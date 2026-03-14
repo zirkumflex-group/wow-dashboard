@@ -1,0 +1,32 @@
+{
+  "name": "wow-dashboard",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "type": "module",
+  "scripts": {
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "check-types": "turbo check-types",
+    "dev:web": "turbo -F web dev",
+    "dev:server": "turbo -F @wow-dashboard/backend dev",
+    "dev:setup": "turbo -F @wow-dashboard/backend dev:setup",
+    "check": "oxlint && oxfmt --write"
+  },
+  "dependencies": {
+    "@wow-dashboard/env": "workspace:*",
+    "dotenv": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@wow-dashboard/config": "workspace:*",
+    "lefthook": "^2.0.13",
+    "oxfmt": "^0.26.0",
+    "oxlint": "^1.41.0",
+    "turbo": "^2.8.12",
+    "typescript": "^5"
+  },
+  "packageManager": "pnpm@10.11.0"
+}

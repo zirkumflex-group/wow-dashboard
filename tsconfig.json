@@ -1,0 +1,3 @@
+{
+  "extends": "@wow-dashboard/config/tsconfig.base.json"
+}
