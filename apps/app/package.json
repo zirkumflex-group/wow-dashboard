@@ -1,0 +1,38 @@
+{
+  "name": "app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "",
+  "keywords": [],
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "start": "electron-vite preview"
+  },
+  "dependencies": {
+    "@convex-dev/better-auth": "catalog:",
+    "@wow-dashboard/backend": "workspace:*",
+    "@wow-dashboard/env": "workspace:*",
+    "@wow-dashboard/ui": "workspace:*",
+    "better-auth": "catalog:",
+    "convex": "catalog:",
+    "dotenv": "catalog:",
+    "lucide-react": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "tailwindcss": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.18",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "@vitejs/plugin-react": "^4.5.2",
+    "@wow-dashboard/config": "workspace:*",
+    "electron": "^41.0.2",
+    "electron-vite": "^3.1.0",
+    "typescript": "^5",
+    "vite": "^6.3.5"
+  }
+}
