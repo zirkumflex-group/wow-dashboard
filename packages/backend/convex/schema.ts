@@ -1,4 +1,10 @@
-import { defineSchema, defineTable } from "convex/server";
-import { v } from "convex/values";
+import { defineSchema } from "convex/server";
+import { playersTable } from "./schemas/players";
+import { charactersTable } from "./schemas/characters";
+import { snapshotsTable } from "./schemas/snapshots";
 
-export default defineSchema({});
+export default defineSchema({
+  players: playersTable,
+  characters: charactersTable,
+  snapshots: snapshotsTable,
+});
