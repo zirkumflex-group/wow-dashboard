@@ -83,9 +83,11 @@ const STAT_OPTIONS: { key: StatKey; label: string; format: (v: number) => string
 
 // ---- Time Frame ----
 
-type TimeFrame = "1d" | "3d" | "1w" | "2w" | "1m" | "3m" | "all";
+type TimeFrame = "12h" | "24h" | "1d" | "3d" | "1w" | "2w" | "1m" | "3m" | "all";
 
 const TIME_FRAME_OPTIONS: { value: TimeFrame; label: string }[] = [
+  { value: "12h", label: "12H" },
+  { value: "24h", label: "24H" },
   { value: "1d", label: "1D" },
   { value: "3d", label: "3D" },
   { value: "1w", label: "1W" },
@@ -98,7 +100,14 @@ const TIME_FRAME_OPTIONS: { value: TimeFrame; label: string }[] = [
 function filterByTimeFrame<T extends { takenAt: number }>(items: T[], frame: TimeFrame): T[] {
   if (frame === "all") return items;
   const nowSec = Date.now() / 1000;
-  const days = { "1d": 1, "3d": 3, "1w": 7, "2w": 14, "1m": 30, "3m": 90 }[frame];
+  const hours: Partial<Record<TimeFrame, number>> = { "12h": 12, "24h": 24 };
+  if (hours[frame] !== undefined) {
+    const cutoff = nowSec - hours[frame]! * 3600;
+    return items.filter((s) => s.takenAt >= cutoff);
+  }
+  const days = { "1d": 1, "3d": 3, "1w": 7, "2w": 14, "1m": 30, "3m": 90 }[
+    frame as Exclude<TimeFrame, "12h" | "24h" | "all">
+  ];
   const cutoff = nowSec - days * 86400;
   return items.filter((s) => s.takenAt >= cutoff);
 }
@@ -284,21 +293,13 @@ function CompareChart({
           cursor={false}
           content={
             <ChartTooltipContent
-              labelFormatter={(ts) => formatDate(ts as number)}
-              formatter={(value, name, item) => (
-                <>
-                  <div
-                    className="h-2.5 w-2.5 shrink-0 rounded-[2px]"
-                    style={{ backgroundColor: item.color }}
-                  />
-                  <span className="flex-1 text-muted-foreground">
-                    {config[name as string]?.label ?? name}
-                  </span>
-                  <span className="ml-auto font-mono font-medium tabular-nums">
-                    {statOpt.format(value as number)}
-                  </span>
-                </>
-              )}
+              labelFormatter={(value) => {
+                return new Date((value as number) * 1000).toLocaleDateString("en-US", {
+                  month: "short",
+                  day: "numeric",
+                });
+              }}
+              indicator="dot"
             />
           }
         />

@@ -51,7 +51,9 @@ function createTray(): void {
   tray.setContextMenu(buildMenu());
 
   const showWindow = () => {
-    if (mainWindow) {
+    if (!mainWindow) {
+      createWindow();
+    } else {
       mainWindow.setSkipTaskbar(false);
       mainWindow.show();
       mainWindow.focus();
@@ -644,7 +646,7 @@ ipcMain.handle("app:getVersion", () => app.getVersion());
 ipcMain.handle("settings:getAppSettings", async () => {
   const s = await getSettings();
   return {
-    closeBehavior: (s.closeBehavior as string) ?? "exit",
+    closeBehavior: (s.closeBehavior as string) ?? "tray",
     autostart: (s.autostart as boolean) ?? false,
   };
 });
