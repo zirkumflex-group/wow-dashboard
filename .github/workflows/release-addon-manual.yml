@@ -1,0 +1,91 @@
+name: Release Addon (Manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. 1.2.3). Leave empty to use version from .toc file."
+        required: false
+        default: ""
+      prerelease:
+        description: "Mark as pre-release"
+        required: false
+        default: "false"
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  release-addon:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION=$(grep "^## Version:" apps/addon/wow-dashboard.toc | awk '{print $3}')
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Using addon version: ${VERSION}"
+
+      - name: Update .toc version
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          sed -i "s/^## Version:.*$/## Version: ${VERSION}/" apps/addon/wow-dashboard.toc
+
+      - name: Commit and tag version
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="addon-v${VERSION}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add apps/addon/wow-dashboard.toc
+          if ! git diff --staged --quiet; then
+            git commit -m "chore: bump addon to ${VERSION} [skip ci]"
+            git push origin HEAD:master
+          fi
+
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists, skipping tag creation"
+          else
+            git tag "$TAG"
+            git push origin "$TAG"
+          fi
+
+      - name: Package addon
+        run: |
+          ADDON_NAME="wow-dashboard"
+          OUT_DIR="apps/addon/dist/${ADDON_NAME}"
+          mkdir -p "${OUT_DIR}"
+          cp "apps/addon/${ADDON_NAME}.toc" "${OUT_DIR}/"
+          cp "apps/addon/${ADDON_NAME}.lua" "${OUT_DIR}/"
+          for dir in Art Fonts; do
+            if [ -d "apps/addon/${dir}" ]; then
+              cp -r "apps/addon/${dir}" "${OUT_DIR}/${dir}"
+            fi
+          done
+          cd apps/addon/dist
+          zip -r "${ADDON_NAME}.zip" "${ADDON_NAME}/"
+          echo "ZIP=apps/addon/dist/${ADDON_NAME}.zip" >> $GITHUB_ENV
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: addon-v${{ steps.version.outputs.version }}
+          name: Addon v${{ steps.version.outputs.version }}
+          prerelease: ${{ github.event.inputs.prerelease }}
+          files: ${{ env.ZIP }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
