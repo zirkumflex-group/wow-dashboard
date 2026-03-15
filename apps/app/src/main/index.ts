@@ -5,6 +5,7 @@ import {
   ipcMain,
   net,
   session,
+  shell,
   Tray,
   Menu,
   nativeImage,
@@ -19,10 +20,9 @@ let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let isQuitting = false;
 
-// 1x1 transparent PNG — used as tray icon placeholder in development.
-// Replace with a proper 16x16 or 32x32 PNG for production builds.
+// 16x16 solid blue (#3B82F6) PNG used as tray icon.
 const TRAY_ICON_DATA_URL =
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQAABjE+ibYAAAAASUVORK5CYII=";
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR4nGOwbvpGEmIY1TCqYfhqAACHB7MQtEO1oAAAAABJRU5ErkJggg==";
 
 function createTray(): void {
   const icon = nativeImage.createFromDataURL(TRAY_ICON_DATA_URL);
@@ -50,15 +50,17 @@ function createTray(): void {
   tray.setToolTip("WoW Dashboard");
   tray.setContextMenu(buildMenu());
 
-  tray.on("click", () => {
+  const showWindow = () => {
     if (mainWindow) {
-      if (mainWindow.isVisible()) {
-        mainWindow.focus();
-      } else {
-        mainWindow.show();
-      }
+      mainWindow.setSkipTaskbar(false);
+      mainWindow.show();
+      mainWindow.focus();
     }
-  });
+  };
+
+  tray.on("click", showWindow);
+  // Windows fires "double-click" on the tray icon; handle both.
+  tray.on("double-click", showWindow);
 }
 
 // ─── Settings persistence ─────────────────────────────────────────────────────
@@ -392,6 +394,7 @@ function createWindow(): void {
     const settings = await getSettings();
     if ((settings.closeBehavior as string) === "tray") {
       event.preventDefault();
+      mainWindow?.setSkipTaskbar(true);
       mainWindow?.hide();
     } else {
       mainWindow = null;
@@ -571,6 +574,17 @@ ipcMain.handle("wow:checkAddonInstalled", async (_, retailPath: string) => {
   }
 });
 
+ipcMain.handle("wow:getInstalledAddonVersion", async (_, retailPath: string) => {
+  const tocPath = join(retailPath, "Interface", "AddOns", "wow-dashboard", "wow-dashboard.toc");
+  try {
+    const content = await fs.promises.readFile(tocPath, "utf-8");
+    const match = content.match(/^##\s*Version:\s*(.+)$/m);
+    return match ? match[1].trim() : null;
+  } catch {
+    return null;
+  }
+});
+
 ipcMain.handle("wow:installAddon", async (_, retailPath: string, downloadUrl: string) => {
   const tmpDir = os.tmpdir();
   const zipPath = join(tmpDir, "wow-dashboard-addon.zip");
@@ -622,6 +636,9 @@ ipcMain.handle("wow:getLatestAddonRelease", async () => {
   };
 });
 
+// Shell
+ipcMain.handle("app:openExternal", (_, url: string) => shell.openExternal(url));
+
 // App settings
 ipcMain.handle("settings:getAppSettings", async () => {
   const s = await getSettings();
@@ -656,8 +673,14 @@ app.whenReady().then(async () => {
 
   // Check for app updates (only in packaged builds)
   if (app.isPackaged) {
+    const CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
     autoUpdater.checkForUpdates().catch(() => {});
-    autoUpdater.on("update-downloaded", () => {
+    setInterval(() => autoUpdater.checkForUpdates().catch(() => {}), CHECK_INTERVAL_MS);
+    autoUpdater.on("update-available", (info) => {
+      mainWindow?.webContents.send("app:updateAvailable", info.version);
+    });
+    autoUpdater.on("update-downloaded", (info) => {
+      mainWindow?.webContents.send("app:updateDownloaded", info.version);
       dialog
         .showMessageBox(mainWindow!, {
           type: "info",

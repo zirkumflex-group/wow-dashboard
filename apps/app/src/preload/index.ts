@@ -14,6 +14,8 @@ contextBridge.exposeInMainWorld("electron", {
     readAddonData: (retailPath: string) => ipcRenderer.invoke("wow:readAddonData", retailPath),
     checkAddonInstalled: (retailPath: string) =>
       ipcRenderer.invoke("wow:checkAddonInstalled", retailPath),
+    getInstalledAddonVersion: (retailPath: string) =>
+      ipcRenderer.invoke("wow:getInstalledAddonVersion", retailPath) as Promise<string | null>,
     installAddon: (retailPath: string, downloadUrl: string) =>
       ipcRenderer.invoke("wow:installAddon", retailPath, downloadUrl),
     getLatestAddonRelease: () =>
@@ -24,5 +26,14 @@ contextBridge.exposeInMainWorld("electron", {
     setCloseBehavior: (value: "tray" | "exit") =>
       ipcRenderer.invoke("settings:setCloseBehavior", value),
     setAutostart: (value: boolean) => ipcRenderer.invoke("settings:setAutostart", value),
+  },
+  openExternal: (url: string) => ipcRenderer.invoke("app:openExternal", url),
+  updates: {
+    onUpdateAvailable: (cb: (version: string) => void) => {
+      ipcRenderer.on("app:updateAvailable", (_, version: string) => cb(version));
+    },
+    onUpdateDownloaded: (cb: (version: string) => void) => {
+      ipcRenderer.on("app:updateDownloaded", (_, version: string) => cb(version));
+    },
   },
 });

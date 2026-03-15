@@ -396,6 +396,7 @@ twwBG:SetVertexColor(0.25, 0.25, 0.25)
 
 RightSection.NineSlice.CloseButton:SetScript("OnClick", function()
     MainFrame:Hide()
+    WowDashboardDB.panelOpen = false
 end)
 
 -- Header title
@@ -705,7 +706,9 @@ end
 SLASH_WOWDASHBOARD1 = "/wd"
 SLASH_WOWDASHBOARD2 = "/wowdashboard"
 SlashCmdList["WOWDASHBOARD"] = function()
-    MainFrame:SetShown(not MainFrame:IsShown())
+    local shown = not MainFrame:IsShown()
+    MainFrame:SetShown(shown)
+    WowDashboardDB.panelOpen = shown
 end
 
 local eventFrame = CreateFrame("Frame")
@@ -716,16 +719,17 @@ eventFrame:RegisterEvent("TIME_PLAYED_MSG")
 eventFrame:SetScript("OnEvent", function(self, event, ...)
     if event == "ADDON_LOADED" and ... == addonName then
         if not WowDashboardDB then
-            WowDashboardDB = { version = DB_VERSION, characters = {} }
+            WowDashboardDB = { version = DB_VERSION, characters = {}, panelOpen = false }
         end
         if not WowDashboardDB.version    then WowDashboardDB.version    = DB_VERSION end
         if not WowDashboardDB.characters then WowDashboardDB.characters = {} end
+        if WowDashboardDB.panelOpen == nil then WowDashboardDB.panelOpen = false end
 
     elseif event == "PLAYER_ENTERING_WORLD" then
         if not initialized then
             initialized = true
             print("|cff00ccff[WoW Dashboard]|r Loaded — type |cffffffff/wowdashboard|r to open.")
-            MainFrame:Show()
+            MainFrame:SetShown(WowDashboardDB.panelOpen == true)
             C_Timer.NewTicker(1, OnSecondTick)
             -- First snapshot in 5 s, then every 15 min
             nextSnapshotAt = GetTime() + 5

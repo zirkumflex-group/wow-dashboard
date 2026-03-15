@@ -67,6 +67,7 @@ declare global {
           accountsFound: string[];
         }>;
         checkAddonInstalled: (retailPath: string) => Promise<boolean>;
+        getInstalledAddonVersion: (retailPath: string) => Promise<string | null>;
         installAddon: (retailPath: string, downloadUrl: string) => Promise<void>;
         getLatestAddonRelease: () => Promise<{ url: string; version: string }>;
       };
@@ -74,6 +75,11 @@ declare global {
         getAppSettings: () => Promise<{ closeBehavior: "tray" | "exit"; autostart: boolean }>;
         setCloseBehavior: (value: "tray" | "exit") => Promise<void>;
         setAutostart: (value: boolean) => Promise<void>;
+      };
+      openExternal: (url: string) => Promise<void>;
+      updates: {
+        onUpdateAvailable: (cb: (version: string) => void) => void;
+        onUpdateDownloaded: (cb: (version: string) => void) => void;
       };
     };
   }
@@ -195,11 +201,21 @@ function LoginScreen({ onLogin }: { onLogin: () => Promise<void> }) {
   );
 }
 
+type LogLevel = "info" | "success" | "warn" | "error";
+
 interface LogEntry {
   id: number;
   time: Date;
+  level: LogLevel;
   message: string;
 }
+
+const LOG_COLORS: Record<LogLevel, string> = {
+  info: "text-gray-300",
+  success: "text-green-400",
+  warn: "text-yellow-400",
+  error: "text-red-400",
+};
 
 let _logId = 0;
 
@@ -215,15 +231,19 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
   const [closeBehavior, setCloseBehavior] = useState<"tray" | "exit">("exit");
   const [autostart, setAutostart] = useState(false);
   const [addonInstalled, setAddonInstalled] = useState<boolean | null>(null);
+  const [addonVersion, setAddonVersion] = useState<string | null>(null);
+  const [latestAddonVersion, setLatestAddonVersion] = useState<string | null>(null);
   const [installing, setInstalling] = useState(false);
   const [installError, setInstallError] = useState<string | null>(null);
+  const [appUpdateAvailable, setAppUpdateAvailable] = useState<string | null>(null);
+  const [appUpdateDownloaded, setAppUpdateDownloaded] = useState<string | null>(null);
 
   const syncingRef = useRef(false);
   const prevCharCountRef = useRef<number | null>(null);
 
-  function addLog(message: string) {
+  function addLog(message: string, level: LogLevel = "info") {
     _logId += 1;
-    const entry: LogEntry = { id: _logId, time: new Date(), message };
+    const entry: LogEntry = { id: _logId, time: new Date(), level, message };
     setLog((prev) => [entry, ...prev].slice(0, 100));
   }
 
@@ -234,15 +254,30 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
       setCloseBehavior(s.closeBehavior);
       setAutostart(s.autostart);
     });
+    window.electron.updates.onUpdateAvailable((v) => {
+      setAppUpdateAvailable(v);
+      addLog(`App update v${v} available — downloading…`, "info");
+    });
+    window.electron.updates.onUpdateDownloaded((v) => {
+      setAppUpdateDownloaded(v);
+      addLog(`App update v${v} downloaded — restart to apply`, "success");
+    });
+    // Fetch latest addon release version once on mount
+    window.electron.wow
+      .getLatestAddonRelease()
+      .then(({ version }) => setLatestAddonVersion(version))
+      .catch(() => {});
   }, []);
 
-  // Check addon installation whenever retailPath changes
+  // Check addon installation and version whenever retailPath changes
   useEffect(() => {
     if (!retailPath) {
       setAddonInstalled(null);
+      setAddonVersion(null);
       return;
     }
     window.electron.wow.checkAddonInstalled(retailPath).then(setAddonInstalled);
+    window.electron.wow.getInstalledAddonVersion(retailPath).then(setAddonVersion);
   }, [retailPath]);
 
   async function handleCloseBehaviorChange(value: "tray" | "exit") {
@@ -263,11 +298,12 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
       const { url, version } = await window.electron.wow.getLatestAddonRelease();
       await window.electron.wow.installAddon(retailPath, url);
       setAddonInstalled(true);
-      addLog(`Addon v${version} installed successfully`);
+      setAddonVersion(version);
+      addLog(`Addon v${version} installed successfully`, "success");
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setInstallError(msg);
-      addLog(`Addon install failed: ${msg}`);
+      addLog(`Addon install failed: ${msg}`, "error");
     } finally {
       setInstalling(false);
     }
@@ -277,7 +313,7 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
     const folder = await window.electron.wow.selectRetailFolder();
     if (folder) {
       setRetailPath(folder);
-      addLog(`WoW folder set: ${folder}`);
+      addLog(`WoW folder set: ${folder}`, "info");
       const installed = await window.electron.wow.checkAddonInstalled(folder);
       setAddonInstalled(installed);
     }
@@ -299,22 +335,24 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
             accountsFound.length === 0
               ? "No wow-dashboard.lua found — run the addon in-game first"
               : `Parsed ${accountsFound.length} account(s) but no characters found`,
+            "warn",
           );
         } else {
           addLog(`Read ${addonChars.length} character(s) from ${accountsFound.length} account(s)`);
           const result = await ingestAddon({ characters: addonChars });
           addLog(
             `Addon ingest done — ${result.newChars} new char(s), ${result.newSnapshots} new snapshot(s)`,
+            "success",
           );
         }
       } else {
-        addLog("No WoW folder set — skipping addon ingest");
+        addLog("No WoW folder set — skipping addon ingest", "warn");
       }
 
       // Step 2: resync from Battle.net
       await resync();
     } catch (e) {
-      addLog(`Ingest error: ${e instanceof Error ? e.message : String(e)}`);
+      addLog(`Ingest error: ${e instanceof Error ? e.message : String(e)}`, "error");
     } finally {
       syncingRef.current = false;
       setSyncing(false);
@@ -342,10 +380,22 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
     if (characters === undefined) return;
     const count = characters?.length ?? 0;
     if (prevCharCountRef.current !== null && prevCharCountRef.current !== count) {
-      addLog(`Sync complete — ${count} character${count !== 1 ? "s" : ""} found`);
+      addLog(`Sync complete — ${count} character${count !== 1 ? "s" : ""} found`, "success");
     }
     prevCharCountRef.current = count;
   }, [characters]);
+
+  function isOutdated(installed: string, latest: string): boolean {
+    const a = installed.split(".").map(Number);
+    const b = latest.split(".").map(Number);
+    for (let i = 0; i < Math.max(a.length, b.length); i++) {
+      const ai = a[i] ?? 0;
+      const bi = b[i] ?? 0;
+      if (ai < bi) return true;
+      if (ai > bi) return false;
+    }
+    return false;
+  }
 
   function formatTime(s: number) {
     const m = Math.floor(s / 60)
@@ -361,10 +411,48 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
         {/* Header */}
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-bold">WoW Dashboard</h1>
-          <button onClick={onLogout} className="text-sm text-gray-400 hover:text-white">
-            Sign out
-          </button>
+          <div className="flex items-center gap-4">
+            <button
+              onClick={() => window.electron.openExternal("https://wow.zirkumflex.io")}
+              className="text-sm text-blue-400 hover:text-blue-300"
+            >
+              Open Dashboard ↗
+            </button>
+            <button onClick={onLogout} className="text-sm text-gray-400 hover:text-white">
+              Sign out
+            </button>
+          </div>
         </div>
+
+        {/* App update banners */}
+        {appUpdateDownloaded && (
+          <div className="rounded-lg border border-green-700 bg-green-950 px-4 py-3 text-sm text-green-300">
+            App v{appUpdateDownloaded} downloaded — restart to apply the update.
+          </div>
+        )}
+        {appUpdateAvailable && !appUpdateDownloaded && (
+          <div className="rounded-lg border border-blue-700 bg-blue-950 px-4 py-3 text-sm text-blue-300">
+            App update v{appUpdateAvailable} is available and downloading…
+          </div>
+        )}
+
+        {/* Addon update banner */}
+        {addonInstalled &&
+          addonVersion &&
+          latestAddonVersion &&
+          isOutdated(addonVersion, latestAddonVersion) && (
+            <div className="rounded-lg border border-yellow-700 bg-yellow-950 px-4 py-3 text-sm text-yellow-300">
+              Addon update available: v{addonVersion} → v{latestAddonVersion}. Click{" "}
+              <button
+                onClick={handleInstallAddon}
+                disabled={installing}
+                className="underline hover:text-yellow-100 disabled:opacity-50"
+              >
+                Update Addon
+              </button>{" "}
+              to install.
+            </div>
+          )}
 
         {/* WoW folder selector */}
         <div className="rounded-lg border border-gray-800 p-4 space-y-2">
@@ -395,7 +483,9 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
               {retailPath && addonInstalled !== null && (
                 <p className="mt-0.5 text-xs">
                   {addonInstalled ? (
-                    <span className="text-green-400">Installed</span>
+                    <span className="text-green-400">
+                      Installed{addonVersion ? ` v${addonVersion}` : ""}
+                    </span>
                   ) : (
                     <span className="text-yellow-400">Not installed</span>
                   )}
@@ -431,9 +521,9 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
           </span>
         </div>
 
-        {/* Ingest log */}
+        {/* Log */}
         <div className="rounded-lg border border-gray-800 p-4">
-          <h2 className="mb-3 font-medium text-gray-300">Ingest Log</h2>
+          <h2 className="mb-3 font-medium text-gray-300">Log</h2>
           <div className="max-h-64 space-y-1 overflow-y-auto">
             {log.length === 0 ? (
               <p className="text-sm text-gray-500">No activity yet.</p>
@@ -443,7 +533,7 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
                   <span className="shrink-0 font-mono text-xs text-gray-500">
                     {entry.time.toLocaleTimeString()}
                   </span>
-                  <span className="text-gray-200">{entry.message}</span>
+                  <span className={LOG_COLORS[entry.level]}>{entry.message}</span>
                 </div>
               ))
             )}
