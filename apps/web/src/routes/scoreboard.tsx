@@ -1,11 +1,19 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { api } from "@wow-dashboard/backend/convex/_generated/api";
-import { Card, CardContent, CardHeader, CardTitle } from "@wow-dashboard/ui/components/card";
+import { Card, CardContent } from "@wow-dashboard/ui/components/card";
 import { Progress } from "@wow-dashboard/ui/components/progress";
 import { Skeleton } from "@wow-dashboard/ui/components/skeleton";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@wow-dashboard/ui/components/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@wow-dashboard/ui/components/tabs";
 import { useQuery } from "convex/react";
-import { Trophy, Users } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Trophy, Users } from "lucide-react";
 import { useState } from "react";
 
 export const Route = createFileRoute("/scoreboard")({
@@ -34,30 +42,28 @@ function classColor(cls: string) {
 
 const MEDAL: Record<number, string> = { 0: "🥇", 1: "🥈", 2: "🥉" };
 
-function RankBadge({ rank }: { rank: number }) {
+function RankCell({ rank }: { rank: number }) {
   if (rank < 3) {
-    return <span className="text-lg leading-none">{MEDAL[rank]}</span>;
+    return <span className="text-base leading-none">{MEDAL[rank]}</span>;
   }
-  return (
-    <span className="text-muted-foreground w-7 text-right text-sm tabular-nums">{rank + 1}</span>
-  );
+  return <span className="text-muted-foreground text-sm tabular-nums">{rank + 1}</span>;
 }
 
-function ScoreBar({ score, max }: { score: number; max: number }) {
-  const pct = max > 0 ? (score / max) * 100 : 0;
-  return (
-    <div className="flex items-center gap-2">
-      <span className="w-14 text-right text-sm font-semibold tabular-nums">
-        {score.toLocaleString()}
-      </span>
-      <Progress value={pct} className="flex-1" />
-    </div>
+function SortIcon({
+  column,
+  sort,
+  direction,
+}: {
+  column: string;
+  sort: string;
+  direction: "asc" | "desc";
+}) {
+  if (sort !== column) return <ArrowUpDown className="ml-1 inline h-3 w-3 opacity-50" />;
+  return direction === "desc" ? (
+    <ArrowDown className="ml-1 inline h-3 w-3" />
+  ) : (
+    <ArrowUp className="ml-1 inline h-3 w-3" />
   );
-}
-
-function StatBar({ value, max }: { value: number; max: number }) {
-  const pct = max > 0 ? (value / max) * 100 : 0;
-  return <Progress value={pct} className="w-full" />;
 }
 
 function formatPlaytime(seconds: number) {
@@ -75,23 +81,20 @@ function formatGold(gold: number) {
   return gold.toLocaleString();
 }
 
-type Tab = "characters" | "players";
-
 type CharSort = "mplus" | "ilvl";
+type SortDir = "asc" | "desc";
 
 function CharactersTab() {
   const entries = useQuery(api.characters.getScoreboard);
   const [sort, setSort] = useState<CharSort>("mplus");
+  const [dir, setDir] = useState<SortDir>("desc");
 
   if (entries === undefined) {
     return (
       <Card>
-        <CardHeader>
-          <CardTitle>Loading…</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
+        <CardContent className="space-y-3 py-4">
           {Array.from({ length: 10 }).map((_, i) => (
-            <Skeleton key={i} className="h-12 w-full rounded-lg" />
+            <Skeleton key={i} className="h-10 w-full rounded-lg" />
           ))}
         </CardContent>
       </Card>
@@ -111,102 +114,111 @@ function CharactersTab() {
     );
   }
 
-  const sorted = [...entries]
-    .filter((e) => e.spec !== "Unknown" && e.role !== "Unknown")
-    .sort((a, b) =>
-      sort === "ilvl" ? b.itemLevel - a.itemLevel : b.mythicPlusScore - a.mythicPlusScore,
-    );
-  const maxMplus = Math.max(...sorted.map((e) => e.mythicPlusScore));
-  const maxIlvl = Math.max(...sorted.map((e) => e.itemLevel));
+  const filtered = entries.filter((e) => e.spec !== "Unknown");
+
+  const sorted = [...filtered].sort((a, b) => {
+    const diff =
+      sort === "ilvl" ? a.itemLevel - b.itemLevel : a.mythicPlusScore - b.mythicPlusScore;
+    return dir === "desc" ? -diff : diff;
+  });
+
+  const maxMplus = Math.max(...filtered.map((e) => e.mythicPlusScore));
+  const maxIlvl = Math.max(...filtered.map((e) => e.itemLevel));
+
+  function handleSort(col: CharSort) {
+    if (sort === col) {
+      setDir((d) => (d === "desc" ? "asc" : "desc"));
+    } else {
+      setSort(col);
+      setDir("desc");
+    }
+  }
 
   return (
     <Card>
-      <CardHeader className="border-b pb-3">
-        <div className="flex items-center gap-2">
-          <span className="text-muted-foreground text-xs">Sort by</span>
-          <button
-            onClick={() => setSort("mplus")}
-            className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${sort === "mplus" ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:text-foreground"}`}
-          >
-            M+ Score
-          </button>
-          <button
-            onClick={() => setSort("ilvl")}
-            className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${sort === "ilvl" ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:text-foreground"}`}
-          >
-            Item Level
-          </button>
-        </div>
-      </CardHeader>
       <CardContent className="p-0">
-        <div className="divide-y divide-border">
-          {sorted.map((entry, i) => (
-            <Link
-              key={entry.characterId}
-              to="/character/$characterId"
-              params={{ characterId: entry.characterId }}
-              className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-muted/50"
-            >
-              {/* Rank */}
-              <div className="flex w-7 shrink-0 items-center justify-center">
-                <RankBadge rank={i} />
-              </div>
-
-              {/* Character info */}
-              <div className="min-w-0 flex-1">
-                <div className="flex items-baseline gap-2">
-                  <span className={`font-semibold ${classColor(entry.class)}`}>{entry.name}</span>
-                  <span className="text-muted-foreground text-xs">
-                    {entry.spec} {entry.class}
-                  </span>
-                </div>
-                <div className="text-muted-foreground flex items-center gap-2 text-xs">
-                  <span>
-                    {entry.realm}-{entry.region.toUpperCase()}
-                  </span>
-                  <span>·</span>
-                  <span className={entry.faction === "alliance" ? "text-blue-400" : "text-red-400"}>
-                    {entry.battleTag}
-                  </span>
-                </div>
-              </div>
-
-              {/* M+ score with bar */}
-              <div className="hidden w-40 shrink-0 sm:block">
-                <p className="text-muted-foreground mb-0.5 text-xs">M+ Score</p>
-                <ScoreBar score={entry.mythicPlusScore} max={maxMplus} />
-              </div>
-
-              {/* Item level */}
-              <div className="shrink-0 text-right">
-                <p
-                  className={`text-xs ${sort === "ilvl" ? "text-foreground font-medium" : "text-muted-foreground"}`}
-                >
-                  iLvl
-                </p>
-                <p className={`tabular-nums ${sort === "ilvl" ? "font-bold" : "font-semibold"}`}>
-                  {entry.itemLevel.toFixed(1)}
-                </p>
-                {sort === "ilvl" && (
-                  <div className="mt-0.5 w-16">
+        <Table>
+          <TableHeader>
+            <TableRow className="hover:bg-transparent">
+              <TableHead className="w-10">#</TableHead>
+              <TableHead>Character</TableHead>
+              <TableHead
+                className="hidden cursor-pointer select-none sm:table-cell"
+                onClick={() => handleSort("mplus")}
+              >
+                M+ Score
+                <SortIcon column="mplus" sort={sort} direction={dir} />
+              </TableHead>
+              <TableHead
+                className="cursor-pointer select-none text-right"
+                onClick={() => handleSort("ilvl")}
+              >
+                Item Level
+                <SortIcon column="ilvl" sort={sort} direction={dir} />
+              </TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {sorted.map((entry, i) => (
+              <TableRow key={entry.characterId} className="group">
+                <TableCell className="w-10">
+                  <RankCell rank={i} />
+                </TableCell>
+                <TableCell>
+                  <Link
+                    to="/character/$characterId"
+                    params={{ characterId: entry.characterId }}
+                    className="block"
+                  >
+                    <div className="flex items-baseline gap-2">
+                      <span className={`font-semibold ${classColor(entry.class)}`}>
+                        {entry.name}
+                      </span>
+                      <span className="text-muted-foreground text-xs">
+                        {entry.spec} {entry.class}
+                      </span>
+                    </div>
+                    <div className="text-muted-foreground flex items-center gap-1.5 text-xs">
+                      <span>
+                        {entry.realm}-{entry.region.toUpperCase()}
+                      </span>
+                      <span>·</span>
+                      <span
+                        className={entry.faction === "alliance" ? "text-blue-400" : "text-red-400"}
+                      >
+                        {entry.battleTag}
+                      </span>
+                    </div>
+                  </Link>
+                </TableCell>
+                <TableCell className="hidden sm:table-cell">
+                  <div className="flex items-center gap-2">
+                    <span className="w-14 text-right text-sm font-semibold tabular-nums">
+                      {entry.mythicPlusScore.toLocaleString()}
+                    </span>
                     <Progress
-                      value={maxIlvl > 0 ? (entry.itemLevel / maxIlvl) * 100 : 0}
-                      className="h-1"
+                      value={maxMplus > 0 ? (entry.mythicPlusScore / maxMplus) * 100 : 0}
+                      className="w-24"
                     />
                   </div>
-                )}
-              </div>
-
-              {/* M+ score (mobile only) */}
-              <div className="shrink-0 text-right sm:hidden">
-                <p className="text-muted-foreground text-xs">M+</p>
-                <p className="font-semibold tabular-nums">
-                  {entry.mythicPlusScore.toLocaleString()}
-                </p>
-              </div>
-            </Link>
-          ))}
-        </div>
+                </TableCell>
+                <TableCell className="text-right">
+                  <span
+                    className={`tabular-nums font-semibold ${sort === "ilvl" ? "text-foreground" : "text-muted-foreground"}`}
+                  >
+                    {entry.itemLevel.toFixed(1)}
+                  </span>
+                  {sort === "ilvl" && (
+                    <Progress
+                      value={maxIlvl > 0 ? (entry.itemLevel / maxIlvl) * 100 : 0}
+                      className="mt-0.5 h-1 w-16 ml-auto"
+                    />
+                  )}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
       </CardContent>
     </Card>
   );
@@ -217,16 +229,14 @@ type PlayerSort = "playtime" | "gold";
 function PlayersTab() {
   const entries = useQuery(api.characters.getPlayerScoreboard);
   const [sort, setSort] = useState<PlayerSort>("playtime");
+  const [dir, setDir] = useState<SortDir>("desc");
 
   if (entries === undefined) {
     return (
       <Card>
-        <CardHeader>
-          <CardTitle>Loading…</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
+        <CardContent className="space-y-3 py-4">
           {Array.from({ length: 5 }).map((_, i) => (
-            <Skeleton key={i} className="h-14 w-full rounded-lg" />
+            <Skeleton key={i} className="h-12 w-full rounded-lg" />
           ))}
         </CardContent>
       </Card>
@@ -246,98 +256,113 @@ function PlayersTab() {
     );
   }
 
-  const sorted = [...entries].sort((a, b) =>
-    sort === "gold" ? b.totalGold - a.totalGold : b.totalPlaytimeSeconds - a.totalPlaytimeSeconds,
-  );
-  const maxPlaytime = Math.max(...sorted.map((e) => e.totalPlaytimeSeconds));
-  const maxGold = Math.max(...sorted.map((e) => e.totalGold));
+  const sorted = [...entries].sort((a, b) => {
+    const diff =
+      sort === "gold" ? a.totalGold - b.totalGold : a.totalPlaytimeSeconds - b.totalPlaytimeSeconds;
+    return dir === "desc" ? -diff : diff;
+  });
+
+  const maxPlaytime = Math.max(...entries.map((e) => e.totalPlaytimeSeconds));
+  const maxGold = Math.max(...entries.map((e) => e.totalGold));
+
+  function handleSort(col: PlayerSort) {
+    if (sort === col) {
+      setDir((d) => (d === "desc" ? "asc" : "desc"));
+    } else {
+      setSort(col);
+      setDir("desc");
+    }
+  }
 
   return (
     <Card>
-      <CardHeader className="border-b pb-3">
-        <div className="flex items-center gap-2">
-          <span className="text-muted-foreground text-xs">Sort by</span>
-          <button
-            onClick={() => setSort("playtime")}
-            className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${sort === "playtime" ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:text-foreground"}`}
-          >
-            Playtime
-          </button>
-          <button
-            onClick={() => setSort("gold")}
-            className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${sort === "gold" ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:text-foreground"}`}
-          >
-            Gold
-          </button>
-        </div>
-      </CardHeader>
       <CardContent className="p-0">
-        <div className="divide-y divide-border">
-          {sorted.map((entry, i) => (
-            <div key={entry.battleTag} className="flex items-center gap-3 px-4 py-3">
-              {/* Rank */}
-              <div className="flex w-7 shrink-0 items-center justify-center">
-                <RankBadge rank={i} />
-              </div>
-
-              {/* Player info */}
-              <div className="min-w-0 flex-1">
-                <p className="font-semibold">{entry.battleTag}</p>
-                <p className="text-muted-foreground text-xs">
-                  {entry.characterCount} character{entry.characterCount !== 1 ? "s" : ""}
-                </p>
-              </div>
-
-              {/* Playtime */}
-              <div className="hidden w-44 shrink-0 sm:block">
-                <div className="flex items-center justify-between mb-0.5">
-                  <p
-                    className={`text-xs ${sort === "playtime" ? "text-foreground font-medium" : "text-muted-foreground"}`}
-                  >
-                    Playtime
+        <Table>
+          <TableHeader>
+            <TableRow className="hover:bg-transparent">
+              <TableHead className="w-10">#</TableHead>
+              <TableHead>Player</TableHead>
+              <TableHead
+                className="hidden cursor-pointer select-none sm:table-cell"
+                onClick={() => handleSort("playtime")}
+              >
+                Playtime
+                <SortIcon column="playtime" sort={sort} direction={dir} />
+              </TableHead>
+              <TableHead
+                className="hidden cursor-pointer select-none sm:table-cell"
+                onClick={() => handleSort("gold")}
+              >
+                Gold
+                <SortIcon column="gold" sort={sort} direction={dir} />
+              </TableHead>
+              {/* Mobile: show both in one column header */}
+              <TableHead
+                className="cursor-pointer select-none text-right sm:hidden"
+                onClick={() => handleSort(sort === "playtime" ? "gold" : "playtime")}
+              >
+                {sort === "playtime" ? "Playtime" : "Gold"}
+                <ArrowDown className="ml-1 inline h-3 w-3 opacity-50" />
+              </TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {sorted.map((entry, i) => (
+              <TableRow key={entry.battleTag}>
+                <TableCell className="w-10">
+                  <RankCell rank={i} />
+                </TableCell>
+                <TableCell>
+                  <p className="font-semibold">{entry.battleTag}</p>
+                  <p className="text-muted-foreground text-xs">
+                    {entry.characterCount} character{entry.characterCount !== 1 ? "s" : ""}
                   </p>
-                  <p className="text-xs font-semibold tabular-nums">
+                </TableCell>
+                <TableCell className="hidden sm:table-cell">
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`w-16 text-right text-sm tabular-nums font-semibold ${sort === "playtime" ? "text-foreground" : "text-muted-foreground"}`}
+                    >
+                      {formatPlaytime(entry.totalPlaytimeSeconds)}
+                    </span>
+                    <Progress
+                      value={maxPlaytime > 0 ? (entry.totalPlaytimeSeconds / maxPlaytime) * 100 : 0}
+                      className="w-24"
+                    />
+                  </div>
+                </TableCell>
+                <TableCell className="hidden sm:table-cell">
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`w-16 text-right text-sm tabular-nums font-semibold ${sort === "gold" ? "text-yellow-400" : "text-muted-foreground"}`}
+                    >
+                      {formatGold(entry.totalGold)}
+                    </span>
+                    <Progress
+                      value={maxGold > 0 ? (entry.totalGold / maxGold) * 100 : 0}
+                      className="w-24"
+                    />
+                  </div>
+                </TableCell>
+                {/* Mobile */}
+                <TableCell className="text-right sm:hidden">
+                  <p className="text-sm font-semibold tabular-nums">
                     {formatPlaytime(entry.totalPlaytimeSeconds)}
-                  </p>
-                </div>
-                <StatBar value={entry.totalPlaytimeSeconds} max={maxPlaytime} />
-              </div>
-
-              {/* Gold */}
-              <div className="hidden w-36 shrink-0 sm:block">
-                <div className="flex items-center justify-between mb-0.5">
-                  <p
-                    className={`text-xs ${sort === "gold" ? "text-foreground font-medium" : "text-muted-foreground"}`}
-                  >
-                    Gold
                   </p>
                   <p className="text-xs font-semibold tabular-nums text-yellow-400">
                     {formatGold(entry.totalGold)}
                   </p>
-                </div>
-                <StatBar value={entry.totalGold} max={maxGold} />
-              </div>
-
-              {/* Mobile: playtime + gold */}
-              <div className="shrink-0 text-right sm:hidden">
-                <p className="text-muted-foreground text-xs">Playtime</p>
-                <p className="font-semibold tabular-nums text-sm">
-                  {formatPlaytime(entry.totalPlaytimeSeconds)}
-                </p>
-              </div>
-              <div className="shrink-0 text-right sm:hidden">
-                <p className="text-muted-foreground text-xs">Gold</p>
-                <p className="font-semibold tabular-nums text-sm text-yellow-400">
-                  {formatGold(entry.totalGold)}
-                </p>
-              </div>
-            </div>
-          ))}
-        </div>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
       </CardContent>
     </Card>
   );
 }
+
+type Tab = "characters" | "players";
 
 function Scoreboard() {
   const [tab, setTab] = useState<Tab>("characters");
@@ -350,7 +375,7 @@ function Scoreboard() {
   return (
     <div className="w-full px-4 py-6 sm:px-6 lg:px-8">
       <div className="mb-6">
-        <h1 className="text-3xl font-bold flex items-center gap-2">
+        <h1 className="flex items-center gap-2 text-3xl font-bold">
           <Trophy className="h-7 w-7 text-yellow-400 transition-transform duration-200 hover:scale-110" />
           Scoreboard
         </h1>
