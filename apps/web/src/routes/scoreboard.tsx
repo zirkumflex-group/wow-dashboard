@@ -1,8 +1,11 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { api } from "@wow-dashboard/backend/convex/_generated/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@wow-dashboard/ui/components/card";
+import { Progress } from "@wow-dashboard/ui/components/progress";
 import { Skeleton } from "@wow-dashboard/ui/components/skeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@wow-dashboard/ui/components/tabs";
 import { useQuery } from "convex/react";
+import { Trophy, Users } from "lucide-react";
 import { useState } from "react";
 
 export const Route = createFileRoute("/scoreboard")({
@@ -47,31 +50,14 @@ function ScoreBar({ score, max }: { score: number; max: number }) {
       <span className="w-14 text-right text-sm font-semibold tabular-nums">
         {score.toLocaleString()}
       </span>
-      <div className="h-1.5 flex-1 rounded-full bg-muted overflow-hidden">
-        <div
-          className="h-full rounded-full bg-blue-500 transition-all"
-          style={{ width: `${pct}%` }}
-        />
-      </div>
+      <Progress value={pct} className="flex-1" />
     </div>
   );
 }
 
-function StatBar({
-  value,
-  max,
-  color = "bg-blue-500",
-}: {
-  value: number;
-  max: number;
-  color?: string;
-}) {
+function StatBar({ value, max }: { value: number; max: number }) {
   const pct = max > 0 ? (value / max) * 100 : 0;
-  return (
-    <div className="h-1.5 flex-1 rounded-full bg-muted overflow-hidden">
-      <div className={`h-full rounded-full transition-all ${color}`} style={{ width: `${pct}%` }} />
-    </div>
-  );
+  return <Progress value={pct} className="w-full" />;
 }
 
 function formatPlaytime(seconds: number) {
@@ -90,33 +76,6 @@ function formatGold(gold: number) {
 }
 
 type Tab = "characters" | "players";
-
-function TabSwitch({ tab, onChange }: { tab: Tab; onChange: (t: Tab) => void }) {
-  return (
-    <div className="inline-flex rounded-lg border border-border bg-muted p-1 text-sm">
-      <button
-        onClick={() => onChange("characters")}
-        className={`rounded-md px-3 py-1 transition-colors ${
-          tab === "characters"
-            ? "bg-background text-foreground shadow-sm"
-            : "text-muted-foreground hover:text-foreground"
-        }`}
-      >
-        Characters
-      </button>
-      <button
-        onClick={() => onChange("players")}
-        className={`rounded-md px-3 py-1 transition-colors ${
-          tab === "players"
-            ? "bg-background text-foreground shadow-sm"
-            : "text-muted-foreground hover:text-foreground"
-        }`}
-      >
-        Players
-      </button>
-    </div>
-  );
-}
 
 function CharactersTab() {
   const entries = useQuery(api.characters.getScoreboard);
@@ -273,11 +232,7 @@ function PlayersTab() {
                     {formatPlaytime(entry.totalPlaytimeSeconds)}
                   </p>
                 </div>
-                <StatBar
-                  value={entry.totalPlaytimeSeconds}
-                  max={maxPlaytime}
-                  color="bg-violet-500"
-                />
+                <StatBar value={entry.totalPlaytimeSeconds} max={maxPlaytime} />
               </div>
 
               {/* Gold */}
@@ -288,7 +243,7 @@ function PlayersTab() {
                     {formatGold(entry.totalGold)}
                   </p>
                 </div>
-                <StatBar value={entry.totalGold} max={maxGold} color="bg-yellow-500" />
+                <StatBar value={entry.totalGold} max={maxGold} />
               </div>
 
               {/* Mobile: playtime + gold */}
@@ -322,24 +277,32 @@ function Scoreboard() {
 
   return (
     <div className="w-full px-4 py-6 sm:px-6 lg:px-8">
-      <div className="mb-8 flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-3xl font-bold">Scoreboard</h1>
-          <p className="text-muted-foreground mt-1 text-sm">{subtitle}</p>
-        </div>
-        <Link
-          to="/dashboard"
-          className="text-muted-foreground hover:text-foreground shrink-0 text-sm transition-colors mt-1"
-        >
-          ← Dashboard
-        </Link>
+      <div className="mb-6">
+        <h1 className="text-3xl font-bold flex items-center gap-2">
+          <Trophy className="h-7 w-7 text-yellow-400 transition-transform duration-200 hover:scale-110" />
+          Scoreboard
+        </h1>
+        <p className="text-muted-foreground mt-1 text-sm">{subtitle}</p>
       </div>
 
-      <div className="mb-4">
-        <TabSwitch tab={tab} onChange={setTab} />
-      </div>
-
-      {tab === "characters" ? <CharactersTab /> : <PlayersTab />}
+      <Tabs value={tab} onValueChange={(v) => setTab((v ?? "characters") as Tab)}>
+        <TabsList className="mb-4">
+          <TabsTrigger value="characters" className="flex items-center gap-1.5">
+            <Trophy className="h-3.5 w-3.5" />
+            Characters
+          </TabsTrigger>
+          <TabsTrigger value="players" className="flex items-center gap-1.5">
+            <Users className="h-3.5 w-3.5" />
+            Players
+          </TabsTrigger>
+        </TabsList>
+        <TabsContent value="characters">
+          <CharactersTab />
+        </TabsContent>
+        <TabsContent value="players">
+          <PlayersTab />
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

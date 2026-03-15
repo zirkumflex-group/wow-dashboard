@@ -19,9 +19,11 @@ const TanStackRouterDevtools = import.meta.env.PROD
       })),
     );
 import { Toaster } from "@wow-dashboard/ui/components/sonner";
+import { SidebarInset, SidebarProvider } from "@wow-dashboard/ui/components/sidebar";
 
 import { authClient } from "@/lib/auth-client";
 import { getToken } from "@/lib/auth-server";
+import { AppSidebar } from "@/components/app-sidebar";
 
 import appCss from "../index.css?url";
 
@@ -45,7 +47,7 @@ export const Route = createRootRouteWithContext<RouterAppContext>()({
         content: "width=device-width, initial-scale=1",
       },
       {
-        title: "My App",
+        title: "WoW Dashboard",
       },
     ],
     links: [
@@ -82,9 +84,18 @@ function RootDocument() {
           <HeadContent />
         </head>
         <body>
-          <div className="h-svh">
-            <Outlet />
-          </div>
+          {context.isAuthenticated ? (
+            <SidebarProvider>
+              <AppSidebar />
+              <SidebarInset>
+                <Outlet />
+              </SidebarInset>
+            </SidebarProvider>
+          ) : (
+            <div className="h-svh">
+              <Outlet />
+            </div>
+          )}
           <Toaster richColors />
           <TanStackRouterDevtools position="bottom-left" />
           <Scripts />

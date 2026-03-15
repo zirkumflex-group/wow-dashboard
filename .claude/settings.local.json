@@ -18,7 +18,11 @@
       "Bash(grep:*)",
       "Bash(cat:*)",
       "Bash(node:*)",
-      "Bash(npx oxfmt:*)"
+      "Bash(npx oxfmt:*)",
+      "Bash(echo:*)",
+      "Bash(printf:*)",
+      "Bash(yes:*)",
+      "Bash(pnpm:*)"
     ]
   }
 }

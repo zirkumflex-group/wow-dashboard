@@ -57,9 +57,7 @@ function ChartContainer({
         {...props}
       >
         <ChartStyle id={chartId} config={config} />
-        <RechartsPrimitive.ResponsiveContainer>
-          {children}
-        </RechartsPrimitive.ResponsiveContainer>
+        <RechartsPrimitive.ResponsiveContainer>{children}</RechartsPrimitive.ResponsiveContainer>
       </div>
     </ChartContext.Provider>
   );
@@ -119,9 +117,7 @@ function ChartTooltipContent({
         className,
       )}
     >
-      {label !== undefined && (
-        <div className="font-medium">{label}</div>
-      )}
+      {label !== undefined && <div className="font-medium">{label}</div>}
       <div className="grid gap-1.5">
         {payload.map((item, index) => {
           const key = String(item.dataKey ?? item.name ?? "value");
@@ -205,9 +201,7 @@ function ChartLegendContent({
                 style={{ backgroundColor: item.color }}
               />
             )}
-            <span className="text-muted-foreground text-xs">
-              {itemConfig?.label ?? item.value}
-            </span>
+            <span className="text-muted-foreground text-xs">{itemConfig?.label ?? item.value}</span>
           </div>
         );
       })}
@@ -215,10 +209,4 @@ function ChartLegendContent({
   );
 }
 
-export {
-  ChartContainer,
-  ChartTooltip,
-  ChartTooltipContent,
-  ChartLegend,
-  ChartLegendContent,
-};
+export { ChartContainer, ChartTooltip, ChartTooltipContent, ChartLegend, ChartLegendContent };

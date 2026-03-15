@@ -1,27 +1,33 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import { api } from "@wow-dashboard/backend/convex/_generated/api";
 import type { Id } from "@wow-dashboard/backend/convex/_generated/dataModel";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@wow-dashboard/ui/components/card";
+import { Badge } from "@wow-dashboard/ui/components/badge";
+import { Button } from "@wow-dashboard/ui/components/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@wow-dashboard/ui/components/card";
 import {
   ChartContainer,
   ChartTooltip,
   ChartTooltipContent,
   type ChartConfig,
 } from "@wow-dashboard/ui/components/chart";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@wow-dashboard/ui/components/tabs";
 import { useQuery } from "convex/react";
-import { useState } from "react";
 import {
-  CartesianGrid,
-  Line,
-  LineChart,
-  XAxis,
-  YAxis,
-} from "recharts";
+  Calendar,
+  ChevronRight,
+  Clock,
+  Coins,
+  Flame,
+  Gem,
+  History,
+  Maximize2,
+  Sword,
+  X,
+  Zap,
+} from "lucide-react";
+import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
+import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
 
 export const Route = createFileRoute("/character/$characterId")({
   component: RouteComponent,
@@ -108,14 +114,7 @@ function GoldDisplay({ value }: { value: number }) {
   );
 }
 
-
-function StatRow({
-  label,
-  value,
-}: {
-  label: string;
-  value: React.ReactNode;
-}) {
+function StatRow({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="flex justify-between text-sm">
       <span className="text-muted-foreground">{label}</span>
@@ -133,37 +132,60 @@ function StatGrid({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
-/** Small toggle button used in card headers */
-function ViewToggle({
-  mode,
-  onChange,
+// ---- Fullscreen ----
+
+function FullscreenOverlay({
+  title,
+  onClose,
+  children,
 }: {
-  mode: "current" | "chart";
-  onChange: (m: "current" | "chart") => void;
+  title: string;
+  onClose: () => void;
+  children: React.ReactNode;
 }) {
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-50 bg-background/95 backdrop-blur-sm flex flex-col"
+      onClick={onClose}
+    >
+      <div
+        className="flex-1 flex flex-col p-6 max-w-6xl mx-auto w-full min-h-0"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-4 shrink-0">
+          <h2 className="text-base font-semibold">{title}</h2>
+          <button
+            onClick={onClose}
+            className="text-muted-foreground hover:text-foreground p-1 rounded transition-colors"
+            aria-label="Close fullscreen"
+          >
+            <X size={16} className="transition-transform duration-200 hover:rotate-90" />
+          </button>
+        </div>
+        <div className="flex-1 min-h-0">{children}</div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+function FullscreenButton({ onClick }: { onClick: () => void }) {
   return (
-    <div className="flex rounded-md border border-border/60 overflow-hidden text-xs">
-      <button
-        onClick={() => onChange("current")}
-        className={`px-2 py-0.5 transition-colors ${
-          mode === "current"
-            ? "bg-muted text-foreground"
-            : "text-muted-foreground hover:text-foreground"
-        }`}
-      >
-        Current
-      </button>
-      <button
-        onClick={() => onChange("chart")}
-        className={`px-2 py-0.5 transition-colors border-l border-border/60 ${
-          mode === "chart"
-            ? "bg-muted text-foreground"
-            : "text-muted-foreground hover:text-foreground"
-        }`}
-      >
-        Chart
-      </button>
-    </div>
+    <button
+      onClick={onClick}
+      className="text-muted-foreground hover:text-foreground p-1 rounded transition-colors"
+      aria-label="View fullscreen"
+    >
+      <Maximize2 size={13} className="transition-transform duration-200 hover:scale-110" />
+    </button>
   );
 }
 
@@ -235,6 +257,7 @@ function SnapshotLineChart({
   config,
   valueFormatter,
   tooltipFormatter,
+  className,
 }: {
   data: Record<string, number | string>[];
   lines: { key: string; color: string }[];
@@ -243,21 +266,26 @@ function SnapshotLineChart({
   valueFormatter?: (v: number) => string;
   /** Override tooltip value rendering (ReactNode) */
   tooltipFormatter?: (v: number) => React.ReactNode;
+  /** Override container height class (default: "h-[200px]") */
+  className?: string;
 }) {
   if (data.length < 2) {
     return (
-      <p className="text-muted-foreground text-sm py-6 text-center">
-        Not enough data points yet.
-      </p>
+      <p className="text-muted-foreground text-sm py-6 text-center">Not enough data points yet.</p>
     );
   }
 
-  const tooltipFn = tooltipFormatter ?? (valueFormatter ? (v: number) => (
-    <span className="font-mono font-medium">{valueFormatter(v)}</span>
-  ) : undefined);
+  const tooltipFn =
+    tooltipFormatter ??
+    (valueFormatter
+      ? (v: number) => <span className="font-mono font-medium">{valueFormatter(v)}</span>
+      : undefined);
+
+  // Show at most ~8 ticks on X axis; group up when there are many data points
+  const xAxisInterval = data.length > 8 ? Math.ceil(data.length / 8) - 1 : 0;
 
   return (
-    <ChartContainer config={config} className="h-[200px] w-full">
+    <ChartContainer config={config} className={`w-full ${className ?? "h-[200px]"}`}>
       <LineChart data={data} margin={{ top: 8, right: 8, left: 4, bottom: 8 }}>
         <CartesianGrid vertical={false} strokeOpacity={0.15} />
         <XAxis
@@ -266,6 +294,7 @@ function SnapshotLineChart({
           axisLine={false}
           tickMargin={6}
           tick={{ fontSize: 10 }}
+          interval={xAxisInterval}
         />
         <YAxis
           tickLine={false}
@@ -298,10 +327,132 @@ function SnapshotLineChart({
   );
 }
 
+// ---- Inline chart cards ----
+
+function IlvlChartCard({ snapshots }: { snapshots: Snapshot[] }) {
+  const [fullscreen, setFullscreen] = useState(false);
+  const data = snapshots.map((s) => ({ date: formatDateShort(s.takenAt), itemLevel: s.itemLevel }));
+  const lines = [{ key: "itemLevel", color: "var(--chart-1)" }];
+  return (
+    <Card>
+      <CardHeader className="pb-0">
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-sm font-medium flex items-center gap-1.5">
+            <Sword size={14} className="text-muted-foreground" />
+            Item Level
+          </CardTitle>
+          <FullscreenButton onClick={() => setFullscreen(true)} />
+        </div>
+      </CardHeader>
+      <CardContent>
+        <SnapshotLineChart
+          data={data}
+          lines={lines}
+          config={ilvlConfig}
+          valueFormatter={(v) => v.toFixed(1)}
+        />
+      </CardContent>
+      {fullscreen && (
+        <FullscreenOverlay title="Item Level" onClose={() => setFullscreen(false)}>
+          <SnapshotLineChart
+            data={data}
+            lines={lines}
+            config={ilvlConfig}
+            valueFormatter={(v) => v.toFixed(1)}
+            className="h-full"
+          />
+        </FullscreenOverlay>
+      )}
+    </Card>
+  );
+}
+
+function MplusChartCard({ snapshots }: { snapshots: Snapshot[] }) {
+  const [fullscreen, setFullscreen] = useState(false);
+  const data = snapshots.map((s) => ({
+    date: formatDateShort(s.takenAt),
+    mythicPlusScore: s.mythicPlusScore,
+  }));
+  const lines = [{ key: "mythicPlusScore", color: "var(--chart-2)" }];
+  return (
+    <Card>
+      <CardHeader className="pb-0">
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-sm font-medium flex items-center gap-1.5">
+            <Flame size={14} className="text-muted-foreground" />
+            M+ Score
+          </CardTitle>
+          <FullscreenButton onClick={() => setFullscreen(true)} />
+        </div>
+      </CardHeader>
+      <CardContent>
+        <SnapshotLineChart
+          data={data}
+          lines={lines}
+          config={mplusConfig}
+          valueFormatter={(v) => v.toLocaleString()}
+        />
+      </CardContent>
+      {fullscreen && (
+        <FullscreenOverlay title="M+ Score" onClose={() => setFullscreen(false)}>
+          <SnapshotLineChart
+            data={data}
+            lines={lines}
+            config={mplusConfig}
+            valueFormatter={(v) => v.toLocaleString()}
+            className="h-full"
+          />
+        </FullscreenOverlay>
+      )}
+    </Card>
+  );
+}
+
+function GoldChartCard({ snapshots }: { snapshots: Snapshot[] }) {
+  const [fullscreen, setFullscreen] = useState(false);
+  const data = snapshots.map((s) => ({ date: formatDateShort(s.takenAt), gold: s.gold }));
+  const lines = [{ key: "gold", color: "oklch(0.85 0.15 85)" }];
+  return (
+    <Card className="sm:col-span-2">
+      <CardHeader className="pb-0">
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-sm font-medium flex items-center gap-1.5">
+            <Coins size={14} className="text-muted-foreground" />
+            Gold
+          </CardTitle>
+          <FullscreenButton onClick={() => setFullscreen(true)} />
+        </div>
+      </CardHeader>
+      <CardContent>
+        <SnapshotLineChart
+          data={data}
+          lines={lines}
+          config={goldConfig}
+          valueFormatter={(v) => `${goldUnits(v).toLocaleString()}g`}
+          tooltipFormatter={(v) => <GoldDisplay value={v} />}
+        />
+      </CardContent>
+      {fullscreen && (
+        <FullscreenOverlay title="Gold" onClose={() => setFullscreen(false)}>
+          <SnapshotLineChart
+            data={data}
+            lines={lines}
+            config={goldConfig}
+            valueFormatter={(v) => `${goldUnits(v).toLocaleString()}g`}
+            tooltipFormatter={(v) => <GoldDisplay value={v} />}
+            className="h-full"
+          />
+        </FullscreenOverlay>
+      )}
+    </Card>
+  );
+}
+
 // ---- Combat Stats card ----
 
 function CombatStatsCard({ snapshots }: { snapshots: Snapshot[] }) {
   const [mode, setMode] = useState<"current" | "chart">("current");
+  const [fullscreen, setFullscreen] = useState(false);
   const latest = snapshots[snapshots.length - 1];
   if (!latest) return null;
 
@@ -322,44 +473,73 @@ function CombatStatsCard({ snapshots }: { snapshots: Snapshot[] }) {
     versatilityPercent: s.stats.versatilityPercent,
   }));
 
+  const chartLines = [
+    { key: "critPercent", color: "var(--chart-1)" },
+    { key: "hastePercent", color: "var(--chart-2)" },
+    { key: "masteryPercent", color: "var(--chart-3)" },
+    { key: "versatilityPercent", color: "var(--chart-4)" },
+  ];
+
   return (
     <Card>
-      <CardHeader className="border-b pb-3">
-        <div className="flex items-center justify-between">
-          <CardTitle className="text-sm font-medium">Combat Stats</CardTitle>
-          <ViewToggle mode={mode} onChange={setMode} />
-        </div>
-      </CardHeader>
-      <CardContent className="pt-3">
-        {mode === "current" ? (
-          <div className="space-y-1.5">
-            <StatRow label="Stamina" value={latest.stats.stamina.toLocaleString()} />
-            {primaryStat && (
-              <StatRow label={primaryStat.label} value={primaryStat.value.toLocaleString()} />
-            )}
-            <div className="border-t border-border/50 my-2" />
-            <StatRow label="Crit" value={`${latest.stats.critPercent.toFixed(2)}%`} />
-            <StatRow label="Haste" value={`${latest.stats.hastePercent.toFixed(2)}%`} />
-            <StatRow label="Mastery" value={`${latest.stats.masteryPercent.toFixed(2)}%`} />
-            <StatRow
-              label="Versatility"
-              value={`${latest.stats.versatilityPercent.toFixed(2)}%`}
-            />
+      <Tabs
+        value={mode}
+        onValueChange={(v) => setMode((v ?? "current") as "current" | "chart")}
+        className="gap-0"
+      >
+        <CardHeader className="border-b pb-3">
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-sm font-medium flex items-center gap-1.5">
+              <Zap size={14} className="text-muted-foreground" />
+              Combat Stats
+            </CardTitle>
+            <div className="flex items-center gap-1.5">
+              {mode === "chart" && <FullscreenButton onClick={() => setFullscreen(true)} />}
+              <TabsList>
+                <TabsTrigger value="current">Current</TabsTrigger>
+                <TabsTrigger value="chart">Chart</TabsTrigger>
+              </TabsList>
+            </div>
           </div>
-        ) : (
+        </CardHeader>
+        <CardContent className="pt-3">
+          <TabsContent value="current">
+            <div className="space-y-1.5">
+              <StatRow label="Stamina" value={latest.stats.stamina.toLocaleString()} />
+              {primaryStat && (
+                <StatRow label={primaryStat.label} value={primaryStat.value.toLocaleString()} />
+              )}
+              <div className="border-t border-border/50 my-2" />
+              <StatRow label="Crit" value={`${latest.stats.critPercent.toFixed(2)}%`} />
+              <StatRow label="Haste" value={`${latest.stats.hastePercent.toFixed(2)}%`} />
+              <StatRow label="Mastery" value={`${latest.stats.masteryPercent.toFixed(2)}%`} />
+              <StatRow
+                label="Versatility"
+                value={`${latest.stats.versatilityPercent.toFixed(2)}%`}
+              />
+            </div>
+          </TabsContent>
+          <TabsContent value="chart">
+            <SnapshotLineChart
+              data={chartData}
+              lines={chartLines}
+              config={secondaryStatsConfig}
+              valueFormatter={(v) => `${v.toFixed(1)}%`}
+            />
+          </TabsContent>
+        </CardContent>
+      </Tabs>
+      {fullscreen && (
+        <FullscreenOverlay title="Combat Stats" onClose={() => setFullscreen(false)}>
           <SnapshotLineChart
             data={chartData}
-            lines={[
-              { key: "critPercent", color: "var(--chart-1)" },
-              { key: "hastePercent", color: "var(--chart-2)" },
-              { key: "masteryPercent", color: "var(--chart-3)" },
-              { key: "versatilityPercent", color: "var(--chart-4)" },
-            ]}
+            lines={chartLines}
             config={secondaryStatsConfig}
             valueFormatter={(v) => `${v.toFixed(1)}%`}
+            className="h-full"
           />
-        )}
-      </CardContent>
+        </FullscreenOverlay>
+      )}
     </Card>
   );
 }
@@ -368,6 +548,7 @@ function CombatStatsCard({ snapshots }: { snapshots: Snapshot[] }) {
 
 function CurrenciesCard({ snapshots }: { snapshots: Snapshot[] }) {
   const [mode, setMode] = useState<"current" | "chart">("current");
+  const [fullscreen, setFullscreen] = useState(false);
   const latest = snapshots[snapshots.length - 1];
   if (!latest) return null;
 
@@ -381,58 +562,82 @@ function CurrenciesCard({ snapshots }: { snapshots: Snapshot[] }) {
     radiantSparkDust: s.currencies.radiantSparkDust,
   }));
 
+  const chartLines = [
+    { key: "adventurerDawncrest", color: "var(--chart-1)" },
+    { key: "veteranDawncrest", color: "var(--chart-2)" },
+    { key: "championDawncrest", color: "var(--chart-3)" },
+    { key: "heroDawncrest", color: "var(--chart-4)" },
+    { key: "mythDawncrest", color: "var(--chart-5)" },
+    { key: "radiantSparkDust", color: "oklch(0.75 0.18 310)" },
+  ];
+
   return (
     <Card>
-      <CardHeader className="border-b pb-3">
-        <div className="flex items-center justify-between">
-          <CardTitle className="text-sm font-medium">Currencies</CardTitle>
-          <ViewToggle mode={mode} onChange={setMode} />
-        </div>
-      </CardHeader>
-      <CardContent className="pt-3">
-        {mode === "current" ? (
-          <div className="space-y-1.5">
-            <StatRow
-              label="Adventurer Crest"
-              value={latest.currencies.adventurerDawncrest.toLocaleString()}
-            />
-            <StatRow
-              label="Veteran Crest"
-              value={latest.currencies.veteranDawncrest.toLocaleString()}
-            />
-            <StatRow
-              label="Champion Crest"
-              value={latest.currencies.championDawncrest.toLocaleString()}
-            />
-            <StatRow
-              label="Hero Crest"
-              value={latest.currencies.heroDawncrest.toLocaleString()}
-            />
-            <StatRow
-              label="Myth Crest"
-              value={latest.currencies.mythDawncrest.toLocaleString()}
-            />
-            <div className="border-t border-border/50 my-2" />
-            <StatRow
-              label="Radiant Spark Dust"
-              value={latest.currencies.radiantSparkDust.toLocaleString()}
-            />
+      <Tabs
+        value={mode}
+        onValueChange={(v) => setMode((v ?? "current") as "current" | "chart")}
+        className="gap-0"
+      >
+        <CardHeader className="border-b pb-3">
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-sm font-medium flex items-center gap-1.5">
+              <Gem size={14} className="text-muted-foreground" />
+              Currencies
+            </CardTitle>
+            <div className="flex items-center gap-1.5">
+              {mode === "chart" && <FullscreenButton onClick={() => setFullscreen(true)} />}
+              <TabsList>
+                <TabsTrigger value="current">Current</TabsTrigger>
+                <TabsTrigger value="chart">Chart</TabsTrigger>
+              </TabsList>
+            </div>
           </div>
-        ) : (
+        </CardHeader>
+        <CardContent className="pt-3">
+          <TabsContent value="current">
+            <div className="space-y-1.5">
+              <StatRow
+                label="Adventurer Crest"
+                value={latest.currencies.adventurerDawncrest.toLocaleString()}
+              />
+              <StatRow
+                label="Veteran Crest"
+                value={latest.currencies.veteranDawncrest.toLocaleString()}
+              />
+              <StatRow
+                label="Champion Crest"
+                value={latest.currencies.championDawncrest.toLocaleString()}
+              />
+              <StatRow
+                label="Hero Crest"
+                value={latest.currencies.heroDawncrest.toLocaleString()}
+              />
+              <StatRow
+                label="Myth Crest"
+                value={latest.currencies.mythDawncrest.toLocaleString()}
+              />
+              <div className="border-t border-border/50 my-2" />
+              <StatRow
+                label="Radiant Spark Dust"
+                value={latest.currencies.radiantSparkDust.toLocaleString()}
+              />
+            </div>
+          </TabsContent>
+          <TabsContent value="chart">
+            <SnapshotLineChart data={chartData} lines={chartLines} config={currenciesConfig} />
+          </TabsContent>
+        </CardContent>
+      </Tabs>
+      {fullscreen && (
+        <FullscreenOverlay title="Currencies" onClose={() => setFullscreen(false)}>
           <SnapshotLineChart
             data={chartData}
-            lines={[
-              { key: "adventurerDawncrest", color: "var(--chart-1)" },
-              { key: "veteranDawncrest", color: "var(--chart-2)" },
-              { key: "championDawncrest", color: "var(--chart-3)" },
-              { key: "heroDawncrest", color: "var(--chart-4)" },
-              { key: "mythDawncrest", color: "var(--chart-5)" },
-              { key: "radiantSparkDust", color: "oklch(0.75 0.18 310)" },
-            ]}
+            lines={chartLines}
             config={currenciesConfig}
+            className="h-full"
           />
-        )}
-      </CardContent>
+        </FullscreenOverlay>
+      )}
     </Card>
   );
 }
@@ -441,6 +646,7 @@ function CurrenciesCard({ snapshots }: { snapshots: Snapshot[] }) {
 
 function PlaytimeCard({ snapshots }: { snapshots: Snapshot[] }) {
   const [mode, setMode] = useState<"current" | "chart">("current");
+  const [fullscreen, setFullscreen] = useState(false);
   const latest = snapshots[snapshots.length - 1];
   if (!latest) return null;
 
@@ -448,6 +654,8 @@ function PlaytimeCard({ snapshots }: { snapshots: Snapshot[] }) {
     date: formatDateShort(s.takenAt),
     playtimeHours: Math.round(s.playtimeSeconds / 3600),
   }));
+
+  const chartLines = [{ key: "playtimeHours", color: "var(--chart-5)" }];
 
   function formatHours(totalHours: number) {
     const d = Math.floor(totalHours / 24);
@@ -457,37 +665,61 @@ function PlaytimeCard({ snapshots }: { snapshots: Snapshot[] }) {
 
   return (
     <Card>
-      <CardHeader className="border-b pb-3">
-        <div className="flex items-center justify-between">
-          <CardTitle className="text-sm font-medium">Time Played</CardTitle>
-          <ViewToggle mode={mode} onChange={setMode} />
-        </div>
-      </CardHeader>
-      <CardContent className="pt-3">
-        {mode === "current" ? (
-          <div className="space-y-1.5">
-            <StatRow
-              label="Total"
-              value={formatPlaytime(latest.playtimeSeconds)}
-            />
-            <StatRow
-              label="Hours"
-              value={`${Math.floor(latest.playtimeSeconds / 3600).toLocaleString()}h`}
-            />
-            <StatRow
-              label="Days"
-              value={`${Math.floor(latest.playtimeSeconds / 86400).toLocaleString()}d`}
-            />
+      <Tabs
+        value={mode}
+        onValueChange={(v) => setMode((v ?? "current") as "current" | "chart")}
+        className="gap-0"
+      >
+        <CardHeader className="border-b pb-3">
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-sm font-medium flex items-center gap-1.5">
+              <Clock size={14} className="text-muted-foreground" />
+              Time Played
+            </CardTitle>
+            <div className="flex items-center gap-1.5">
+              {mode === "chart" && <FullscreenButton onClick={() => setFullscreen(true)} />}
+              <TabsList>
+                <TabsTrigger value="current">Current</TabsTrigger>
+                <TabsTrigger value="chart">Chart</TabsTrigger>
+              </TabsList>
+            </div>
           </div>
-        ) : (
+        </CardHeader>
+        <CardContent className="pt-3">
+          <TabsContent value="current">
+            <div className="space-y-1.5">
+              <StatRow label="Total" value={formatPlaytime(latest.playtimeSeconds)} />
+              <StatRow
+                label="Hours"
+                value={`${Math.floor(latest.playtimeSeconds / 3600).toLocaleString()}h`}
+              />
+              <StatRow
+                label="Days"
+                value={`${Math.floor(latest.playtimeSeconds / 86400).toLocaleString()}d`}
+              />
+            </div>
+          </TabsContent>
+          <TabsContent value="chart">
+            <SnapshotLineChart
+              data={chartData}
+              lines={chartLines}
+              config={playtimeConfig}
+              valueFormatter={(v) => formatHours(v)}
+            />
+          </TabsContent>
+        </CardContent>
+      </Tabs>
+      {fullscreen && (
+        <FullscreenOverlay title="Time Played" onClose={() => setFullscreen(false)}>
           <SnapshotLineChart
             data={chartData}
-            lines={[{ key: "playtimeHours", color: "var(--chart-5)" }]}
+            lines={chartLines}
             config={playtimeConfig}
             valueFormatter={(v) => formatHours(v)}
+            className="h-full"
           />
-        )}
-      </CardContent>
+        </FullscreenOverlay>
+      )}
     </Card>
   );
 }
@@ -523,44 +755,41 @@ function RoleSpecFilter({
   // Specs visible in the current role context
   const specsInContext: { spec: string; role: string }[] = selectedRole
     ? [...(roleMap.get(selectedRole) ?? [])].map((spec) => ({ spec, role: selectedRole }))
-    : roles.flatMap((role) =>
-        [...(roleMap.get(role) ?? [])].map((spec) => ({ spec, role })),
-      );
+    : roles.flatMap((role) => [...(roleMap.get(role) ?? [])].map((spec) => ({ spec, role })));
 
-  const showSpecRow = specsInContext.length > 1 || (selectedRole !== null && specsInContext.length === 1);
-
-  function pillClass(active: boolean) {
-    return `px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
-      active
-        ? "bg-primary text-primary-foreground border-primary"
-        : "border-border/60 text-muted-foreground hover:text-foreground hover:border-border"
-    }`;
-  }
+  const showSpecRow =
+    specsInContext.length > 1 || (selectedRole !== null && specsInContext.length === 1);
 
   return (
     <div className="space-y-2">
       {/* Row 1 — Roles */}
       <div className="flex flex-wrap gap-1.5 items-center">
         <span className="text-muted-foreground text-xs mr-1">Role</span>
-        <button
-          onClick={() => { onRoleChange(null); onSpecChange(null); }}
-          className={pillClass(selectedRole === null)}
+        <Button
+          size="sm"
+          variant={selectedRole === null ? "default" : "outline"}
+          onClick={() => {
+            onRoleChange(null);
+            onSpecChange(null);
+          }}
         >
           All
-        </button>
+        </Button>
         {roles.map((role) => (
-          <button
+          <Button
             key={role}
-            onClick={() => { onRoleChange(role); onSpecChange(null); }}
-            className={pillClass(selectedRole === role)}
+            size="sm"
+            variant={selectedRole === role ? "default" : "outline"}
+            onClick={() => {
+              onRoleChange(role);
+              onSpecChange(null);
+            }}
           >
             {ROLE_LABELS[role] ?? role}
             {(roleMap.get(role)?.size ?? 0) > 1 && (
-              <span className="ml-1 opacity-60">
-                ×{roleMap.get(role)!.size}
-              </span>
+              <span className="ml-1 opacity-60">×{roleMap.get(role)!.size}</span>
             )}
-          </button>
+          </Button>
         ))}
       </div>
 
@@ -569,30 +798,30 @@ function RoleSpecFilter({
         <div className="flex flex-wrap gap-1.5 items-center pl-1 border-l-2 border-border/30 ml-1">
           <span className="text-muted-foreground text-xs mr-1">Spec</span>
           {selectedRole && (
-            <button
+            <Button
+              size="sm"
+              variant={selectedSpec === null ? "default" : "outline"}
               onClick={() => onSpecChange(null)}
-              className={pillClass(selectedSpec === null)}
             >
               All
-            </button>
+            </Button>
           )}
           {specsInContext.map(({ spec, role }) => (
-            <button
+            <Button
               key={`${role}:${spec}`}
+              size="sm"
+              variant={selectedSpec === spec ? "default" : "outline"}
               onClick={() => {
                 if (selectedRole === null) onRoleChange(role);
                 onSpecChange(spec);
               }}
-              className={pillClass(selectedSpec === spec)}
             >
               {spec}
               {/* Show role tag only when viewing all roles */}
               {selectedRole === null && (
-                <span className="ml-1 opacity-50 font-normal">
-                  ({ROLE_LABELS[role] ?? role})
-                </span>
+                <span className="ml-1 opacity-50 font-normal">({ROLE_LABELS[role] ?? role})</span>
               )}
-            </button>
+            </Button>
           ))}
         </div>
       )}
@@ -613,7 +842,7 @@ function RouteComponent() {
 
   if (data === undefined) {
     return (
-      <div className="container mx-auto max-w-3xl px-4 py-6 space-y-4">
+      <div className="w-full px-4 py-6 sm:px-6 lg:px-8 space-y-4">
         <div className="h-40 animate-pulse rounded-lg bg-muted" />
         <div className="h-56 animate-pulse rounded-lg bg-muted" />
       </div>
@@ -624,9 +853,6 @@ function RouteComponent() {
     return (
       <div className="container mx-auto max-w-3xl px-4 py-6">
         <p className="text-muted-foreground text-sm">Character not found.</p>
-        <Link to="/dashboard" className="text-blue-400 text-sm hover:underline mt-2 block">
-          ← Back to dashboard
-        </Link>
       </div>
     );
   }
@@ -642,22 +868,8 @@ function RouteComponent() {
 
   const latest = filtered[filtered.length - 1] ?? null;
 
-  // Gold chart: store full raw value so tooltip can show g/s/c breakdown
-  const goldChartData = filtered.map((s) => ({
-    date: formatDateShort(s.takenAt),
-    gold: s.gold,
-  }));
-
   return (
-    <div className="container mx-auto max-w-3xl px-4 py-6 space-y-4">
-      {/* Back */}
-      <Link
-        to="/dashboard"
-        className="text-muted-foreground text-sm hover:text-foreground inline-block"
-      >
-        ← Back to dashboard
-      </Link>
-
+    <div className="w-full px-4 py-6 sm:px-6 lg:px-8 space-y-4">
       {/* Character Header */}
       <Card>
         <CardHeader className="border-b pb-3">
@@ -665,19 +877,19 @@ function RouteComponent() {
             <CardTitle className={`text-2xl font-bold ${classColor(character.class)}`}>
               {character.name}
             </CardTitle>
-            <span
-              className={`text-xs font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full border ${
+            <Badge
+              variant="outline"
+              className={
                 character.faction === "alliance"
-                  ? "border-blue-500/40 text-blue-400"
-                  : "border-red-500/40 text-red-400"
-              }`}
+                  ? "border-blue-500/40 text-blue-400 uppercase tracking-wider"
+                  : "border-red-500/40 text-red-400 uppercase tracking-wider"
+              }
             >
               {character.faction}
-            </span>
+            </Badge>
           </div>
           <p className="text-muted-foreground text-sm mt-1">
-            {character.race} {character.class} — {character.realm}-
-            {character.region.toUpperCase()}
+            {character.race} {character.class} — {character.realm}-{character.region.toUpperCase()}
           </p>
         </CardHeader>
 
@@ -711,55 +923,10 @@ function RouteComponent() {
 
       {/* Main charts */}
       {filtered.length > 0 && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <Card>
-            <CardHeader className="pb-0">
-              <CardTitle className="text-sm font-medium">Item Level</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <SnapshotLineChart
-                data={filtered.map((s) => ({
-                  date: formatDateShort(s.takenAt),
-                  itemLevel: s.itemLevel,
-                }))}
-                lines={[{ key: "itemLevel", color: "var(--chart-1)" }]}
-                config={ilvlConfig}
-                valueFormatter={(v) => v.toFixed(1)}
-              />
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="pb-0">
-              <CardTitle className="text-sm font-medium">M+ Score</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <SnapshotLineChart
-                data={filtered.map((s) => ({
-                  date: formatDateShort(s.takenAt),
-                  mythicPlusScore: s.mythicPlusScore,
-                }))}
-                lines={[{ key: "mythicPlusScore", color: "var(--chart-2)" }]}
-                config={mplusConfig}
-                valueFormatter={(v) => v.toLocaleString()}
-              />
-            </CardContent>
-          </Card>
-
-          <Card className="sm:col-span-2">
-            <CardHeader className="pb-0">
-              <CardTitle className="text-sm font-medium">Gold</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <SnapshotLineChart
-                data={goldChartData}
-                lines={[{ key: "gold", color: "oklch(0.85 0.15 85)" }]}
-                config={goldConfig}
-                valueFormatter={(v) => `${goldUnits(v).toLocaleString()}g`}
-                tooltipFormatter={(v) => <GoldDisplay value={v} />}
-              />
-            </CardContent>
-          </Card>
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+          <IlvlChartCard snapshots={filtered} />
+          <MplusChartCard snapshots={filtered} />
+          <GoldChartCard snapshots={filtered} />
         </div>
       )}
 
@@ -776,12 +943,11 @@ function RouteComponent() {
       {filtered.length > 1 && (
         <Card>
           <CardHeader className="border-b pb-3">
-            <CardTitle className="text-sm font-medium">
+            <CardTitle className="text-sm font-medium flex items-center gap-1.5">
+              <History size={14} className="text-muted-foreground" />
               Snapshot History ({filtered.length})
               {(selectedRole ?? selectedSpec) && (
-                <span className="text-muted-foreground font-normal ml-1">
-                  — filtered
-                </span>
+                <span className="text-muted-foreground font-normal ml-1">— filtered</span>
               )}
             </CardTitle>
           </CardHeader>
@@ -789,18 +955,10 @@ function RouteComponent() {
             <table className="w-full text-xs">
               <thead>
                 <tr className="border-b border-border/50">
-                  <th className="text-left text-muted-foreground font-medium py-2 pr-4">
-                    Date
-                  </th>
-                  <th className="text-right text-muted-foreground font-medium py-2 px-2">
-                    iLvl
-                  </th>
-                  <th className="text-right text-muted-foreground font-medium py-2 px-2">
-                    M+
-                  </th>
-                  <th className="text-right text-muted-foreground font-medium py-2 px-2">
-                    Gold
-                  </th>
+                  <th className="text-left text-muted-foreground font-medium py-2 pr-4">Date</th>
+                  <th className="text-right text-muted-foreground font-medium py-2 px-2">iLvl</th>
+                  <th className="text-right text-muted-foreground font-medium py-2 px-2">M+</th>
+                  <th className="text-right text-muted-foreground font-medium py-2 px-2">Gold</th>
                   <th className="text-left text-muted-foreground font-medium py-2 pl-2">
                     Spec / Role
                   </th>
@@ -812,12 +970,8 @@ function RouteComponent() {
                     key={i}
                     className="border-b border-border/30 last:border-0 hover:bg-muted/20 transition-colors"
                   >
-                    <td className="py-2 pr-4 text-muted-foreground">
-                      {formatDate(s.takenAt)}
-                    </td>
-                    <td className="py-2 px-2 text-right tabular-nums">
-                      {s.itemLevel.toFixed(1)}
-                    </td>
+                    <td className="py-2 pr-4 text-muted-foreground">{formatDate(s.takenAt)}</td>
+                    <td className="py-2 px-2 text-right tabular-nums">{s.itemLevel.toFixed(1)}</td>
                     <td className="py-2 px-2 text-right tabular-nums">
                       {s.mythicPlusScore.toLocaleString()}
                     </td>
@@ -825,8 +979,7 @@ function RouteComponent() {
                       <GoldDisplay value={s.gold} />
                     </td>
                     <td className="py-2 pl-2 text-muted-foreground">
-                      {s.spec}{" "}
-                      <span className="opacity-60">({s.role})</span>
+                      {s.spec} <span className="opacity-60">({s.role})</span>
                     </td>
                   </tr>
                 ))}

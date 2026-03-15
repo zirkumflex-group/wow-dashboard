@@ -1,12 +1,13 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { api } from "@wow-dashboard/backend/convex/_generated/api";
+import { Badge } from "@wow-dashboard/ui/components/badge";
 import { Button } from "@wow-dashboard/ui/components/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@wow-dashboard/ui/components/card";
 import { Skeleton } from "@wow-dashboard/ui/components/skeleton";
 import { Authenticated, AuthLoading, Unauthenticated, useMutation, useQuery } from "convex/react";
+import { HeartPulse, RefreshCw, Shield, Star, Swords } from "lucide-react";
+import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
-
-import UserMenu from "@/components/user-menu";
 
 export const Route = createFileRoute("/dashboard")({
   component: RouteComponent,
@@ -178,10 +179,10 @@ function normalizeRole(role: string): string {
 
 const ROLE_ORDER = ["Tank", "Healer", "DPS"];
 
-const ROLE_ICONS: Record<string, string> = {
-  Tank: "🛡️",
-  Healer: "💚",
-  DPS: "⚔️",
+const ROLE_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
+  Tank: Shield,
+  Healer: HeartPulse,
+  DPS: Swords,
 };
 
 function CharacterCard({
@@ -212,20 +213,9 @@ function CharacterCard({
             isFavorite ? "text-yellow-400" : "text-muted-foreground hover:text-yellow-400"
           }`}
         >
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            viewBox="0 0 24 24"
-            fill={isFavorite ? "currentColor" : "none"}
-            stroke="currentColor"
-            strokeWidth={1.5}
-            className="h-4 w-4"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              d="M11.48 3.499a.562.562 0 0 1 1.04 0l2.125 5.111a.563.563 0 0 0 .475.345l5.518.442c.499.04.701.663.321.988l-4.204 3.602a.563.563 0 0 0-.182.557l1.285 5.385a.562.562 0 0 1-.84.61l-4.725-2.885a.562.562 0 0 0-.586 0L6.982 20.54a.562.562 0 0 1-.84-.61l1.285-5.386a.562.562 0 0 0-.182-.557l-4.204-3.602a.563.563 0 0 1 .321-.988l5.518-.442a.563.563 0 0 0 .475-.345L11.48 3.5Z"
-            />
-          </svg>
+          <Star
+            className={`h-4 w-4 transition-transform duration-200 hover:scale-125 ${isFavorite ? "fill-current" : ""}`}
+          />
         </button>
         <CardHeader className="pb-2 pr-9">
           <div className="flex items-start justify-between gap-2">
@@ -237,15 +227,16 @@ function CharacterCard({
                 {char.realm}-{char.region.toUpperCase()}
               </p>
             </div>
-            <span
-              className={`shrink-0 rounded-full border px-2 py-0.5 text-xs font-semibold uppercase ${
+            <Badge
+              variant="outline"
+              className={
                 char.faction === "alliance"
-                  ? "border-blue-500/30 bg-blue-500/10 text-blue-400"
-                  : "border-red-500/30 bg-red-500/10 text-red-400"
-              }`}
+                  ? "shrink-0 border-blue-500/30 bg-blue-500/10 text-blue-400 uppercase"
+                  : "shrink-0 border-red-500/30 bg-red-500/10 text-red-400 uppercase"
+              }
             >
               {char.faction}
-            </span>
+            </Badge>
           </div>
           <p className="text-muted-foreground text-sm">
             {char.race} {char.class}
@@ -324,12 +315,11 @@ function RoleSection({
   favorites: Set<string>;
   onToggleFavorite: (id: string) => void;
 }) {
+  const RoleIcon = ROLE_ICONS[role];
   return (
     <section>
       <div className="mb-3 flex items-center gap-2">
-        <span className="text-base" aria-hidden="true">
-          {ROLE_ICONS[role]}
-        </span>
+        {RoleIcon && <RoleIcon className="h-4 w-4 text-muted-foreground" />}
         <h2 className="text-lg font-semibold">{role}</h2>
         <span className="text-muted-foreground rounded-full bg-muted px-2 py-0.5 text-xs">
           {characters.length}
@@ -388,22 +378,16 @@ function Dashboard() {
           )}
         </div>
         <div className="flex items-center gap-3">
-          <Link
-            to="/scoreboard"
-            className="inline-flex items-center gap-1.5 rounded-md border border-yellow-500/40 bg-yellow-500/10 px-3 py-1.5 text-sm font-medium text-yellow-400 transition-colors hover:bg-yellow-500/20 hover:text-yellow-300"
-          >
-            🏆 Scoreboard
-          </Link>
           <Button
             size="sm"
             variant="outline"
-            className="border-blue-500/50 text-blue-400 hover:bg-blue-500/10 hover:text-blue-300 min-w-[100px]"
+            className="border-blue-500/50 text-blue-400 hover:bg-blue-500/10 hover:text-blue-300 min-w-[100px] gap-1.5"
             onClick={handleResync}
             disabled={isDisabled}
           >
+            <RefreshCw className={`h-3.5 w-3.5 ${syncing ? "animate-spin" : ""}`} />
             {syncing ? "Syncing…" : isCoolingDown ? formatRemaining(remaining) : "Resync"}
           </Button>
-          <UserMenu />
         </div>
       </div>
 
@@ -437,18 +421,7 @@ function Dashboard() {
           {favoriteChars.length > 0 && (
             <section>
               <div className="mb-3 flex items-center gap-2">
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  viewBox="0 0 24 24"
-                  fill="currentColor"
-                  className="h-5 w-5 text-yellow-400"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M11.48 3.499a.562.562 0 0 1 1.04 0l2.125 5.111a.563.563 0 0 0 .475.345l5.518.442c.499.04.701.663.321.988l-4.204 3.602a.563.563 0 0 0-.182.557l1.285 5.385a.562.562 0 0 1-.84.61l-4.725-2.885a.562.562 0 0 0-.586 0L6.982 20.54a.562.562 0 0 1-.84-.61l1.285-5.386a.562.562 0 0 0-.182-.557l-4.204-3.602a.563.563 0 0 1 .321-.988l5.518-.442a.563.563 0 0 0 .475-.345L11.48 3.5Z"
-                  />
-                </svg>
+                <Star className="h-5 w-5 fill-current text-yellow-400" />
                 <h2 className="text-lg font-semibold">Favorites</h2>
                 <span className="text-muted-foreground rounded-full bg-muted px-2 py-0.5 text-xs">
                   {favoriteChars.length}
