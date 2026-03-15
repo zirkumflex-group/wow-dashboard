@@ -66,6 +66,14 @@ declare global {
           characters: CharacterData[];
           accountsFound: string[];
         }>;
+        checkAddonInstalled: (retailPath: string) => Promise<boolean>;
+        installAddon: (retailPath: string, downloadUrl: string) => Promise<void>;
+        getLatestAddonRelease: () => Promise<{ url: string; version: string }>;
+      };
+      settings: {
+        getAppSettings: () => Promise<{ closeBehavior: "tray" | "exit"; autostart: boolean }>;
+        setCloseBehavior: (value: "tray" | "exit") => Promise<void>;
+        setAutostart: (value: boolean) => Promise<void>;
       };
     };
   }
@@ -204,6 +212,11 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
   const [timeLeft, setTimeLeft] = useState(15 * 60);
   const [log, setLog] = useState<LogEntry[]>([]);
   const [retailPath, setRetailPath] = useState<string | null>(null);
+  const [closeBehavior, setCloseBehavior] = useState<"tray" | "exit">("exit");
+  const [autostart, setAutostart] = useState(false);
+  const [addonInstalled, setAddonInstalled] = useState<boolean | null>(null);
+  const [installing, setInstalling] = useState(false);
+  const [installError, setInstallError] = useState<string | null>(null);
 
   const syncingRef = useRef(false);
   const prevCharCountRef = useRef<number | null>(null);
@@ -214,16 +227,59 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
     setLog((prev) => [entry, ...prev].slice(0, 100));
   }
 
-  // Load persisted retail path on mount
+  // Load persisted settings on mount
   useEffect(() => {
     window.electron.wow.getRetailPath().then((p) => setRetailPath(p));
+    window.electron.settings.getAppSettings().then((s) => {
+      setCloseBehavior(s.closeBehavior);
+      setAutostart(s.autostart);
+    });
   }, []);
+
+  // Check addon installation whenever retailPath changes
+  useEffect(() => {
+    if (!retailPath) {
+      setAddonInstalled(null);
+      return;
+    }
+    window.electron.wow.checkAddonInstalled(retailPath).then(setAddonInstalled);
+  }, [retailPath]);
+
+  async function handleCloseBehaviorChange(value: "tray" | "exit") {
+    setCloseBehavior(value);
+    await window.electron.settings.setCloseBehavior(value);
+  }
+
+  async function handleAutostartChange(value: boolean) {
+    setAutostart(value);
+    await window.electron.settings.setAutostart(value);
+  }
+
+  async function handleInstallAddon() {
+    if (!retailPath) return;
+    setInstalling(true);
+    setInstallError(null);
+    try {
+      const { url, version } = await window.electron.wow.getLatestAddonRelease();
+      await window.electron.wow.installAddon(retailPath, url);
+      setAddonInstalled(true);
+      addLog(`Addon v${version} installed successfully`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setInstallError(msg);
+      addLog(`Addon install failed: ${msg}`);
+    } finally {
+      setInstalling(false);
+    }
+  }
 
   async function handleSelectFolder() {
     const folder = await window.electron.wow.selectRetailFolder();
     if (folder) {
       setRetailPath(folder);
       addLog(`WoW folder set: ${folder}`);
+      const installed = await window.electron.wow.checkAddonInstalled(folder);
+      setAddonInstalled(installed);
     }
   }
 
@@ -331,6 +387,36 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
           )}
         </div>
 
+        {/* Addon installation */}
+        <div className="rounded-lg border border-gray-800 p-4 space-y-2">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="font-medium text-gray-300">WoW Addon</h2>
+              {retailPath && addonInstalled !== null && (
+                <p className="mt-0.5 text-xs">
+                  {addonInstalled ? (
+                    <span className="text-green-400">Installed</span>
+                  ) : (
+                    <span className="text-yellow-400">Not installed</span>
+                  )}
+                </p>
+              )}
+            </div>
+            {retailPath ? (
+              <button
+                onClick={handleInstallAddon}
+                disabled={installing}
+                className="rounded bg-gray-700 px-3 py-1.5 text-sm font-medium hover:bg-gray-600 disabled:opacity-50"
+              >
+                {installing ? "Installing…" : addonInstalled ? "Reinstall" : "Install Addon"}
+              </button>
+            ) : (
+              <span className="text-xs text-gray-500">Select WoW folder first</span>
+            )}
+          </div>
+          {installError && <p className="text-xs text-red-400">{installError}</p>}
+        </div>
+
         {/* Controls */}
         <div className="flex items-center gap-4 rounded-lg border border-gray-800 p-4">
           <button
@@ -362,6 +448,57 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
               ))
             )}
           </div>
+        </div>
+
+        {/* Settings */}
+        <div className="rounded-lg border border-gray-800 p-4 space-y-4">
+          <h2 className="font-medium text-gray-300">Settings</h2>
+
+          {/* Close behavior */}
+          <div className="space-y-2">
+            <p className="text-sm text-gray-400">When closing the window</p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => handleCloseBehaviorChange("tray")}
+                className={`rounded px-3 py-1.5 text-sm font-medium transition-colors ${
+                  closeBehavior === "tray"
+                    ? "bg-blue-600 text-white"
+                    : "bg-gray-700 text-gray-300 hover:bg-gray-600"
+                }`}
+              >
+                Minimize to tray
+              </button>
+              <button
+                onClick={() => handleCloseBehaviorChange("exit")}
+                className={`rounded px-3 py-1.5 text-sm font-medium transition-colors ${
+                  closeBehavior === "exit"
+                    ? "bg-blue-600 text-white"
+                    : "bg-gray-700 text-gray-300 hover:bg-gray-600"
+                }`}
+              >
+                Exit application
+              </button>
+            </div>
+          </div>
+
+          {/* Autostart */}
+          <label className="flex cursor-pointer items-center gap-3">
+            <div className="relative">
+              <input
+                type="checkbox"
+                className="sr-only"
+                checked={autostart}
+                onChange={(e) => handleAutostartChange(e.target.checked)}
+              />
+              <div
+                className={`h-5 w-9 rounded-full transition-colors ${autostart ? "bg-blue-600" : "bg-gray-600"}`}
+              />
+              <div
+                className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${autostart ? "translate-x-4" : "translate-x-0.5"}`}
+              />
+            </div>
+            <span className="text-sm text-gray-300">Launch on Windows login</span>
+          </label>
         </div>
 
         {/* Character count */}

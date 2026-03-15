@@ -213,30 +213,46 @@ type Snapshot = {
 // ---- Snapshot grouping ----
 
 /** Reduce dense snapshot arrays for chart readability.
- *  ≤30 pts → as-is | ≤180 pts → weekly | >180 pts → monthly
+ *  Cascades daily → weekly → monthly until ≤30 points remain.
+ *  Always uses the coarsest granularity that keeps the result ≤30 pts,
+ *  starting from daily so short bursts of snapshots are never over-collapsed.
  *  Keeps the *last* snapshot in each period so values are always real readings. */
 function groupSnapshotsAuto(snapshots: Snapshot[]): Snapshot[] {
   if (snapshots.length <= 30) return snapshots;
 
-  const byPeriod = new Map<string, Snapshot>();
-  const monthly = snapshots.length > 180;
-
-  for (const s of snapshots) {
-    const d = new Date(s.takenAt * 1000);
-    const key = monthly
-      ? `${d.getFullYear()}-${d.getMonth()}`
-      : (() => {
-          // ISO week-start = Monday
-          const day = d.getDay(); // 0=Sun
-          const diff = day === 0 ? -6 : 1 - day;
-          const mon = new Date(d);
-          mon.setDate(d.getDate() + diff);
-          return `${mon.getFullYear()}-${mon.getMonth()}-${mon.getDate()}`;
-        })();
-    byPeriod.set(key, s); // last snapshot in period wins
+  // Helper: group by an arbitrary key function, keeping last per period
+  function groupBy(snaps: Snapshot[], key: (s: Snapshot) => string): Snapshot[] {
+    const map = new Map<string, Snapshot>();
+    for (const s of snaps) map.set(key(s), s);
+    return [...map.values()];
   }
 
-  return [...byPeriod.values()];
+  const toDay = (s: Snapshot) => {
+    const d = new Date(s.takenAt * 1000);
+    return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+  };
+
+  const toWeek = (s: Snapshot) => {
+    const d = new Date(s.takenAt * 1000);
+    const day = d.getDay(); // 0=Sun
+    const diff = day === 0 ? -6 : 1 - day;
+    const mon = new Date(d);
+    mon.setDate(d.getDate() + diff);
+    return `${mon.getFullYear()}-${mon.getMonth()}-${mon.getDate()}`;
+  };
+
+  const toMonth = (s: Snapshot) => {
+    const d = new Date(s.takenAt * 1000);
+    return `${d.getFullYear()}-${d.getMonth()}`;
+  };
+
+  const daily = groupBy(snapshots, toDay);
+  if (daily.length <= 30) return daily;
+
+  const weekly = groupBy(snapshots, toWeek);
+  if (weekly.length <= 30) return weekly;
+
+  return groupBy(snapshots, toMonth);
 }
 
 // ---- Chart configs ----

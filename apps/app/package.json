@@ -19,6 +19,7 @@
     "better-auth": "catalog:",
     "convex": "catalog:",
     "dotenv": "catalog:",
+    "electron-updater": "^6.8.3",
     "lucide-react": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",
@@ -39,6 +40,11 @@
   },
   "build": {
     "appId": "com.wow-dashboard.app",
+    "publish": {
+      "provider": "github",
+      "owner": "zirkumflex-group",
+      "repo": "wow-dashboard"
+    },
     "productName": "WoW Dashboard",
     "directories": {
       "output": "dist"

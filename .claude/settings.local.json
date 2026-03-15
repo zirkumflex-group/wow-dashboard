@@ -23,7 +23,10 @@
       "Bash(printf:*)",
       "Bash(yes:*)",
       "Bash(pnpm:*)",
-      "Bash(npx tsc:*)"
+      "Bash(npx tsc:*)",
+      "Bash(git check-ignore:*)",
+      "Bash(git ls-files:*)",
+      "Bash(git remote:*)"
     ]
   }
 }

@@ -1,8 +1,65 @@
-import { app, BrowserWindow, dialog, ipcMain, session } from "electron";
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  net,
+  session,
+  Tray,
+  Menu,
+  nativeImage,
+} from "electron";
+import { autoUpdater } from "electron-updater";
 import * as fs from "fs";
 import { join, basename } from "path";
+import * as os from "os";
+import { execFile } from "child_process";
 
 let mainWindow: BrowserWindow | null = null;
+let tray: Tray | null = null;
+let isQuitting = false;
+
+// 1x1 transparent PNG — used as tray icon placeholder in development.
+// Replace with a proper 16x16 or 32x32 PNG for production builds.
+const TRAY_ICON_DATA_URL =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQAABjE+ibYAAAAASUVORK5CYII=";
+
+function createTray(): void {
+  const icon = nativeImage.createFromDataURL(TRAY_ICON_DATA_URL);
+  tray = new Tray(icon);
+
+  const buildMenu = () =>
+    Menu.buildFromTemplate([
+      {
+        label: "Show WoW Dashboard",
+        click: () => {
+          mainWindow?.show();
+          mainWindow?.focus();
+        },
+      },
+      { type: "separator" },
+      {
+        label: "Quit",
+        click: () => {
+          isQuitting = true;
+          app.quit();
+        },
+      },
+    ]);
+
+  tray.setToolTip("WoW Dashboard");
+  tray.setContextMenu(buildMenu());
+
+  tray.on("click", () => {
+    if (mainWindow) {
+      if (mainWindow.isVisible()) {
+        mainWindow.focus();
+      } else {
+        mainWindow.show();
+      }
+    }
+  });
+}
 
 // ─── Settings persistence ─────────────────────────────────────────────────────
 
@@ -330,6 +387,17 @@ function createWindow(): void {
     mainWindow.loadFile(join(__dirname, "../renderer/index.html"));
   }
 
+  mainWindow.on("close", async (event) => {
+    if (isQuitting) return;
+    const settings = await getSettings();
+    if ((settings.closeBehavior as string) === "tray") {
+      event.preventDefault();
+      mainWindow?.hide();
+    } else {
+      mainWindow = null;
+    }
+  });
+
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
@@ -364,7 +432,7 @@ async function openOAuthPopup(url: string, callbackBase: string): Promise<void> 
 ipcMain.handle("auth:login", async (_, siteUrl: string) => {
   const resp = await session.defaultSession.fetch(`${siteUrl}/api/auth/sign-in/social`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", Origin: siteUrl },
     body: JSON.stringify({ provider: "battlenet", callbackURL: `${siteUrl}/dashboard` }),
   });
 
@@ -381,7 +449,9 @@ ipcMain.handle("auth:login", async (_, siteUrl: string) => {
 
 ipcMain.handle("auth:getToken", async (_, siteUrl: string) => {
   try {
-    const resp = await session.defaultSession.fetch(`${siteUrl}/api/auth/convex/token`);
+    const resp = await session.defaultSession.fetch(`${siteUrl}/api/auth/convex/token`, {
+      headers: { Origin: siteUrl },
+    });
     if (!resp.ok) return null;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const data: any = await resp.json();
@@ -393,7 +463,9 @@ ipcMain.handle("auth:getToken", async (_, siteUrl: string) => {
 
 ipcMain.handle("auth:getSession", async (_, siteUrl: string) => {
   try {
-    const resp = await session.defaultSession.fetch(`${siteUrl}/api/auth/get-session`);
+    const resp = await session.defaultSession.fetch(`${siteUrl}/api/auth/get-session`, {
+      headers: { Origin: siteUrl },
+    });
     if (!resp.ok) return null;
     return await resp.json();
   } catch {
@@ -405,7 +477,7 @@ ipcMain.handle("auth:logout", async (_, siteUrl: string) => {
   try {
     await session.defaultSession.fetch(`${siteUrl}/api/auth/sign-out`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", Origin: siteUrl },
     });
     return true;
   } catch {
@@ -438,14 +510,177 @@ ipcMain.handle("wow:readAddonData", async (_, retailPath: string) => {
   return findAndParseAddonData(retailPath);
 });
 
+// Addon installation
+function downloadFile(url: string, destPath: string): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const request = net.request({ url, useSessionCookies: false });
+    const writeStream = fs.createWriteStream(destPath);
+    request.on("response", (response) => {
+      if (response.statusCode !== 200) {
+        writeStream.destroy();
+        reject(new Error(`Download failed with status ${response.statusCode}`));
+        return;
+      }
+      response.on("data", (chunk: Buffer) => writeStream.write(chunk));
+      response.on("end", () => writeStream.end(() => resolve()));
+      response.on("error", (err: Error) => {
+        writeStream.destroy();
+        reject(err);
+      });
+    });
+    request.on("error", (err: Error) => {
+      writeStream.destroy();
+      reject(err);
+    });
+    request.end();
+  });
+}
+
+function extractZip(zipPath: string, destDir: string): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    if (process.platform === "win32") {
+      execFile(
+        "powershell",
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          `Expand-Archive -LiteralPath "${zipPath}" -DestinationPath "${destDir}" -Force`,
+        ],
+        (error) => {
+          if (error) reject(error);
+          else resolve();
+        },
+      );
+    } else {
+      execFile("unzip", ["-o", zipPath, "-d", destDir], (error) => {
+        if (error) reject(error);
+        else resolve();
+      });
+    }
+  });
+}
+
+ipcMain.handle("wow:checkAddonInstalled", async (_, retailPath: string) => {
+  const addonPath = join(retailPath, "Interface", "AddOns", "wow-dashboard");
+  try {
+    await fs.promises.access(addonPath, fs.constants.F_OK);
+    return true;
+  } catch {
+    return false;
+  }
+});
+
+ipcMain.handle("wow:installAddon", async (_, retailPath: string, downloadUrl: string) => {
+  const tmpDir = os.tmpdir();
+  const zipPath = join(tmpDir, "wow-dashboard-addon.zip");
+  const extractDir = join(tmpDir, "wow-dashboard-addon-extract");
+  const addonsDir = join(retailPath, "Interface", "AddOns");
+  const addonDest = join(addonsDir, "wow-dashboard");
+
+  try {
+    await downloadFile(downloadUrl, zipPath);
+
+    await fs.promises.rm(extractDir, { recursive: true, force: true });
+    await fs.promises.mkdir(extractDir, { recursive: true });
+
+    await extractZip(zipPath, extractDir);
+
+    const entries = await fs.promises.readdir(extractDir, { withFileTypes: true });
+    const dirs = entries.filter((e) => e.isDirectory());
+    const addonSrc = dirs.length === 1 ? join(extractDir, dirs[0].name) : extractDir;
+
+    await fs.promises.mkdir(addonsDir, { recursive: true });
+    await fs.promises.rm(addonDest, { recursive: true, force: true });
+    await fs.promises.cp(addonSrc, addonDest, { recursive: true });
+  } finally {
+    await fs.promises.rm(zipPath, { force: true }).catch(() => {});
+    await fs.promises.rm(extractDir, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
+const GITHUB_REPO = "zirkumflex-group/wow-dashboard";
+
+ipcMain.handle("wow:getLatestAddonRelease", async () => {
+  const res = await net.fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases`, {
+    headers: { Accept: "application/vnd.github+json" },
+  });
+  if (!res.ok) throw new Error(`GitHub API error: ${res.status}`);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const releases = (await res.json()) as any[];
+  const addonRelease = releases.find(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (r: any) => r.tag_name.startsWith("addon-v") && !r.draft && !r.prerelease,
+  );
+  if (!addonRelease) throw new Error("No addon release found on GitHub");
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const asset = addonRelease.assets.find((a: any) => a.name === "wow-dashboard.zip");
+  if (!asset) throw new Error("No wow-dashboard.zip asset found in latest addon release");
+  return {
+    url: asset.browser_download_url as string,
+    version: (addonRelease.tag_name as string).replace("addon-v", ""),
+  };
+});
+
+// App settings
+ipcMain.handle("settings:getAppSettings", async () => {
+  const s = await getSettings();
+  return {
+    closeBehavior: (s.closeBehavior as string) ?? "exit",
+    autostart: (s.autostart as boolean) ?? false,
+  };
+});
+
+ipcMain.handle("settings:setCloseBehavior", async (_, value: "tray" | "exit") => {
+  const s = await getSettings();
+  s.closeBehavior = value;
+  await saveSettings(s);
+});
+
+ipcMain.handle("settings:setAutostart", async (_, value: boolean) => {
+  const s = await getSettings();
+  s.autostart = value;
+  await saveSettings(s);
+  app.setLoginItemSettings({ openAtLogin: value });
+});
+
 // ─── App lifecycle ────────────────────────────────────────────────────────────
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   createWindow();
+  createTray();
+
+  // Apply persisted autostart on startup
+  const settings = await getSettings();
+  app.setLoginItemSettings({ openAtLogin: (settings.autostart as boolean) ?? false });
+
+  // Check for app updates (only in packaged builds)
+  if (app.isPackaged) {
+    autoUpdater.checkForUpdates().catch(() => {});
+    autoUpdater.on("update-downloaded", () => {
+      dialog
+        .showMessageBox(mainWindow!, {
+          type: "info",
+          title: "Update Ready",
+          message: "A new version of WoW Dashboard has been downloaded.",
+          detail: "Restart the app to apply the update.",
+          buttons: ["Restart Now", "Later"],
+          defaultId: 0,
+        })
+        .then(({ response }) => {
+          if (response === 0) autoUpdater.quitAndInstall();
+        })
+        .catch(() => {});
+    });
+  }
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+});
+
+app.on("before-quit", () => {
+  isQuitting = true;
 });
 
 app.on("window-all-closed", () => {

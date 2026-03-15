@@ -82,8 +82,94 @@ jobs:
         env:
           CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
 
-  release-app:
+  bump-versions:
     needs: [check, changes]
+    if: needs.changes.outputs.app == 'true' || needs.changes.outputs.addon == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      app_version: ${{ steps.bump.outputs.app_version }}
+      addon_version: ${{ steps.bump.outputs.addon_version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Bump versions
+        id: bump
+        env:
+          APP_CHANGED: ${{ needs.changes.outputs.app }}
+          ADDON_CHANGED: ${{ needs.changes.outputs.addon }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          bump_semver() {
+            local CURRENT=$1
+            local SCOPE=$2   # e.g. "apps/app/ packages/"
+            local TAG_PATTERN=$3  # e.g. "app-v*"
+
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+            LAST_TAG=$(git describe --tags --match "$TAG_PATTERN" --abbrev=0 2>/dev/null || echo "")
+
+            if [ -n "$LAST_TAG" ]; then
+              COMMITS=$(git log "${LAST_TAG}..HEAD" --oneline -- $SCOPE)
+            else
+              COMMITS=$(git log --oneline -- $SCOPE)
+            fi
+
+            if echo "$COMMITS" | grep -qiE "[[:space:]]feat(\(.+\))?:"; then
+              MINOR=$((MINOR + 1))
+              PATCH=0
+            else
+              PATCH=$((PATCH + 1))
+            fi
+
+            echo "${MAJOR}.${MINOR}.${PATCH}"
+          }
+
+          if [ "$APP_CHANGED" = "true" ]; then
+            CURRENT=$(node -p "require('./apps/app/package.json').version")
+            APP_VERSION=$(bump_semver "$CURRENT" "apps/app/ packages/ui/ packages/env/ packages/config/" "app-v*")
+            # Update package.json version
+            node -e "
+              const fs = require('fs');
+              const pkg = JSON.parse(fs.readFileSync('./apps/app/package.json', 'utf8'));
+              pkg.version = '${APP_VERSION}';
+              fs.writeFileSync('./apps/app/package.json', JSON.stringify(pkg, null, 2) + '\n');
+            "
+            echo "app_version=${APP_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "Bumped app to ${APP_VERSION}"
+          fi
+
+          if [ "$ADDON_CHANGED" = "true" ]; then
+            CURRENT=$(grep "^## Version:" apps/addon/wow-dashboard.toc | awk '{print $3}')
+            ADDON_VERSION=$(bump_semver "$CURRENT" "apps/addon/" "addon-v*")
+            sed -i "s/^## Version:.*$/## Version: ${ADDON_VERSION}/" apps/addon/wow-dashboard.toc
+            echo "addon_version=${ADDON_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "Bumped addon to ${ADDON_VERSION}"
+          fi
+
+          # Commit only if there are staged changes
+          git add apps/app/package.json apps/addon/wow-dashboard.toc 2>/dev/null || true
+          if ! git diff --staged --quiet; then
+            git commit -m "chore: bump versions [skip ci]"
+            git push origin HEAD:master
+          fi
+
+          # Push version tags
+          if [ -n "$APP_VERSION" ]; then
+            git tag "app-v${APP_VERSION}"
+          fi
+          if [ -n "$ADDON_VERSION" ]; then
+            git tag "addon-v${ADDON_VERSION}"
+          fi
+          git push --tags
+
+  release-app:
+    needs: [bump-versions, changes]
     if: needs.changes.outputs.app == 'true'
     runs-on: windows-latest
 
@@ -91,6 +177,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          ref: master
           fetch-depth: 0
 
       - name: Setup pnpm
@@ -133,27 +220,23 @@ jobs:
 
       - name: Package app (electron-builder)
         run: pnpm --filter app package
-
-      - name: Compute release tag
-        id: release_tag
-        shell: bash
-        run: |
-          SHORT_SHA=$(git rev-parse --short HEAD)
-          echo "tag=build-${SHORT_SHA}" >> $GITHUB_OUTPUT
-          echo "name=Build ${SHORT_SHA}" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.release_tag.outputs.tag }}
-          name: ${{ steps.release_tag.outputs.name }}
-          files: apps/app/dist/wow-dashboard.exe
-          prerelease: true
+          tag_name: app-v${{ needs.bump-versions.outputs.app_version }}
+          name: App v${{ needs.bump-versions.outputs.app_version }}
+          prerelease: false
+          files: |
+            apps/app/dist/wow-dashboard.exe
+            apps/app/dist/latest.yml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   release-addon:
-    needs: [check, changes]
+    needs: [bump-versions, changes]
     if: needs.changes.outputs.addon == 'true'
     runs-on: ubuntu-latest
 
@@ -161,7 +244,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          ref: master
 
       - name: Package addon
         run: |
@@ -179,19 +262,12 @@ jobs:
           zip -r "${ADDON_NAME}.zip" "${ADDON_NAME}/"
           echo "ZIP=apps/addon/dist/${ADDON_NAME}.zip" >> $GITHUB_ENV
 
-      - name: Compute release tag
-        id: release_tag
-        run: |
-          SHORT_SHA=$(git rev-parse --short HEAD)
-          echo "tag=build-${SHORT_SHA}" >> $GITHUB_OUTPUT
-          echo "name=Build ${SHORT_SHA}" >> $GITHUB_OUTPUT
-
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.release_tag.outputs.tag }}
-          name: ${{ steps.release_tag.outputs.name }}
+          tag_name: addon-v${{ needs.bump-versions.outputs.addon_version }}
+          name: Addon v${{ needs.bump-versions.outputs.addon_version }}
+          prerelease: false
           files: ${{ env.ZIP }}
-          prerelease: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
