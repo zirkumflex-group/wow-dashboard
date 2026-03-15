@@ -59,9 +59,11 @@ const ROLE_LABELS: Record<string, string> = {
 
 // ---- Time Frame ----
 
-type TimeFrame = "1w" | "2w" | "1m" | "3m" | "all";
+type TimeFrame = "1d" | "3d" | "1w" | "2w" | "1m" | "3m" | "all";
 
 const TIME_FRAME_OPTIONS: { value: TimeFrame; label: string }[] = [
+  { value: "1d", label: "1D" },
+  { value: "3d", label: "3D" },
   { value: "1w", label: "1W" },
   { value: "2w", label: "2W" },
   { value: "1m", label: "1M" },
@@ -72,7 +74,7 @@ const TIME_FRAME_OPTIONS: { value: TimeFrame; label: string }[] = [
 function filterByTimeFrame<T extends { takenAt: number }>(items: T[], frame: TimeFrame): T[] {
   if (frame === "all") return items;
   const nowSec = Date.now() / 1000;
-  const days = { "1w": 7, "2w": 14, "1m": 30, "3m": 90 }[frame];
+  const days = { "1d": 1, "3d": 3, "1w": 7, "2w": 14, "1m": 30, "3m": 90 }[frame];
   const cutoff = nowSec - days * 86400;
   return items.filter((s) => s.takenAt >= cutoff);
 }
@@ -238,7 +240,7 @@ type Snapshot = {
   takenAt: number;
   level: number;
   spec: string;
-  role: "tank" | "healer" | "dps";
+  role: string;
   itemLevel: number;
   gold: number;
   playtimeSeconds: number;
@@ -1027,8 +1029,12 @@ function RouteComponent() {
 
   const { character, snapshots } = data;
 
+  // Separate valid snapshots from unknown/invalid ones
+  const validSnapshots = snapshots.filter((s) => s.spec !== "Unknown" && s.role !== "Unknown");
+  const unknownSnapshots = snapshots.filter((s) => s.spec === "Unknown" || s.role === "Unknown");
+
   // Filter by role/spec
-  const filtered = snapshots.filter((s) => {
+  const filtered = validSnapshots.filter((s) => {
     if (selectedRole && s.role !== selectedRole) return false;
     if (selectedSpec && s.spec !== selectedSpec) return false;
     return true;
@@ -1083,9 +1089,9 @@ function RouteComponent() {
       </Card>
 
       {/* Role / Spec filter */}
-      {snapshots.length > 0 && (
+      {validSnapshots.length > 0 && (
         <RoleSpecFilter
-          snapshots={snapshots}
+          snapshots={validSnapshots}
           selectedRole={selectedRole}
           selectedSpec={selectedSpec}
           onRoleChange={setSelectedRole}
@@ -1163,6 +1169,56 @@ function RouteComponent() {
                       <GoldDisplay value={s.gold} />
                     </td>
                     <td className="py-2 pl-2 text-muted-foreground">
+                      {s.spec} <span className="opacity-60">({s.role})</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Unknown / Invalid Snapshots */}
+      {unknownSnapshots.length > 0 && (
+        <Card className="border-dashed border-yellow-500/30">
+          <CardHeader className="border-b border-yellow-500/20 pb-3">
+            <CardTitle className="text-sm font-medium flex items-center gap-1.5 text-yellow-500/80">
+              <History size={14} />
+              Unknown / Invalid Snapshots ({unknownSnapshots.length})
+            </CardTitle>
+            <p className="text-muted-foreground text-xs mt-1">
+              These snapshots have an unknown spec or role and are excluded from charts and filters.
+            </p>
+          </CardHeader>
+          <CardContent className="pt-0 overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-border/50">
+                  <th className="text-left text-muted-foreground font-medium py-2 pr-4">Date</th>
+                  <th className="text-right text-muted-foreground font-medium py-2 px-2">iLvl</th>
+                  <th className="text-right text-muted-foreground font-medium py-2 px-2">M+</th>
+                  <th className="text-right text-muted-foreground font-medium py-2 px-2">Gold</th>
+                  <th className="text-left text-muted-foreground font-medium py-2 pl-2">
+                    Spec / Role
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...unknownSnapshots].reverse().map((s, i) => (
+                  <tr
+                    key={i}
+                    className="border-b border-border/30 last:border-0 hover:bg-muted/20 transition-colors opacity-70"
+                  >
+                    <td className="py-2 pr-4 text-muted-foreground">{formatDate(s.takenAt)}</td>
+                    <td className="py-2 px-2 text-right tabular-nums">{s.itemLevel.toFixed(1)}</td>
+                    <td className="py-2 px-2 text-right tabular-nums">
+                      {s.mythicPlusScore.toLocaleString()}
+                    </td>
+                    <td className="py-2 px-2 text-right">
+                      <GoldDisplay value={s.gold} />
+                    </td>
+                    <td className="py-2 pl-2 text-yellow-500/70">
                       {s.spec} <span className="opacity-60">({s.role})</span>
                     </td>
                   </tr>

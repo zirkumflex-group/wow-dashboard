@@ -111,9 +111,11 @@ function CharactersTab() {
     );
   }
 
-  const sorted = [...entries].sort((a, b) =>
-    sort === "ilvl" ? b.itemLevel - a.itemLevel : b.mythicPlusScore - a.mythicPlusScore,
-  );
+  const sorted = [...entries]
+    .filter((e) => e.spec !== "Unknown" && e.role !== "Unknown")
+    .sort((a, b) =>
+      sort === "ilvl" ? b.itemLevel - a.itemLevel : b.mythicPlusScore - a.mythicPlusScore,
+    );
   const maxMplus = Math.max(...sorted.map((e) => e.mythicPlusScore));
   const maxIlvl = Math.max(...sorted.map((e) => e.itemLevel));
 

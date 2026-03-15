@@ -83,9 +83,11 @@ const STAT_OPTIONS: { key: StatKey; label: string; format: (v: number) => string
 
 // ---- Time Frame ----
 
-type TimeFrame = "1w" | "2w" | "1m" | "3m" | "all";
+type TimeFrame = "1d" | "3d" | "1w" | "2w" | "1m" | "3m" | "all";
 
 const TIME_FRAME_OPTIONS: { value: TimeFrame; label: string }[] = [
+  { value: "1d", label: "1D" },
+  { value: "3d", label: "3D" },
   { value: "1w", label: "1W" },
   { value: "2w", label: "2W" },
   { value: "1m", label: "1M" },
@@ -96,7 +98,7 @@ const TIME_FRAME_OPTIONS: { value: TimeFrame; label: string }[] = [
 function filterByTimeFrame<T extends { takenAt: number }>(items: T[], frame: TimeFrame): T[] {
   if (frame === "all") return items;
   const nowSec = Date.now() / 1000;
-  const days = { "1w": 7, "2w": 14, "1m": 30, "3m": 90 }[frame];
+  const days = { "1d": 1, "3d": 3, "1w": 7, "2w": 14, "1m": 30, "3m": 90 }[frame];
   const cutoff = nowSec - days * 86400;
   return items.filter((s) => s.takenAt >= cutoff);
 }
@@ -109,6 +111,8 @@ type Snapshot = {
   gold: number;
   playtimeSeconds: number;
   mythicPlusScore: number;
+  spec: string;
+  role: string;
   stats: {
     critPercent: number;
     hastePercent: number;
@@ -214,10 +218,10 @@ function CompareChart({
     ]),
   );
 
-  if (data.length < 2) {
+  if (data.length < 1) {
     return (
       <div className="flex items-center justify-center h-[300px] text-muted-foreground text-sm">
-        Not enough data points for the selected time range.
+        No data for the selected time range.
       </div>
     );
   }
@@ -234,6 +238,7 @@ function CompareChart({
   const yDomain: [number, number] = [Math.floor(minVal - pad), Math.ceil(maxVal + pad)];
 
   const xAxisInterval = data.length > 10 ? Math.ceil(data.length / 10) - 1 : 0;
+  // Always show dots when few points; hide only when there are many
   const hideDots = data.length > 15;
 
   return (
@@ -258,6 +263,7 @@ function CompareChart({
         <CartesianGrid vertical={false} strokeOpacity={0.15} />
         <XAxis
           dataKey="date"
+          type="category"
           tickLine={false}
           axisLine={false}
           tickMargin={6}
@@ -308,7 +314,11 @@ function CompareChart({
             dot={
               hideDots
                 ? false
-                : { r: 3, strokeWidth: 0, fill: CHART_COLORS[i % CHART_COLORS.length] }
+                : {
+                    r: data.length === 1 ? 5 : 3,
+                    strokeWidth: 0,
+                    fill: CHART_COLORS[i % CHART_COLORS.length],
+                  }
             }
             activeDot={{ r: 5 }}
             connectNulls={false}
@@ -327,6 +337,7 @@ function RouteComponent() {
 
   // Fixed slots for up to 4 character queries
   const [selectedChars, setSelectedChars] = useState<string[]>([]);
+  const [specFilters, setSpecFilters] = useState<Record<string, string | null>>({});
   const [selectedStat, setSelectedStat] = useState<StatKey>("itemLevel");
   const [timeFrame, setTimeFrame] = useState<TimeFrame>("1w");
 
@@ -355,27 +366,60 @@ function RouteComponent() {
   const snapshotResults = [snap0, snap1, snap2, snap3];
 
   function toggleChar(id: string) {
-    setSelectedChars((prev) => {
-      if (prev.includes(id)) return prev.filter((c) => c !== id);
-      if (prev.length >= 4) return prev; // max 4
-      return [...prev, id];
-    });
+    if (selectedChars.includes(id)) {
+      setSelectedChars((prev) => prev.filter((c) => c !== id));
+      setSpecFilters((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+    } else if (selectedChars.length < 4) {
+      setSelectedChars((prev) => [...prev, id]);
+    }
   }
 
-  // Build characterSnapshots for chart
+  function setSpecFilter(charId: string, spec: string | null) {
+    setSpecFilters((prev) => ({ ...prev, [charId]: spec }));
+  }
+
+  // Available specs per selected character (from snapshot history)
+  const charAvailableSpecs: Record<
+    string,
+    Array<{ spec: string; role: string }>
+  > = Object.fromEntries(
+    selectedChars.map((id, i) => {
+      const result = snapshotResults[i];
+      if (!result) return [id, []];
+      const seen = new Map<string, string>();
+      for (const s of result.snapshots as Snapshot[]) {
+        if (s.spec && s.spec !== "Unknown" && s.role !== "Unknown" && !seen.has(s.spec))
+          seen.set(s.spec, s.role);
+      }
+      return [id, Array.from(seen.entries()).map(([spec, role]) => ({ spec, role }))];
+    }),
+  );
+
+  // Build characterSnapshots for chart (with optional spec filter per character)
   const characterSnapshots: { key: string; snapshots: Snapshot[] }[] = selectedChars
     .map((id, i) => {
       const result = snapshotResults[i];
       if (!result) return null;
-      return { key: `char_${i}`, snapshots: result.snapshots as Snapshot[] };
+      const specFilter = specFilters[id] ?? null;
+      const snapshots = (result.snapshots as Snapshot[]).filter(
+        (s) =>
+          s.spec !== "Unknown" && s.role !== "Unknown" && (!specFilter || s.spec === specFilter),
+      );
+      return { key: `char_${i}`, snapshots };
     })
     .filter((x): x is NonNullable<typeof x> => x !== null);
 
-  // Map char_0, char_1... to names
+  // Map char_0, char_1... to names (include spec if filtered)
   const characterNames: Record<string, string> = Object.fromEntries(
     selectedChars.map((id, i) => {
       const entry = scoreboard?.find((c) => c.characterId === id);
-      return [`char_${i}`, entry?.name ?? id];
+      const name = entry?.name ?? id;
+      const specFilter = specFilters[id];
+      return [`char_${i}`, specFilter ? `${name} (${specFilter})` : name];
     }),
   );
 
@@ -437,6 +481,9 @@ function RouteComponent() {
                     <span className="text-muted-foreground text-xs">
                       {entry.spec} {entry.class}
                     </span>
+                    <span className="text-muted-foreground/60 text-xs capitalize">
+                      · {entry.role}
+                    </span>
                     {isSelected && (
                       <span className="ml-1 text-xs text-muted-foreground">
                         ×{selectedChars.indexOf(entry.characterId) + 1}
@@ -447,6 +494,57 @@ function RouteComponent() {
               })}
             </div>
           )}
+
+          {/* Spec / role filter for selected characters */}
+          {selectedChars.length > 0 &&
+            selectedChars.some((id) => (charAvailableSpecs[id]?.length ?? 0) > 1) && (
+              <div className="mt-4 pt-4 border-t space-y-2">
+                <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider mb-2">
+                  Spec filter
+                </p>
+                {selectedChars.map((id) => {
+                  const entry = scoreboard?.find((c) => c.characterId === id);
+                  const specs = charAvailableSpecs[id] ?? [];
+                  if (specs.length <= 1) return null;
+                  const currentFilter = specFilters[id] ?? null;
+                  return (
+                    <div key={id} className="flex items-center gap-2 flex-wrap">
+                      <span
+                        className={`text-sm font-medium min-w-[80px] ${classColor(entry?.class ?? "")}`}
+                      >
+                        {entry?.name}
+                      </span>
+                      <button
+                        onClick={() => setSpecFilter(id, null)}
+                        className={[
+                          "text-xs px-2 py-0.5 rounded border transition-colors",
+                          currentFilter === null
+                            ? "border-primary bg-primary/10 text-foreground"
+                            : "border-border text-muted-foreground hover:border-primary/50",
+                        ].join(" ")}
+                      >
+                        All
+                      </button>
+                      {specs.map(({ spec, role }) => (
+                        <button
+                          key={spec}
+                          onClick={() => setSpecFilter(id, spec)}
+                          className={[
+                            "text-xs px-2 py-0.5 rounded border transition-colors flex items-center gap-1",
+                            currentFilter === spec
+                              ? "border-primary bg-primary/10 text-foreground"
+                              : "border-border text-muted-foreground hover:border-primary/50",
+                          ].join(" ")}
+                        >
+                          {spec}
+                          <span className="opacity-60 capitalize">({role})</span>
+                        </button>
+                      ))}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
         </CardContent>
       </Card>
 

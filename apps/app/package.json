@@ -12,31 +12,31 @@
     "package": "electron-builder --win"
   },
   "dependencies": {
+    "electron-updater": "^6.8.3"
+  },
+  "devDependencies": {
     "@convex-dev/better-auth": "catalog:",
+    "@tailwindcss/vite": "^4.1.18",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "@vitejs/plugin-react": "^4.5.2",
     "@wow-dashboard/backend": "workspace:*",
+    "@wow-dashboard/config": "workspace:*",
     "@wow-dashboard/env": "workspace:*",
     "@wow-dashboard/ui": "workspace:*",
     "better-auth": "catalog:",
     "convex": "catalog:",
     "dotenv": "catalog:",
-    "electron-updater": "^6.8.3",
+    "electron": "^41.0.2",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^3.1.0",
     "lucide-react": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",
     "tailwindcss": "catalog:",
-    "zod": "catalog:"
-  },
-  "devDependencies": {
-    "@tailwindcss/vite": "^4.1.18",
-    "@types/react": "catalog:",
-    "@types/react-dom": "catalog:",
-    "@vitejs/plugin-react": "^4.5.2",
-    "@wow-dashboard/config": "workspace:*",
-    "electron": "^41.0.2",
-    "electron-builder": "^25.1.8",
-    "electron-vite": "^3.1.0",
     "typescript": "^5",
-    "vite": "^6.3.5"
+    "vite": "^6.3.5",
+    "zod": "catalog:"
   },
   "build": {
     "appId": "com.wow-dashboard.app",
@@ -46,12 +46,17 @@
       "repo": "wow-dashboard"
     },
     "productName": "WoW Dashboard",
+    "compression": "maximum",
     "directories": {
       "output": "dist"
     },
     "files": [
       "out/**/*",
-      "package.json"
+      "package.json",
+      "!**/*.{md,txt,map}",
+      "!**/node_modules/*/{CHANGELOG.md,README.md,readme.md,CHANGES,changelog}",
+      "!**/node_modules/*/{test,__tests__,tests,powered-test,example,examples}",
+      "!**/node_modules/.bin"
     ],
     "extraMetadata": {
       "main": "./out/main/index.js"
@@ -66,6 +71,9 @@
             "x64"
           ]
         }
+      ],
+      "electronLanguages": [
+        "en-US"
       ]
     },
     "nsis": {
