@@ -9,12 +9,18 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from "./routes/__root";
+import { Route as SettingsRouteImport } from "./routes/settings";
 import { Route as ScoreboardRouteImport } from "./routes/scoreboard";
 import { Route as DashboardRouteImport } from "./routes/dashboard";
 import { Route as IndexRouteImport } from "./routes/index";
 import { Route as CharacterCharacterIdRouteImport } from "./routes/character.$characterId";
 import { Route as ApiAuthSplatRouteImport } from "./routes/api/auth/$";
 
+const SettingsRoute = SettingsRouteImport.update({
+  id: "/settings",
+  path: "/settings",
+  getParentRoute: () => rootRouteImport,
+} as any);
 const ScoreboardRoute = ScoreboardRouteImport.update({
   id: "/scoreboard",
   path: "/scoreboard",
@@ -45,6 +51,7 @@ export interface FileRoutesByFullPath {
   "/": typeof IndexRoute;
   "/dashboard": typeof DashboardRoute;
   "/scoreboard": typeof ScoreboardRoute;
+  "/settings": typeof SettingsRoute;
   "/character/$characterId": typeof CharacterCharacterIdRoute;
   "/api/auth/$": typeof ApiAuthSplatRoute;
 }
@@ -52,6 +59,7 @@ export interface FileRoutesByTo {
   "/": typeof IndexRoute;
   "/dashboard": typeof DashboardRoute;
   "/scoreboard": typeof ScoreboardRoute;
+  "/settings": typeof SettingsRoute;
   "/character/$characterId": typeof CharacterCharacterIdRoute;
   "/api/auth/$": typeof ApiAuthSplatRoute;
 }
@@ -60,27 +68,49 @@ export interface FileRoutesById {
   "/": typeof IndexRoute;
   "/dashboard": typeof DashboardRoute;
   "/scoreboard": typeof ScoreboardRoute;
+  "/settings": typeof SettingsRoute;
   "/character/$characterId": typeof CharacterCharacterIdRoute;
   "/api/auth/$": typeof ApiAuthSplatRoute;
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath;
-  fullPaths: "/" | "/dashboard" | "/scoreboard" | "/character/$characterId" | "/api/auth/$";
+  fullPaths:
+    | "/"
+    | "/dashboard"
+    | "/scoreboard"
+    | "/settings"
+    | "/character/$characterId"
+    | "/api/auth/$";
   fileRoutesByTo: FileRoutesByTo;
-  to: "/" | "/dashboard" | "/scoreboard" | "/character/$characterId" | "/api/auth/$";
-  id: "__root__" | "/" | "/dashboard" | "/scoreboard" | "/character/$characterId" | "/api/auth/$";
+  to: "/" | "/dashboard" | "/scoreboard" | "/settings" | "/character/$characterId" | "/api/auth/$";
+  id:
+    | "__root__"
+    | "/"
+    | "/dashboard"
+    | "/scoreboard"
+    | "/settings"
+    | "/character/$characterId"
+    | "/api/auth/$";
   fileRoutesById: FileRoutesById;
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute;
   DashboardRoute: typeof DashboardRoute;
   ScoreboardRoute: typeof ScoreboardRoute;
+  SettingsRoute: typeof SettingsRoute;
   CharacterCharacterIdRoute: typeof CharacterCharacterIdRoute;
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute;
 }
 
 declare module "@tanstack/react-router" {
   interface FileRoutesByPath {
+    "/settings": {
+      id: "/settings";
+      path: "/settings";
+      fullPath: "/settings";
+      preLoaderRoute: typeof SettingsRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
     "/scoreboard": {
       id: "/scoreboard";
       path: "/scoreboard";
@@ -123,6 +153,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   DashboardRoute: DashboardRoute,
   ScoreboardRoute: ScoreboardRoute,
+  SettingsRoute: SettingsRoute,
   CharacterCharacterIdRoute: CharacterCharacterIdRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
 };

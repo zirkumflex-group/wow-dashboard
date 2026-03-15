@@ -24,6 +24,7 @@ import { SidebarInset, SidebarProvider } from "@wow-dashboard/ui/components/side
 import { authClient } from "@/lib/auth-client";
 import { getToken } from "@/lib/auth-server";
 import { AppSidebar } from "@/components/app-sidebar";
+import { ThemeProvider, THEME_SCRIPT } from "@/components/theme-provider";
 
 import appCss from "../index.css?url";
 
@@ -79,24 +80,28 @@ function RootDocument() {
       authClient={authClient}
       initialToken={context.token}
     >
-      <html lang="en" className="dark">
+      <html lang="en">
         <head>
           <HeadContent />
+          {/* Inline script runs before first paint to avoid theme flash */}
+          <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
         </head>
         <body>
-          {context.isAuthenticated ? (
-            <SidebarProvider>
-              <AppSidebar />
-              <SidebarInset>
+          <ThemeProvider>
+            {context.isAuthenticated ? (
+              <SidebarProvider>
+                <AppSidebar />
+                <SidebarInset>
+                  <Outlet />
+                </SidebarInset>
+              </SidebarProvider>
+            ) : (
+              <div className="h-svh">
                 <Outlet />
-              </SidebarInset>
-            </SidebarProvider>
-          ) : (
-            <div className="h-svh">
-              <Outlet />
-            </div>
-          )}
-          <Toaster richColors />
+              </div>
+            )}
+            <Toaster richColors />
+          </ThemeProvider>
           <TanStackRouterDevtools position="bottom-left" />
           <Scripts />
         </body>

@@ -12,19 +12,7 @@ import {
 } from "@wow-dashboard/ui/components/chart";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@wow-dashboard/ui/components/tabs";
 import { useQuery } from "convex/react";
-import {
-  Calendar,
-  ChevronRight,
-  Clock,
-  Coins,
-  Flame,
-  Gem,
-  History,
-  Maximize2,
-  Sword,
-  X,
-  Zap,
-} from "lucide-react";
+import { Clock, Coins, Flame, Gem, History, Maximize2, Sword, X, Zap } from "lucide-react";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
@@ -153,7 +141,7 @@ function FullscreenOverlay({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-50 bg-background/95 backdrop-blur-sm flex flex-col"
+      className="fixed inset-0 z-50 bg-background/60 backdrop-blur-xl flex flex-col"
       onClick={onClose}
     >
       <div
@@ -275,11 +263,51 @@ function SnapshotLineChart({
     );
   }
 
-  const tooltipFn =
-    tooltipFormatter ??
-    (valueFormatter
-      ? (v: number) => <span className="font-mono font-medium">{valueFormatter(v)}</span>
-      : undefined);
+  const isMultiLine = lines.length > 1;
+
+  // Build the right tooltip formatter depending on line count and formatter type.
+  // When formatter is provided and there are multiple lines, we must manually
+  // render the colored indicator + label ourselves because ChartTooltipContent's
+  // `formatter` prop replaces the entire row (dot + label + value).
+  const tooltipContent = (() => {
+    if (tooltipFormatter) {
+      // Single-line with custom ReactNode value (e.g. GoldDisplay)
+      return <ChartTooltipContent formatter={(val) => tooltipFormatter(val as number)} />;
+    }
+    if (valueFormatter && isMultiLine) {
+      // Multi-line with formatted values — show dot + label + formatted value
+      return (
+        <ChartTooltipContent
+          formatter={(val, name, item) => (
+            <>
+              <div
+                className="h-2.5 w-2.5 shrink-0 rounded-[2px]"
+                style={{ backgroundColor: item.color }}
+              />
+              <span className="flex-1 text-muted-foreground">
+                {config[name as string]?.label ?? name}
+              </span>
+              <span className="ml-auto font-mono font-medium tabular-nums">
+                {valueFormatter(val as number)}
+              </span>
+            </>
+          )}
+        />
+      );
+    }
+    if (valueFormatter) {
+      // Single-line with formatted value
+      return (
+        <ChartTooltipContent
+          formatter={(val) => (
+            <span className="font-mono font-medium">{valueFormatter(val as number)}</span>
+          )}
+        />
+      );
+    }
+    // No formatter — default rendering already shows indicator + label + value
+    return <ChartTooltipContent />;
+  })();
 
   // Show at most ~8 ticks on X axis; group up when there are many data points
   const xAxisInterval = data.length > 8 ? Math.ceil(data.length / 8) - 1 : 0;
@@ -304,13 +332,7 @@ function SnapshotLineChart({
           tickFormatter={valueFormatter}
           width={52}
         />
-        <ChartTooltip
-          content={
-            <ChartTooltipContent
-              formatter={tooltipFn ? (val) => tooltipFn(val as number) : undefined}
-            />
-          }
-        />
+        <ChartTooltip content={tooltipContent} />
         {lines.map(({ key, color }) => (
           <Line
             key={key}

@@ -22,7 +22,8 @@
       "Bash(echo:*)",
       "Bash(printf:*)",
       "Bash(yes:*)",
-      "Bash(pnpm:*)"
+      "Bash(pnpm:*)",
+      "Bash(npx tsc:*)"
     ]
   }
 }
