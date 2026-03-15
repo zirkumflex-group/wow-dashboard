@@ -82,12 +82,31 @@ importers:
 
   apps/app:
     dependencies:
+      electron-updater:
+        specifier: ^6.8.3
+        version: 6.8.3
+    devDependencies:
       '@convex-dev/better-auth':
         specifier: 'catalog:'
         version: 0.10.13(@better-auth/core@1.4.9(@better-auth/utils@0.3.0)(@better-fetch/fetch@1.1.21)(better-call@1.1.7(zod@4.3.6))(jose@6.2.1)(kysely@0.28.12)(nanostores@1.2.0))(@better-auth/utils@0.3.0)(@standard-schema/spec@1.1.0)(better-auth@1.4.9(@tanstack/react-start@1.166.11(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(vite@6.4.1(@types/node@24.12.0)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)))(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(better-call@1.1.7(zod@4.3.6))(convex@1.33.1(react@19.2.4))(hono@4.12.8)(nanostores@1.2.0)(react@19.2.4)(typescript@5.9.3)
+      '@tailwindcss/vite':
+        specifier: ^4.1.18
+        version: 4.2.1(vite@6.4.1(@types/node@24.12.0)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0))
+      '@types/react':
+        specifier: 'catalog:'
+        version: 19.2.14
+      '@types/react-dom':
+        specifier: 'catalog:'
+        version: 19.2.3(@types/react@19.2.14)
+      '@vitejs/plugin-react':
+        specifier: ^4.5.2
+        version: 4.7.0(vite@6.4.1(@types/node@24.12.0)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0))
       '@wow-dashboard/backend':
         specifier: workspace:*
         version: file:packages/backend(@better-auth/core@1.4.9(@better-auth/utils@0.3.0)(@better-fetch/fetch@1.1.21)(better-call@1.1.7(zod@4.3.6))(jose@6.2.1)(kysely@0.28.12)(nanostores@1.2.0))(@better-auth/utils@0.3.0)(@standard-schema/spec@1.1.0)(@tanstack/react-start@1.166.11(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(vite@6.4.1(@types/node@24.12.0)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)))(better-call@1.1.7(zod@4.3.6))(hono@4.12.8)(nanostores@1.2.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3)
+      '@wow-dashboard/config':
+        specifier: workspace:*
+        version: link:../../packages/config
       '@wow-dashboard/env':
         specifier: workspace:*
         version: link:../../packages/env
@@ -103,9 +122,15 @@ importers:
       dotenv:
         specifier: 'catalog:'
         version: 17.3.1
-      electron-updater:
-        specifier: ^6.8.3
-        version: 6.8.3
+      electron:
+        specifier: ^41.0.2
+        version: 41.0.2
+      electron-builder:
+        specifier: ^25.1.8
+        version: 25.1.8(electron-builder-squirrel-windows@25.1.8)
+      electron-vite:
+        specifier: ^3.1.0
+        version: 3.1.0(vite@6.4.1(@types/node@24.12.0)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0))
       lucide-react:
         specifier: 'catalog:'
         version: 0.546.0(react@19.2.4)
@@ -118,40 +143,15 @@ importers:
       tailwindcss:
         specifier: 'catalog:'
         version: 4.2.1
-      zod:
-        specifier: 'catalog:'
-        version: 4.3.6
-    devDependencies:
-      '@tailwindcss/vite':
-        specifier: ^4.1.18
-        version: 4.2.1(vite@6.4.1(@types/node@24.12.0)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0))
-      '@types/react':
-        specifier: 'catalog:'
-        version: 19.2.14
-      '@types/react-dom':
-        specifier: 'catalog:'
-        version: 19.2.3(@types/react@19.2.14)
-      '@vitejs/plugin-react':
-        specifier: ^4.5.2
-        version: 4.7.0(vite@6.4.1(@types/node@24.12.0)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0))
-      '@wow-dashboard/config':
-        specifier: workspace:*
-        version: link:../../packages/config
-      electron:
-        specifier: ^41.0.2
-        version: 41.0.2
-      electron-builder:
-        specifier: ^25.1.8
-        version: 25.1.8(electron-builder-squirrel-windows@25.1.8)
-      electron-vite:
-        specifier: ^3.1.0
-        version: 3.1.0(vite@6.4.1(@types/node@24.12.0)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0))
       typescript:
         specifier: ^5
         version: 5.9.3
       vite:
         specifier: ^6.3.5
         version: 6.4.1(@types/node@24.12.0)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)
+      zod:
+        specifier: 'catalog:'
+        version: 4.3.6
 
   apps/web:
     dependencies:
