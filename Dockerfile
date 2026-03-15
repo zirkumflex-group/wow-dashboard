@@ -10,7 +10,7 @@ WORKDIR /app
 
 # Copy manifests first for better layer caching.
 # Changes to source files won't invalidate the install layer.
-COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml .npmrc ./
 COPY apps/web/package.json             ./apps/web/
 COPY packages/backend/package.json     ./packages/backend/
 COPY packages/config/package.json      ./packages/config/
