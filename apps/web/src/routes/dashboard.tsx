@@ -3,11 +3,18 @@ import { api } from "@wow-dashboard/backend/convex/_generated/api";
 import { Badge } from "@wow-dashboard/ui/components/badge";
 import { Button } from "@wow-dashboard/ui/components/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@wow-dashboard/ui/components/card";
+import { Checkbox } from "@wow-dashboard/ui/components/checkbox";
+import { Input } from "@wow-dashboard/ui/components/input";
 import { Skeleton } from "@wow-dashboard/ui/components/skeleton";
 import { Authenticated, AuthLoading, Unauthenticated, useMutation, useQuery } from "convex/react";
 import { HeartPulse, RefreshCw, Shield, Star, Swords } from "lucide-react";
 import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
+
+const HIDE_BELOW_90_KEY = "wow_dashboard_hide_below_90";
+const MIN_ILVL_KEY = "wow_dashboard_min_ilvl";
+const HIDE_NO_SNAPSHOT_KEY = "wow_dashboard_hide_no_snapshot";
+const DEFAULT_MIN_ILVL = 200;
 
 export const Route = createFileRoute("/dashboard")({
   component: RouteComponent,
@@ -341,6 +348,60 @@ function Dashboard() {
   const { isCoolingDown, remaining, startCooldown, formatRemaining } = useResyncCooldown();
   const { favorites, toggle: toggleFavorite } = useFavorites();
 
+  const [hideBelow90, setHideBelow90] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(HIDE_BELOW_90_KEY) === "true";
+    } catch {
+      return false;
+    }
+  });
+  const [minIlvlInput, setMinIlvlInput] = useState<string>(() => {
+    try {
+      const v = localStorage.getItem(MIN_ILVL_KEY);
+      return v !== null ? v : String(DEFAULT_MIN_ILVL);
+    } catch {
+      return String(DEFAULT_MIN_ILVL);
+    }
+  });
+  const [hideNoSnapshot, setHideNoSnapshot] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(HIDE_NO_SNAPSHOT_KEY) === "true";
+    } catch {
+      return false;
+    }
+  });
+  const minIlvl = Number(minIlvlInput) || 0;
+
+  function toggleHideBelow90(checked: boolean) {
+    setHideBelow90(checked);
+    try {
+      localStorage.setItem(HIDE_BELOW_90_KEY, String(checked));
+    } catch {}
+  }
+
+  function handleMinIlvlChange(value: string) {
+    setMinIlvlInput(value);
+    try {
+      localStorage.setItem(MIN_ILVL_KEY, value);
+    } catch {}
+  }
+
+  function toggleHideNoSnapshot(checked: boolean) {
+    setHideNoSnapshot(checked);
+    try {
+      localStorage.setItem(HIDE_NO_SNAPSHOT_KEY, String(checked));
+    } catch {}
+  }
+
+  function applyFilters(chars: Character[]): Character[] {
+    return chars.filter((c) => {
+      if (!c.snapshot) return !hideNoSnapshot;
+      if (hideBelow90 && c.snapshot.level < 90) return false;
+      if (minIlvl > 0 && c.snapshot.itemLevel < minIlvl) return false;
+      return true;
+    });
+  }
+
   async function handleResync() {
     if (isCoolingDown || syncing) return;
     setSyncing(true);
@@ -352,9 +413,11 @@ function Dashboard() {
     }
   }
 
-  const grouped = characters
+  const filteredCharacters = characters ? applyFilters(characters) : null;
+
+  const grouped = filteredCharacters
     ? ROLE_ORDER.reduce<Record<string, Character[]>>((acc, role) => {
-        const chars = characters.filter((c) =>
+        const chars = filteredCharacters.filter((c) =>
           c.snapshot ? normalizeRole(c.snapshot.role) === role : role === "DPS",
         );
         if (chars.length > 0) acc[role] = chars;
@@ -362,22 +425,49 @@ function Dashboard() {
       }, {})
     : {};
 
-  const favoriteChars = characters?.filter((c) => favorites.has(c._id)) ?? [];
+  const favoriteChars = filteredCharacters?.filter((c) => favorites.has(c._id)) ?? [];
   const isDisabled = syncing || isCoolingDown;
 
   return (
     <div className="w-full px-4 py-6 sm:px-6 lg:px-8">
-      <div className="mb-8 flex items-center justify-between">
+      <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-3xl font-bold">My Characters</h1>
           {characters !== undefined && characters !== null && characters.length > 0 && (
             <p className="text-muted-foreground text-sm mt-1">
-              {characters.length} character{characters.length !== 1 ? "s" : ""} across{" "}
-              {Object.keys(grouped).length} role{Object.keys(grouped).length !== 1 ? "s" : ""}
+              {filteredCharacters?.length ?? 0} of {characters.length} character
+              {characters.length !== 1 ? "s" : ""} across {Object.keys(grouped).length} role
+              {Object.keys(grouped).length !== 1 ? "s" : ""}
             </p>
           )}
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="flex cursor-pointer items-center gap-2 text-sm">
+            <Checkbox
+              checked={hideBelow90}
+              onCheckedChange={(v) => toggleHideBelow90(!!v)}
+              id="dashboard-hide-below-90"
+            />
+            <span className="text-muted-foreground select-none">Hide below Lvl 90</span>
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <span className="text-muted-foreground select-none">Min iLvl</span>
+            <Input
+              type="number"
+              min={0}
+              value={minIlvlInput}
+              onChange={(e) => handleMinIlvlChange(e.target.value)}
+              className="h-7 w-20 text-sm"
+            />
+          </label>
+          <label className="flex cursor-pointer items-center gap-2 text-sm">
+            <Checkbox
+              checked={hideNoSnapshot}
+              onCheckedChange={(v) => toggleHideNoSnapshot(!!v)}
+              id="dashboard-hide-no-snapshot"
+            />
+            <span className="text-muted-foreground select-none">Hide no snapshot</span>
+          </label>
           <Button
             size="sm"
             variant="outline"
