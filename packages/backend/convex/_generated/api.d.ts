@@ -8,6 +8,7 @@
  * @module
  */
 
+import type * as addonIngest from "../addonIngest.js";
 import type * as auth from "../auth.js";
 import type * as battlenet from "../battlenet.js";
 import type * as characters from "../characters.js";
@@ -23,6 +24,7 @@ import type * as utils from "../utils.js";
 import type { ApiFromModules, FilterApi, FunctionReference } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  addonIngest: typeof addonIngest;
   auth: typeof auth;
   battlenet: typeof battlenet;
   characters: typeof characters;
