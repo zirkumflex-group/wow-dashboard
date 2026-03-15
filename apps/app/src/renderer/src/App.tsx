@@ -77,6 +77,7 @@ declare global {
         setAutostart: (value: boolean) => Promise<void>;
       };
       openExternal: (url: string) => Promise<void>;
+      getVersion: () => Promise<string>;
       updates: {
         onUpdateAvailable: (cb: (version: string) => void) => void;
         onUpdateDownloaded: (cb: (version: string) => void) => void;
@@ -237,6 +238,7 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
   const [installError, setInstallError] = useState<string | null>(null);
   const [appUpdateAvailable, setAppUpdateAvailable] = useState<string | null>(null);
   const [appUpdateDownloaded, setAppUpdateDownloaded] = useState<string | null>(null);
+  const [appVersion, setAppVersion] = useState<string | null>(null);
 
   const syncingRef = useRef(false);
   const prevCharCountRef = useRef<number | null>(null);
@@ -249,6 +251,7 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
 
   // Load persisted settings on mount
   useEffect(() => {
+    window.electron.getVersion().then((v) => setAppVersion(v));
     window.electron.wow.getRetailPath().then((p) => setRetailPath(p));
     window.electron.settings.getAppSettings().then((s) => {
       setCloseBehavior(s.closeBehavior);
@@ -599,6 +602,9 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
               : `${characters.length} character${characters.length !== 1 ? "s" : ""} tracked.`}
           </p>
         )}
+
+        {/* App version */}
+        {appVersion && <p className="text-center text-xs text-gray-600">v{appVersion}</p>}
       </div>
     </div>
   );

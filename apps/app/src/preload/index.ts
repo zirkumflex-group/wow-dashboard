@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld("electron", {
     setAutostart: (value: boolean) => ipcRenderer.invoke("settings:setAutostart", value),
   },
   openExternal: (url: string) => ipcRenderer.invoke("app:openExternal", url),
+  getVersion: () => ipcRenderer.invoke("app:getVersion") as Promise<string>,
   updates: {
     onUpdateAvailable: (cb: (version: string) => void) => {
       ipcRenderer.on("app:updateAvailable", (_, version: string) => cb(version));

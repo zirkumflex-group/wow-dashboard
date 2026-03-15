@@ -638,6 +638,7 @@ ipcMain.handle("wow:getLatestAddonRelease", async () => {
 
 // Shell
 ipcMain.handle("app:openExternal", (_, url: string) => shell.openExternal(url));
+ipcMain.handle("app:getVersion", () => app.getVersion());
 
 // App settings
 ipcMain.handle("settings:getAppSettings", async () => {

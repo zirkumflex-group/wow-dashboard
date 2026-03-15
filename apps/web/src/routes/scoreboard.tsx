@@ -77,9 +77,11 @@ function formatGold(gold: number) {
 
 type Tab = "characters" | "players";
 
+type CharSort = "mplus" | "ilvl";
+
 function CharactersTab() {
   const entries = useQuery(api.characters.getScoreboard);
-  const maxMplus = entries?.[0]?.mythicPlusScore ?? 0;
+  const [sort, setSort] = useState<CharSort>("mplus");
 
   if (entries === undefined) {
     return (
@@ -109,11 +111,34 @@ function CharactersTab() {
     );
   }
 
+  const sorted = [...entries].sort((a, b) =>
+    sort === "ilvl" ? b.itemLevel - a.itemLevel : b.mythicPlusScore - a.mythicPlusScore,
+  );
+  const maxMplus = Math.max(...sorted.map((e) => e.mythicPlusScore));
+  const maxIlvl = Math.max(...sorted.map((e) => e.itemLevel));
+
   return (
     <Card>
+      <CardHeader className="border-b pb-3">
+        <div className="flex items-center gap-2">
+          <span className="text-muted-foreground text-xs">Sort by</span>
+          <button
+            onClick={() => setSort("mplus")}
+            className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${sort === "mplus" ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:text-foreground"}`}
+          >
+            M+ Score
+          </button>
+          <button
+            onClick={() => setSort("ilvl")}
+            className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${sort === "ilvl" ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:text-foreground"}`}
+          >
+            Item Level
+          </button>
+        </div>
+      </CardHeader>
       <CardContent className="p-0">
         <div className="divide-y divide-border">
-          {entries.map((entry, i) => (
+          {sorted.map((entry, i) => (
             <Link
               key={entry.characterId}
               to="/character/$characterId"
@@ -152,8 +177,22 @@ function CharactersTab() {
 
               {/* Item level */}
               <div className="shrink-0 text-right">
-                <p className="text-muted-foreground text-xs">iLvl</p>
-                <p className="font-semibold tabular-nums">{entry.itemLevel.toFixed(1)}</p>
+                <p
+                  className={`text-xs ${sort === "ilvl" ? "text-foreground font-medium" : "text-muted-foreground"}`}
+                >
+                  iLvl
+                </p>
+                <p className={`tabular-nums ${sort === "ilvl" ? "font-bold" : "font-semibold"}`}>
+                  {entry.itemLevel.toFixed(1)}
+                </p>
+                {sort === "ilvl" && (
+                  <div className="mt-0.5 w-16">
+                    <Progress
+                      value={maxIlvl > 0 ? (entry.itemLevel / maxIlvl) * 100 : 0}
+                      className="h-1"
+                    />
+                  </div>
+                )}
               </div>
 
               {/* M+ score (mobile only) */}
@@ -171,11 +210,11 @@ function CharactersTab() {
   );
 }
 
+type PlayerSort = "playtime" | "gold";
+
 function PlayersTab() {
   const entries = useQuery(api.characters.getPlayerScoreboard);
-
-  const maxPlaytime = entries?.[0]?.totalPlaytimeSeconds ?? 0;
-  const maxGold = Math.max(...(entries?.map((e) => e.totalGold) ?? [0]));
+  const [sort, setSort] = useState<PlayerSort>("playtime");
 
   if (entries === undefined) {
     return (
@@ -205,11 +244,34 @@ function PlayersTab() {
     );
   }
 
+  const sorted = [...entries].sort((a, b) =>
+    sort === "gold" ? b.totalGold - a.totalGold : b.totalPlaytimeSeconds - a.totalPlaytimeSeconds,
+  );
+  const maxPlaytime = Math.max(...sorted.map((e) => e.totalPlaytimeSeconds));
+  const maxGold = Math.max(...sorted.map((e) => e.totalGold));
+
   return (
     <Card>
+      <CardHeader className="border-b pb-3">
+        <div className="flex items-center gap-2">
+          <span className="text-muted-foreground text-xs">Sort by</span>
+          <button
+            onClick={() => setSort("playtime")}
+            className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${sort === "playtime" ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:text-foreground"}`}
+          >
+            Playtime
+          </button>
+          <button
+            onClick={() => setSort("gold")}
+            className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${sort === "gold" ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:text-foreground"}`}
+          >
+            Gold
+          </button>
+        </div>
+      </CardHeader>
       <CardContent className="p-0">
         <div className="divide-y divide-border">
-          {entries.map((entry, i) => (
+          {sorted.map((entry, i) => (
             <div key={entry.battleTag} className="flex items-center gap-3 px-4 py-3">
               {/* Rank */}
               <div className="flex w-7 shrink-0 items-center justify-center">
@@ -227,7 +289,11 @@ function PlayersTab() {
               {/* Playtime */}
               <div className="hidden w-44 shrink-0 sm:block">
                 <div className="flex items-center justify-between mb-0.5">
-                  <p className="text-muted-foreground text-xs">Playtime</p>
+                  <p
+                    className={`text-xs ${sort === "playtime" ? "text-foreground font-medium" : "text-muted-foreground"}`}
+                  >
+                    Playtime
+                  </p>
                   <p className="text-xs font-semibold tabular-nums">
                     {formatPlaytime(entry.totalPlaytimeSeconds)}
                   </p>
@@ -238,7 +304,11 @@ function PlayersTab() {
               {/* Gold */}
               <div className="hidden w-36 shrink-0 sm:block">
                 <div className="flex items-center justify-between mb-0.5">
-                  <p className="text-muted-foreground text-xs">Gold</p>
+                  <p
+                    className={`text-xs ${sort === "gold" ? "text-foreground font-medium" : "text-muted-foreground"}`}
+                  >
+                    Gold
+                  </p>
                   <p className="text-xs font-semibold tabular-nums text-yellow-400">
                     {formatGold(entry.totalGold)}
                   </p>

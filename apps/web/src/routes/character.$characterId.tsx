@@ -362,9 +362,28 @@ function SnapshotLineChart({
   // Show at most ~10 ticks on X axis
   const xAxisInterval = data.length > 10 ? Math.ceil(data.length / 10) - 1 : 0;
 
+  // Compute Y-axis domain from actual data so the chart isn't squashed to 0-based range
+  const allValues = data
+    .flatMap((d) =>
+      lines.map((l) => {
+        const v = d[l.key];
+        return typeof v === "number" ? v : NaN;
+      }),
+    )
+    .filter((v) => !isNaN(v));
+  const minVal = allValues.length ? Math.min(...allValues) : 0;
+  const maxVal = allValues.length ? Math.max(...allValues) : 0;
+  const range = maxVal - minVal;
+  const pad = range > 0 ? range * 0.1 : Math.abs(maxVal) * 0.05 || 1;
+  const yDomain: [number, number] = [Math.floor(minVal - pad), Math.ceil(maxVal + pad)];
+
   return (
     <ChartContainer config={config} className={`w-full ${className ?? "h-[200px]"}`}>
-      <LineChart data={data} margin={{ top: 8, right: 8, left: 4, bottom: 8 }}>
+      <LineChart
+        data={data}
+        margin={{ top: 8, right: 8, left: 4, bottom: 8 }}
+        style={{ overflow: "visible" }}
+      >
         <CartesianGrid vertical={false} strokeOpacity={0.15} />
         <XAxis
           dataKey="date"
@@ -381,11 +400,13 @@ function SnapshotLineChart({
           tick={{ fontSize: 10 }}
           tickFormatter={valueFormatter}
           width={52}
+          domain={yDomain}
         />
         <ChartTooltip
           content={tooltipContent}
           cursor={{ stroke: "var(--border)", strokeWidth: 1 }}
           isAnimationActive={false}
+          wrapperStyle={{ pointerEvents: "none" }}
         />
         {showLegend && <ChartLegend content={<ChartLegendContent />} />}
         {lines.map(({ key, color }) => (
