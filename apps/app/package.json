@@ -8,7 +8,8 @@
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
-    "start": "electron-vite preview"
+    "start": "electron-vite preview",
+    "package": "electron-builder --win"
   },
   "dependencies": {
     "@convex-dev/better-auth": "catalog:",
@@ -31,8 +32,38 @@
     "@vitejs/plugin-react": "^4.5.2",
     "@wow-dashboard/config": "workspace:*",
     "electron": "^41.0.2",
+    "electron-builder": "^25.1.8",
     "electron-vite": "^3.1.0",
     "typescript": "^5",
     "vite": "^6.3.5"
+  },
+  "build": {
+    "appId": "com.wow-dashboard.app",
+    "productName": "WoW Dashboard",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "extraMetadata": {
+      "main": "./out/main/index.js"
+    },
+    "npmRebuild": false,
+    "nodeGypRebuild": false,
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    }
   }
 }

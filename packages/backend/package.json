@@ -6,6 +6,7 @@
   "author": "",
   "scripts": {
     "dev": "convex dev",
+    "deploy": "convex deploy",
     "dev:setup": "convex dev --configure --until-success"
   },
   "dependencies": {

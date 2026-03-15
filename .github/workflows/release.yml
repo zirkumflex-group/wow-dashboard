@@ -1,0 +1,113 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: write
+
+jobs:
+  release-app:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.11.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Create .env file
+        shell: bash
+        run: |
+          echo "VITE_CONVEX_URL=${{ secrets.VITE_CONVEX_URL }}" > apps/app/.env
+          echo "VITE_CONVEX_SITE_URL=${{ secrets.VITE_CONVEX_SITE_URL }}" >> apps/app/.env
+          echo "VITE_SITE_URL=${{ secrets.VITE_SITE_URL }}" >> apps/app/.env
+
+      - name: Build app (electron-vite)
+        run: pnpm --filter app build
+
+      - name: Package app (electron-builder)
+        run: pnpm --filter app package
+
+      - name: Compute release tag
+        id: release_tag
+        shell: bash
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          echo "tag=build-${SHORT_SHA}" >> $GITHUB_OUTPUT
+          echo "name=Build ${SHORT_SHA}" >> $GITHUB_OUTPUT
+
+      - name: Find installer artifact
+        id: find_artifact
+        shell: bash
+        run: |
+          ARTIFACT=$(find apps/app/dist -name "*.exe" | head -1)
+          echo "path=${ARTIFACT}" >> $GITHUB_OUTPUT
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release_tag.outputs.tag }}
+          name: ${{ steps.release_tag.outputs.name }}
+          files: ${{ steps.find_artifact.outputs.path }}
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release-addon:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Package addon
+        run: |
+          ADDON_NAME="wow-dashboard"
+          OUT_DIR="apps/addon/dist/${ADDON_NAME}"
+          mkdir -p "${OUT_DIR}"
+          cp "apps/addon/${ADDON_NAME}.toc" "${OUT_DIR}/"
+          cp "apps/addon/${ADDON_NAME}.lua" "${OUT_DIR}/"
+          for dir in Art Fonts; do
+            if [ -d "apps/addon/${dir}" ]; then
+              cp -r "apps/addon/${dir}" "${OUT_DIR}/${dir}"
+            fi
+          done
+          cd apps/addon/dist
+          zip -r "${ADDON_NAME}.zip" "${ADDON_NAME}/"
+          echo "ZIP=apps/addon/dist/${ADDON_NAME}.zip" >> $GITHUB_ENV
+
+      - name: Compute release tag
+        id: release_tag
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          echo "tag=build-${SHORT_SHA}" >> $GITHUB_OUTPUT
+          echo "name=Build ${SHORT_SHA}" >> $GITHUB_OUTPUT
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release_tag.outputs.tag }}
+          name: ${{ steps.release_tag.outputs.name }}
+          files: ${{ env.ZIP }}
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
