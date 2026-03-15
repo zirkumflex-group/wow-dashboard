@@ -105,6 +105,46 @@ export const getCharacterSnapshots = query({
   },
 });
 
+export const getScoreboard = query({
+  args: {},
+  handler: async (ctx) => {
+    const characters = await ctx.db.query("characters").collect();
+
+    const withSnapshots = await Promise.all(
+      characters.map(async (char) => {
+        const snapshot = await ctx.db
+          .query("snapshots")
+          .withIndex("by_character_and_time", (q) => q.eq("characterId", char._id))
+          .order("desc")
+          .first();
+        if (!snapshot) return null;
+
+        const player = await ctx.db.get(char.playerId);
+        return {
+          characterId: char._id,
+          name: char.name,
+          realm: char.realm,
+          region: char.region,
+          class: char.class,
+          race: char.race,
+          faction: char.faction,
+          battleTag: player?.battleTag ?? "Unknown",
+          mythicPlusScore: snapshot.mythicPlusScore,
+          itemLevel: snapshot.itemLevel,
+          spec: snapshot.spec,
+          role: snapshot.role,
+          level: snapshot.level,
+          takenAt: snapshot.takenAt,
+        };
+      }),
+    );
+
+    return withSnapshots
+      .filter((c): c is NonNullable<typeof c> => c !== null)
+      .sort((a, b) => b.mythicPlusScore - a.mythicPlusScore || b.itemLevel - a.itemLevel);
+  },
+});
+
 export const getMyCharactersWithSnapshot = query({
   args: {},
   handler: async (ctx) => {
