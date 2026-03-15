@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from "./routes/__root";
 import { Route as SettingsRouteImport } from "./routes/settings";
 import { Route as ScoreboardRouteImport } from "./routes/scoreboard";
 import { Route as DashboardRouteImport } from "./routes/dashboard";
+import { Route as CompareRouteImport } from "./routes/compare";
 import { Route as IndexRouteImport } from "./routes/index";
 import { Route as CharacterCharacterIdRouteImport } from "./routes/character.$characterId";
 import { Route as ApiAuthSplatRouteImport } from "./routes/api/auth/$";
@@ -29,6 +30,11 @@ const ScoreboardRoute = ScoreboardRouteImport.update({
 const DashboardRoute = DashboardRouteImport.update({
   id: "/dashboard",
   path: "/dashboard",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const CompareRoute = CompareRouteImport.update({
+  id: "/compare",
+  path: "/compare",
   getParentRoute: () => rootRouteImport,
 } as any);
 const IndexRoute = IndexRouteImport.update({
@@ -49,6 +55,7 @@ const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
 
 export interface FileRoutesByFullPath {
   "/": typeof IndexRoute;
+  "/compare": typeof CompareRoute;
   "/dashboard": typeof DashboardRoute;
   "/scoreboard": typeof ScoreboardRoute;
   "/settings": typeof SettingsRoute;
@@ -57,6 +64,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   "/": typeof IndexRoute;
+  "/compare": typeof CompareRoute;
   "/dashboard": typeof DashboardRoute;
   "/scoreboard": typeof ScoreboardRoute;
   "/settings": typeof SettingsRoute;
@@ -66,6 +74,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport;
   "/": typeof IndexRoute;
+  "/compare": typeof CompareRoute;
   "/dashboard": typeof DashboardRoute;
   "/scoreboard": typeof ScoreboardRoute;
   "/settings": typeof SettingsRoute;
@@ -76,16 +85,25 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath;
   fullPaths:
     | "/"
+    | "/compare"
     | "/dashboard"
     | "/scoreboard"
     | "/settings"
     | "/character/$characterId"
     | "/api/auth/$";
   fileRoutesByTo: FileRoutesByTo;
-  to: "/" | "/dashboard" | "/scoreboard" | "/settings" | "/character/$characterId" | "/api/auth/$";
+  to:
+    | "/"
+    | "/compare"
+    | "/dashboard"
+    | "/scoreboard"
+    | "/settings"
+    | "/character/$characterId"
+    | "/api/auth/$";
   id:
     | "__root__"
     | "/"
+    | "/compare"
     | "/dashboard"
     | "/scoreboard"
     | "/settings"
@@ -95,6 +113,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute;
+  CompareRoute: typeof CompareRoute;
   DashboardRoute: typeof DashboardRoute;
   ScoreboardRoute: typeof ScoreboardRoute;
   SettingsRoute: typeof SettingsRoute;
@@ -125,6 +144,13 @@ declare module "@tanstack/react-router" {
       preLoaderRoute: typeof DashboardRouteImport;
       parentRoute: typeof rootRouteImport;
     };
+    "/compare": {
+      id: "/compare";
+      path: "/compare";
+      fullPath: "/compare";
+      preLoaderRoute: typeof CompareRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
     "/": {
       id: "/";
       path: "/";
@@ -151,6 +177,7 @@ declare module "@tanstack/react-router" {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  CompareRoute: CompareRoute,
   DashboardRoute: DashboardRoute,
   ScoreboardRoute: ScoreboardRoute,
   SettingsRoute: SettingsRoute,

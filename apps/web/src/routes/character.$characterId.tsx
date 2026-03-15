@@ -17,7 +17,17 @@ import { useQuery } from "convex/react";
 import { Clock, Coins, Flame, Gem, History, Maximize2, Sword, X, Zap } from "lucide-react";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
+import {
+  CartesianGrid,
+  Line,
+  LineChart,
+  PolarAngleAxis,
+  PolarGrid,
+  Radar,
+  RadarChart,
+  XAxis,
+  YAxis,
+} from "recharts";
 
 export const Route = createFileRoute("/character/$characterId")({
   component: RouteComponent,
@@ -47,6 +57,51 @@ const ROLE_LABELS: Record<string, string> = {
   dps: "DPS",
 };
 
+// ---- Time Frame ----
+
+type TimeFrame = "1w" | "2w" | "1m" | "3m" | "all";
+
+const TIME_FRAME_OPTIONS: { value: TimeFrame; label: string }[] = [
+  { value: "1w", label: "1W" },
+  { value: "2w", label: "2W" },
+  { value: "1m", label: "1M" },
+  { value: "3m", label: "3M" },
+  { value: "all", label: "All" },
+];
+
+function filterByTimeFrame<T extends { takenAt: number }>(items: T[], frame: TimeFrame): T[] {
+  if (frame === "all") return items;
+  const nowSec = Date.now() / 1000;
+  const days = { "1w": 7, "2w": 14, "1m": 30, "3m": 90 }[frame];
+  const cutoff = nowSec - days * 86400;
+  return items.filter((s) => s.takenAt >= cutoff);
+}
+
+function TimeFramePicker({
+  value,
+  onChange,
+}: {
+  value: TimeFrame;
+  onChange: (v: TimeFrame) => void;
+}) {
+  return (
+    <div className="flex items-center gap-1">
+      <span className="text-muted-foreground text-xs mr-1">Range</span>
+      {TIME_FRAME_OPTIONS.map((opt) => (
+        <Button
+          key={opt.value}
+          size="sm"
+          variant={value === opt.value ? "default" : "outline"}
+          className="h-7 px-2.5 text-xs"
+          onClick={() => onChange(opt.value)}
+        >
+          {opt.label}
+        </Button>
+      ))}
+    </div>
+  );
+}
+
 // ---- Formatters ----
 
 function classColor(cls: string) {
@@ -74,7 +129,7 @@ function formatDateShort(takenAtSeconds: number) {
   });
 }
 
-/** Parse gold value stored as GGGGG.SSCC (e.g. 366492.2707) */
+/** Parse gold value stored as GGGGG.SSCC */
 function parseGoldValue(value: number) {
   const totalCopper = Math.round(value * 10000);
   const gold = Math.floor(totalCopper / 10000);
@@ -83,14 +138,12 @@ function parseGoldValue(value: number) {
   return { gold, silver, copper };
 }
 
-/** Just the gold integer for chart Y-axis */
 function goldUnits(value: number) {
   return Math.floor(value);
 }
 
 // ---- Components ----
 
-/** Renders "366,492g 27s 7c" with WoW currency colors */
 function GoldDisplay({ value }: { value: number }) {
   const { gold, silver, copper } = parseGoldValue(value);
   return (
@@ -214,13 +267,10 @@ type Snapshot = {
 
 /** Reduce dense snapshot arrays for chart readability.
  *  Cascades daily → weekly → monthly until ≤30 points remain.
- *  Always uses the coarsest granularity that keeps the result ≤30 pts,
- *  starting from daily so short bursts of snapshots are never over-collapsed.
  *  Keeps the *last* snapshot in each period so values are always real readings. */
 function groupSnapshotsAuto(snapshots: Snapshot[]): Snapshot[] {
   if (snapshots.length <= 30) return snapshots;
 
-  // Helper: group by an arbitrary key function, keeping last per period
   function groupBy(snaps: Snapshot[], key: (s: Snapshot) => string): Snapshot[] {
     const map = new Map<string, Snapshot>();
     for (const s of snaps) map.set(key(s), s);
@@ -234,7 +284,7 @@ function groupSnapshotsAuto(snapshots: Snapshot[]): Snapshot[] {
 
   const toWeek = (s: Snapshot) => {
     const d = new Date(s.takenAt * 1000);
-    const day = d.getDay(); // 0=Sun
+    const day = d.getDay();
     const diff = day === 0 ? -6 : 1 - day;
     const mon = new Date(d);
     mon.setDate(d.getDate() + diff);
@@ -247,12 +297,13 @@ function groupSnapshotsAuto(snapshots: Snapshot[]): Snapshot[] {
   };
 
   const daily = groupBy(snapshots, toDay);
-  if (daily.length <= 30) return daily;
+  if (daily.length <= 30) return daily.length >= 2 ? daily : snapshots.slice(-30);
 
   const weekly = groupBy(snapshots, toWeek);
-  if (weekly.length <= 30) return weekly;
+  if (weekly.length <= 30) return weekly.length >= 2 ? weekly : snapshots.slice(-30);
 
-  return groupBy(snapshots, toMonth);
+  const monthly = groupBy(snapshots, toMonth);
+  return monthly.length >= 2 ? monthly : snapshots.slice(-30);
 }
 
 // ---- Chart configs ----
@@ -291,23 +342,17 @@ function SnapshotLineChart({
   lines,
   config,
   valueFormatter,
-  tooltipFormatter,
   className,
   showLegend,
   yPadMaxFactor,
 }: {
-  data: Record<string, number | string>[];
+  /** data points — `date` must be a Unix timestamp (seconds) */
+  data: Record<string, number>[];
   lines: { key: string; color: string }[];
   config: ChartConfig;
-  /** Used for Y-axis tick labels and default tooltip */
   valueFormatter?: (v: number) => string;
-  /** Override tooltip value rendering (ReactNode) */
-  tooltipFormatter?: (v: number) => React.ReactNode;
-  /** Override container height class (default: "h-[200px]") */
   className?: string;
-  /** Show a legend below the chart */
   showLegend?: boolean;
-  /** When set, y-axis padding is maxVal * this factor instead of range-based (e.g. 0.01 = ±1% of max) */
   yPadMaxFactor?: number;
 }) {
   if (data.length < 2) {
@@ -316,64 +361,16 @@ function SnapshotLineChart({
     );
   }
 
-  const isMultiLine = lines.length > 1;
-
-  // Build the right tooltip formatter depending on line count and formatter type.
-  // When formatter is provided and there are multiple lines, we must manually
-  // render the colored indicator + label ourselves because ChartTooltipContent's
-  // `formatter` prop replaces the entire row (dot + label + value).
-  const tooltipContent = (() => {
-    if (tooltipFormatter) {
-      // Single-line with custom ReactNode value (e.g. GoldDisplay)
-      return <ChartTooltipContent formatter={(val) => tooltipFormatter(val as number)} />;
-    }
-    if (valueFormatter && isMultiLine) {
-      // Multi-line with formatted values — show dot + label + formatted value
-      return (
-        <ChartTooltipContent
-          formatter={(val, name, item) => (
-            <>
-              <div
-                className="h-2.5 w-2.5 shrink-0 rounded-[2px]"
-                style={{ backgroundColor: item.color }}
-              />
-              <span className="flex-1 text-muted-foreground">
-                {config[name as string]?.label ?? name}
-              </span>
-              <span className="ml-auto font-mono font-medium tabular-nums">
-                {valueFormatter(val as number)}
-              </span>
-            </>
-          )}
-        />
-      );
-    }
-    if (valueFormatter) {
-      // Single-line with formatted value
-      return (
-        <ChartTooltipContent
-          formatter={(val) => (
-            <span className="font-mono font-medium">{valueFormatter(val as number)}</span>
-          )}
-        />
-      );
-    }
-    // No formatter — default rendering already shows indicator + label + value
-    return <ChartTooltipContent />;
-  })();
+  // Hide dots when there are too many points (>15) to avoid clutter
+  const hideDots = data.length > 15;
 
   // Show at most ~10 ticks on X axis
   const xAxisInterval = data.length > 10 ? Math.ceil(data.length / 10) - 1 : 0;
 
-  // Compute Y-axis domain from actual data so the chart isn't squashed to 0-based range
+  // Compute Y-axis domain from actual data so the chart isn't squashed
   const allValues = data
-    .flatMap((d) =>
-      lines.map((l) => {
-        const v = d[l.key];
-        return typeof v === "number" ? v : NaN;
-      }),
-    )
-    .filter((v) => !isNaN(v));
+    .flatMap((d) => lines.map((l) => d[l.key]))
+    .filter((v) => typeof v === "number" && !isNaN(v));
   const minVal = allValues.length ? Math.min(...allValues) : 0;
   const maxVal = allValues.length ? Math.max(...allValues) : 0;
   const range = maxVal - minVal;
@@ -387,11 +384,7 @@ function SnapshotLineChart({
 
   return (
     <ChartContainer config={config} className={`w-full ${className ?? "h-[200px]"}`}>
-      <LineChart
-        data={data}
-        margin={{ top: 8, right: 8, left: 4, bottom: 8 }}
-        style={{ overflow: "visible" }}
-      >
+      <LineChart data={data} margin={{ top: 8, right: 8, left: 4, bottom: 8 }}>
         <CartesianGrid vertical={false} strokeOpacity={0.15} />
         <XAxis
           dataKey="date"
@@ -400,6 +393,7 @@ function SnapshotLineChart({
           tickMargin={6}
           tick={{ fontSize: 10 }}
           interval={xAxisInterval}
+          tickFormatter={(ts: number) => formatDateShort(ts)}
         />
         <YAxis
           tickLine={false}
@@ -411,10 +405,30 @@ function SnapshotLineChart({
           domain={yDomain}
         />
         <ChartTooltip
-          content={tooltipContent}
-          cursor={{ stroke: "var(--border)", strokeWidth: 1 }}
-          isAnimationActive={false}
-          wrapperStyle={{ pointerEvents: "none" }}
+          cursor={false}
+          content={
+            <ChartTooltipContent
+              labelFormatter={(ts) => formatDate(ts as number)}
+              formatter={
+                valueFormatter
+                  ? (value, name, item) => (
+                      <>
+                        <div
+                          className="h-2.5 w-2.5 shrink-0 rounded-[2px]"
+                          style={{ backgroundColor: item.color }}
+                        />
+                        <span className="flex-1 text-muted-foreground">
+                          {config[name as string]?.label ?? name}
+                        </span>
+                        <span className="ml-auto font-mono font-medium tabular-nums">
+                          {valueFormatter(value as number)}
+                        </span>
+                      </>
+                    )
+                  : undefined
+              }
+            />
+          }
         />
         {showLegend && <ChartLegend content={<ChartLegendContent />} />}
         {lines.map(({ key, color }) => (
@@ -424,7 +438,7 @@ function SnapshotLineChart({
             dataKey={key}
             stroke={color}
             strokeWidth={2}
-            dot={{ r: 3, fill: color, strokeWidth: 0 }}
+            dot={hideDots ? false : { r: 3, fill: color, strokeWidth: 0 }}
             activeDot={{ r: 5 }}
             isAnimationActive={false}
           />
@@ -438,7 +452,7 @@ function SnapshotLineChart({
 
 function IlvlChartCard({ snapshots }: { snapshots: Snapshot[] }) {
   const [fullscreen, setFullscreen] = useState(false);
-  const data = snapshots.map((s) => ({ date: formatDateShort(s.takenAt), itemLevel: s.itemLevel }));
+  const data = snapshots.map((s) => ({ date: s.takenAt, itemLevel: s.itemLevel }));
   const lines = [{ key: "itemLevel", color: "var(--chart-1)" }];
   return (
     <Card>
@@ -477,10 +491,7 @@ function IlvlChartCard({ snapshots }: { snapshots: Snapshot[] }) {
 
 function MplusChartCard({ snapshots }: { snapshots: Snapshot[] }) {
   const [fullscreen, setFullscreen] = useState(false);
-  const data = snapshots.map((s) => ({
-    date: formatDateShort(s.takenAt),
-    mythicPlusScore: s.mythicPlusScore,
-  }));
+  const data = snapshots.map((s) => ({ date: s.takenAt, mythicPlusScore: s.mythicPlusScore }));
   const lines = [{ key: "mythicPlusScore", color: "var(--chart-2)" }];
   return (
     <Card>
@@ -519,7 +530,7 @@ function MplusChartCard({ snapshots }: { snapshots: Snapshot[] }) {
 
 function GoldChartCard({ snapshots }: { snapshots: Snapshot[] }) {
   const [fullscreen, setFullscreen] = useState(false);
-  const data = snapshots.map((s) => ({ date: formatDateShort(s.takenAt), gold: s.gold }));
+  const data = snapshots.map((s) => ({ date: s.takenAt, gold: s.gold }));
   const lines = [{ key: "gold", color: "oklch(0.85 0.15 85)" }];
   return (
     <Card className="sm:col-span-2">
@@ -538,7 +549,6 @@ function GoldChartCard({ snapshots }: { snapshots: Snapshot[] }) {
           lines={lines}
           config={goldConfig}
           valueFormatter={(v) => `${goldUnits(v).toLocaleString()}g`}
-          tooltipFormatter={(v) => <GoldDisplay value={v} />}
           yPadMaxFactor={0.01}
         />
       </CardContent>
@@ -549,7 +559,6 @@ function GoldChartCard({ snapshots }: { snapshots: Snapshot[] }) {
             lines={lines}
             config={goldConfig}
             valueFormatter={(v) => `${goldUnits(v).toLocaleString()}g`}
-            tooltipFormatter={(v) => <GoldDisplay value={v} />}
             yPadMaxFactor={0.01}
             className="h-full"
             showLegend
@@ -562,8 +571,12 @@ function GoldChartCard({ snapshots }: { snapshots: Snapshot[] }) {
 
 // ---- Combat Stats card ----
 
+const radarConfig: ChartConfig = {
+  value: { label: "Value", color: "var(--chart-1)" },
+};
+
 function CombatStatsCard({ snapshots }: { snapshots: Snapshot[] }) {
-  const [mode, setMode] = useState<"current" | "chart">("current");
+  const [mode, setMode] = useState<"current" | "chart" | "radar">("current");
   const [fullscreen, setFullscreen] = useState(false);
   const latest = snapshots[snapshots.length - 1];
   if (!latest) return null;
@@ -578,12 +591,19 @@ function CombatStatsCard({ snapshots }: { snapshots: Snapshot[] }) {
           : null;
 
   const chartData = snapshots.map((s) => ({
-    date: formatDateShort(s.takenAt),
+    date: s.takenAt,
     critPercent: s.stats.critPercent,
     hastePercent: s.stats.hastePercent,
     masteryPercent: s.stats.masteryPercent,
     versatilityPercent: s.stats.versatilityPercent,
   }));
+
+  const radarData = [
+    { stat: "Crit", value: latest.stats.critPercent },
+    { stat: "Haste", value: latest.stats.hastePercent },
+    { stat: "Mastery", value: latest.stats.masteryPercent },
+    { stat: "Versatility", value: latest.stats.versatilityPercent },
+  ];
 
   const chartLines = [
     { key: "critPercent", color: "var(--chart-1)" },
@@ -596,7 +616,7 @@ function CombatStatsCard({ snapshots }: { snapshots: Snapshot[] }) {
     <Card>
       <Tabs
         value={mode}
-        onValueChange={(v) => setMode((v ?? "current") as "current" | "chart")}
+        onValueChange={(v) => setMode((v ?? "current") as typeof mode)}
         className="gap-0"
       >
         <CardHeader className="border-b pb-3">
@@ -610,6 +630,7 @@ function CombatStatsCard({ snapshots }: { snapshots: Snapshot[] }) {
               <TabsList>
                 <TabsTrigger value="current">Current</TabsTrigger>
                 <TabsTrigger value="chart">Chart</TabsTrigger>
+                <TabsTrigger value="radar">Radar</TabsTrigger>
               </TabsList>
             </div>
           </div>
@@ -637,7 +658,39 @@ function CombatStatsCard({ snapshots }: { snapshots: Snapshot[] }) {
               lines={chartLines}
               config={secondaryStatsConfig}
               valueFormatter={(v) => `${v.toFixed(1)}%`}
+              showLegend
             />
+          </TabsContent>
+          <TabsContent value="radar">
+            <ChartContainer config={radarConfig} className="w-full h-[200px]">
+              <RadarChart data={radarData}>
+                <PolarGrid />
+                <PolarAngleAxis dataKey="stat" tick={{ fontSize: 11 }} />
+                <ChartTooltip
+                  cursor={false}
+                  content={
+                    <ChartTooltipContent
+                      formatter={(value, name) => (
+                        <>
+                          <span className="text-muted-foreground">{name}</span>
+                          <span className="ml-auto font-mono font-medium tabular-nums">
+                            {(value as number).toFixed(2)}%
+                          </span>
+                        </>
+                      )}
+                    />
+                  }
+                />
+                <Radar
+                  dataKey="value"
+                  fill="var(--chart-1)"
+                  fillOpacity={0.25}
+                  stroke="var(--chart-1)"
+                  strokeWidth={2}
+                  dot={{ r: 3, fill: "var(--chart-1)", strokeWidth: 0 }}
+                />
+              </RadarChart>
+            </ChartContainer>
           </TabsContent>
         </CardContent>
       </Tabs>
@@ -666,7 +719,7 @@ function CurrenciesCard({ snapshots }: { snapshots: Snapshot[] }) {
   if (!latest) return null;
 
   const chartData = snapshots.map((s) => ({
-    date: formatDateShort(s.takenAt),
+    date: s.takenAt,
     adventurerDawncrest: s.currencies.adventurerDawncrest,
     veteranDawncrest: s.currencies.veteranDawncrest,
     championDawncrest: s.currencies.championDawncrest,
@@ -737,7 +790,12 @@ function CurrenciesCard({ snapshots }: { snapshots: Snapshot[] }) {
             </div>
           </TabsContent>
           <TabsContent value="chart">
-            <SnapshotLineChart data={chartData} lines={chartLines} config={currenciesConfig} />
+            <SnapshotLineChart
+              data={chartData}
+              lines={chartLines}
+              config={currenciesConfig}
+              showLegend
+            />
           </TabsContent>
         </CardContent>
       </Tabs>
@@ -758,6 +816,12 @@ function CurrenciesCard({ snapshots }: { snapshots: Snapshot[] }) {
 
 // ---- Playtime card ----
 
+function formatHours(totalHours: number) {
+  const d = Math.floor(totalHours / 24);
+  const h = totalHours % 24;
+  return d > 0 ? `${d}d ${h}h` : `${h}h`;
+}
+
 function PlaytimeCard({ snapshots }: { snapshots: Snapshot[] }) {
   const [mode, setMode] = useState<"current" | "chart">("current");
   const [fullscreen, setFullscreen] = useState(false);
@@ -765,17 +829,11 @@ function PlaytimeCard({ snapshots }: { snapshots: Snapshot[] }) {
   if (!latest) return null;
 
   const chartData = snapshots.map((s) => ({
-    date: formatDateShort(s.takenAt),
+    date: s.takenAt,
     playtimeHours: Math.round(s.playtimeSeconds / 3600),
   }));
 
   const chartLines = [{ key: "playtimeHours", color: "var(--chart-5)" }];
-
-  function formatHours(totalHours: number) {
-    const d = Math.floor(totalHours / 24);
-    const h = totalHours % 24;
-    return d > 0 ? `${d}d ${h}h` : `${h}h`;
-  }
 
   return (
     <Card>
@@ -854,7 +912,6 @@ function RoleSpecFilter({
   onRoleChange: (r: string | null) => void;
   onSpecChange: (s: string | null) => void;
 }) {
-  // Build role → specs map
   const roleMap = new Map<string, Set<string>>();
   for (const s of snapshots) {
     if (!roleMap.has(s.role)) roleMap.set(s.role, new Set());
@@ -864,10 +921,8 @@ function RoleSpecFilter({
   const roles = [...roleMap.keys()];
   const totalUniqueSpecs = roles.reduce((n, r) => n + (roleMap.get(r)?.size ?? 0), 0);
 
-  // Nothing to filter if only one role with one spec
   if (roles.length <= 1 && totalUniqueSpecs <= 1) return null;
 
-  // Specs visible in the current role context
   const specsInContext: { spec: string; role: string }[] = selectedRole
     ? [...(roleMap.get(selectedRole) ?? [])].map((spec) => ({ spec, role: selectedRole }))
     : roles.flatMap((role) => [...(roleMap.get(role) ?? [])].map((spec) => ({ spec, role })));
@@ -877,7 +932,6 @@ function RoleSpecFilter({
 
   return (
     <div className="space-y-2">
-      {/* Row 1 — Roles */}
       <div className="flex flex-wrap gap-1.5 items-center">
         <span className="text-muted-foreground text-xs mr-1">Role</span>
         <Button
@@ -908,7 +962,6 @@ function RoleSpecFilter({
         ))}
       </div>
 
-      {/* Row 2 — Specs (always shown when there's something to pick) */}
       {showSpecRow && (
         <div className="flex flex-wrap gap-1.5 items-center pl-1 border-l-2 border-border/30 ml-1">
           <span className="text-muted-foreground text-xs mr-1">Spec</span>
@@ -932,7 +985,6 @@ function RoleSpecFilter({
               }}
             >
               {spec}
-              {/* Show role tag only when viewing all roles */}
               {selectedRole === null && (
                 <span className="ml-1 opacity-50 font-normal">({ROLE_LABELS[role] ?? role})</span>
               )}
@@ -954,6 +1006,7 @@ function RouteComponent() {
 
   const [selectedRole, setSelectedRole] = useState<string | null>(null);
   const [selectedSpec, setSelectedSpec] = useState<string | null>(null);
+  const [timeFrame, setTimeFrame] = useState<TimeFrame>("1w");
 
   if (data === undefined) {
     return (
@@ -974,7 +1027,7 @@ function RouteComponent() {
 
   const { character, snapshots } = data;
 
-  // Filter snapshots by role → spec
+  // Filter by role/spec
   const filtered = snapshots.filter((s) => {
     if (selectedRole && s.role !== selectedRole) return false;
     if (selectedSpec && s.spec !== selectedSpec) return false;
@@ -982,7 +1035,10 @@ function RouteComponent() {
   });
 
   const latest = filtered[filtered.length - 1] ?? null;
-  const chartSnapshots = groupSnapshotsAuto(filtered);
+
+  // Apply time frame filter then grouping for charts
+  const timeFrameFiltered = filterByTimeFrame(filtered, timeFrame);
+  const chartSnapshots = groupSnapshotsAuto(timeFrameFiltered);
 
   return (
     <div className="w-full px-4 py-6 sm:px-6 lg:px-8 space-y-4">
@@ -1035,6 +1091,18 @@ function RouteComponent() {
           onRoleChange={setSelectedRole}
           onSpecChange={setSelectedSpec}
         />
+      )}
+
+      {/* Time frame + chart count info */}
+      {filtered.length > 0 && (
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <TimeFramePicker value={timeFrame} onChange={setTimeFrame} />
+          <span className="text-muted-foreground text-xs">
+            {chartSnapshots.length} data point{chartSnapshots.length !== 1 ? "s" : ""}
+            {timeFrameFiltered.length !== chartSnapshots.length &&
+              ` (grouped from ${timeFrameFiltered.length})`}
+          </span>
+        </div>
       )}
 
       {/* Main charts */}

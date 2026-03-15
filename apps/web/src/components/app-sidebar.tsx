@@ -23,7 +23,7 @@ import {
 } from "@wow-dashboard/ui/components/dropdown-menu";
 import { Authenticated } from "convex/react";
 import { useQuery } from "convex/react";
-import { ChevronUp, LayoutDashboard, Settings, Trophy } from "lucide-react";
+import { ChevronUp, LayoutDashboard, Scale, Settings, Trophy } from "lucide-react";
 import { Link, useRouterState } from "@tanstack/react-router";
 
 import { authClient } from "@/lib/auth-client";
@@ -31,6 +31,7 @@ import { authClient } from "@/lib/auth-client";
 const navItems = [
   { to: "/dashboard" as const, label: "Dashboard", icon: LayoutDashboard },
   { to: "/scoreboard" as const, label: "Scoreboard", icon: Trophy },
+  { to: "/compare" as const, label: "Compare", icon: Scale },
 ];
 
 const bottomNavItems = [{ to: "/settings" as const, label: "Settings", icon: Settings }];
