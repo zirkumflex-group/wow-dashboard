@@ -88,19 +88,12 @@ jobs:
           echo "tag=build-${SHORT_SHA}" >> $GITHUB_OUTPUT
           echo "name=Build ${SHORT_SHA}" >> $GITHUB_OUTPUT
 
-      - name: Find installer artifact
-        id: find_artifact
-        shell: bash
-        run: |
-          ARTIFACT=$(find apps/app/dist -name "*.exe" | head -1)
-          echo "path=${ARTIFACT}" >> $GITHUB_OUTPUT
-
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.release_tag.outputs.tag }}
           name: ${{ steps.release_tag.outputs.name }}
-          files: ${{ steps.find_artifact.outputs.path }}
+          files: apps/app/dist/wow-dashboard.exe
           prerelease: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
