@@ -8,8 +8,16 @@ import {
   createRootRouteWithContext,
   useRouteContext,
 } from "@tanstack/react-router";
-import { TanStackRouterDevtools } from "@tanstack/react-router-devtools";
+import { lazy } from "react";
 import { createServerFn } from "@tanstack/react-start";
+
+const TanStackRouterDevtools = import.meta.env.PROD
+  ? () => null
+  : lazy(() =>
+      import("@tanstack/react-router-devtools").then((m) => ({
+        default: m.TanStackRouterDevtools,
+      })),
+    );
 import { Toaster } from "@wow-dashboard/ui/components/sonner";
 
 import { authClient } from "@/lib/auth-client";
