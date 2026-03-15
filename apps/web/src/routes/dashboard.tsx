@@ -44,6 +44,19 @@ function formatPlaytime(seconds: number) {
   return `${days}d ${hours}h`;
 }
 
+/** Parse gold stored as GGGGG.SSCC decimal (e.g. 366492.2707) */
+function formatGold(value: number) {
+  const totalCopper = Math.round(value * 10000);
+  const g = Math.floor(totalCopper / 10000);
+  const s = Math.floor((totalCopper % 10000) / 100);
+  const c = totalCopper % 100;
+  const parts: string[] = [];
+  if (g > 0) parts.push(`${g.toLocaleString()}g`);
+  if (s > 0) parts.push(`${s}s`);
+  if (c > 0 || parts.length === 0) parts.push(`${c}c`);
+  return parts.join(" ");
+}
+
 function CharacterCard({
   char,
 }: {
@@ -96,10 +109,15 @@ function CharacterCard({
           <Stat label="Spec" value={`${snapshot.spec} (${snapshot.role})`} />
           <Stat label="Item Level" value={snapshot.itemLevel.toFixed(1)} />
           <Stat label="M+ Score" value={snapshot.mythicPlusScore.toLocaleString()} />
-          <Stat label="Gold" value={`${Math.floor(snapshot.gold / 10000).toLocaleString()}g`} />
+          <Stat label="Gold" value={formatGold(snapshot.gold)} />
           <Stat label="Playtime" value={formatPlaytime(snapshot.playtimeSeconds)} />
           <div className="text-muted-foreground col-span-2 mt-1 text-xs sm:col-span-3">
-            Snapshot: {new Date(snapshot.takenAt).toLocaleDateString()}
+            Snapshot:{" "}
+            {new Date(snapshot.takenAt * 1000).toLocaleDateString(undefined, {
+              year: "numeric",
+              month: "short",
+              day: "numeric",
+            })}
           </div>
         </div>
       ) : (
