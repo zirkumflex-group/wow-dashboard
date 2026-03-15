@@ -23,7 +23,6 @@ export default function UserMenu() {
         <DropdownMenuGroup>
           <DropdownMenuLabel>My Account</DropdownMenuLabel>
           <DropdownMenuSeparator />
-          <DropdownMenuItem>{user?.email}</DropdownMenuItem>
           <DropdownMenuItem
             variant="destructive"
             onClick={() => {

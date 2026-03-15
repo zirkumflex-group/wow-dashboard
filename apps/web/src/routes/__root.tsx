@@ -15,8 +15,6 @@ import { Toaster } from "@wow-dashboard/ui/components/sonner";
 import { authClient } from "@/lib/auth-client";
 import { getToken } from "@/lib/auth-server";
 
-import Header from "../components/header";
-
 import appCss from "../index.css?url";
 
 const getAuth = createServerFn({ method: "GET" }).handler(async () => {
@@ -76,8 +74,7 @@ function RootDocument() {
           <HeadContent />
         </head>
         <body>
-          <div className="grid h-svh grid-rows-[auto_1fr]">
-            <Header />
+          <div className="h-svh">
             <Outlet />
           </div>
           <Toaster richColors />

@@ -35,6 +35,30 @@ function createAuth(ctx: GenericCtx<DataModel>) {
           },
         },
       },
+      account: {
+        create: {
+          after: async (account) => {
+            if (account.providerId !== "battlenet") return;
+            if (!account.accessToken) return;
+            if (!isRunMutationCtx(ctx)) return;
+            await ctx.scheduler.runAfter(0, internal.battlenet.syncCharacters, {
+              userId: account.userId,
+              accessToken: account.accessToken,
+            });
+          },
+        },
+        update: {
+          after: async (account) => {
+            if (account.providerId !== "battlenet") return;
+            if (!account.accessToken) return;
+            if (!isRunMutationCtx(ctx)) return;
+            await ctx.scheduler.runAfter(0, internal.battlenet.syncCharacters, {
+              userId: account.userId,
+              accessToken: account.accessToken,
+            });
+          },
+        },
+      },
     },
     plugins: [
       convex({
@@ -50,7 +74,7 @@ function createAuth(ctx: GenericCtx<DataModel>) {
             authorizationUrl: "https://oauth.battle.net/authorize",
             tokenUrl: "https://oauth.battle.net/token",
             userInfoUrl: "https://oauth.battle.net/userinfo",
-            scopes: ["openid"],
+            scopes: ["openid", "wow.profile"],
             mapProfileToUser: (profile: Record<string, string>) => ({
               id: String(profile.sub),
               name: profile.battletag ?? profile.battle_tag ?? String(profile.sub),

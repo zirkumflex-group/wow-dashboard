@@ -1,51 +1,54 @@
-import { convexQuery } from "@convex-dev/react-query";
-import { useQuery } from "@tanstack/react-query";
-import { createFileRoute } from "@tanstack/react-router";
-import { api } from "@wow-dashboard/backend/convex/_generated/api";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { Button } from "@wow-dashboard/ui/components/button";
+import { Authenticated, AuthLoading, Unauthenticated } from "convex/react";
+import { useEffect } from "react";
+
+import { authClient } from "@/lib/auth-client";
 
 export const Route = createFileRoute("/")({
   component: HomeComponent,
 });
 
-const TITLE_TEXT = `
- ██████╗ ███████╗████████╗████████╗███████╗██████╗
- ██╔══██╗██╔════╝╚══██╔══╝╚══██╔══╝██╔════╝██╔══██╗
- ██████╔╝█████╗     ██║      ██║   █████╗  ██████╔╝
- ██╔══██╗██╔══╝     ██║      ██║   ██╔══╝  ██╔══██╗
- ██████╔╝███████╗   ██║      ██║   ███████╗██║  ██║
- ╚═════╝ ╚══════╝   ╚═╝      ╚═╝   ╚══════╝╚═╝  ╚═╝
-
- ████████╗    ███████╗████████╗ █████╗  ██████╗██╗  ██╗
- ╚══██╔══╝    ██╔════╝╚══██╔══╝██╔══██╗██╔════╝██║ ██╔╝
-    ██║       ███████╗   ██║   ███████║██║     █████╔╝
-    ██║       ╚════██║   ██║   ██╔══██║██║     ██╔═██╗
-    ██║       ███████║   ██║   ██║  ██║╚██████╗██║  ██╗
-    ╚═╝       ╚══════╝   ╚═╝   ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝
- `;
+function RedirectToDashboard() {
+  const navigate = useNavigate();
+  useEffect(() => {
+    void navigate({ to: "/dashboard" });
+  }, [navigate]);
+  return null;
+}
 
 function HomeComponent() {
-  const healthCheck = useQuery(convexQuery(api.healthCheck.get, {}));
-
   return (
-    <div className="container mx-auto max-w-3xl px-4 py-2">
-      <pre className="overflow-x-auto font-mono text-sm">{TITLE_TEXT}</pre>
-      <div className="grid gap-6">
-        <section className="rounded-lg border p-4">
-          <h2 className="mb-2 font-medium">API Status</h2>
-          <div className="flex items-center gap-2">
-            <div
-              className={`h-2 w-2 rounded-full ${healthCheck.data === "OK" ? "bg-green-500" : healthCheck.isLoading ? "bg-orange-400" : "bg-red-500"}`}
-            />
-            <span className="text-muted-foreground text-sm">
-              {healthCheck.isLoading
-                ? "Checking..."
-                : healthCheck.data === "OK"
-                  ? "Connected"
-                  : "Error"}
-            </span>
+    <>
+      <Authenticated>
+        <RedirectToDashboard />
+      </Authenticated>
+      <Unauthenticated>
+        <div className="flex h-full flex-col items-center justify-center gap-8">
+          <div className="text-center">
+            <h1 className="text-4xl font-bold tracking-tight">WoW Dashboard</h1>
+            <p className="text-muted-foreground mt-2 text-lg">
+              Track your characters across all realms
+            </p>
           </div>
-        </section>
-      </div>
-    </div>
+          <Button
+            size="lg"
+            onClick={() =>
+              authClient.signIn.social({
+                provider: "battlenet",
+                callbackURL: "/dashboard",
+              })
+            }
+          >
+            Sign in with Battle.net
+          </Button>
+        </div>
+      </Unauthenticated>
+      <AuthLoading>
+        <div className="flex h-full items-center justify-center">
+          <p className="text-muted-foreground text-sm">Loading...</p>
+        </div>
+      </AuthLoading>
+    </>
   );
 }

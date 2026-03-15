@@ -9,6 +9,8 @@
  */
 
 import type * as auth from "../auth.js";
+import type * as battlenet from "../battlenet.js";
+import type * as characters from "../characters.js";
 import type * as healthCheck from "../healthCheck.js";
 import type * as http from "../http.js";
 import type * as players from "../players.js";
@@ -22,6 +24,8 @@ import type { ApiFromModules, FilterApi, FunctionReference } from "convex/server
 
 declare const fullApi: ApiFromModules<{
   auth: typeof auth;
+  battlenet: typeof battlenet;
+  characters: typeof characters;
   healthCheck: typeof healthCheck;
   http: typeof http;
   players: typeof players;
