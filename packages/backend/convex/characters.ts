@@ -82,18 +82,8 @@ export const resyncCharacters = mutation({
 export const getCharacterSnapshots = query({
   args: { characterId: v.id("characters") },
   handler: async (ctx, { characterId }) => {
-    const authUser = await authComponent.safeGetAuthUser(ctx);
-    if (!authUser) return null;
-
     const character = await ctx.db.get(characterId);
     if (!character) return null;
-
-    const player = await ctx.db
-      .query("players")
-      .withIndex("by_user", (q) => q.eq("userId", authUser._id as string))
-      .first();
-
-    if (!player || character.playerId !== player._id) return null;
 
     const snapshots = await ctx.db
       .query("snapshots")
@@ -142,6 +132,51 @@ export const getScoreboard = query({
     return withSnapshots
       .filter((c): c is NonNullable<typeof c> => c !== null)
       .sort((a, b) => b.mythicPlusScore - a.mythicPlusScore || b.itemLevel - a.itemLevel);
+  },
+});
+
+export const getPlayerScoreboard = query({
+  args: {},
+  handler: async (ctx) => {
+    const characters = await ctx.db.query("characters").collect();
+
+    const playerMap = new Map<
+      string,
+      { battleTag: string; totalPlaytimeSeconds: number; totalGold: number; characterCount: number }
+    >();
+
+    await Promise.all(
+      characters.map(async (char) => {
+        const snapshot = await ctx.db
+          .query("snapshots")
+          .withIndex("by_character_and_time", (q) => q.eq("characterId", char._id))
+          .order("desc")
+          .first();
+        if (!snapshot) return;
+
+        const player = await ctx.db.get(char.playerId);
+        const battleTag = player?.battleTag ?? "Unknown";
+        const playerId = char.playerId.toString();
+
+        const existing = playerMap.get(playerId);
+        if (existing) {
+          existing.totalPlaytimeSeconds += snapshot.playtimeSeconds;
+          existing.totalGold += snapshot.gold;
+          existing.characterCount += 1;
+        } else {
+          playerMap.set(playerId, {
+            battleTag,
+            totalPlaytimeSeconds: snapshot.playtimeSeconds,
+            totalGold: snapshot.gold,
+            characterCount: 1,
+          });
+        }
+      }),
+    );
+
+    return Array.from(playerMap.values()).sort(
+      (a, b) => b.totalPlaytimeSeconds - a.totalPlaytimeSeconds || b.totalGold - a.totalGold,
+    );
   },
 });
 
