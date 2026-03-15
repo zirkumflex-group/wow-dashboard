@@ -6,6 +6,8 @@ import { Button } from "@wow-dashboard/ui/components/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@wow-dashboard/ui/components/card";
 import {
   ChartContainer,
+  ChartLegend,
+  ChartLegendContent,
   ChartTooltip,
   ChartTooltipContent,
   type ChartConfig,
@@ -208,6 +210,35 @@ type Snapshot = {
   };
 };
 
+// ---- Snapshot grouping ----
+
+/** Reduce dense snapshot arrays for chart readability.
+ *  ≤30 pts → as-is | ≤180 pts → weekly | >180 pts → monthly
+ *  Keeps the *last* snapshot in each period so values are always real readings. */
+function groupSnapshotsAuto(snapshots: Snapshot[]): Snapshot[] {
+  if (snapshots.length <= 30) return snapshots;
+
+  const byPeriod = new Map<string, Snapshot>();
+  const monthly = snapshots.length > 180;
+
+  for (const s of snapshots) {
+    const d = new Date(s.takenAt * 1000);
+    const key = monthly
+      ? `${d.getFullYear()}-${d.getMonth()}`
+      : (() => {
+          // ISO week-start = Monday
+          const day = d.getDay(); // 0=Sun
+          const diff = day === 0 ? -6 : 1 - day;
+          const mon = new Date(d);
+          mon.setDate(d.getDate() + diff);
+          return `${mon.getFullYear()}-${mon.getMonth()}-${mon.getDate()}`;
+        })();
+    byPeriod.set(key, s); // last snapshot in period wins
+  }
+
+  return [...byPeriod.values()];
+}
+
 // ---- Chart configs ----
 
 const ilvlConfig: ChartConfig = {
@@ -246,6 +277,7 @@ function SnapshotLineChart({
   valueFormatter,
   tooltipFormatter,
   className,
+  showLegend,
 }: {
   data: Record<string, number | string>[];
   lines: { key: string; color: string }[];
@@ -256,6 +288,8 @@ function SnapshotLineChart({
   tooltipFormatter?: (v: number) => React.ReactNode;
   /** Override container height class (default: "h-[200px]") */
   className?: string;
+  /** Show a legend below the chart */
+  showLegend?: boolean;
 }) {
   if (data.length < 2) {
     return (
@@ -309,8 +343,8 @@ function SnapshotLineChart({
     return <ChartTooltipContent />;
   })();
 
-  // Show at most ~8 ticks on X axis; group up when there are many data points
-  const xAxisInterval = data.length > 8 ? Math.ceil(data.length / 8) - 1 : 0;
+  // Show at most ~10 ticks on X axis
+  const xAxisInterval = data.length > 10 ? Math.ceil(data.length / 10) - 1 : 0;
 
   return (
     <ChartContainer config={config} className={`w-full ${className ?? "h-[200px]"}`}>
@@ -332,7 +366,12 @@ function SnapshotLineChart({
           tickFormatter={valueFormatter}
           width={52}
         />
-        <ChartTooltip content={tooltipContent} />
+        <ChartTooltip
+          content={tooltipContent}
+          cursor={{ stroke: "var(--border)", strokeWidth: 1 }}
+          isAnimationActive={false}
+        />
+        {showLegend && <ChartLegend content={<ChartLegendContent />} />}
         {lines.map(({ key, color }) => (
           <Line
             key={key}
@@ -342,6 +381,7 @@ function SnapshotLineChart({
             strokeWidth={2}
             dot={{ r: 3, fill: color, strokeWidth: 0 }}
             activeDot={{ r: 5 }}
+            isAnimationActive={false}
           />
         ))}
       </LineChart>
@@ -382,6 +422,7 @@ function IlvlChartCard({ snapshots }: { snapshots: Snapshot[] }) {
             config={ilvlConfig}
             valueFormatter={(v) => v.toFixed(1)}
             className="h-full"
+            showLegend
           />
         </FullscreenOverlay>
       )}
@@ -423,6 +464,7 @@ function MplusChartCard({ snapshots }: { snapshots: Snapshot[] }) {
             config={mplusConfig}
             valueFormatter={(v) => v.toLocaleString()}
             className="h-full"
+            showLegend
           />
         </FullscreenOverlay>
       )}
@@ -463,6 +505,7 @@ function GoldChartCard({ snapshots }: { snapshots: Snapshot[] }) {
             valueFormatter={(v) => `${goldUnits(v).toLocaleString()}g`}
             tooltipFormatter={(v) => <GoldDisplay value={v} />}
             className="h-full"
+            showLegend
           />
         </FullscreenOverlay>
       )}
@@ -559,6 +602,7 @@ function CombatStatsCard({ snapshots }: { snapshots: Snapshot[] }) {
             config={secondaryStatsConfig}
             valueFormatter={(v) => `${v.toFixed(1)}%`}
             className="h-full"
+            showLegend
           />
         </FullscreenOverlay>
       )}
@@ -657,6 +701,7 @@ function CurrenciesCard({ snapshots }: { snapshots: Snapshot[] }) {
             lines={chartLines}
             config={currenciesConfig}
             className="h-full"
+            showLegend
           />
         </FullscreenOverlay>
       )}
@@ -739,6 +784,7 @@ function PlaytimeCard({ snapshots }: { snapshots: Snapshot[] }) {
             config={playtimeConfig}
             valueFormatter={(v) => formatHours(v)}
             className="h-full"
+            showLegend
           />
         </FullscreenOverlay>
       )}
@@ -889,6 +935,7 @@ function RouteComponent() {
   });
 
   const latest = filtered[filtered.length - 1] ?? null;
+  const chartSnapshots = groupSnapshotsAuto(filtered);
 
   return (
     <div className="w-full px-4 py-6 sm:px-6 lg:px-8 space-y-4">
@@ -946,18 +993,18 @@ function RouteComponent() {
       {/* Main charts */}
       {filtered.length > 0 && (
         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-          <IlvlChartCard snapshots={filtered} />
-          <MplusChartCard snapshots={filtered} />
-          <GoldChartCard snapshots={filtered} />
+          <IlvlChartCard snapshots={chartSnapshots} />
+          <MplusChartCard snapshots={chartSnapshots} />
+          <GoldChartCard snapshots={chartSnapshots} />
         </div>
       )}
 
       {/* Stats & Currencies with chart toggle */}
       {latest && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          <CombatStatsCard snapshots={filtered} />
-          <CurrenciesCard snapshots={filtered} />
-          <PlaytimeCard snapshots={filtered} />
+          <CombatStatsCard snapshots={chartSnapshots} />
+          <CurrenciesCard snapshots={chartSnapshots} />
+          <PlaytimeCard snapshots={chartSnapshots} />
         </div>
       )}
 
