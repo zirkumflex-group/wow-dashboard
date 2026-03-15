@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from "./routes/__root";
 import { Route as DashboardRouteImport } from "./routes/dashboard";
 import { Route as IndexRouteImport } from "./routes/index";
+import { Route as CharacterCharacterIdRouteImport } from "./routes/character.$characterId";
 import { Route as ApiAuthSplatRouteImport } from "./routes/api/auth/$";
 
 const DashboardRoute = DashboardRouteImport.update({
@@ -23,6 +24,11 @@ const IndexRoute = IndexRouteImport.update({
   path: "/",
   getParentRoute: () => rootRouteImport,
 } as any);
+const CharacterCharacterIdRoute = CharacterCharacterIdRouteImport.update({
+  id: "/character/$characterId",
+  path: "/character/$characterId",
+  getParentRoute: () => rootRouteImport,
+} as any);
 const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   id: "/api/auth/$",
   path: "/api/auth/$",
@@ -32,30 +38,34 @@ const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
 export interface FileRoutesByFullPath {
   "/": typeof IndexRoute;
   "/dashboard": typeof DashboardRoute;
+  "/character/$characterId": typeof CharacterCharacterIdRoute;
   "/api/auth/$": typeof ApiAuthSplatRoute;
 }
 export interface FileRoutesByTo {
   "/": typeof IndexRoute;
   "/dashboard": typeof DashboardRoute;
+  "/character/$characterId": typeof CharacterCharacterIdRoute;
   "/api/auth/$": typeof ApiAuthSplatRoute;
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport;
   "/": typeof IndexRoute;
   "/dashboard": typeof DashboardRoute;
+  "/character/$characterId": typeof CharacterCharacterIdRoute;
   "/api/auth/$": typeof ApiAuthSplatRoute;
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath;
-  fullPaths: "/" | "/dashboard" | "/api/auth/$";
+  fullPaths: "/" | "/dashboard" | "/character/$characterId" | "/api/auth/$";
   fileRoutesByTo: FileRoutesByTo;
-  to: "/" | "/dashboard" | "/api/auth/$";
-  id: "__root__" | "/" | "/dashboard" | "/api/auth/$";
+  to: "/" | "/dashboard" | "/character/$characterId" | "/api/auth/$";
+  id: "__root__" | "/" | "/dashboard" | "/character/$characterId" | "/api/auth/$";
   fileRoutesById: FileRoutesById;
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute;
   DashboardRoute: typeof DashboardRoute;
+  CharacterCharacterIdRoute: typeof CharacterCharacterIdRoute;
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute;
 }
 
@@ -75,6 +85,13 @@ declare module "@tanstack/react-router" {
       preLoaderRoute: typeof IndexRouteImport;
       parentRoute: typeof rootRouteImport;
     };
+    "/character/$characterId": {
+      id: "/character/$characterId";
+      path: "/character/$characterId";
+      fullPath: "/character/$characterId";
+      preLoaderRoute: typeof CharacterCharacterIdRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
     "/api/auth/$": {
       id: "/api/auth/$";
       path: "/api/auth/$";
@@ -88,6 +105,7 @@ declare module "@tanstack/react-router" {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   DashboardRoute: DashboardRoute,
+  CharacterCharacterIdRoute: CharacterCharacterIdRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
 };
 export const routeTree = rootRouteImport

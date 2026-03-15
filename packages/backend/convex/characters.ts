@@ -79,6 +79,32 @@ export const resyncCharacters = mutation({
   },
 });
 
+export const getCharacterSnapshots = query({
+  args: { characterId: v.id("characters") },
+  handler: async (ctx, { characterId }) => {
+    const authUser = await authComponent.safeGetAuthUser(ctx);
+    if (!authUser) return null;
+
+    const character = await ctx.db.get(characterId);
+    if (!character) return null;
+
+    const player = await ctx.db
+      .query("players")
+      .withIndex("by_user", (q) => q.eq("userId", authUser._id as string))
+      .first();
+
+    if (!player || character.playerId !== player._id) return null;
+
+    const snapshots = await ctx.db
+      .query("snapshots")
+      .withIndex("by_character_and_time", (q) => q.eq("characterId", characterId))
+      .order("asc")
+      .collect();
+
+    return { character, snapshots };
+  },
+});
+
 export const getMyCharactersWithSnapshot = query({
   args: {},
   handler: async (ctx) => {

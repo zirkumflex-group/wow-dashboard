@@ -1,4 +1,4 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { api } from "@wow-dashboard/backend/convex/_generated/api";
 import { Button } from "@wow-dashboard/ui/components/button";
 import { Authenticated, AuthLoading, Unauthenticated, useMutation, useQuery } from "convex/react";
@@ -71,7 +71,11 @@ function CharacterCard({
   const factionColor = char.faction === "alliance" ? "text-blue-400" : "text-red-400";
 
   return (
-    <div className="bg-card rounded-lg border p-4">
+    <Link
+      to="/character/$characterId"
+      params={{ characterId: char._id }}
+      className="bg-card rounded-lg border p-4 block hover:border-blue-500/50 transition-colors"
+    >
       <div className="mb-3 flex items-baseline justify-between">
         <div>
           <span className={`text-lg font-bold ${classColor(char.class)}`}>{char.name}</span>
@@ -101,7 +105,7 @@ function CharacterCard({
       ) : (
         <p className="text-muted-foreground text-sm">No snapshot yet</p>
       )}
-    </div>
+    </Link>
   );
 }
 
