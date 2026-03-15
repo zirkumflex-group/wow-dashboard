@@ -11,7 +11,12 @@
 import type * as auth from "../auth.js";
 import type * as healthCheck from "../healthCheck.js";
 import type * as http from "../http.js";
+import type * as players from "../players.js";
 import type * as privateData from "../privateData.js";
+import type * as schemas_characters from "../schemas/characters.js";
+import type * as schemas_players from "../schemas/players.js";
+import type * as schemas_snapshots from "../schemas/snapshots.js";
+import type * as utils from "../utils.js";
 
 import type { ApiFromModules, FilterApi, FunctionReference } from "convex/server";
 
@@ -19,7 +24,12 @@ declare const fullApi: ApiFromModules<{
   auth: typeof auth;
   healthCheck: typeof healthCheck;
   http: typeof http;
+  players: typeof players;
   privateData: typeof privateData;
+  "schemas/characters": typeof schemas_characters;
+  "schemas/players": typeof schemas_players;
+  "schemas/snapshots": typeof schemas_snapshots;
+  utils: typeof utils;
 }>;
 
 /**
