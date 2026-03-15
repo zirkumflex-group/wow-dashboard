@@ -294,6 +294,7 @@ function SnapshotLineChart({
   tooltipFormatter,
   className,
   showLegend,
+  yPadMaxFactor,
 }: {
   data: Record<string, number | string>[];
   lines: { key: string; color: string }[];
@@ -306,6 +307,8 @@ function SnapshotLineChart({
   className?: string;
   /** Show a legend below the chart */
   showLegend?: boolean;
+  /** When set, y-axis padding is maxVal * this factor instead of range-based (e.g. 0.01 = ±1% of max) */
+  yPadMaxFactor?: number;
 }) {
   if (data.length < 2) {
     return (
@@ -374,7 +377,12 @@ function SnapshotLineChart({
   const minVal = allValues.length ? Math.min(...allValues) : 0;
   const maxVal = allValues.length ? Math.max(...allValues) : 0;
   const range = maxVal - minVal;
-  const pad = range > 0 ? range * 0.1 : Math.abs(maxVal) * 0.05 || 1;
+  const pad =
+    yPadMaxFactor != null
+      ? Math.abs(maxVal) * yPadMaxFactor || 1
+      : range > 0
+        ? range * 0.1
+        : Math.abs(maxVal) * 0.05 || 1;
   const yDomain: [number, number] = [Math.floor(minVal - pad), Math.ceil(maxVal + pad)];
 
   return (
@@ -531,6 +539,7 @@ function GoldChartCard({ snapshots }: { snapshots: Snapshot[] }) {
           config={goldConfig}
           valueFormatter={(v) => `${goldUnits(v).toLocaleString()}g`}
           tooltipFormatter={(v) => <GoldDisplay value={v} />}
+          yPadMaxFactor={0.01}
         />
       </CardContent>
       {fullscreen && (
@@ -541,6 +550,7 @@ function GoldChartCard({ snapshots }: { snapshots: Snapshot[] }) {
             config={goldConfig}
             valueFormatter={(v) => `${goldUnits(v).toLocaleString()}g`}
             tooltipFormatter={(v) => <GoldDisplay value={v} />}
+            yPadMaxFactor={0.01}
             className="h-full"
             showLegend
           />
