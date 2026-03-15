@@ -13,7 +13,7 @@
     "dev:web": "turbo -F web dev",
     "dev:server": "turbo -F @wow-dashboard/backend dev",
     "dev:setup": "turbo -F @wow-dashboard/backend dev:setup",
-    "check": "oxlint && oxfmt --write"
+    "check": "oxlint && oxfmt --write ."
   },
   "dependencies": {
     "@wow-dashboard/env": "workspace:*",

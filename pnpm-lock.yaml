@@ -3,6 +3,7 @@ lockfileVersion: '9.0'
 settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
+  injectWorkspacePackages: true
 
 catalogs:
   default:
@@ -86,7 +87,7 @@ importers:
         version: 0.10.13(@better-auth/core@1.4.9(@better-auth/utils@0.3.0)(@better-fetch/fetch@1.1.21)(better-call@1.1.7(zod@4.3.6))(jose@6.2.1)(kysely@0.28.12)(nanostores@1.2.0))(@better-auth/utils@0.3.0)(@standard-schema/spec@1.1.0)(better-auth@1.4.9(@tanstack/react-start@1.166.11(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(vite@6.4.1(@types/node@24.12.0)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)))(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(better-call@1.1.7(zod@4.3.6))(convex@1.33.1(react@19.2.4))(hono@4.12.8)(nanostores@1.2.0)(react@19.2.4)(typescript@5.9.3)
       '@wow-dashboard/backend':
         specifier: workspace:*
-        version: link:../../packages/backend
+        version: file:packages/backend(@better-auth/core@1.4.9(@better-auth/utils@0.3.0)(@better-fetch/fetch@1.1.21)(better-call@1.1.7(zod@4.3.6))(jose@6.2.1)(kysely@0.28.12)(nanostores@1.2.0))(@better-auth/utils@0.3.0)(@standard-schema/spec@1.1.0)(@tanstack/react-start@1.166.11(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(vite@6.4.1(@types/node@24.12.0)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)))(better-call@1.1.7(zod@4.3.6))(hono@4.12.8)(nanostores@1.2.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3)
       '@wow-dashboard/env':
         specifier: workspace:*
         version: link:../../packages/env
@@ -2093,6 +2094,9 @@ packages:
     engines: {node: ^20.19.0 || >=22.12.0}
     peerDependencies:
       vite: ^4.2.0 || ^5.0.0 || ^6.0.0 || ^7.0.0 || ^8.0.0
+
+  '@wow-dashboard/backend@file:packages/backend':
+    resolution: {directory: packages/backend, type: directory}
 
   '@xmldom/xmldom@0.8.11':
     resolution: {integrity: sha512-cQzWCtO6C8TQiYl1ruKNn2U6Ao4o4WBBcbL61yJl84x+j5sOWWFU9X7DpND8XZG3daDppSsigMdfAIl2upQBRw==}
@@ -6885,6 +6889,44 @@ snapshots:
       vite: 7.3.1(@types/node@24.12.0)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)
     transitivePeerDependencies:
       - supports-color
+
+  '@wow-dashboard/backend@file:packages/backend(@better-auth/core@1.4.9(@better-auth/utils@0.3.0)(@better-fetch/fetch@1.1.21)(better-call@1.1.7(zod@4.3.6))(jose@6.2.1)(kysely@0.28.12)(nanostores@1.2.0))(@better-auth/utils@0.3.0)(@standard-schema/spec@1.1.0)(@tanstack/react-start@1.166.11(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(vite@6.4.1(@types/node@24.12.0)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)))(better-call@1.1.7(zod@4.3.6))(hono@4.12.8)(nanostores@1.2.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3)':
+    dependencies:
+      '@convex-dev/better-auth': 0.10.13(@better-auth/core@1.4.9(@better-auth/utils@0.3.0)(@better-fetch/fetch@1.1.21)(better-call@1.1.7(zod@4.3.6))(jose@6.2.1)(kysely@0.28.12)(nanostores@1.2.0))(@better-auth/utils@0.3.0)(@standard-schema/spec@1.1.0)(better-auth@1.4.9(@tanstack/react-start@1.166.11(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(vite@6.4.1(@types/node@24.12.0)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)))(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(better-call@1.1.7(zod@4.3.6))(convex@1.33.1(react@19.2.4))(hono@4.12.8)(nanostores@1.2.0)(react@19.2.4)(typescript@5.9.3)
+      better-auth: 1.4.9(@tanstack/react-start@1.166.11(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(vite@6.4.1(@types/node@24.12.0)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)))(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+      convex: 1.33.1(react@19.2.4)
+      dotenv: 17.3.1
+      zod: 4.3.6
+    transitivePeerDependencies:
+      - '@auth0/auth0-react'
+      - '@better-auth/core'
+      - '@better-auth/utils'
+      - '@clerk/clerk-react'
+      - '@lynx-js/react'
+      - '@prisma/client'
+      - '@standard-schema/spec'
+      - '@sveltejs/kit'
+      - '@tanstack/react-start'
+      - better-call
+      - better-sqlite3
+      - bufferutil
+      - drizzle-kit
+      - drizzle-orm
+      - hono
+      - mongodb
+      - mysql2
+      - nanostores
+      - next
+      - pg
+      - prisma
+      - react
+      - react-dom
+      - solid-js
+      - svelte
+      - typescript
+      - utf-8-validate
+      - vitest
+      - vue
 
   '@xmldom/xmldom@0.8.11': {}
 
