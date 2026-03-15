@@ -4,12 +4,33 @@ on:
   push:
     branches:
       - master
+    paths:
+      - "apps/app/**"
+      - "apps/addon/**"
 
 permissions:
   contents: write
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      app: ${{ steps.filter.outputs.app }}
+      addon: ${{ steps.filter.outputs.addon }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            app:
+              - 'apps/app/**'
+            addon:
+              - 'apps/addon/**'
+
   release-app:
+    needs: changes
+    if: needs.changes.outputs.app == 'true'
     runs-on: windows-latest
 
     steps:
@@ -85,6 +106,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   release-addon:
+    needs: changes
+    if: needs.changes.outputs.addon == 'true'
     runs-on: ubuntu-latest
 
     steps:
