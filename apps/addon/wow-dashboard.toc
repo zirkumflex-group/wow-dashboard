@@ -1,0 +1,14 @@
+## X-Flavor: retail
+## X-Expansion: TWW
+## Interface: 120001
+## Version: 1.0.0
+
+## Title: WoW Dashboard
+## Notes: A WoW Dashboard addon.|n|nOpen with Slash Command:|n/wowdashboard
+
+## Author: wow-dashboard
+## SavedVariables: WowDashboardDB
+
+## IconTexture: Interface\AddOns\wow-dashboard\Art\Logo\PlumberLogo64
+
+wow-dashboard.lua

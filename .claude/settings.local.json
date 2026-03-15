@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(find:*)",
+      "Bash(head:*)",
+      "Bash(wc:*)",
+      "Bash(mkdir:*)",
+      "Bash(cp:*)",
+      "Bash(cd:*)",
+      "Bash(rm:*)",
+      "Read(//mnt/c/Program Files \\(x86\\)/World of Warcraft/_retail_/Interface/AddOns/**)",
+      "Read(//mnt/**)",
+      "Bash(for dir:*)",
+      "Bash(do echo:*)",
+      "Read(//c/Program Files \\(x86\\)/World of Warcraft/_retail_/Interface/AddOns/Plumber/Art/**)",
+      "Bash(done)",
+      "Bash(grep:*)"
+    ]
+  }
+}
