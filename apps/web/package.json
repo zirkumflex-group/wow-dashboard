@@ -30,6 +30,7 @@
     "react-dom": "catalog:",
     "recharts": "^3.8.0",
     "sonner": "catalog:",
+    "srvx": "^0.11.9",
     "tailwindcss": "catalog:",
     "vite-tsconfig-paths": "^5.1.4",
     "zod": "catalog:"
