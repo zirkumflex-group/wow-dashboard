@@ -1,0 +1,26 @@
+# ---- dependencies (reinstalled inside Docker) ----
+node_modules
+**/node_modules
+
+# ---- build artefacts (rebuilt inside Docker) ----
+**/dist
+**/.tanstack
+**/.turbo
+.turbo
+
+# ---- git ----
+.git
+.gitignore
+
+# ---- local env / secrets (never bake into the image) ----
+.env
+.env.*
+**/.env
+**/.env.*
+
+# ---- editor / OS noise ----
+.vscode
+.idea
+*.log
+.DS_Store
+Thumbs.db

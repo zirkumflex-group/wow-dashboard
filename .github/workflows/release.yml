@@ -29,8 +29,22 @@ jobs:
           node-version: 20
           cache: pnpm
 
+      - name: Clean install state
+        shell: pwsh
+        run: |
+          if (Test-Path node_modules) {
+            Remove-Item node_modules -Recurse -Force
+          }
+          pnpm store prune
+
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --force
+
+      - name: Debug Rollup native package
+        shell: pwsh
+        run: |
+          pnpm why @rollup/rollup-win32-x64-msvc
+          Test-Path "node_modules/.pnpm/@rollup+rollup-win32-x64-msvc@4.59.0/node_modules/@rollup/rollup-win32-x64-msvc"
 
       - name: Create .env file
         shell: bash
