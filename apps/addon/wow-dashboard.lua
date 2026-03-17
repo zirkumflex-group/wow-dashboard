@@ -335,6 +335,14 @@ local function CollectSnapshot()
         },
     }
 
+    -- Suppress the default chat output by temporarily unregistering
+    -- all chat frames from TIME_PLAYED_MSG before requesting.
+    for i = 1, NUM_CHAT_WINDOWS do
+        local frame = _G["ChatFrame" .. i]
+        if frame and frame:IsEventRegistered("TIME_PLAYED_MSG") then
+            frame:UnregisterEvent("TIME_PLAYED_MSG")
+        end
+    end
     RequestTimePlayed()
 end
 
@@ -751,6 +759,13 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
 
     elseif event == "TIME_PLAYED_MSG" then
         local totalSeconds = ...
+        -- Restore chat frames so future /played commands still show in chat
+        for i = 1, NUM_CHAT_WINDOWS do
+            local frame = _G["ChatFrame" .. i]
+            if frame then
+                frame:RegisterEvent("TIME_PLAYED_MSG")
+            end
+        end
         CommitSnapshot(totalSeconds)
     end
 end)
