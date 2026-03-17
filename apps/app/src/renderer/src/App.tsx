@@ -78,6 +78,7 @@ declare global {
       };
       openExternal: (url: string) => Promise<void>;
       getVersion: () => Promise<string>;
+      installUpdate: () => Promise<void>;
       updates: {
         onUpdateAvailable: (cb: (version: string) => void) => void;
         onUpdateDownloaded: (cb: (version: string) => void) => void;
@@ -151,6 +152,39 @@ function useElectronAuth() {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function isValidRetailPath(path: string): boolean {
+  const lastSegment =
+    path
+      .replace(/[/\\]+$/, "")
+      .split(/[/\\]/)
+      .pop() ?? "";
+  return lastSegment.toLowerCase() === "_retail_";
+}
+
+function isOutdated(installed: string, latest: string): boolean {
+  const a = installed.split(".").map(Number);
+  const b = latest.split(".").map(Number);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const ai = a[i] ?? 0;
+    const bi = b[i] ?? 0;
+    if (ai < bi) return true;
+    if (ai > bi) return false;
+  }
+  return false;
+}
+
+function formatTime(s: number) {
+  const m = Math.floor(s / 60)
+    .toString()
+    .padStart(2, "0");
+  const sec = (s % 60).toString().padStart(2, "0");
+  return `${m}:${sec}`;
+}
+
+// ---------------------------------------------------------------------------
 // Components
 // ---------------------------------------------------------------------------
 
@@ -202,34 +236,42 @@ function LoginScreen({ onLogin }: { onLogin: () => Promise<void> }) {
   );
 }
 
-type LogLevel = "info" | "success" | "warn" | "error";
-
-interface LogEntry {
-  id: number;
-  time: Date;
-  level: LogLevel;
-  message: string;
+interface Toggle {
+  checked: boolean;
+  onChange: (val: boolean) => void;
+  label: string;
 }
 
-const LOG_COLORS: Record<LogLevel, string> = {
-  info: "text-gray-300",
-  success: "text-green-400",
-  warn: "text-yellow-400",
-  error: "text-red-400",
-};
-
-let _logId = 0;
+function SwitchRow({ checked, onChange, label }: Toggle) {
+  return (
+    <label className="flex cursor-pointer items-center justify-between">
+      <span className="text-sm text-gray-300">{label}</span>
+      <button
+        role="switch"
+        aria-checked={checked}
+        onClick={() => onChange(!checked)}
+        className="relative focus:outline-none"
+      >
+        <div
+          className={`h-5 w-9 rounded-full transition-colors ${checked ? "bg-blue-600" : "bg-gray-600"}`}
+        />
+        <div
+          className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${checked ? "translate-x-4" : "translate-x-0.5"}`}
+        />
+      </button>
+    </label>
+  );
+}
 
 function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
+  const uploadAddon = useMutation(api.addonIngest.ingestAddonData);
   const resync = useMutation(api.characters.resyncCharacters);
-  const ingestAddon = useMutation(api.addonIngest.ingestAddonData);
   const characters = useQuery(api.characters.getMyCharactersWithSnapshot);
 
   const [syncing, setSyncing] = useState(false);
   const [timeLeft, setTimeLeft] = useState(15 * 60);
-  const [log, setLog] = useState<LogEntry[]>([]);
   const [retailPath, setRetailPath] = useState<string | null>(null);
-  const [closeBehavior, setCloseBehavior] = useState<"tray" | "exit">("exit");
+  const [closeBehavior, setCloseBehavior] = useState<"tray" | "exit">("tray");
   const [autostart, setAutostart] = useState(false);
   const [addonInstalled, setAddonInstalled] = useState<boolean | null>(null);
   const [addonVersion, setAddonVersion] = useState<string | null>(null);
@@ -240,14 +282,16 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
   const [appUpdateDownloaded, setAppUpdateDownloaded] = useState<string | null>(null);
   const [appVersion, setAppVersion] = useState<string | null>(null);
 
-  const syncingRef = useRef(false);
-  const prevCharCountRef = useRef<number | null>(null);
+  // Upload / file status
+  const [fileSnapshotCount, setFileSnapshotCount] = useState<number | null>(null);
+  const [lastUploadResult, setLastUploadResult] = useState<{
+    newChars: number;
+    newSnapshots: number;
+  } | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploadWarn, setUploadWarn] = useState<string | null>(null);
 
-  function addLog(message: string, level: LogLevel = "info") {
-    _logId += 1;
-    const entry: LogEntry = { id: _logId, time: new Date(), level, message };
-    setLog((prev) => [entry, ...prev].slice(0, 100));
-  }
+  const syncingRef = useRef(false);
 
   // Load persisted settings on mount
   useEffect(() => {
@@ -257,35 +301,38 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
       setCloseBehavior(s.closeBehavior);
       setAutostart(s.autostart);
     });
-    window.electron.updates.onUpdateAvailable((v) => {
-      setAppUpdateAvailable(v);
-      addLog(`App update v${v} available — downloading…`, "info");
-    });
-    window.electron.updates.onUpdateDownloaded((v) => {
-      setAppUpdateDownloaded(v);
-      addLog(`App update v${v} downloaded — restart to apply`, "success");
-    });
-    // Fetch latest addon release version once on mount
+    window.electron.updates.onUpdateAvailable((v) => setAppUpdateAvailable(v));
+    window.electron.updates.onUpdateDownloaded((v) => setAppUpdateDownloaded(v));
     window.electron.wow
       .getLatestAddonRelease()
       .then(({ version }) => setLatestAddonVersion(version))
       .catch(() => {});
   }, []);
 
-  // Check addon installation and version whenever retailPath changes
+  // Check addon and read file snapshot count whenever retailPath changes
   useEffect(() => {
     if (!retailPath) {
       setAddonInstalled(null);
       setAddonVersion(null);
+      setFileSnapshotCount(null);
       return;
     }
     window.electron.wow.checkAddonInstalled(retailPath).then(setAddonInstalled);
     window.electron.wow.getInstalledAddonVersion(retailPath).then(setAddonVersion);
+    // Read file to get pending snapshot count
+    window.electron.wow
+      .readAddonData(retailPath)
+      .then(({ characters: chars }) => {
+        const total = chars.reduce((sum, c) => sum + c.snapshots.length, 0);
+        setFileSnapshotCount(total);
+      })
+      .catch(() => setFileSnapshotCount(0));
   }, [retailPath]);
 
-  async function handleCloseBehaviorChange(value: "tray" | "exit") {
-    setCloseBehavior(value);
-    await window.electron.settings.setCloseBehavior(value);
+  async function handleCloseBehaviorChange(value: boolean) {
+    const behavior = value ? "tray" : "exit";
+    setCloseBehavior(behavior);
+    await window.electron.settings.setCloseBehavior(behavior);
   }
 
   async function handleAutostartChange(value: boolean) {
@@ -302,11 +349,9 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
       await window.electron.wow.installAddon(retailPath, url);
       setAddonInstalled(true);
       setAddonVersion(version);
-      addLog(`Addon v${version} installed successfully`, "success");
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setInstallError(msg);
-      addLog(`Addon install failed: ${msg}`, "error");
     } finally {
       setInstalling(false);
     }
@@ -316,46 +361,47 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
     const folder = await window.electron.wow.selectRetailFolder();
     if (folder) {
       setRetailPath(folder);
-      addLog(`WoW folder set: ${folder}`, "info");
+      setLastUploadResult(null);
+      setUploadError(null);
+      setUploadWarn(null);
+      setFileSnapshotCount(null);
       const installed = await window.electron.wow.checkAddonInstalled(folder);
       setAddonInstalled(installed);
     }
   }
 
-  async function doIngest(source: "manual" | "auto") {
+  async function doUpload(source: "manual" | "auto") {
     if (syncingRef.current) return;
     syncingRef.current = true;
     setSyncing(true);
-    addLog(`${source === "manual" ? "Manual" : "Auto"} ingest triggered`);
+    setUploadError(null);
+    setUploadWarn(null);
     try {
-      // Step 1: read addon SavedVariables from disk
       if (retailPath) {
         const { characters: addonChars, accountsFound } =
           await window.electron.wow.readAddonData(retailPath);
 
+        const total = addonChars.reduce((sum, c) => sum + c.snapshots.length, 0);
+        setFileSnapshotCount(total);
+
         if (addonChars.length === 0) {
-          addLog(
+          setUploadWarn(
             accountsFound.length === 0
               ? "No wow-dashboard.lua found — run the addon in-game first"
               : `Parsed ${accountsFound.length} account(s) but no characters found`,
-            "warn",
           );
         } else {
-          addLog(`Read ${addonChars.length} character(s) from ${accountsFound.length} account(s)`);
-          const result = await ingestAddon({ characters: addonChars });
-          addLog(
-            `Addon ingest done — ${result.newChars} new char(s), ${result.newSnapshots} new snapshot(s)`,
-            "success",
-          );
+          const result = await uploadAddon({ characters: addonChars });
+          setLastUploadResult({ newChars: result.newChars, newSnapshots: result.newSnapshots });
         }
       } else {
-        addLog("No WoW folder set — skipping addon ingest", "warn");
+        setUploadWarn("No WoW folder set — select the folder first");
       }
 
-      // Step 2: resync from Battle.net
+      // Resync from Battle.net
       await resync();
     } catch (e) {
-      addLog(`Ingest error: ${e instanceof Error ? e.message : String(e)}`, "error");
+      setUploadError(`Upload failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       syncingRef.current = false;
       setSyncing(false);
@@ -363,13 +409,13 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
     }
   }
 
-  // 15-minute countdown; auto-ingest at 0.
+  // 15-minute countdown; auto-upload at 0.
   useEffect(() => {
     let count = 15 * 60;
     const id = setInterval(() => {
       count -= 1;
       if (count <= 0) {
-        doIngest("auto");
+        doUpload("auto");
         count = 15 * 60;
       }
       setTimeLeft(count);
@@ -378,35 +424,11 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Log when character list updates
-  useEffect(() => {
-    if (characters === undefined) return;
-    const count = characters?.length ?? 0;
-    if (prevCharCountRef.current !== null && prevCharCountRef.current !== count) {
-      addLog(`Sync complete — ${count} character${count !== 1 ? "s" : ""} found`, "success");
-    }
-    prevCharCountRef.current = count;
-  }, [characters]);
-
-  function isOutdated(installed: string, latest: string): boolean {
-    const a = installed.split(".").map(Number);
-    const b = latest.split(".").map(Number);
-    for (let i = 0; i < Math.max(a.length, b.length); i++) {
-      const ai = a[i] ?? 0;
-      const bi = b[i] ?? 0;
-      if (ai < bi) return true;
-      if (ai > bi) return false;
-    }
-    return false;
-  }
-
-  function formatTime(s: number) {
-    const m = Math.floor(s / 60)
-      .toString()
-      .padStart(2, "0");
-    const sec = (s % 60).toString().padStart(2, "0");
-    return `${m}:${sec}`;
-  }
+  const retailPathValid = retailPath ? isValidRetailPath(retailPath) : true;
+  const showAddonOutdated =
+    addonInstalled && addonVersion && latestAddonVersion
+      ? isOutdated(addonVersion, latestAddonVersion)
+      : false;
 
   return (
     <div className="min-h-screen bg-gray-950 p-6 text-white">
@@ -429,8 +451,14 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
 
         {/* App update banners */}
         {appUpdateDownloaded && (
-          <div className="rounded-lg border border-green-700 bg-green-950 px-4 py-3 text-sm text-green-300">
-            App v{appUpdateDownloaded} downloaded — restart to apply the update.
+          <div className="flex items-center justify-between rounded-lg border border-green-700 bg-green-950 px-4 py-3 text-sm text-green-300">
+            <span>App v{appUpdateDownloaded} downloaded — restart to apply the update.</span>
+            <button
+              onClick={() => window.electron.installUpdate()}
+              className="ml-4 rounded bg-green-700 px-3 py-1 text-xs font-medium hover:bg-green-600"
+            >
+              Restart Now
+            </button>
           </div>
         )}
         {appUpdateAvailable && !appUpdateDownloaded && (
@@ -440,22 +468,18 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
         )}
 
         {/* Addon update banner */}
-        {addonInstalled &&
-          addonVersion &&
-          latestAddonVersion &&
-          isOutdated(addonVersion, latestAddonVersion) && (
-            <div className="rounded-lg border border-yellow-700 bg-yellow-950 px-4 py-3 text-sm text-yellow-300">
-              Addon update available: v{addonVersion} → v{latestAddonVersion}. Click{" "}
-              <button
-                onClick={handleInstallAddon}
-                disabled={installing}
-                className="underline hover:text-yellow-100 disabled:opacity-50"
-              >
-                Update Addon
-              </button>{" "}
-              to install.
-            </div>
-          )}
+        {showAddonOutdated && (
+          <div className="rounded-lg border border-yellow-700 bg-yellow-950 px-4 py-3 text-sm text-yellow-300">
+            Addon update available: v{addonVersion} → v{latestAddonVersion}.{" "}
+            <button
+              onClick={handleInstallAddon}
+              disabled={installing}
+              className="underline hover:text-yellow-100 disabled:opacity-50"
+            >
+              Update Addon
+            </button>
+          </div>
+        )}
 
         {/* WoW folder selector */}
         <div className="rounded-lg border border-gray-800 p-4 space-y-2">
@@ -469,7 +493,18 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
             </button>
           </div>
           {retailPath ? (
-            <p className="break-all font-mono text-xs text-green-400">{retailPath}</p>
+            <div className="space-y-1">
+              <p
+                className={`break-all font-mono text-xs ${retailPathValid ? "text-green-400" : "text-red-400"}`}
+              >
+                {retailPath}
+              </p>
+              {!retailPathValid && (
+                <p className="text-xs text-red-400">
+                  Path should end with <span className="font-mono">_retail_</span>
+                </p>
+              )}
+            </div>
           ) : (
             <p className="text-xs text-gray-500">
               No folder selected. The addon&apos;s SavedVariables won&apos;t be read until you pick
@@ -510,88 +545,83 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
           {installError && <p className="text-xs text-red-400">{installError}</p>}
         </div>
 
-        {/* Controls */}
-        <div className="flex items-center gap-4 rounded-lg border border-gray-800 p-4">
-          <button
-            onClick={() => doIngest("manual")}
-            disabled={syncing}
-            className="rounded bg-blue-600 px-4 py-2 font-medium hover:bg-blue-700 disabled:opacity-50"
-          >
-            {syncing ? "Ingesting…" : "Force Ingest"}
-          </button>
-          <span className="text-sm text-gray-400">
-            Next auto-ingest in <span className="font-mono text-white">{formatTime(timeLeft)}</span>
-          </span>
-        </div>
-
-        {/* Log */}
-        <div className="rounded-lg border border-gray-800 p-4">
-          <h2 className="mb-3 font-medium text-gray-300">Log</h2>
-          <div className="max-h-64 space-y-1 overflow-y-auto">
-            {log.length === 0 ? (
-              <p className="text-sm text-gray-500">No activity yet.</p>
-            ) : (
-              log.map((entry) => (
-                <div key={entry.id} className="flex gap-3 text-sm">
-                  <span className="shrink-0 font-mono text-xs text-gray-500">
-                    {entry.time.toLocaleTimeString()}
-                  </span>
-                  <span className={LOG_COLORS[entry.level]}>{entry.message}</span>
-                </div>
-              ))
-            )}
+        {/* Upload / Data Sync */}
+        <div className="rounded-lg border border-gray-800 p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="font-medium text-gray-300">Upload</h2>
+            <div className="flex items-center gap-3">
+              <span className="text-sm text-gray-400">
+                Next upload in <span className="font-mono text-white">{formatTime(timeLeft)}</span>
+              </span>
+              <button
+                onClick={() => doUpload("manual")}
+                disabled={syncing}
+                className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+              >
+                {syncing ? "Uploading…" : "Force Upload"}
+              </button>
+            </div>
           </div>
+
+          {/* Status area */}
+          {uploadError ? (
+            <div className="rounded border border-red-700 bg-red-950 px-3 py-2 text-sm text-red-400">
+              {uploadError}
+            </div>
+          ) : uploadWarn ? (
+            <div className="rounded border border-yellow-700 bg-yellow-950 px-3 py-2 text-sm text-yellow-400">
+              {uploadWarn}
+            </div>
+          ) : syncing ? (
+            <p className="text-sm text-gray-400">Uploading snapshots…</p>
+          ) : lastUploadResult !== null ? (
+            <div className="flex items-center gap-2">
+              <span className="text-green-400 text-base">✓</span>
+              <p className="text-sm text-green-400">All clear</p>
+              {lastUploadResult.newSnapshots > 0 && (
+                <span className="text-xs text-gray-500">
+                  ({lastUploadResult.newSnapshots} new snapshot
+                  {lastUploadResult.newSnapshots !== 1 ? "s" : ""} uploaded)
+                </span>
+              )}
+            </div>
+          ) : !retailPath ? (
+            <p className="text-sm text-gray-500">Select the WoW folder to enable uploads.</p>
+          ) : fileSnapshotCount === null ? (
+            <p className="text-sm text-gray-400">Checking file…</p>
+          ) : fileSnapshotCount === 0 ? (
+            <p className="text-sm text-gray-500">
+              No snapshots found in file. Run the addon in-game first.
+            </p>
+          ) : (
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-yellow-400">
+                {fileSnapshotCount} snapshot{fileSnapshotCount !== 1 ? "s" : ""} pending upload
+              </p>
+              <button
+                onClick={() => doUpload("manual")}
+                disabled={syncing}
+                className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+              >
+                Upload Now
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Settings */}
         <div className="rounded-lg border border-gray-800 p-4 space-y-4">
           <h2 className="font-medium text-gray-300">Settings</h2>
-
-          {/* Close behavior */}
-          <div className="space-y-2">
-            <p className="text-sm text-gray-400">When closing the window</p>
-            <div className="flex gap-3">
-              <button
-                onClick={() => handleCloseBehaviorChange("tray")}
-                className={`rounded px-3 py-1.5 text-sm font-medium transition-colors ${
-                  closeBehavior === "tray"
-                    ? "bg-blue-600 text-white"
-                    : "bg-gray-700 text-gray-300 hover:bg-gray-600"
-                }`}
-              >
-                Minimize to tray
-              </button>
-              <button
-                onClick={() => handleCloseBehaviorChange("exit")}
-                className={`rounded px-3 py-1.5 text-sm font-medium transition-colors ${
-                  closeBehavior === "exit"
-                    ? "bg-blue-600 text-white"
-                    : "bg-gray-700 text-gray-300 hover:bg-gray-600"
-                }`}
-              >
-                Exit application
-              </button>
-            </div>
-          </div>
-
-          {/* Autostart */}
-          <label className="flex cursor-pointer items-center gap-3">
-            <div className="relative">
-              <input
-                type="checkbox"
-                className="sr-only"
-                checked={autostart}
-                onChange={(e) => handleAutostartChange(e.target.checked)}
-              />
-              <div
-                className={`h-5 w-9 rounded-full transition-colors ${autostart ? "bg-blue-600" : "bg-gray-600"}`}
-              />
-              <div
-                className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${autostart ? "translate-x-4" : "translate-x-0.5"}`}
-              />
-            </div>
-            <span className="text-sm text-gray-300">Launch on Windows login</span>
-          </label>
+          <SwitchRow
+            checked={closeBehavior === "tray"}
+            onChange={handleCloseBehaviorChange}
+            label="Close Button Minimizes To Tray"
+          />
+          <SwitchRow
+            checked={autostart}
+            onChange={handleAutostartChange}
+            label="Launch on Windows login"
+          />
         </div>
 
         {/* Character count */}

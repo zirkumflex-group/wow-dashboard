@@ -12,13 +12,16 @@ import {
 } from "electron";
 import { autoUpdater } from "electron-updater";
 import * as fs from "fs";
-import { join, basename } from "path";
+import { join } from "path";
 import * as os from "os";
 import { execFile } from "child_process";
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let isQuitting = false;
+// Cache close behavior so the window close handler can be synchronous (event.preventDefault
+// must be called synchronously – awaiting inside the handler is too late on Windows).
+let closeBehaviorCache: "tray" | "exit" = "tray";
 
 // 16x16 solid blue (#3B82F6) PNG used as tray icon.
 const TRAY_ICON_DATA_URL =
@@ -33,8 +36,7 @@ function createTray(): void {
       {
         label: "Show WoW Dashboard",
         click: () => {
-          mainWindow?.show();
-          mainWindow?.focus();
+          showWindow();
         },
       },
       { type: "separator" },
@@ -379,6 +381,7 @@ function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 900,
     height: 600,
+    show: process.platform !== "win32", // on Windows start hidden in tray; show immediately on other platforms
     webPreferences: {
       preload: join(__dirname, "../preload/index.js"),
       sandbox: false,
@@ -391,15 +394,15 @@ function createWindow(): void {
     mainWindow.loadFile(join(__dirname, "../renderer/index.html"));
   }
 
-  mainWindow.on("close", async (event) => {
+  // Use the cached close behavior so event.preventDefault() is called synchronously.
+  // Awaiting inside a close handler is too late — Electron processes the event before
+  // the async callback resumes, so the window would be destroyed even with preventDefault.
+  mainWindow.on("close", (event) => {
     if (isQuitting) return;
-    const settings = await getSettings();
-    if ((settings.closeBehavior as string) === "tray") {
+    if (closeBehaviorCache === "tray") {
       event.preventDefault();
       mainWindow?.setSkipTaskbar(true);
       mainWindow?.hide();
-    } else {
-      mainWindow = null;
     }
   });
 
@@ -642,6 +645,11 @@ ipcMain.handle("wow:getLatestAddonRelease", async () => {
 ipcMain.handle("app:openExternal", (_, url: string) => shell.openExternal(url));
 ipcMain.handle("app:getVersion", () => app.getVersion());
 
+// Trigger a silent install and relaunch — used by the "Restart Now" button in the renderer.
+ipcMain.handle("app:installUpdate", () => {
+  autoUpdater.quitAndInstall(true, true);
+});
+
 // App settings
 ipcMain.handle("settings:getAppSettings", async () => {
   const s = await getSettings();
@@ -652,6 +660,8 @@ ipcMain.handle("settings:getAppSettings", async () => {
 });
 
 ipcMain.handle("settings:setCloseBehavior", async (_, value: "tray" | "exit") => {
+  // Update in-memory cache first so the window close handler picks it up immediately.
+  closeBehaviorCache = value;
   const s = await getSettings();
   s.closeBehavior = value;
   await saveSettings(s);
@@ -661,20 +671,29 @@ ipcMain.handle("settings:setAutostart", async (_, value: boolean) => {
   const s = await getSettings();
   s.autostart = value;
   await saveSettings(s);
-  app.setLoginItemSettings({ openAtLogin: value });
+  if (process.platform === "win32") {
+    app.setLoginItemSettings({ openAtLogin: value });
+  }
 });
 
 // ─── App lifecycle ────────────────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
+  // Load settings before creating the window so closeBehaviorCache is populated and
+  // the synchronous close handler has the correct value from the very first close event.
+  const settings = await getSettings();
+  closeBehaviorCache = (settings.closeBehavior as "tray" | "exit") ?? "tray";
+  if (process.platform === "win32") {
+    app.setLoginItemSettings({ openAtLogin: (settings.autostart as boolean) ?? false });
+  }
+
   createWindow();
   createTray();
 
-  // Apply persisted autostart on startup
-  const settings = await getSettings();
-  app.setLoginItemSettings({ openAtLogin: (settings.autostart as boolean) ?? false });
-
-  // Check for app updates (only in packaged builds)
+  // Check for app updates (only in packaged builds).
+  // Updates download in the background and install silently on next quit (autoInstallOnAppQuit
+  // is true by default in electron-updater). The renderer shows a banner so the user can also
+  // trigger an immediate restart via app:installUpdate.
   if (app.isPackaged) {
     const CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
     autoUpdater.checkForUpdates().catch(() => {});
@@ -684,24 +703,17 @@ app.whenReady().then(async () => {
     });
     autoUpdater.on("update-downloaded", (info) => {
       mainWindow?.webContents.send("app:updateDownloaded", info.version);
-      dialog
-        .showMessageBox(mainWindow!, {
-          type: "info",
-          title: "Update Ready",
-          message: "A new version of WoW Dashboard has been downloaded.",
-          detail: "Restart the app to apply the update.",
-          buttons: ["Restart Now", "Later"],
-          defaultId: 0,
-        })
-        .then(({ response }) => {
-          if (response === 0) autoUpdater.quitAndInstall();
-        })
-        .catch(() => {});
+      // No blocking dialog — the renderer banner handles user interaction.
     });
   }
 
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+    } else {
+      mainWindow?.show();
+      mainWindow?.focus();
+    }
   });
 });
 

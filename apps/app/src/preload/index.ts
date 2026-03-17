@@ -29,6 +29,7 @@ contextBridge.exposeInMainWorld("electron", {
   },
   openExternal: (url: string) => ipcRenderer.invoke("app:openExternal", url),
   getVersion: () => ipcRenderer.invoke("app:getVersion") as Promise<string>,
+  installUpdate: () => ipcRenderer.invoke("app:installUpdate"),
   updates: {
     onUpdateAvailable: (cb: (version: string) => void) => {
       ipcRenderer.on("app:updateAvailable", (_, version: string) => cb(version));
