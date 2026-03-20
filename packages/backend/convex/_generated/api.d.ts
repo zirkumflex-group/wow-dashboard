@@ -12,6 +12,7 @@ import type * as addonIngest from "../addonIngest.js";
 import type * as auth from "../auth.js";
 import type * as battlenet from "../battlenet.js";
 import type * as characters from "../characters.js";
+import type * as crons from "../crons.js";
 import type * as healthCheck from "../healthCheck.js";
 import type * as http from "../http.js";
 import type * as players from "../players.js";
@@ -19,6 +20,7 @@ import type * as privateData from "../privateData.js";
 import type * as schemas_characters from "../schemas/characters.js";
 import type * as schemas_players from "../schemas/players.js";
 import type * as schemas_snapshots from "../schemas/snapshots.js";
+import type * as snapshots from "../snapshots.js";
 import type * as utils from "../utils.js";
 
 import type {
@@ -32,6 +34,7 @@ declare const fullApi: ApiFromModules<{
   auth: typeof auth;
   battlenet: typeof battlenet;
   characters: typeof characters;
+  crons: typeof crons;
   healthCheck: typeof healthCheck;
   http: typeof http;
   players: typeof players;
@@ -39,6 +42,7 @@ declare const fullApi: ApiFromModules<{
   "schemas/characters": typeof schemas_characters;
   "schemas/players": typeof schemas_players;
   "schemas/snapshots": typeof schemas_snapshots;
+  snapshots: typeof snapshots;
   utils: typeof utils;
 }>;
 

@@ -1,11 +1,63 @@
 import { defineTable } from "convex/server";
 import { v } from "convex/values";
 
+export const specValidator = v.union(
+  // Death Knight
+  v.literal("Blood"),
+  v.literal("Frost"),
+  v.literal("Unholy"),
+  // Demon Hunter
+  v.literal("Havoc"),
+  v.literal("Vengeance"),
+  v.literal("Devourer"),
+  // Druid
+  v.literal("Balance"),
+  v.literal("Feral"),
+  v.literal("Guardian"),
+  v.literal("Restoration"),
+  // Evoker
+  v.literal("Augmentation"),
+  v.literal("Devastation"),
+  v.literal("Preservation"),
+  // Hunter
+  v.literal("Beast Mastery"),
+  v.literal("Marksmanship"),
+  v.literal("Survival"),
+  // Mage
+  v.literal("Arcane"),
+  v.literal("Fire"),
+  // Monk
+  v.literal("Brewmaster"),
+  v.literal("Mistweaver"),
+  v.literal("Windwalker"),
+  // Paladin
+  v.literal("Holy"),
+  v.literal("Protection"),
+  v.literal("Retribution"),
+  // Priest
+  v.literal("Discipline"),
+  v.literal("Shadow"),
+  // Rogue
+  v.literal("Assassination"),
+  v.literal("Outlaw"),
+  v.literal("Subtlety"),
+  // Shaman
+  v.literal("Elemental"),
+  v.literal("Enhancement"),
+  // Warlock
+  v.literal("Affliction"),
+  v.literal("Demonology"),
+  v.literal("Destruction"),
+  // Warrior
+  v.literal("Arms"),
+  v.literal("Fury"),
+);
+
 export const snapshotsTable = defineTable({
   characterId: v.id("characters"),
   takenAt: v.number(),
   level: v.number(),
-  spec: v.string(),
+  spec: specValidator,
   role: v.union(v.literal("tank"), v.literal("healer"), v.literal("dps")),
   itemLevel: v.number(),
   gold: v.number(),

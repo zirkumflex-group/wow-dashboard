@@ -279,13 +279,13 @@ local function CollectSnapshot()
     local factionGroup     = UnitFactionGroup("player") or "Alliance"
 
     local specIndex      = GetSpecialization()
-    local specName, role = "Unknown", "dps"
-    if specIndex and specIndex > 0 then
-        local _, sName, _, _, sRole = GetSpecializationInfo(specIndex)
-        specName = sName or "Unknown"
-        if     sRole == "TANK"   then role = "tank"
-        elseif sRole == "HEALER" then role = "healer"
-        end
+    if not specIndex or specIndex <= 0 then return end
+    local _, sName, _, _, sRole = GetSpecializationInfo(specIndex)
+    if not sName then return end
+    local specName = sName
+    local role     = "dps"
+    if     sRole == "TANK"   then role = "tank"
+    elseif sRole == "HEALER" then role = "healer"
     end
 
     local _, equippedIlvl = GetAverageItemLevel()

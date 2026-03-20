@@ -2,6 +2,7 @@ import { v } from "convex/values";
 
 import { mutation } from "./_generated/server";
 import { authComponent } from "./auth";
+import { specValidator } from "./schemas/snapshots";
 
 const currenciesValidator = v.object({
   adventurerDawncrest: v.number(),
@@ -26,7 +27,7 @@ const statsValidator = v.object({
 const snapshotValidator = v.object({
   takenAt: v.number(),
   level: v.number(),
-  spec: v.string(),
+  spec: specValidator,
   role: v.union(v.literal("tank"), v.literal("healer"), v.literal("dps")),
   itemLevel: v.number(),
   gold: v.number(),
