@@ -235,6 +235,15 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Notify Discord
+        shell: bash
+        run: |
+          VERSION="${{ needs.bump-versions.outputs.app_version }}"
+          RELEASE_URL="https://github.com/${{ github.repository }}/releases/tag/app-v${VERSION}"
+          curl -s -X POST "${{ secrets.DISCORD_WEBHOOK_URL_APP }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"content\": \"**WoW Dashboard App v${VERSION}** has been released! :tada:\n${RELEASE_URL}\"}"
+
   release-addon:
     needs: [bump-versions, changes]
     if: needs.changes.outputs.addon == 'true'

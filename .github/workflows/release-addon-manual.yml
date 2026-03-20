@@ -89,3 +89,11 @@ jobs:
           files: ${{ env.ZIP }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Notify Discord
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          RELEASE_URL="https://github.com/${{ github.repository }}/releases/tag/addon-v${VERSION}"
+          curl -s -X POST "${{ secrets.DISCORD_WEBHOOK_URL_ADDON }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"content\": \"**WoW Dashboard Addon v${VERSION}** has been released! :tada:\n${RELEASE_URL}\"}"
