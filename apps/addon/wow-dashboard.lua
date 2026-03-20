@@ -271,6 +271,7 @@ end
 
 local function CollectSnapshot()
     if not IsLoggedIn() then return end
+    if pendingSnapshot then return end
 
     local key, name, realm = GetCharKey()
     local _, classFilename = UnitClass("player")
@@ -515,54 +516,16 @@ refreshBtn:SetScript("OnClick", function()
     StartSnapshotTicker()   -- reset the 15-minute window from now
 end)
 
--- Delete all snapshots button (two-click confirmation, 5-second window)
-local deleteBtn = CreateFrame("Button", nil, overviewPanel, "UIPanelButtonTemplate")
-deleteBtn:SetSize(160, 30)
-deleteBtn:SetPoint("TOP", refreshBtn, "BOTTOM", 0, -10)
-deleteBtn:SetText("Delete All Snapshots")
-deleteBtn:GetFontString():SetFont(FONT_BOLD, 11, "")
-deleteBtn:SetFrameLevel(overviewPanel:GetFrameLevel() + 2)
-
-local deletePendingUntil = 0
-deleteBtn:SetScript("OnClick", function()
-    local now = GetTime()
-    if now < deletePendingUntil then
-        -- Second click within 5-second window — confirmed, delete
-        if WowDashboardDB then
-            WowDashboardDB.characters = {}
-        end
-        if RefreshLog then RefreshLog() end
-        deletePendingUntil = 0
-        deleteBtn:SetText("Delete All Snapshots")
-        deleteBtn:GetFontString():SetTextColor(1, 1, 1)  -- restore default color
-        print("|cff00ccff[WoW Dashboard]|r All snapshots deleted.")
-    else
-        -- First click — arm confirmation for 5 seconds
-        deletePendingUntil = now + 5
-        deleteBtn:SetText("Click again to confirm!")
-        deleteBtn:GetFontString():SetTextColor(1, 0.2, 0.2)
-    end
-end)
-
 -- Upload button — reloads UI so WoW flushes SavedVariables to disk
 local uploadBtn = CreateFrame("Button", nil, overviewPanel, "UIPanelButtonTemplate")
 uploadBtn:SetSize(160, 30)
-uploadBtn:SetPoint("TOP", deleteBtn, "BOTTOM", 0, -10)
+uploadBtn:SetPoint("TOP", refreshBtn, "BOTTOM", 0, -10)
 uploadBtn:SetText("Upload")
 uploadBtn:GetFontString():SetFont(FONT_BOLD, 11, "")
 uploadBtn:SetFrameLevel(overviewPanel:GetFrameLevel() + 2)
 uploadBtn:SetScript("OnClick", function()
     ReloadUI()
 end)
-
--- Revert delete button if confirmation window expires (checked by 1-second ticker)
-local function UpdateDeleteBtn()
-    if deletePendingUntil > 0 and GetTime() >= deletePendingUntil then
-        deletePendingUntil = 0
-        deleteBtn:SetText("Delete All Snapshots")
-        deleteBtn:GetFontString():SetTextColor(1, 1, 1)
-    end
-end
 
 -- ============================================================
 -- Snapshots Panel — scrollable log of saved snapshots
@@ -681,7 +644,6 @@ end
 -- ============================================================
 
 local function OnSecondTick()
-    UpdateDeleteBtn()
     if timerLabel then
         if pendingSnapshot then
             timerLabel:SetText("Collecting snapshot...")
