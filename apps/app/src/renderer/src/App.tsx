@@ -85,9 +85,11 @@ declare global {
       openExternal: (url: string) => Promise<void>;
       getVersion: () => Promise<string>;
       installUpdate: () => Promise<void>;
+      checkForUpdates: () => Promise<void>;
       updates: {
         onUpdateAvailable: (cb: (version: string) => void) => void;
         onUpdateDownloaded: (cb: (version: string) => void) => void;
+        onUpdateNotAvailable: (cb: () => void) => void;
       };
     };
   }
@@ -303,6 +305,10 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
   const [appUpdateAvailable, setAppUpdateAvailable] = useState<string | null>(null);
   const [appUpdateDownloaded, setAppUpdateDownloaded] = useState<string | null>(null);
   const [appVersion, setAppVersion] = useState<string | null>(null);
+  const [checkingAppUpdate, setCheckingAppUpdate] = useState(false);
+  const [appUpToDate, setAppUpToDate] = useState(false);
+  const [checkingAddonUpdate, setCheckingAddonUpdate] = useState(false);
+  const [addonUpToDate, setAddonUpToDate] = useState(false);
 
   // Upload / file status
   const [fileSnapshotCount, setFileSnapshotCount] = useState<number | null>(null);
@@ -339,6 +345,11 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
     });
     window.electron.updates.onUpdateAvailable((v) => setAppUpdateAvailable(v));
     window.electron.updates.onUpdateDownloaded((v) => setAppUpdateDownloaded(v));
+    window.electron.updates.onUpdateNotAvailable(() => {
+      setCheckingAppUpdate(false);
+      setAppUpToDate(true);
+      setTimeout(() => setAppUpToDate(false), 3000);
+    });
     window.electron.wow
       .getLatestAddonRelease()
       .then(({ version }) => setLatestAddonVersion(version))
@@ -405,6 +416,32 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
       setInstallError(msg);
     } finally {
       setInstalling(false);
+    }
+  }
+
+  async function handleCheckAppUpdate() {
+    setCheckingAppUpdate(true);
+    setAppUpToDate(false);
+    await window.electron.checkForUpdates();
+    // Result comes back via update events. Add a fallback timeout in case no event fires
+    // (e.g., in unpackaged dev builds where the updater is disabled).
+    setTimeout(() => setCheckingAppUpdate(false), 5000);
+  }
+
+  async function handleCheckAddonUpdate() {
+    setCheckingAddonUpdate(true);
+    setAddonUpToDate(false);
+    try {
+      const { version } = await window.electron.wow.getLatestAddonRelease();
+      setLatestAddonVersion(version);
+      if (addonVersion && !isOutdated(addonVersion, version)) {
+        setAddonUpToDate(true);
+        setTimeout(() => setAddonUpToDate(false), 3000);
+      }
+    } catch {
+      // silently ignore
+    } finally {
+      setCheckingAddonUpdate(false);
     }
   }
 
@@ -606,13 +643,24 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
               )}
             </div>
             {retailPath ? (
-              <button
-                onClick={handleInstallAddon}
-                disabled={installing}
-                className="rounded bg-gray-700 px-3 py-1.5 text-sm font-medium hover:bg-gray-600 disabled:opacity-50"
-              >
-                {installing ? "Installing…" : addonInstalled ? "Reinstall" : "Install Addon"}
-              </button>
+              <div className="flex items-center gap-2">
+                {addonInstalled && (
+                  <button
+                    onClick={handleCheckAddonUpdate}
+                    disabled={checkingAddonUpdate || installing}
+                    className="rounded bg-gray-700 px-3 py-1.5 text-sm font-medium hover:bg-gray-600 disabled:opacity-50"
+                  >
+                    {checkingAddonUpdate ? "Checking…" : addonUpToDate ? "Up to date" : "Check for Updates"}
+                  </button>
+                )}
+                <button
+                  onClick={handleInstallAddon}
+                  disabled={installing}
+                  className="rounded bg-gray-700 px-3 py-1.5 text-sm font-medium hover:bg-gray-600 disabled:opacity-50"
+                >
+                  {installing ? "Installing…" : addonInstalled ? "Reinstall" : "Install Addon"}
+                </button>
+              </div>
             ) : (
               <span className="text-xs text-gray-500">Select WoW folder first</span>
             )}
@@ -730,8 +778,17 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
           </p>
         )}
 
-        {/* App version */}
-        {appVersion && <p className="text-center text-xs text-gray-600">v{appVersion}</p>}
+        {/* App version + update check */}
+        <div className="flex items-center justify-center gap-3">
+          {appVersion && <p className="text-xs text-gray-600">v{appVersion}</p>}
+          <button
+            onClick={handleCheckAppUpdate}
+            disabled={checkingAppUpdate || !!appUpdateAvailable || !!appUpdateDownloaded}
+            className="text-xs text-gray-500 hover:text-gray-300 disabled:opacity-50"
+          >
+            {checkingAppUpdate ? "Checking…" : appUpToDate ? "Up to date" : "Check for Updates"}
+          </button>
+        </div>
       </div>
     </div>
   );

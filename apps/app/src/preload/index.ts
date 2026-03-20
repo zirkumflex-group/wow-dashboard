@@ -39,12 +39,16 @@ contextBridge.exposeInMainWorld("electron", {
   openExternal: (url: string) => ipcRenderer.invoke("app:openExternal", url),
   getVersion: () => ipcRenderer.invoke("app:getVersion") as Promise<string>,
   installUpdate: () => ipcRenderer.invoke("app:installUpdate"),
+  checkForUpdates: () => ipcRenderer.invoke("app:checkForUpdates"),
   updates: {
     onUpdateAvailable: (cb: (version: string) => void) => {
       ipcRenderer.on("app:updateAvailable", (_, version: string) => cb(version));
     },
     onUpdateDownloaded: (cb: (version: string) => void) => {
       ipcRenderer.on("app:updateDownloaded", (_, version: string) => cb(version));
+    },
+    onUpdateNotAvailable: (cb: () => void) => {
+      ipcRenderer.on("app:updateNotAvailable", () => cb());
     },
   },
 });

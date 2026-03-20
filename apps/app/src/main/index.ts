@@ -748,6 +748,13 @@ ipcMain.handle("app:installUpdate", () => {
   autoUpdater.quitAndInstall(true, true);
 });
 
+// Manually trigger an update check — used by the "Check for Updates" button in the renderer.
+ipcMain.handle("app:checkForUpdates", () => {
+  if (app.isPackaged) {
+    autoUpdater.checkForUpdates().catch(() => {});
+  }
+});
+
 // App settings
 ipcMain.handle("settings:getAppSettings", async () => {
   const s = await getSettings();
@@ -823,6 +830,9 @@ app.whenReady().then(async () => {
     autoUpdater.on("update-downloaded", (info) => {
       mainWindow?.webContents.send("app:updateDownloaded", info.version);
       // No blocking dialog — the renderer banner handles user interaction.
+    });
+    autoUpdater.on("update-not-available", () => {
+      mainWindow?.webContents.send("app:updateNotAvailable");
     });
   }
 
