@@ -8,170 +8,170 @@
 // You should NOT make any changes in this file as it will be overwritten.
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
-import { Route as rootRouteImport } from "./routes/__root";
-import { Route as SettingsRouteImport } from "./routes/settings";
-import { Route as ScoreboardRouteImport } from "./routes/scoreboard";
-import { Route as DashboardRouteImport } from "./routes/dashboard";
-import { Route as CompareRouteImport } from "./routes/compare";
-import { Route as IndexRouteImport } from "./routes/index";
-import { Route as CharacterCharacterIdRouteImport } from "./routes/character.$characterId";
-import { Route as ApiAuthSplatRouteImport } from "./routes/api/auth/$";
+import { Route as rootRouteImport } from './routes/__root'
+import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as ScoreboardRouteImport } from './routes/scoreboard'
+import { Route as DashboardRouteImport } from './routes/dashboard'
+import { Route as CompareRouteImport } from './routes/compare'
+import { Route as IndexRouteImport } from './routes/index'
+import { Route as CharacterCharacterIdRouteImport } from './routes/character.$characterId'
+import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 
 const SettingsRoute = SettingsRouteImport.update({
-  id: "/settings",
-  path: "/settings",
+  id: '/settings',
+  path: '/settings',
   getParentRoute: () => rootRouteImport,
-} as any);
+} as any)
 const ScoreboardRoute = ScoreboardRouteImport.update({
-  id: "/scoreboard",
-  path: "/scoreboard",
+  id: '/scoreboard',
+  path: '/scoreboard',
   getParentRoute: () => rootRouteImport,
-} as any);
+} as any)
 const DashboardRoute = DashboardRouteImport.update({
-  id: "/dashboard",
-  path: "/dashboard",
+  id: '/dashboard',
+  path: '/dashboard',
   getParentRoute: () => rootRouteImport,
-} as any);
+} as any)
 const CompareRoute = CompareRouteImport.update({
-  id: "/compare",
-  path: "/compare",
+  id: '/compare',
+  path: '/compare',
   getParentRoute: () => rootRouteImport,
-} as any);
+} as any)
 const IndexRoute = IndexRouteImport.update({
-  id: "/",
-  path: "/",
+  id: '/',
+  path: '/',
   getParentRoute: () => rootRouteImport,
-} as any);
+} as any)
 const CharacterCharacterIdRoute = CharacterCharacterIdRouteImport.update({
-  id: "/character/$characterId",
-  path: "/character/$characterId",
+  id: '/character/$characterId',
+  path: '/character/$characterId',
   getParentRoute: () => rootRouteImport,
-} as any);
+} as any)
 const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
-  id: "/api/auth/$",
-  path: "/api/auth/$",
+  id: '/api/auth/$',
+  path: '/api/auth/$',
   getParentRoute: () => rootRouteImport,
-} as any);
+} as any)
 
 export interface FileRoutesByFullPath {
-  "/": typeof IndexRoute;
-  "/compare": typeof CompareRoute;
-  "/dashboard": typeof DashboardRoute;
-  "/scoreboard": typeof ScoreboardRoute;
-  "/settings": typeof SettingsRoute;
-  "/character/$characterId": typeof CharacterCharacterIdRoute;
-  "/api/auth/$": typeof ApiAuthSplatRoute;
+  '/': typeof IndexRoute
+  '/compare': typeof CompareRoute
+  '/dashboard': typeof DashboardRoute
+  '/scoreboard': typeof ScoreboardRoute
+  '/settings': typeof SettingsRoute
+  '/character/$characterId': typeof CharacterCharacterIdRoute
+  '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRoutesByTo {
-  "/": typeof IndexRoute;
-  "/compare": typeof CompareRoute;
-  "/dashboard": typeof DashboardRoute;
-  "/scoreboard": typeof ScoreboardRoute;
-  "/settings": typeof SettingsRoute;
-  "/character/$characterId": typeof CharacterCharacterIdRoute;
-  "/api/auth/$": typeof ApiAuthSplatRoute;
+  '/': typeof IndexRoute
+  '/compare': typeof CompareRoute
+  '/dashboard': typeof DashboardRoute
+  '/scoreboard': typeof ScoreboardRoute
+  '/settings': typeof SettingsRoute
+  '/character/$characterId': typeof CharacterCharacterIdRoute
+  '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRoutesById {
-  __root__: typeof rootRouteImport;
-  "/": typeof IndexRoute;
-  "/compare": typeof CompareRoute;
-  "/dashboard": typeof DashboardRoute;
-  "/scoreboard": typeof ScoreboardRoute;
-  "/settings": typeof SettingsRoute;
-  "/character/$characterId": typeof CharacterCharacterIdRoute;
-  "/api/auth/$": typeof ApiAuthSplatRoute;
+  __root__: typeof rootRouteImport
+  '/': typeof IndexRoute
+  '/compare': typeof CompareRoute
+  '/dashboard': typeof DashboardRoute
+  '/scoreboard': typeof ScoreboardRoute
+  '/settings': typeof SettingsRoute
+  '/character/$characterId': typeof CharacterCharacterIdRoute
+  '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRouteTypes {
-  fileRoutesByFullPath: FileRoutesByFullPath;
+  fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
-    | "/"
-    | "/compare"
-    | "/dashboard"
-    | "/scoreboard"
-    | "/settings"
-    | "/character/$characterId"
-    | "/api/auth/$";
-  fileRoutesByTo: FileRoutesByTo;
+    | '/'
+    | '/compare'
+    | '/dashboard'
+    | '/scoreboard'
+    | '/settings'
+    | '/character/$characterId'
+    | '/api/auth/$'
+  fileRoutesByTo: FileRoutesByTo
   to:
-    | "/"
-    | "/compare"
-    | "/dashboard"
-    | "/scoreboard"
-    | "/settings"
-    | "/character/$characterId"
-    | "/api/auth/$";
+    | '/'
+    | '/compare'
+    | '/dashboard'
+    | '/scoreboard'
+    | '/settings'
+    | '/character/$characterId'
+    | '/api/auth/$'
   id:
-    | "__root__"
-    | "/"
-    | "/compare"
-    | "/dashboard"
-    | "/scoreboard"
-    | "/settings"
-    | "/character/$characterId"
-    | "/api/auth/$";
-  fileRoutesById: FileRoutesById;
+    | '__root__'
+    | '/'
+    | '/compare'
+    | '/dashboard'
+    | '/scoreboard'
+    | '/settings'
+    | '/character/$characterId'
+    | '/api/auth/$'
+  fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
-  IndexRoute: typeof IndexRoute;
-  CompareRoute: typeof CompareRoute;
-  DashboardRoute: typeof DashboardRoute;
-  ScoreboardRoute: typeof ScoreboardRoute;
-  SettingsRoute: typeof SettingsRoute;
-  CharacterCharacterIdRoute: typeof CharacterCharacterIdRoute;
-  ApiAuthSplatRoute: typeof ApiAuthSplatRoute;
+  IndexRoute: typeof IndexRoute
+  CompareRoute: typeof CompareRoute
+  DashboardRoute: typeof DashboardRoute
+  ScoreboardRoute: typeof ScoreboardRoute
+  SettingsRoute: typeof SettingsRoute
+  CharacterCharacterIdRoute: typeof CharacterCharacterIdRoute
+  ApiAuthSplatRoute: typeof ApiAuthSplatRoute
 }
 
-declare module "@tanstack/react-router" {
+declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    "/settings": {
-      id: "/settings";
-      path: "/settings";
-      fullPath: "/settings";
-      preLoaderRoute: typeof SettingsRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
-    "/scoreboard": {
-      id: "/scoreboard";
-      path: "/scoreboard";
-      fullPath: "/scoreboard";
-      preLoaderRoute: typeof ScoreboardRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
-    "/dashboard": {
-      id: "/dashboard";
-      path: "/dashboard";
-      fullPath: "/dashboard";
-      preLoaderRoute: typeof DashboardRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
-    "/compare": {
-      id: "/compare";
-      path: "/compare";
-      fullPath: "/compare";
-      preLoaderRoute: typeof CompareRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
-    "/": {
-      id: "/";
-      path: "/";
-      fullPath: "/";
-      preLoaderRoute: typeof IndexRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
-    "/character/$characterId": {
-      id: "/character/$characterId";
-      path: "/character/$characterId";
-      fullPath: "/character/$characterId";
-      preLoaderRoute: typeof CharacterCharacterIdRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
-    "/api/auth/$": {
-      id: "/api/auth/$";
-      path: "/api/auth/$";
-      fullPath: "/api/auth/$";
-      preLoaderRoute: typeof ApiAuthSplatRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
+    '/settings': {
+      id: '/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof SettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/scoreboard': {
+      id: '/scoreboard'
+      path: '/scoreboard'
+      fullPath: '/scoreboard'
+      preLoaderRoute: typeof ScoreboardRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/dashboard': {
+      id: '/dashboard'
+      path: '/dashboard'
+      fullPath: '/dashboard'
+      preLoaderRoute: typeof DashboardRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/compare': {
+      id: '/compare'
+      path: '/compare'
+      fullPath: '/compare'
+      preLoaderRoute: typeof CompareRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/': {
+      id: '/'
+      path: '/'
+      fullPath: '/'
+      preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/character/$characterId': {
+      id: '/character/$characterId'
+      path: '/character/$characterId'
+      fullPath: '/character/$characterId'
+      preLoaderRoute: typeof CharacterCharacterIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/auth/$': {
+      id: '/api/auth/$'
+      path: '/api/auth/$'
+      fullPath: '/api/auth/$'
+      preLoaderRoute: typeof ApiAuthSplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -183,16 +183,16 @@ const rootRouteChildren: RootRouteChildren = {
   SettingsRoute: SettingsRoute,
   CharacterCharacterIdRoute: CharacterCharacterIdRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
-};
+}
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
-  ._addFileTypes<FileRouteTypes>();
+  ._addFileTypes<FileRouteTypes>()
 
-import type { getRouter } from "./router.tsx";
-import type { createStart } from "@tanstack/react-start";
-declare module "@tanstack/react-start" {
+import type { getRouter } from './router.tsx'
+import type { createStart } from '@tanstack/react-start'
+declare module '@tanstack/react-start' {
   interface Register {
-    ssr: true;
-    router: Awaited<ReturnType<typeof getRouter>>;
+    ssr: true
+    router: Awaited<ReturnType<typeof getRouter>>
   }
 }

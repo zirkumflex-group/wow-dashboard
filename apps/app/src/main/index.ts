@@ -24,6 +24,9 @@ let pendingWindowReveal = false;
 // Cache close behavior so the window close handler can be synchronous (event.preventDefault
 // must be called synchronously – awaiting inside the handler is too late on Windows).
 let closeBehaviorCache: "tray" | "exit" = "tray";
+let launchMinimizedCache = true;
+let addonWatcher: ReturnType<typeof fs.watch> | null = null;
+let addonWatchDebounce: ReturnType<typeof setTimeout> | null = null;
 
 async function loadTrayIcon(): Promise<Electron.NativeImage> {
   try {
@@ -348,17 +351,24 @@ function extractCharacters(db: Record<string, unknown>): CharacterData[] {
 
 async function findAndParseAddonData(
   retailPath: string,
-): Promise<{ characters: CharacterData[]; accountsFound: string[] }> {
+): Promise<{
+  characters: CharacterData[];
+  accountsFound: string[];
+  fileStats: { totalBytes: number; createdAt: number; modifiedAt: number; totalSnapshots: number } | null;
+}> {
   const wtfAccountPath = join(retailPath, "WTF", "Account");
   let accounts: string[];
   try {
     accounts = await fs.promises.readdir(wtfAccountPath);
   } catch {
-    return { characters: [], accountsFound: [] };
+    return { characters: [], accountsFound: [], fileStats: null };
   }
 
   const accountsFound: string[] = [];
   const allChars = new Map<string, CharacterData>();
+  let totalBytes = 0;
+  let createdAt = Infinity;
+  let modifiedAt = 0;
 
   for (const account of accounts) {
     const luaPath = join(wtfAccountPath, account, "SavedVariables", "wow-dashboard.lua");
@@ -370,6 +380,15 @@ async function findAndParseAddonData(
     }
 
     accountsFound.push(account);
+
+    try {
+      const stat = await fs.promises.stat(luaPath);
+      totalBytes += stat.size;
+      createdAt = Math.min(createdAt, stat.birthtimeMs);
+      modifiedAt = Math.max(modifiedAt, stat.mtimeMs);
+    } catch {
+      // ignore stat errors
+    }
 
     let db: Record<string, unknown> | null = null;
     try {
@@ -397,7 +416,14 @@ async function findAndParseAddonData(
     }
   }
 
-  return { characters: Array.from(allChars.values()), accountsFound };
+  const characters = Array.from(allChars.values());
+  const totalSnapshots = characters.reduce((sum, c) => sum + c.snapshots.length, 0);
+  const fileStats =
+    accountsFound.length > 0
+      ? { totalBytes, createdAt, modifiedAt, totalSnapshots }
+      : null;
+
+  return { characters, accountsFound, fileStats };
 }
 
 // ─── Window ───────────────────────────────────────────────────────────────────
@@ -559,6 +585,37 @@ ipcMain.handle("wow:readAddonData", async (_, retailPath: string) => {
   return findAndParseAddonData(retailPath);
 });
 
+function stopAddonWatcher() {
+  if (addonWatchDebounce) {
+    clearTimeout(addonWatchDebounce);
+    addonWatchDebounce = null;
+  }
+  if (addonWatcher) {
+    addonWatcher.close();
+    addonWatcher = null;
+  }
+}
+
+ipcMain.handle("wow:watchAddonFile", (_, retailPath: string) => {
+  stopAddonWatcher();
+  const watchPath = join(retailPath, "WTF", "Account");
+  try {
+    addonWatcher = fs.watch(watchPath, { recursive: true }, (_event, filename) => {
+      if (!filename?.endsWith("wow-dashboard.lua")) return;
+      if (addonWatchDebounce) clearTimeout(addonWatchDebounce);
+      addonWatchDebounce = setTimeout(() => {
+        mainWindow?.webContents.send("wow:addonFileChanged");
+      }, 2000);
+    });
+  } catch (e) {
+    console.warn("[wow-dashboard] Failed to watch addon file:", e);
+  }
+});
+
+ipcMain.handle("wow:unwatchAddonFile", () => {
+  stopAddonWatcher();
+});
+
 // Addon installation
 function downloadFile(url: string, destPath: string): Promise<void> {
   return new Promise<void>((resolve, reject) => {
@@ -697,6 +754,8 @@ ipcMain.handle("settings:getAppSettings", async () => {
   return {
     closeBehavior: (s.closeBehavior as string) ?? "tray",
     autostart: (s.autostart as boolean) ?? false,
+    launchMinimized: (s.launchMinimized as boolean) ?? true,
+    lastSyncedAt: (s.lastSyncedAt as number) ?? 0,
   };
 });
 
@@ -717,6 +776,19 @@ ipcMain.handle("settings:setAutostart", async (_, value: boolean) => {
   }
 });
 
+ipcMain.handle("settings:setLaunchMinimized", async (_, value: boolean) => {
+  launchMinimizedCache = value;
+  const s = await getSettings();
+  s.launchMinimized = value;
+  await saveSettings(s);
+});
+
+ipcMain.handle("settings:setLastSyncedAt", async (_, value: number) => {
+  const s = await getSettings();
+  s.lastSyncedAt = value;
+  await saveSettings(s);
+});
+
 // ─── App lifecycle ────────────────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
@@ -724,8 +796,12 @@ app.whenReady().then(async () => {
   // the synchronous close handler has the correct value from the very first close event.
   const settings = await getSettings();
   closeBehaviorCache = (settings.closeBehavior as "tray" | "exit") ?? "tray";
+  launchMinimizedCache = (settings.launchMinimized as boolean) ?? true;
   if (process.platform === "win32") {
     app.setLoginItemSettings({ openAtLogin: (settings.autostart as boolean) ?? false });
+    if (!launchMinimizedCache) {
+      pendingWindowReveal = true;
+    }
   }
 
   createWindow();
@@ -762,6 +838,7 @@ app.whenReady().then(async () => {
 
 app.on("before-quit", () => {
   isQuitting = true;
+  stopAddonWatcher();
 });
 
 app.on("window-all-closed", () => {

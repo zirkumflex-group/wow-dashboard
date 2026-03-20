@@ -65,16 +65,22 @@ declare global {
         readAddonData: (retailPath: string) => Promise<{
           characters: CharacterData[];
           accountsFound: string[];
+          fileStats: { totalBytes: number; createdAt: number; modifiedAt: number; totalSnapshots: number } | null;
         }>;
         checkAddonInstalled: (retailPath: string) => Promise<boolean>;
         getInstalledAddonVersion: (retailPath: string) => Promise<string | null>;
         installAddon: (retailPath: string, downloadUrl: string) => Promise<void>;
         getLatestAddonRelease: () => Promise<{ url: string; version: string }>;
+        watchAddonFile: (retailPath: string) => Promise<void>;
+        unwatchAddonFile: () => Promise<void>;
+        onAddonFileChanged: (cb: () => void) => void;
       };
       settings: {
-        getAppSettings: () => Promise<{ closeBehavior: "tray" | "exit"; autostart: boolean }>;
+        getAppSettings: () => Promise<{ closeBehavior: "tray" | "exit"; autostart: boolean; launchMinimized: boolean; lastSyncedAt: number }>;
         setCloseBehavior: (value: "tray" | "exit") => Promise<void>;
         setAutostart: (value: boolean) => Promise<void>;
+        setLaunchMinimized: (value: boolean) => Promise<void>;
+        setLastSyncedAt: (value: number) => Promise<void>;
       };
       openExternal: (url: string) => Promise<void>;
       getVersion: () => Promise<string>;
@@ -184,6 +190,20 @@ function formatTime(s: number) {
   return `${m}:${sec}`;
 }
 
+function formatBytes(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatDate(ms: number) {
+  return new Date(ms).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
+
+function formatDateTime(ms: number) {
+  return new Date(ms).toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
 // ---------------------------------------------------------------------------
 // Components
 // ---------------------------------------------------------------------------
@@ -273,6 +293,8 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
   const [retailPath, setRetailPath] = useState<string | null>(null);
   const [closeBehavior, setCloseBehavior] = useState<"tray" | "exit">("tray");
   const [autostart, setAutostart] = useState(false);
+  const [launchMinimized, setLaunchMinimized] = useState(true);
+  const [lastSyncedAt, setLastSyncedAt] = useState(0);
   const [addonInstalled, setAddonInstalled] = useState<boolean | null>(null);
   const [addonVersion, setAddonVersion] = useState<string | null>(null);
   const [latestAddonVersion, setLatestAddonVersion] = useState<string | null>(null);
@@ -284,6 +306,13 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
 
   // Upload / file status
   const [fileSnapshotCount, setFileSnapshotCount] = useState<number | null>(null);
+  const [watchingFile, setWatchingFile] = useState(false);
+  const [addonFileStats, setAddonFileStats] = useState<{
+    totalBytes: number;
+    createdAt: number;
+    modifiedAt: number;
+    totalSnapshots: number;
+  } | null>(null);
   const [lastUploadResult, setLastUploadResult] = useState<{
     newChars: number;
     newSnapshots: number;
@@ -292,6 +321,10 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
   const [uploadWarn, setUploadWarn] = useState<string | null>(null);
 
   const syncingRef = useRef(false);
+  const lastSyncedAtRef = useRef(0);
+  // Always points to the latest doUpload closure so stale-closure effects stay current.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const doUploadRef = useRef<() => Promise<void>>(null as any);
 
   // Load persisted settings on mount
   useEffect(() => {
@@ -300,6 +333,9 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
     window.electron.settings.getAppSettings().then((s) => {
       setCloseBehavior(s.closeBehavior);
       setAutostart(s.autostart);
+      setLaunchMinimized(s.launchMinimized);
+      setLastSyncedAt(s.lastSyncedAt);
+      lastSyncedAtRef.current = s.lastSyncedAt;
     });
     window.electron.updates.onUpdateAvailable((v) => setAppUpdateAvailable(v));
     window.electron.updates.onUpdateDownloaded((v) => setAppUpdateDownloaded(v));
@@ -315,18 +351,28 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
       setAddonInstalled(null);
       setAddonVersion(null);
       setFileSnapshotCount(null);
+      setAddonFileStats(null);
+      window.electron.wow.unwatchAddonFile();
+      setWatchingFile(false);
       return;
     }
+    window.electron.wow.watchAddonFile(retailPath);
+    setWatchingFile(true);
     window.electron.wow.checkAddonInstalled(retailPath).then(setAddonInstalled);
     window.electron.wow.getInstalledAddonVersion(retailPath).then(setAddonVersion);
-    // Read file to get pending snapshot count
+    // Read file to get pending snapshot count and file stats
     window.electron.wow
       .readAddonData(retailPath)
-      .then(({ characters: chars }) => {
-        const total = chars.reduce((sum, c) => sum + c.snapshots.length, 0);
-        setFileSnapshotCount(total);
+      .then(({ characters: chars, fileStats }) => {
+        const sinceTs = lastSyncedAtRef.current - 60;
+        const pending = chars.reduce(
+          (sum, c) => sum + c.snapshots.filter((s) => s.takenAt > sinceTs).length,
+          0,
+        );
+        setFileSnapshotCount(pending);
+        setAddonFileStats(fileStats);
       })
-      .catch(() => setFileSnapshotCount(0));
+      .catch(() => { setFileSnapshotCount(0); setAddonFileStats(null); });
   }, [retailPath]);
 
   async function handleCloseBehaviorChange(value: boolean) {
@@ -338,6 +384,11 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
   async function handleAutostartChange(value: boolean) {
     setAutostart(value);
     await window.electron.settings.setAutostart(value);
+  }
+
+  async function handleLaunchMinimizedChange(value: boolean) {
+    setLaunchMinimized(value);
+    await window.electron.settings.setLaunchMinimized(value);
   }
 
   async function handleInstallAddon() {
@@ -378,11 +429,9 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
     setUploadWarn(null);
     try {
       if (retailPath) {
-        const { characters: addonChars, accountsFound } =
+        const { characters: addonChars, accountsFound, fileStats } =
           await window.electron.wow.readAddonData(retailPath);
-
-        const total = addonChars.reduce((sum, c) => sum + c.snapshots.length, 0);
-        setFileSnapshotCount(total);
+        if (fileStats) setAddonFileStats(fileStats);
 
         if (addonChars.length === 0) {
           setUploadWarn(
@@ -391,8 +440,25 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
               : `Parsed ${accountsFound.length} account(s) but no characters found`,
           );
         } else {
-          const result = await uploadAddon({ characters: addonChars });
-          setLastUploadResult({ newChars: result.newChars, newSnapshots: result.newSnapshots });
+          // Only send snapshots newer than the last successful sync (60s buffer for clock skew).
+          const sinceTs = lastSyncedAtRef.current - 60;
+          const pendingChars = addonChars
+            .map((c) => ({ ...c, snapshots: c.snapshots.filter((s) => s.takenAt > sinceTs) }))
+            .filter((c) => c.snapshots.length > 0);
+
+          const pendingCount = pendingChars.reduce((sum, c) => sum + c.snapshots.length, 0);
+          setFileSnapshotCount(pendingCount);
+
+          if (pendingChars.length > 0) {
+            const result = await uploadAddon({ characters: pendingChars });
+            setLastUploadResult({ newChars: result.newChars, newSnapshots: result.newSnapshots });
+            const now = Math.floor(Date.now() / 1000);
+            setLastSyncedAt(now);
+            lastSyncedAtRef.current = now;
+            await window.electron.settings.setLastSyncedAt(now);
+          } else {
+            setLastUploadResult({ newChars: 0, newSnapshots: 0 });
+          }
         }
       } else {
         setUploadWarn("No WoW folder set — select the folder first");
@@ -409,19 +475,28 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
     }
   }
 
-  // 15-minute countdown; auto-upload at 0.
+  // Keep ref current so effects with empty deps always call the latest closure.
+  doUploadRef.current = doUpload;
+
+  // 15-minute fallback sync; primary sync is triggered by the file watcher.
   useEffect(() => {
     let count = 15 * 60;
     const id = setInterval(() => {
       count -= 1;
       if (count <= 0) {
-        doUpload();
+        doUploadRef.current();
         count = 15 * 60;
       }
       setTimeLeft(count);
     }, 1000);
     return () => clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Register file-change listener once on mount.
+  useEffect(() => {
+    window.electron.wow.onAddonFileChanged(() => {
+      doUploadRef.current();
+    });
   }, []);
 
   const retailPathValid = retailPath ? isValidRetailPath(retailPath) : true;
@@ -548,11 +623,16 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
         {/* Upload / Data Sync */}
         <div className="rounded-lg border border-gray-800 p-4 space-y-3">
           <div className="flex items-center justify-between">
-            <h2 className="font-medium text-gray-300">Sync</h2>
+            <div className="flex items-center gap-2">
+              <h2 className="font-medium text-gray-300">Sync</h2>
+              {watchingFile && (
+                <span className="flex items-center gap-1.5 text-xs text-green-400">
+                  <span className="inline-block h-2 w-2 rounded-full bg-green-400 animate-pulse" />
+                  Watching
+                </span>
+              )}
+            </div>
             <div className="flex items-center gap-3">
-              <span className="text-sm text-gray-400">
-                Next sync in <span className="font-mono text-white">{formatTime(timeLeft)}</span>
-              </span>
               <button
                 onClick={() => doUpload()}
                 disabled={syncing}
@@ -601,6 +681,24 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
               {fileSnapshotCount} snapshot{fileSnapshotCount !== 1 ? "s" : ""} pending upload
             </p>
           )}
+
+          {/* Addon file metadata */}
+          {addonFileStats && (
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1 pt-1 text-xs text-gray-500">
+              <span>Total snapshots</span>
+              <span className="text-gray-400">{addonFileStats.totalSnapshots.toLocaleString()}</span>
+              <span>File size</span>
+              <span className="text-gray-400">{formatBytes(addonFileStats.totalBytes)}</span>
+              <span>Created</span>
+              <span className="text-gray-400">{formatDate(addonFileStats.createdAt)}</span>
+              <span>Last modified</span>
+              <span className="text-gray-400">{formatDate(addonFileStats.modifiedAt)}</span>
+              <span>Last synced</span>
+              <span className="text-gray-400">
+                {lastSyncedAt > 0 ? formatDateTime(lastSyncedAt * 1000) : "Never"}
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Settings */}
@@ -615,6 +713,11 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
             checked={autostart}
             onChange={handleAutostartChange}
             label="Launch on Windows login"
+          />
+          <SwitchRow
+            checked={launchMinimized}
+            onChange={handleLaunchMinimizedChange}
+            label="Launch minimized to tray"
           />
         </div>
 
