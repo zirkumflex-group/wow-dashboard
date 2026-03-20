@@ -370,7 +370,7 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
     }
   }
 
-  async function doUpload(source: "manual" | "auto") {
+  async function doUpload() {
     if (syncingRef.current) return;
     syncingRef.current = true;
     setSyncing(true);
@@ -415,7 +415,7 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
     const id = setInterval(() => {
       count -= 1;
       if (count <= 0) {
-        doUpload("auto");
+        doUpload();
         count = 15 * 60;
       }
       setTimeLeft(count);
@@ -548,20 +548,23 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
         {/* Upload / Data Sync */}
         <div className="rounded-lg border border-gray-800 p-4 space-y-3">
           <div className="flex items-center justify-between">
-            <h2 className="font-medium text-gray-300">Upload</h2>
+            <h2 className="font-medium text-gray-300">Sync</h2>
             <div className="flex items-center gap-3">
               <span className="text-sm text-gray-400">
-                Next upload in <span className="font-mono text-white">{formatTime(timeLeft)}</span>
+                Next sync in <span className="font-mono text-white">{formatTime(timeLeft)}</span>
               </span>
               <button
-                onClick={() => doUpload("manual")}
+                onClick={() => doUpload()}
                 disabled={syncing}
                 className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
               >
-                {syncing ? "Uploading…" : "Force Upload"}
+                {syncing ? "Syncing..." : "Sync Now"}
               </button>
             </div>
           </div>
+          <p className="text-xs text-gray-500">
+            Manual sync uploads addon snapshots and refreshes Battle.net character data.
+          </p>
 
           {/* Status area */}
           {uploadError ? (
@@ -573,7 +576,7 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
               {uploadWarn}
             </div>
           ) : syncing ? (
-            <p className="text-sm text-gray-400">Uploading snapshots…</p>
+            <p className="text-sm text-gray-400">Syncing data...</p>
           ) : lastUploadResult !== null ? (
             <div className="flex items-center gap-2">
               <span className="text-green-400 text-base">✓</span>
@@ -594,18 +597,9 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
               No snapshots found in file. Run the addon in-game first.
             </p>
           ) : (
-            <div className="flex items-center justify-between">
-              <p className="text-sm text-yellow-400">
-                {fileSnapshotCount} snapshot{fileSnapshotCount !== 1 ? "s" : ""} pending upload
-              </p>
-              <button
-                onClick={() => doUpload("manual")}
-                disabled={syncing}
-                className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
-              >
-                Upload Now
-              </button>
-            </div>
+            <p className="text-sm text-yellow-400">
+              {fileSnapshotCount} snapshot{fileSnapshotCount !== 1 ? "s" : ""} pending upload
+            </p>
           )}
         </div>
 
