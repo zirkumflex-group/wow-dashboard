@@ -391,7 +391,9 @@ function PlayersTab() {
                   <RankCell rank={i} />
                 </TableCell>
                 <TableCell>
-                  <p className="font-semibold">Player {i + 1}</p>
+                  <p className="font-semibold">
+                    {entry.battleTag ? entry.battleTag.split("#")[0] : `Player ${i + 1}`}
+                  </p>
                   <p className="text-muted-foreground text-xs">
                     {entry.characterCount} character{entry.characterCount !== 1 ? "s" : ""}
                   </p>

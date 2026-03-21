@@ -171,7 +171,7 @@ export const getPlayerScoreboard = query({
 
     const playerMap = new Map<
       string,
-      { totalPlaytimeSeconds: number; totalGold: number; characterCount: number }
+      { battleTag: string; totalPlaytimeSeconds: number; totalGold: number; characterCount: number }
     >();
 
     await Promise.all(
@@ -191,7 +191,9 @@ export const getPlayerScoreboard = query({
           existing.totalGold += snapshot.gold;
           existing.characterCount += 1;
         } else {
+          const player = await ctx.db.get(char.playerId);
           playerMap.set(playerId, {
+            battleTag: player?.battleTag ?? "",
             totalPlaytimeSeconds: snapshot.playtimeSeconds,
             totalGold: snapshot.gold,
             characterCount: 1,
