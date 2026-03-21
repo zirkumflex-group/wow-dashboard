@@ -25,8 +25,13 @@
     "lefthook": "^2.0.13",
     "oxfmt": "^0.26.0",
     "oxlint": "^1.41.0",
-    "turbo": "^2.8.12",
+    "turbo": "^2.8.20",
     "typescript": "^5"
   },
-  "packageManager": "pnpm@10.11.0"
+  "packageManager": "pnpm@10.11.0",
+  "pnpm": {
+    "overrides": {
+      "tar": ">=7.5.11"
+    }
+  }
 }

@@ -3,6 +3,7 @@ import { v } from "convex/values";
 import { components, internal } from "./_generated/api";
 import { internalMutation, mutation, query } from "./_generated/server";
 import { authComponent } from "./auth";
+import { rateLimiter } from "./rateLimiter";
 
 export const upsertFromBattleNet = internalMutation({
   args: {
@@ -61,6 +62,11 @@ export const resyncCharacters = mutation({
   handler: async (ctx) => {
     const authUser = await authComponent.safeGetAuthUser(ctx);
     if (!authUser) return;
+
+    await rateLimiter.limit(ctx, "battlenetSync", {
+      key: authUser._id as string,
+      throws: true,
+    });
 
     const account = await ctx.runQuery(components.betterAuth.adapter.findOne, {
       model: "account",
@@ -121,7 +127,6 @@ export const getScoreboard = query({
           .first();
         if (!snapshot) return null;
 
-        const player = await ctx.db.get(char.playerId);
         return {
           characterId: char._id,
           name: char.name,
@@ -130,7 +135,6 @@ export const getScoreboard = query({
           class: char.class,
           race: char.race,
           faction: char.faction,
-          battleTag: player?.battleTag ?? "Unknown",
           mythicPlusScore: snapshot.mythicPlusScore,
           itemLevel: snapshot.itemLevel,
           spec: snapshot.spec,
@@ -157,7 +161,7 @@ export const getPlayerScoreboard = query({
 
     const playerMap = new Map<
       string,
-      { battleTag: string; totalPlaytimeSeconds: number; totalGold: number; characterCount: number }
+      { totalPlaytimeSeconds: number; totalGold: number; characterCount: number }
     >();
 
     await Promise.all(
@@ -169,8 +173,6 @@ export const getPlayerScoreboard = query({
           .first();
         if (!snapshot) return;
 
-        const player = await ctx.db.get(char.playerId);
-        const battleTag = player?.battleTag ?? "Unknown";
         const playerId = char.playerId.toString();
 
         const existing = playerMap.get(playerId);
@@ -180,7 +182,6 @@ export const getPlayerScoreboard = query({
           existing.characterCount += 1;
         } else {
           playerMap.set(playerId, {
-            battleTag,
             totalPlaytimeSeconds: snapshot.playtimeSeconds,
             totalGold: snapshot.gold,
             characterCount: 1,

@@ -9,11 +9,12 @@ import type { DataModel } from "./_generated/dataModel";
 import { query } from "./_generated/server";
 import authConfig from "./auth.config";
 
-const siteUrl = process.env.SITE_URL;
-if (!siteUrl) throw new Error("SITE_URL environment variable is required");
 
-const battlenetClientId = process.env.BATTLENET_CLIENT_ID;
-if (!battlenetClientId) throw new Error("BATTLENET_CLIENT_ID environment variable is required");
+if (!process.env.SITE_URL) throw new Error("SITE_URL environment variable is required");
+const siteUrl = process.env.SITE_URL!;
+
+if (!process.env.BATTLENET_CLIENT_ID) throw new Error("BATTLENET_CLIENT_ID environment variable is required");
+const battlenetClientId = process.env.BATTLENET_CLIENT_ID!;
 
 const battlenetClientSecret = process.env.BATTLENET_CLIENT_SECRET;
 if (!battlenetClientSecret)

@@ -1,4 +1,5 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { toast } from "sonner";
 import { api } from "@wow-dashboard/backend/convex/_generated/api";
 import { Badge } from "@wow-dashboard/ui/components/badge";
 import { Button } from "@wow-dashboard/ui/components/button";
@@ -408,6 +409,11 @@ function Dashboard() {
     try {
       await resync();
       startCooldown();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes("RateLimited") || msg.includes("Too many")) {
+        toast.error("Too many requests — please wait a moment before trying again.");
+      }
     } finally {
       setSyncing(false);
     }

@@ -505,7 +505,12 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
       // Resync from Battle.net
       await resync();
     } catch (e) {
-      setUploadError(`Upload failed: ${e instanceof Error ? e.message : String(e)}`);
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes("RateLimited") || msg.includes("Too many")) {
+        setUploadError("Too many requests — please wait a moment before trying again.");
+      } else {
+        setUploadError(`Upload failed: ${msg}`);
+      }
     } finally {
       syncingRef.current = false;
       setSyncing(false);
@@ -820,6 +825,11 @@ export default function App() {
         <Dashboard onLogout={handleLogout} />
       ) : (
         <LoginScreen onLogin={handleLogin} />
+      )}
+      {import.meta.env.DEV && (
+        <div className="fixed bottom-2 right-2 z-[9999] rounded bg-orange-500 px-2 py-0.5 text-xs font-bold text-white select-none pointer-events-none opacity-80">
+          DEV
+        </div>
       )}
     </ConvexProviderWithAuth>
   );

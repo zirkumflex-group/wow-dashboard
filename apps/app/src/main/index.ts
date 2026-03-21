@@ -443,6 +443,7 @@ function createWindow(): void {
     webPreferences: {
       preload: join(__dirname, "../preload/index.js"),
       sandbox: true,
+      nodeIntegration: false,
     },
   });
 
@@ -486,7 +487,8 @@ function handleDeepLink(url: string): void {
   try {
     const parsed = new URL(url);
     if (parsed.hostname === "auth") {
-      const token = parsed.searchParams.get("token");
+      const fragment = parsed.hash.slice(1); // remove leading #
+      const token = new URLSearchParams(fragment).get("token");
       if (token && pendingLoginResolve) {
         pendingLoginResolve(token);
         pendingLoginResolve = null;

@@ -2,6 +2,7 @@ import { v } from "convex/values";
 
 import { mutation } from "./_generated/server";
 import { authComponent } from "./auth";
+import { rateLimiter } from "./rateLimiter";
 import { specValidator } from "./schemas/snapshots";
 
 const currenciesValidator = v.object({
@@ -52,6 +53,11 @@ export const ingestAddonData = mutation({
   handler: async (ctx, { characters }) => {
     const authUser = await authComponent.safeGetAuthUser(ctx);
     if (!authUser) throw new Error("Not authenticated");
+
+    await rateLimiter.limit(ctx, "addonIngest", {
+      key: authUser._id as string,
+      throws: true,
+    });
 
     const player = await ctx.db
       .query("players")

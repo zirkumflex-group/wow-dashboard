@@ -16,7 +16,7 @@ function ElectronCallback() {
       .then((data: unknown) => {
         const token = (data as { token?: string })?.token;
         if (token) {
-          setDeepLinkUrl(`wow-dashboard://auth?token=${encodeURIComponent(token)}`);
+          setDeepLinkUrl(`wow-dashboard://auth#token=${encodeURIComponent(token)}`);
         } else {
           setError(true);
         }

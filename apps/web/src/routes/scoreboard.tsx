@@ -260,7 +260,7 @@ function CharactersTab() {
                             entry.faction === "alliance" ? "text-blue-400" : "text-red-400"
                           }
                         >
-                          {entry.battleTag}
+                          {entry.faction}
                         </span>
                       </div>
                     </Link>
@@ -383,12 +383,12 @@ function PlayersTab() {
           </TableHeader>
           <TableBody>
             {sorted.map((entry, i) => (
-              <TableRow key={entry.battleTag}>
+              <TableRow key={i}>
                 <TableCell className="w-10">
                   <RankCell rank={i} />
                 </TableCell>
                 <TableCell>
-                  <p className="font-semibold">{entry.battleTag}</p>
+                  <p className="font-semibold">Player {i + 1}</p>
                   <p className="text-muted-foreground text-xs">
                     {entry.characterCount} character{entry.characterCount !== 1 ? "s" : ""}
                   </p>

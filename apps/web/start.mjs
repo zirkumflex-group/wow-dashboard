@@ -7,6 +7,28 @@ import { fileURLToPath } from "node:url";
 import { serve } from "srvx/node";
 import server from "./dist/server/server.js";
 
+// Security headers applied to every response.
+// unsafe-inline for script-src is required for the theme anti-flash inline script.
+const SECURITY_HEADERS = {
+  "X-Frame-Options": "DENY",
+  "X-Content-Type-Options": "nosniff",
+  "Referrer-Policy": "strict-origin-when-cross-origin",
+  "Content-Security-Policy":
+    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' *.convex.cloud *.convex.site wss://*.convex.cloud;",
+};
+
+function addSecurityHeaders(response) {
+  const headers = new Headers(response.headers);
+  for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
+    headers.set(name, value);
+  }
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 const ROOT = fileURLToPath(new URL(".", import.meta.url));
 const CLIENT_DIR = join(ROOT, "dist/client");
 
@@ -33,18 +55,18 @@ serve({
     try {
       const file = await readFile(join(CLIENT_DIR, pathname));
       const type = MIME[extname(pathname)] ?? "application/octet-stream";
-      return new Response(file, {
+      return addSecurityHeaders(new Response(file, {
         headers: {
           "content-type": type,
           "cache-control": pathname.startsWith("/assets/")
             ? "public, max-age=31536000, immutable"
             : "public, max-age=3600",
         },
-      });
+      }));
     } catch {
       // Not a static file — fall through to SSR.
     }
 
-    return server.fetch(request);
+    return addSecurityHeaders(await server.fetch(request));
   },
 });
