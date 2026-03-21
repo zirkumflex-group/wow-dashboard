@@ -3,7 +3,7 @@ import { api } from "@wow-dashboard/backend/convex/_generated/api";
 import type { Id } from "@wow-dashboard/backend/convex/_generated/dataModel";
 import { Badge } from "@wow-dashboard/ui/components/badge";
 import { Button } from "@wow-dashboard/ui/components/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@wow-dashboard/ui/components/card";
+import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@wow-dashboard/ui/components/card";
 import {
   ChartContainer,
   ChartLegend,
@@ -138,6 +138,47 @@ function formatDateShort(takenAtSeconds: number) {
     month: "short",
     day: "numeric",
   });
+}
+
+function xAxisTickFormatter(ts: number, frame: TimeFrame): string {
+  const d = new Date(ts * 1000);
+  if (frame === "12h" || frame === "24h") {
+    return d.toLocaleTimeString(undefined, { hour: "numeric", hour12: true });
+  }
+  if (frame === "1d" || frame === "3d") {
+    return (
+      d.toLocaleDateString(undefined, { weekday: "short" }) +
+      " " +
+      d.toLocaleTimeString(undefined, { hour: "numeric", hour12: true })
+    );
+  }
+  if (frame === "1w" || frame === "2w") {
+    return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+  }
+  return formatDateShort(ts);
+}
+
+function xTooltipLabelFormatter(ts: number, frame: TimeFrame): string {
+  const d = new Date(ts * 1000);
+  if (frame === "12h" || frame === "24h") {
+    return d.toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    });
+  }
+  if (frame === "1d" || frame === "3d") {
+    return d.toLocaleString(undefined, {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      hour12: true,
+    });
+  }
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
 /** Parse gold value stored as GGGGG.SSCC */
@@ -319,31 +360,43 @@ function groupSnapshotsAuto(snapshots: Snapshot[]): Snapshot[] {
 
 // ---- Chart configs ----
 
+// Explicit oklch palette spread evenly across the hue wheel so every series
+// is visually distinct regardless of active theme.
+const C = {
+  blue:   "oklch(0.72 0.20 245)",  // 245° – blue
+  red:    "oklch(0.72 0.22 20)",   //  20° – red-orange
+  gold:   "oklch(0.84 0.18 80)",   //  80° – amber/gold
+  purple: "oklch(0.73 0.20 295)",  // 295° – violet
+  teal:   "oklch(0.75 0.18 190)",  // 190° – teal/cyan
+  green:  "oklch(0.76 0.18 155)",  // 155° – green
+  pink:   "oklch(0.75 0.18 330)",  // 330° – pink/rose
+} as const;
+
 const ilvlConfig: ChartConfig = {
-  itemLevel: { label: "Item Level", color: "var(--chart-1)" },
+  itemLevel: { label: "Item Level", color: C.blue },
 };
 const mplusConfig: ChartConfig = {
-  mythicPlusScore: { label: "M+ Score", color: "var(--chart-2)" },
+  mythicPlusScore: { label: "M+ Score", color: C.red },
 };
 const goldConfig: ChartConfig = {
-  gold: { label: "Gold", color: "oklch(0.85 0.15 85)" },
+  gold: { label: "Gold", color: C.gold },
 };
 const playtimeConfig: ChartConfig = {
-  playtimeHours: { label: "Playtime", color: "var(--chart-5)" },
+  playtimeHours: { label: "Playtime", color: C.purple },
 };
 const secondaryStatsConfig: ChartConfig = {
-  critPercent: { label: "Crit", color: "var(--chart-1)" },
-  hastePercent: { label: "Haste", color: "var(--chart-2)" },
-  masteryPercent: { label: "Mastery", color: "var(--chart-3)" },
-  versatilityPercent: { label: "Versatility", color: "var(--chart-4)" },
+  critPercent:        { label: "Crit",        color: C.red    },
+  hastePercent:       { label: "Haste",       color: C.green  },
+  masteryPercent:     { label: "Mastery",     color: C.blue   },
+  versatilityPercent: { label: "Versatility", color: C.purple },
 };
 const currenciesConfig: ChartConfig = {
-  adventurerDawncrest: { label: "Adventurer", color: "var(--chart-1)" },
-  veteranDawncrest: { label: "Veteran", color: "var(--chart-2)" },
-  championDawncrest: { label: "Champion", color: "var(--chart-3)" },
-  heroDawncrest: { label: "Hero", color: "var(--chart-4)" },
-  mythDawncrest: { label: "Myth", color: "var(--chart-5)" },
-  radiantSparkDust: { label: "Spark Dust", color: "oklch(0.75 0.18 310)" },
+  adventurerDawncrest: { label: "Adventurer", color: C.blue   },
+  veteranDawncrest:    { label: "Veteran",    color: C.teal   },
+  championDawncrest:   { label: "Champion",   color: C.green  },
+  heroDawncrest:       { label: "Hero",       color: C.gold   },
+  mythDawncrest:       { label: "Myth",       color: C.red    },
+  radiantSparkDust:    { label: "Spark Dust", color: C.pink   },
 };
 
 // ---- Reusable line chart ----
@@ -356,6 +409,10 @@ function SnapshotLineChart({
   className,
   showLegend,
   yPadMaxFactor,
+  yDomainOverride,
+  xLabel,
+  yLabel,
+  timeFrame,
 }: {
   /** data points — `date` must be a Unix timestamp (seconds) */
   data: Record<string, number>[];
@@ -365,6 +422,10 @@ function SnapshotLineChart({
   className?: string;
   showLegend?: boolean;
   yPadMaxFactor?: number;
+  yDomainOverride?: [number, number];
+  xLabel?: string;
+  yLabel?: string;
+  timeFrame?: TimeFrame;
 }) {
   if (data.length < 2) {
     return (
@@ -391,11 +452,11 @@ function SnapshotLineChart({
       : range > 0
         ? range * 0.1
         : Math.abs(maxVal) * 0.05 || 1;
-  const yDomain: [number, number] = [Math.floor(minVal - pad), Math.ceil(maxVal + pad)];
+  const yDomain: [number, number] = yDomainOverride ?? [Math.floor(minVal - pad), Math.ceil(maxVal + pad)];
 
   return (
     <ChartContainer config={config} className={`w-full ${className ?? "h-[200px]"}`}>
-      <LineChart data={data} margin={{ top: 8, right: 8, left: 4, bottom: 8 }}>
+      <LineChart data={data} margin={{ top: 8, right: 8, left: yLabel ? 8 : 4, bottom: xLabel ? 24 : 8 }}>
         <CartesianGrid vertical={false} strokeOpacity={0.15} />
         <XAxis
           dataKey="date"
@@ -404,7 +465,8 @@ function SnapshotLineChart({
           tickMargin={6}
           tick={{ fontSize: 10 }}
           interval={xAxisInterval}
-          tickFormatter={(ts: number) => formatDateShort(ts)}
+          tickFormatter={(ts: number) => xAxisTickFormatter(ts, timeFrame ?? "all")}
+          label={xLabel ? { value: xLabel, position: "insideBottom", offset: -12, fontSize: 10, fill: "var(--muted-foreground)" } : undefined}
         />
         <YAxis
           tickLine={false}
@@ -412,19 +474,16 @@ function SnapshotLineChart({
           tickMargin={4}
           tick={{ fontSize: 10 }}
           tickFormatter={valueFormatter}
-          width={52}
+          width={yLabel ? 64 : 52}
           domain={yDomain}
+          allowDataOverflow={!!yDomainOverride}
+          label={yLabel ? { value: yLabel, angle: -90, position: "insideLeft", offset: 12, fontSize: 10, fill: "var(--muted-foreground)" } : undefined}
         />
         <ChartTooltip
           cursor={false}
           content={
             <ChartTooltipContent
-              labelFormatter={(value) => {
-                return new Date((value as number) * 1000).toLocaleDateString("en-US", {
-                  month: "short",
-                  day: "numeric",
-                });
-              }}
+              labelFormatter={(value) => xTooltipLabelFormatter(value as number, timeFrame ?? "all")}
               indicator="dot"
             />
           }
@@ -449,10 +508,12 @@ function SnapshotLineChart({
 
 // ---- Inline chart cards ----
 
-function IlvlChartCard({ snapshots }: { snapshots: Snapshot[] }) {
+function IlvlChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeFrame: TimeFrame }) {
   const [fullscreen, setFullscreen] = useState(false);
+  const [zoomed, setZoomed] = useState(false);
   const data = snapshots.map((s) => ({ date: s.takenAt, itemLevel: s.itemLevel }));
-  const lines = [{ key: "itemLevel", color: "var(--chart-1)" }];
+  const lines = [{ key: "itemLevel", color: C.blue }];
+  const yDomain: [number, number] = zoomed ? [200, 300] : [0, 300];
   return (
     <Card>
       <CardHeader className="pb-0">
@@ -461,26 +522,52 @@ function IlvlChartCard({ snapshots }: { snapshots: Snapshot[] }) {
             <Sword size={14} className="text-muted-foreground" />
             Item Level
           </CardTitle>
-          <FullscreenButton onClick={() => setFullscreen(true)} />
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1 rounded-md border text-xs overflow-hidden">
+              <button
+                className={`px-2 py-0.5 transition-colors ${!zoomed ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                onClick={() => setZoomed(false)}
+              >
+                0–300
+              </button>
+              <button
+                className={`px-2 py-0.5 transition-colors ${zoomed ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                onClick={() => setZoomed(true)}
+              >
+                200–300
+              </button>
+            </div>
+            <FullscreenButton onClick={() => setFullscreen(true)} />
+          </div>
         </div>
       </CardHeader>
       <CardContent>
         <SnapshotLineChart
+          key={yDomain.join(",")}
           data={data}
           lines={lines}
           config={ilvlConfig}
           valueFormatter={(v) => v.toFixed(1)}
+          yDomainOverride={yDomain}
+          xLabel="Date"
+          yLabel="Item Level"
+          timeFrame={timeFrame}
         />
       </CardContent>
       {fullscreen && (
         <FullscreenOverlay title="Item Level" onClose={() => setFullscreen(false)}>
           <SnapshotLineChart
+            key={yDomain.join(",")}
             data={data}
             lines={lines}
             config={ilvlConfig}
             valueFormatter={(v) => v.toFixed(1)}
             className="h-full"
             showLegend
+            yDomainOverride={yDomain}
+            xLabel="Date"
+            yLabel="Item Level"
+            timeFrame={timeFrame}
           />
         </FullscreenOverlay>
       )}
@@ -488,10 +575,12 @@ function IlvlChartCard({ snapshots }: { snapshots: Snapshot[] }) {
   );
 }
 
-function MplusChartCard({ snapshots }: { snapshots: Snapshot[] }) {
+function MplusChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeFrame: TimeFrame }) {
   const [fullscreen, setFullscreen] = useState(false);
+  const [zoomed, setZoomed] = useState(false);
   const data = snapshots.map((s) => ({ date: s.takenAt, mythicPlusScore: s.mythicPlusScore }));
-  const lines = [{ key: "mythicPlusScore", color: "var(--chart-2)" }];
+  const lines = [{ key: "mythicPlusScore", color: C.red }];
+  const yDomain: [number, number] = zoomed ? [2000, 4500] : [0, 4500];
   return (
     <Card>
       <CardHeader className="pb-0">
@@ -500,26 +589,52 @@ function MplusChartCard({ snapshots }: { snapshots: Snapshot[] }) {
             <Flame size={14} className="text-muted-foreground" />
             M+ Score
           </CardTitle>
-          <FullscreenButton onClick={() => setFullscreen(true)} />
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1 rounded-md border text-xs overflow-hidden">
+              <button
+                className={`px-2 py-0.5 transition-colors ${!zoomed ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                onClick={() => setZoomed(false)}
+              >
+                0–4500
+              </button>
+              <button
+                className={`px-2 py-0.5 transition-colors ${zoomed ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                onClick={() => setZoomed(true)}
+              >
+                2000–4500
+              </button>
+            </div>
+            <FullscreenButton onClick={() => setFullscreen(true)} />
+          </div>
         </div>
       </CardHeader>
       <CardContent>
         <SnapshotLineChart
+          key={yDomain.join(",")}
           data={data}
           lines={lines}
           config={mplusConfig}
           valueFormatter={(v) => v.toLocaleString()}
+          yDomainOverride={yDomain}
+          xLabel="Date"
+          yLabel="M+ Score"
+          timeFrame={timeFrame}
         />
       </CardContent>
       {fullscreen && (
         <FullscreenOverlay title="M+ Score" onClose={() => setFullscreen(false)}>
           <SnapshotLineChart
+            key={yDomain.join(",")}
             data={data}
             lines={lines}
             config={mplusConfig}
             valueFormatter={(v) => v.toLocaleString()}
             className="h-full"
             showLegend
+            yDomainOverride={yDomain}
+            xLabel="Date"
+            yLabel="M+ Score"
+            timeFrame={timeFrame}
           />
         </FullscreenOverlay>
       )}
@@ -527,10 +642,10 @@ function MplusChartCard({ snapshots }: { snapshots: Snapshot[] }) {
   );
 }
 
-function GoldChartCard({ snapshots }: { snapshots: Snapshot[] }) {
+function GoldChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeFrame: TimeFrame }) {
   const [fullscreen, setFullscreen] = useState(false);
   const data = snapshots.map((s) => ({ date: s.takenAt, gold: s.gold }));
-  const lines = [{ key: "gold", color: "oklch(0.85 0.15 85)" }];
+  const lines = [{ key: "gold", color: C.gold }];
   return (
     <Card className="sm:col-span-2">
       <CardHeader className="pb-0">
@@ -548,7 +663,10 @@ function GoldChartCard({ snapshots }: { snapshots: Snapshot[] }) {
           lines={lines}
           config={goldConfig}
           valueFormatter={(v) => `${goldUnits(v).toLocaleString()}g`}
-          yPadMaxFactor={0.01}
+          yDomainOverride={[0, 1000000]}
+          xLabel="Date"
+          yLabel="Gold"
+          timeFrame={timeFrame}
         />
       </CardContent>
       {fullscreen && (
@@ -558,9 +676,12 @@ function GoldChartCard({ snapshots }: { snapshots: Snapshot[] }) {
             lines={lines}
             config={goldConfig}
             valueFormatter={(v) => `${goldUnits(v).toLocaleString()}g`}
-            yPadMaxFactor={0.01}
+            yDomainOverride={[0, 1000000]}
             className="h-full"
             showLegend
+            xLabel="Date"
+            yLabel="Gold"
+            timeFrame={timeFrame}
           />
         </FullscreenOverlay>
       )}
@@ -571,10 +692,10 @@ function GoldChartCard({ snapshots }: { snapshots: Snapshot[] }) {
 // ---- Combat Stats card ----
 
 const radarConfig: ChartConfig = {
-  value: { label: "Value", color: "var(--chart-1)" },
+  value: { label: "Value", color: C.blue },
 };
 
-function CombatStatsCard({ snapshots }: { snapshots: Snapshot[] }) {
+function CombatStatsCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeFrame: TimeFrame }) {
   const [mode, setMode] = useState<"current" | "chart" | "radar">("current");
   const [fullscreen, setFullscreen] = useState(false);
   const latest = snapshots[snapshots.length - 1];
@@ -605,10 +726,10 @@ function CombatStatsCard({ snapshots }: { snapshots: Snapshot[] }) {
   ];
 
   const chartLines = [
-    { key: "critPercent", color: "var(--chart-1)" },
-    { key: "hastePercent", color: "var(--chart-2)" },
-    { key: "masteryPercent", color: "var(--chart-3)" },
-    { key: "versatilityPercent", color: "var(--chart-4)" },
+    { key: "critPercent",        color: C.red    },
+    { key: "hastePercent",       color: C.green  },
+    { key: "masteryPercent",     color: C.blue   },
+    { key: "versatilityPercent", color: C.purple },
   ];
 
   return (
@@ -658,6 +779,7 @@ function CombatStatsCard({ snapshots }: { snapshots: Snapshot[] }) {
               config={secondaryStatsConfig}
               valueFormatter={(v) => `${v.toFixed(1)}%`}
               showLegend
+              timeFrame={timeFrame}
             />
           </TabsContent>
           <TabsContent value="radar">
@@ -668,11 +790,11 @@ function CombatStatsCard({ snapshots }: { snapshots: Snapshot[] }) {
                 <ChartTooltip cursor={false} content={<ChartTooltipContent indicator="dot" />} />
                 <Radar
                   dataKey="value"
-                  fill="var(--chart-1)"
+                  fill={C.blue}
                   fillOpacity={0.25}
-                  stroke="var(--chart-1)"
+                  stroke={C.blue}
                   strokeWidth={2}
-                  dot={{ r: 3, fill: "var(--chart-1)", strokeWidth: 0 }}
+                  dot={{ r: 3, fill: C.blue, strokeWidth: 0 }}
                 />
               </RadarChart>
             </ChartContainer>
@@ -688,6 +810,7 @@ function CombatStatsCard({ snapshots }: { snapshots: Snapshot[] }) {
             valueFormatter={(v) => `${v.toFixed(1)}%`}
             className="h-full"
             showLegend
+            timeFrame={timeFrame}
           />
         </FullscreenOverlay>
       )}
@@ -697,7 +820,7 @@ function CombatStatsCard({ snapshots }: { snapshots: Snapshot[] }) {
 
 // ---- Currencies card ----
 
-function CurrenciesCard({ snapshots }: { snapshots: Snapshot[] }) {
+function CurrenciesCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeFrame: TimeFrame }) {
   const [mode, setMode] = useState<"current" | "chart">("current");
   const [fullscreen, setFullscreen] = useState(false);
   const latest = snapshots[snapshots.length - 1];
@@ -714,12 +837,12 @@ function CurrenciesCard({ snapshots }: { snapshots: Snapshot[] }) {
   }));
 
   const chartLines = [
-    { key: "adventurerDawncrest", color: "var(--chart-1)" },
-    { key: "veteranDawncrest", color: "var(--chart-2)" },
-    { key: "championDawncrest", color: "var(--chart-3)" },
-    { key: "heroDawncrest", color: "var(--chart-4)" },
-    { key: "mythDawncrest", color: "var(--chart-5)" },
-    { key: "radiantSparkDust", color: "oklch(0.75 0.18 310)" },
+    { key: "adventurerDawncrest", color: C.blue   },
+    { key: "veteranDawncrest",    color: C.teal   },
+    { key: "championDawncrest",   color: C.green  },
+    { key: "heroDawncrest",       color: C.gold   },
+    { key: "mythDawncrest",       color: C.red    },
+    { key: "radiantSparkDust",    color: C.pink   },
   ];
 
   return (
@@ -780,6 +903,7 @@ function CurrenciesCard({ snapshots }: { snapshots: Snapshot[] }) {
               lines={chartLines}
               config={currenciesConfig}
               showLegend
+              timeFrame={timeFrame}
             />
           </TabsContent>
         </CardContent>
@@ -792,6 +916,7 @@ function CurrenciesCard({ snapshots }: { snapshots: Snapshot[] }) {
             config={currenciesConfig}
             className="h-full"
             showLegend
+            timeFrame={timeFrame}
           />
         </FullscreenOverlay>
       )}
@@ -807,7 +932,7 @@ function formatHours(totalHours: number) {
   return d > 0 ? `${d}d ${h}h` : `${h}h`;
 }
 
-function PlaytimeCard({ snapshots }: { snapshots: Snapshot[] }) {
+function PlaytimeCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeFrame: TimeFrame }) {
   const [mode, setMode] = useState<"current" | "chart">("current");
   const [fullscreen, setFullscreen] = useState(false);
   const latest = snapshots[snapshots.length - 1];
@@ -818,7 +943,7 @@ function PlaytimeCard({ snapshots }: { snapshots: Snapshot[] }) {
     playtimeHours: Math.round(s.playtimeSeconds / 3600),
   }));
 
-  const chartLines = [{ key: "playtimeHours", color: "var(--chart-5)" }];
+  const chartLines = [{ key: "playtimeHours", color: C.purple }];
 
   return (
     <Card>
@@ -862,6 +987,8 @@ function PlaytimeCard({ snapshots }: { snapshots: Snapshot[] }) {
               lines={chartLines}
               config={playtimeConfig}
               valueFormatter={(v) => formatHours(v)}
+              yDomainOverride={[0, 4800]}
+              timeFrame={timeFrame}
             />
           </TabsContent>
         </CardContent>
@@ -873,8 +1000,10 @@ function PlaytimeCard({ snapshots }: { snapshots: Snapshot[] }) {
             lines={chartLines}
             config={playtimeConfig}
             valueFormatter={(v) => formatHours(v)}
+            yDomainOverride={[0, 4800]}
             className="h-full"
             showLegend
+            timeFrame={timeFrame}
           />
         </FullscreenOverlay>
       )}
@@ -992,6 +1121,7 @@ function RouteComponent() {
   const [selectedRole, setSelectedRole] = useState<string | null>(null);
   const [selectedSpec, setSelectedSpec] = useState<string | null>(null);
   const [timeFrame, setTimeFrame] = useState<TimeFrame>("1w");
+  const [visibleSnapshots, setVisibleSnapshots] = useState(5);
 
   if (data === undefined) {
     return (
@@ -1097,18 +1227,18 @@ function RouteComponent() {
       {/* Main charts */}
       {filtered.length > 0 && (
         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-          <IlvlChartCard snapshots={chartSnapshots} />
-          <MplusChartCard snapshots={chartSnapshots} />
-          <GoldChartCard snapshots={chartSnapshots} />
+          <IlvlChartCard snapshots={chartSnapshots} timeFrame={timeFrame} />
+          <MplusChartCard snapshots={chartSnapshots} timeFrame={timeFrame} />
+          <GoldChartCard snapshots={chartSnapshots} timeFrame={timeFrame} />
         </div>
       )}
 
       {/* Stats & Currencies with chart toggle */}
       {latest && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          <CombatStatsCard snapshots={chartSnapshots} />
-          <CurrenciesCard snapshots={chartSnapshots} />
-          <PlaytimeCard snapshots={chartSnapshots} />
+          <CombatStatsCard snapshots={chartSnapshots} timeFrame={timeFrame} />
+          <CurrenciesCard snapshots={chartSnapshots} timeFrame={timeFrame} />
+          <PlaytimeCard snapshots={chartSnapshots} timeFrame={timeFrame} />
         </div>
       )}
 
@@ -1124,9 +1254,9 @@ function RouteComponent() {
               )}
             </CardTitle>
           </CardHeader>
-          <CardContent className="pt-0 overflow-x-auto">
+          <CardContent className="pt-0 overflow-x-auto max-h-[360px] overflow-y-auto">
             <table className="w-full text-xs">
-              <thead>
+              <thead className="sticky top-0 bg-card z-10">
                 <tr className="border-b border-border/50">
                   <th className="text-left text-muted-foreground font-medium py-2 pr-4">Date</th>
                   <th className="text-right text-muted-foreground font-medium py-2 px-2">iLvl</th>
@@ -1138,7 +1268,7 @@ function RouteComponent() {
                 </tr>
               </thead>
               <tbody>
-                {[...filtered].reverse().map((s, i) => (
+                {[...filtered].reverse().slice(0, visibleSnapshots).map((s, i) => (
                   <tr
                     key={i}
                     className="border-b border-border/30 last:border-0 hover:bg-muted/20 transition-colors"
@@ -1159,6 +1289,18 @@ function RouteComponent() {
               </tbody>
             </table>
           </CardContent>
+          {visibleSnapshots < filtered.length && (
+            <CardFooter className="border-t pt-3 pb-3">
+              <Button
+                variant="outline"
+                size="sm"
+                className="w-full text-xs"
+                onClick={() => setVisibleSnapshots((v) => v + 5)}
+              >
+                Load more ({filtered.length - visibleSnapshots} remaining)
+              </Button>
+            </CardFooter>
+          )}
         </Card>
       )}
 
