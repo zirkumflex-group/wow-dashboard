@@ -174,33 +174,40 @@ export const getPlayerScoreboard = query({
       { battleTag: string; totalPlaytimeSeconds: number; totalGold: number; characterCount: number }
     >();
 
-    await Promise.all(
+    const charSnapshots = await Promise.all(
       characters.map(async (char) => {
         const snapshot = await ctx.db
           .query("snapshots")
           .withIndex("by_character_and_time", (q) => q.eq("characterId", char._id))
           .order("desc")
           .first();
-        if (!snapshot) return;
-
-        const playerId = char.playerId.toString();
-
-        const existing = playerMap.get(playerId);
-        if (existing) {
-          existing.totalPlaytimeSeconds += snapshot.playtimeSeconds;
-          existing.totalGold += snapshot.gold;
-          existing.characterCount += 1;
-        } else {
-          const player = await ctx.db.get(char.playerId);
-          playerMap.set(playerId, {
-            battleTag: player?.battleTag ?? "",
-            totalPlaytimeSeconds: snapshot.playtimeSeconds,
-            totalGold: snapshot.gold,
-            characterCount: 1,
-          });
-        }
+        return { char, snapshot };
       }),
     );
+
+    const playerIds = [...new Set(characters.map((c) => c.playerId))];
+    const playerRecords = await Promise.all(playerIds.map((id) => ctx.db.get(id)));
+    const playerBattleTagMap = new Map(
+      playerIds.map((id, i) => [id.toString(), playerRecords[i]?.battleTag ?? ""]),
+    );
+
+    for (const { char, snapshot } of charSnapshots) {
+      if (!snapshot) continue;
+      const playerId = char.playerId.toString();
+      const existing = playerMap.get(playerId);
+      if (existing) {
+        existing.totalPlaytimeSeconds += snapshot.playtimeSeconds;
+        existing.totalGold += snapshot.gold;
+        existing.characterCount += 1;
+      } else {
+        playerMap.set(playerId, {
+          battleTag: playerBattleTagMap.get(playerId) ?? "",
+          totalPlaytimeSeconds: snapshot.playtimeSeconds,
+          totalGold: snapshot.gold,
+          characterCount: 1,
+        });
+      }
+    }
 
     return Array.from(playerMap.values()).sort(
       (a, b) => b.totalPlaytimeSeconds - a.totalPlaytimeSeconds || b.totalGold - a.totalGold,
