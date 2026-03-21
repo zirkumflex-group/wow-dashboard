@@ -1,9 +1,9 @@
-import { createFileRoute, redirect } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import { api } from "@wow-dashboard/backend/convex/_generated/api";
 import type { Id } from "@wow-dashboard/backend/convex/_generated/dataModel";
 import { Badge } from "@wow-dashboard/ui/components/badge";
 import { Button } from "@wow-dashboard/ui/components/button";
-import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@wow-dashboard/ui/components/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@wow-dashboard/ui/components/card";
 import {
   ChartContainer,
   ChartLegend,
@@ -12,9 +12,21 @@ import {
   ChartTooltipContent,
   type ChartConfig,
 } from "@wow-dashboard/ui/components/chart";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@wow-dashboard/ui/components/tabs";
 import { useQuery } from "convex/react";
-import { Clock, Coins, Flame, Gem, History, Maximize2, Sword, X, Zap } from "lucide-react";
+import {
+  Clock,
+  Coins,
+  Columns,
+  Flame,
+  Gem,
+  History,
+  LayoutGrid,
+  LayoutList,
+  Maximize2,
+  Sword,
+  X,
+  Zap,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -30,13 +42,10 @@ import {
 } from "recharts";
 
 export const Route = createFileRoute("/character/$characterId")({
-  beforeLoad: ({ context }) => {
-    if (!context.isAuthenticated) throw redirect({ to: "/" });
-  },
   component: RouteComponent,
 });
 
-// ---- Constants ----
+// ── Constants ────────────────────────────────────────────────────────────────
 
 const CLASS_COLORS: Record<string, string> = {
   warrior: "text-amber-500",
@@ -54,40 +63,23 @@ const CLASS_COLORS: Record<string, string> = {
   evoker: "text-teal-400",
 };
 
-const ROLE_LABELS: Record<string, string> = {
-  tank: "Tank",
-  healer: "Healer",
-  dps: "DPS",
-};
+const ROLE_LABELS: Record<string, string> = { tank: "Tank", healer: "Healer", dps: "DPS" };
 
-// ---- Time Frame ----
+// ── Time frame ───────────────────────────────────────────────────────────────
 
-type TimeFrame = "12h" | "24h" | "1d" | "3d" | "1w" | "2w" | "1m" | "3m" | "all";
+type TimeFrame = "7d" | "30d" | "90d" | "all";
 
 const TIME_FRAME_OPTIONS: { value: TimeFrame; label: string }[] = [
-  { value: "12h", label: "12H" },
-  { value: "24h", label: "24H" },
-  { value: "1d", label: "1D" },
-  { value: "3d", label: "3D" },
-  { value: "1w", label: "1W" },
-  { value: "2w", label: "2W" },
-  { value: "1m", label: "1M" },
-  { value: "3m", label: "3M" },
+  { value: "7d",  label: "7D"  },
+  { value: "30d", label: "30D" },
+  { value: "90d", label: "90D" },
   { value: "all", label: "All" },
 ];
 
 function filterByTimeFrame<T extends { takenAt: number }>(items: T[], frame: TimeFrame): T[] {
   if (frame === "all") return items;
-  const nowSec = Date.now() / 1000;
-  const hours: Partial<Record<TimeFrame, number>> = { "12h": 12, "24h": 24 };
-  if (hours[frame] !== undefined) {
-    const cutoff = nowSec - hours[frame]! * 3600;
-    return items.filter((s) => s.takenAt >= cutoff);
-  }
-  const days = { "1d": 1, "3d": 3, "1w": 7, "2w": 14, "1m": 30, "3m": 90 }[
-    frame as Exclude<TimeFrame, "12h" | "24h" | "all">
-  ];
-  const cutoff = nowSec - days * 86400;
+  const days = ({ "7d": 7, "30d": 30, "90d": 90 } as Record<TimeFrame, number>)[frame];
+  const cutoff = Date.now() / 1000 - days * 86400;
   return items.filter((s) => s.takenAt >= cutoff);
 }
 
@@ -99,24 +91,65 @@ function TimeFramePicker({
   onChange: (v: TimeFrame) => void;
 }) {
   return (
-    <div className="flex items-center gap-1">
-      <span className="text-muted-foreground text-xs mr-1">Range</span>
-      {TIME_FRAME_OPTIONS.map((opt) => (
-        <Button
-          key={opt.value}
-          size="sm"
-          variant={value === opt.value ? "default" : "outline"}
-          className="h-7 px-2.5 text-xs"
-          onClick={() => onChange(opt.value)}
+    <div className="flex items-center gap-2">
+      <span className="text-muted-foreground text-xs">Range</span>
+      <div className="flex rounded-md border overflow-hidden">
+        {TIME_FRAME_OPTIONS.map((opt) => (
+          <button
+            key={opt.value}
+            onClick={() => onChange(opt.value)}
+            className={`px-3 py-1 text-xs transition-colors ${
+              value === opt.value
+                ? "bg-primary text-primary-foreground"
+                : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+            }`}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Layout mode ───────────────────────────────────────────────────────────────
+
+type LayoutMode = "overview" | "focus" | "timeline";
+
+function LayoutSwitcher({
+  value,
+  onChange,
+}: {
+  value: LayoutMode;
+  onChange: (m: LayoutMode) => void;
+}) {
+  const opts = [
+    { mode: "overview" as const, Icon: LayoutGrid,  title: "Overview — radar sidebar + chart grid" },
+    { mode: "focus"    as const, Icon: Columns,     title: "Focus — single metric deep-dive"       },
+    { mode: "timeline" as const, Icon: LayoutList,  title: "Timeline — stacked charts + full history" },
+  ] as const;
+  return (
+    <div className="flex items-center gap-0.5 rounded-md border p-0.5">
+      {opts.map(({ mode, Icon, title }) => (
+        <button
+          key={mode}
+          onClick={() => onChange(mode)}
+          title={title}
+          aria-label={title}
+          className={`p-1.5 rounded transition-colors ${
+            value === mode
+              ? "bg-primary text-primary-foreground"
+              : "text-muted-foreground hover:text-foreground"
+          }`}
         >
-          {opt.label}
-        </Button>
+          <Icon size={14} />
+        </button>
       ))}
     </div>
   );
 }
 
-// ---- Formatters ----
+// ── Formatters ────────────────────────────────────────────────────────────────
 
 function classColor(cls: string) {
   return CLASS_COLORS[cls.toLowerCase()] ?? "text-foreground";
@@ -145,46 +178,20 @@ function formatDateShort(takenAtSeconds: number) {
 
 function xAxisTickFormatter(ts: number, frame: TimeFrame): string {
   const d = new Date(ts * 1000);
-  if (frame === "12h" || frame === "24h") {
-    return d.toLocaleTimeString(undefined, { hour: "numeric", hour12: true });
-  }
-  if (frame === "1d" || frame === "3d") {
-    return (
-      d.toLocaleDateString(undefined, { weekday: "short" }) +
-      " " +
-      d.toLocaleTimeString(undefined, { hour: "numeric", hour12: true })
-    );
-  }
-  if (frame === "1w" || frame === "2w") {
-    return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+  if (frame === "7d") {
+    return d.toLocaleDateString(undefined, { weekday: "short", day: "numeric" });
   }
   return formatDateShort(ts);
 }
 
 function xTooltipLabelFormatter(ts: number, frame: TimeFrame): string {
   const d = new Date(ts * 1000);
-  if (frame === "12h" || frame === "24h") {
-    return d.toLocaleString(undefined, {
-      month: "short",
-      day: "numeric",
-      hour: "numeric",
-      minute: "2-digit",
-      hour12: true,
-    });
+  if (frame === "7d") {
+    return d.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" });
   }
-  if (frame === "1d" || frame === "3d") {
-    return d.toLocaleString(undefined, {
-      weekday: "short",
-      month: "short",
-      day: "numeric",
-      hour: "numeric",
-      hour12: true,
-    });
-  }
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  return d.toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" });
 }
 
-/** Parse gold value stored as GGGGG.SSCC */
 function parseGoldValue(value: number) {
   const totalCopper = Math.round(value * 10000);
   const gold = Math.floor(totalCopper / 10000);
@@ -197,7 +204,13 @@ function goldUnits(value: number) {
   return Math.floor(value);
 }
 
-// ---- Components ----
+function formatHours(totalHours: number) {
+  const d = Math.floor(totalHours / 24);
+  const h = totalHours % 24;
+  return d > 0 ? `${d}d ${h}h` : `${h}h`;
+}
+
+// ── Shared display components ─────────────────────────────────────────────────
 
 function GoldDisplay({ value }: { value: number }) {
   const { gold, silver, copper } = parseGoldValue(value);
@@ -230,7 +243,7 @@ function StatGrid({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
-// ---- Fullscreen ----
+// ── Fullscreen ────────────────────────────────────────────────────────────────
 
 function FullscreenOverlay({
   title,
@@ -242,9 +255,7 @@ function FullscreenOverlay({
   children: React.ReactNode;
 }) {
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
   }, [onClose]);
@@ -287,7 +298,7 @@ function FullscreenButton({ onClick }: { onClick: () => void }) {
   );
 }
 
-// ---- Types ----
+// ── Types ─────────────────────────────────────────────────────────────────────
 
 type Snapshot = {
   takenAt: number;
@@ -318,11 +329,16 @@ type Snapshot = {
   };
 };
 
-// ---- Snapshot grouping ----
+type LayoutProps = {
+  latest: Snapshot;
+  chartSnapshots: Snapshot[];
+  filteredSnapshots: Snapshot[];
+  timeFrame: TimeFrame;
+  setTimeFrame: (f: TimeFrame) => void;
+};
 
-/** Reduce dense snapshot arrays for chart readability.
- *  Cascades daily → weekly → monthly until ≤30 points remain.
- *  Keeps the *last* snapshot in each period so values are always real readings. */
+// ── Snapshot grouping ─────────────────────────────────────────────────────────
+
 function groupSnapshotsAuto(snapshots: Snapshot[]): Snapshot[] {
   if (snapshots.length <= 30) return snapshots;
 
@@ -336,16 +352,13 @@ function groupSnapshotsAuto(snapshots: Snapshot[]): Snapshot[] {
     const d = new Date(s.takenAt * 1000);
     return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
   };
-
   const toWeek = (s: Snapshot) => {
     const d = new Date(s.takenAt * 1000);
-    const day = d.getDay();
-    const diff = day === 0 ? -6 : 1 - day;
+    const diff = d.getDay() === 0 ? -6 : 1 - d.getDay();
     const mon = new Date(d);
     mon.setDate(d.getDate() + diff);
     return `${mon.getFullYear()}-${mon.getMonth()}-${mon.getDate()}`;
   };
-
   const toMonth = (s: Snapshot) => {
     const d = new Date(s.takenAt * 1000);
     return `${d.getFullYear()}-${d.getMonth()}`;
@@ -353,40 +366,29 @@ function groupSnapshotsAuto(snapshots: Snapshot[]): Snapshot[] {
 
   const daily = groupBy(snapshots, toDay);
   if (daily.length <= 30) return daily.length >= 2 ? daily : snapshots.slice(-30);
-
   const weekly = groupBy(snapshots, toWeek);
   if (weekly.length <= 30) return weekly.length >= 2 ? weekly : snapshots.slice(-30);
-
   const monthly = groupBy(snapshots, toMonth);
   return monthly.length >= 2 ? monthly : snapshots.slice(-30);
 }
 
-// ---- Chart configs ----
+// ── Chart palette ─────────────────────────────────────────────────────────────
 
-// Explicit oklch palette spread evenly across the hue wheel so every series
-// is visually distinct regardless of active theme.
 const C = {
-  blue:   "oklch(0.72 0.20 245)",  // 245° – blue
-  red:    "oklch(0.72 0.22 20)",   //  20° – red-orange
-  gold:   "oklch(0.84 0.18 80)",   //  80° – amber/gold
-  purple: "oklch(0.73 0.20 295)",  // 295° – violet
-  teal:   "oklch(0.75 0.18 190)",  // 190° – teal/cyan
-  green:  "oklch(0.76 0.18 155)",  // 155° – green
-  pink:   "oklch(0.75 0.18 330)",  // 330° – pink/rose
+  blue:   "oklch(0.72 0.20 245)",
+  red:    "oklch(0.72 0.22 20)",
+  gold:   "oklch(0.84 0.18 80)",
+  purple: "oklch(0.73 0.20 295)",
+  teal:   "oklch(0.75 0.18 190)",
+  green:  "oklch(0.76 0.18 155)",
+  pink:   "oklch(0.75 0.18 330)",
 } as const;
 
-const ilvlConfig: ChartConfig = {
-  itemLevel: { label: "Item Level", color: C.blue },
-};
-const mplusConfig: ChartConfig = {
-  mythicPlusScore: { label: "M+ Score", color: C.red },
-};
-const goldConfig: ChartConfig = {
-  gold: { label: "Gold", color: C.gold },
-};
-const playtimeConfig: ChartConfig = {
-  playtimeHours: { label: "Playtime", color: C.purple },
-};
+const ilvlConfig: ChartConfig          = { itemLevel:           { label: "Item Level", color: C.blue   } };
+const mplusConfig: ChartConfig         = { mythicPlusScore:     { label: "M+ Score",   color: C.red    } };
+const goldConfig: ChartConfig          = { gold:                { label: "Gold",        color: C.gold   } };
+const playtimeConfig: ChartConfig      = { playtimeHours:       { label: "Playtime",   color: C.purple } };
+const radarConfig: ChartConfig         = { value:               { label: "Value",      color: C.blue   } };
 const secondaryStatsConfig: ChartConfig = {
   critPercent:        { label: "Crit",        color: C.red    },
   hastePercent:       { label: "Haste",       color: C.green  },
@@ -394,15 +396,15 @@ const secondaryStatsConfig: ChartConfig = {
   versatilityPercent: { label: "Versatility", color: C.purple },
 };
 const currenciesConfig: ChartConfig = {
-  adventurerDawncrest: { label: "Adventurer", color: C.blue   },
-  veteranDawncrest:    { label: "Veteran",    color: C.teal   },
-  championDawncrest:   { label: "Champion",   color: C.green  },
-  heroDawncrest:       { label: "Hero",       color: C.gold   },
-  mythDawncrest:       { label: "Myth",       color: C.red    },
-  radiantSparkDust:    { label: "Spark Dust", color: C.pink   },
+  adventurerDawncrest: { label: "Adventurer", color: C.blue  },
+  veteranDawncrest:    { label: "Veteran",    color: C.teal  },
+  championDawncrest:   { label: "Champion",   color: C.green },
+  heroDawncrest:       { label: "Hero",       color: C.gold  },
+  mythDawncrest:       { label: "Myth",       color: C.red   },
+  radiantSparkDust:    { label: "Spark Dust", color: C.pink  },
 };
 
-// ---- Reusable line chart ----
+// ── Reusable line chart ───────────────────────────────────────────────────────
 
 function SnapshotLineChart({
   data,
@@ -411,23 +413,18 @@ function SnapshotLineChart({
   valueFormatter,
   className,
   showLegend,
-  yPadMaxFactor,
   yDomainOverride,
-  xLabel,
-  yLabel,
+  yPadMaxFactor,
   timeFrame,
 }: {
-  /** data points — `date` must be a Unix timestamp (seconds) */
   data: Record<string, number>[];
   lines: { key: string; color: string }[];
   config: ChartConfig;
   valueFormatter?: (v: number) => string;
   className?: string;
   showLegend?: boolean;
-  yPadMaxFactor?: number;
   yDomainOverride?: [number, number];
-  xLabel?: string;
-  yLabel?: string;
+  yPadMaxFactor?: number;
   timeFrame?: TimeFrame;
 }) {
   if (data.length < 2) {
@@ -436,13 +433,9 @@ function SnapshotLineChart({
     );
   }
 
-  // Hide dots when there are too many points (>15) to avoid clutter
   const hideDots = data.length > 15;
-
-  // Show at most ~10 ticks on X axis
   const xAxisInterval = data.length > 10 ? Math.ceil(data.length / 10) - 1 : 0;
 
-  // Compute Y-axis domain from actual data so the chart isn't squashed
   const allValues = data
     .flatMap((d) => lines.map((l) => d[l.key]))
     .filter((v) => typeof v === "number" && !isNaN(v));
@@ -459,7 +452,7 @@ function SnapshotLineChart({
 
   return (
     <ChartContainer config={config} className={`w-full ${className ?? "h-[200px]"}`}>
-      <LineChart data={data} margin={{ top: 8, right: 8, left: yLabel ? 8 : 4, bottom: xLabel ? 24 : 8 }}>
+      <LineChart data={data} margin={{ top: 8, right: 8, left: 4, bottom: 8 }}>
         <CartesianGrid vertical={false} strokeOpacity={0.15} />
         <XAxis
           dataKey="date"
@@ -469,7 +462,6 @@ function SnapshotLineChart({
           tick={{ fontSize: 10 }}
           interval={xAxisInterval}
           tickFormatter={(ts: number) => xAxisTickFormatter(ts, timeFrame ?? "all")}
-          label={xLabel ? { value: xLabel, position: "insideBottom", offset: -12, fontSize: 10, fill: "var(--muted-foreground)" } : undefined}
         />
         <YAxis
           tickLine={false}
@@ -477,10 +469,9 @@ function SnapshotLineChart({
           tickMargin={4}
           tick={{ fontSize: 10 }}
           tickFormatter={valueFormatter}
-          width={yLabel ? 64 : 52}
+          width={52}
           domain={yDomain}
           allowDataOverflow={!!yDomainOverride}
-          label={yLabel ? { value: yLabel, angle: -90, position: "insideLeft", offset: 12, fontSize: 10, fill: "var(--muted-foreground)" } : undefined}
         />
         <ChartTooltip
           cursor={false}
@@ -509,7 +500,97 @@ function SnapshotLineChart({
   );
 }
 
-// ---- Inline chart cards ----
+// ── Radar panel (always-visible, reused across layouts) ───────────────────────
+
+function RadarPanel({ snapshot }: { snapshot: Snapshot }) {
+  const radarData = [
+    { stat: "Crit",        value: snapshot.stats.critPercent        },
+    { stat: "Haste",       value: snapshot.stats.hastePercent       },
+    { stat: "Mastery",     value: snapshot.stats.masteryPercent     },
+    { stat: "Versatility", value: snapshot.stats.versatilityPercent },
+  ];
+  const primaryStat =
+    snapshot.stats.strength > 0  ? { label: "Strength",  value: snapshot.stats.strength  } :
+    snapshot.stats.agility > 0   ? { label: "Agility",   value: snapshot.stats.agility   } :
+    snapshot.stats.intellect > 0 ? { label: "Intellect", value: snapshot.stats.intellect } :
+    null;
+
+  return (
+    <div className="space-y-3">
+      <ChartContainer config={radarConfig} className="w-full h-[180px]">
+        <RadarChart data={radarData}>
+          <PolarGrid />
+          <PolarAngleAxis dataKey="stat" tick={{ fontSize: 11 }} />
+          <ChartTooltip cursor={false} content={<ChartTooltipContent indicator="dot" />} />
+          <Radar
+            dataKey="value"
+            fill={C.blue}
+            fillOpacity={0.25}
+            stroke={C.blue}
+            strokeWidth={2}
+            dot={{ r: 3, fill: C.blue, strokeWidth: 0 }}
+          />
+        </RadarChart>
+      </ChartContainer>
+      <div className="space-y-1.5 text-sm">
+        <StatRow label="Stamina" value={snapshot.stats.stamina.toLocaleString()} />
+        {primaryStat && <StatRow label={primaryStat.label} value={primaryStat.value.toLocaleString()} />}
+        <div className="border-t border-border/50 my-1" />
+        <StatRow label="Crit"        value={`${snapshot.stats.critPercent.toFixed(2)}%`}        />
+        <StatRow label="Haste"       value={`${snapshot.stats.hastePercent.toFixed(2)}%`}       />
+        <StatRow label="Mastery"     value={`${snapshot.stats.masteryPercent.toFixed(2)}%`}     />
+        <StatRow label="Versatility" value={`${snapshot.stats.versatilityPercent.toFixed(2)}%`} />
+      </div>
+    </div>
+  );
+}
+
+// Compact horizontal radar for Timeline layout
+function RadarStrip({ snapshot }: { snapshot: Snapshot }) {
+  const radarData = [
+    { stat: "Crit",        value: snapshot.stats.critPercent        },
+    { stat: "Haste",       value: snapshot.stats.hastePercent       },
+    { stat: "Mastery",     value: snapshot.stats.masteryPercent     },
+    { stat: "Versatility", value: snapshot.stats.versatilityPercent },
+  ];
+  return (
+    <Card>
+      <CardContent className="py-4">
+        <div className="flex items-center gap-6">
+          <div className="shrink-0">
+            <ChartContainer config={radarConfig} className="w-[130px] h-[130px]">
+              <RadarChart data={radarData}>
+                <PolarGrid />
+                <PolarAngleAxis dataKey="stat" tick={{ fontSize: 10 }} />
+                <ChartTooltip cursor={false} content={<ChartTooltipContent indicator="dot" />} />
+                <Radar
+                  dataKey="value"
+                  fill={C.blue}
+                  fillOpacity={0.25}
+                  stroke={C.blue}
+                  strokeWidth={2}
+                  dot={{ r: 2, fill: C.blue, strokeWidth: 0 }}
+                />
+              </RadarChart>
+            </ChartContainer>
+          </div>
+          <div className="grid grid-cols-2 gap-x-8 gap-y-1.5 flex-1 text-sm">
+            <StatRow label="Crit"        value={`${snapshot.stats.critPercent.toFixed(2)}%`}        />
+            <StatRow label="Haste"       value={`${snapshot.stats.hastePercent.toFixed(2)}%`}       />
+            <StatRow label="Mastery"     value={`${snapshot.stats.masteryPercent.toFixed(2)}%`}     />
+            <StatRow label="Versatility" value={`${snapshot.stats.versatilityPercent.toFixed(2)}%`} />
+            <StatRow label="Stamina"     value={snapshot.stats.stamina.toLocaleString()}             />
+            {snapshot.stats.strength > 0  && <StatRow label="Strength"  value={snapshot.stats.strength.toLocaleString()}  />}
+            {snapshot.stats.agility > 0   && <StatRow label="Agility"   value={snapshot.stats.agility.toLocaleString()}   />}
+            {snapshot.stats.intellect > 0 && <StatRow label="Intellect" value={snapshot.stats.intellect.toLocaleString()} />}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ── Chart cards used in Overview ──────────────────────────────────────────────
 
 function IlvlChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeFrame: TimeFrame }) {
   const [fullscreen, setFullscreen] = useState(false);
@@ -522,23 +603,18 @@ function IlvlChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeFr
       <CardHeader className="pb-0">
         <div className="flex items-center justify-between">
           <CardTitle className="text-sm font-medium flex items-center gap-1.5">
-            <Sword size={14} className="text-muted-foreground" />
-            Item Level
+            <Sword size={14} className="text-muted-foreground" /> Item Level
           </CardTitle>
           <div className="flex items-center gap-2">
-            <div className="flex items-center gap-1 rounded-md border text-xs overflow-hidden">
+            <div className="flex items-center rounded-md border text-xs overflow-hidden">
               <button
                 className={`px-2 py-0.5 transition-colors ${!zoomed ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
                 onClick={() => setZoomed(false)}
-              >
-                0–300
-              </button>
+              >0–300</button>
               <button
                 className={`px-2 py-0.5 transition-colors ${zoomed ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
                 onClick={() => setZoomed(true)}
-              >
-                200–300
-              </button>
+              >200–300</button>
             </div>
             <FullscreenButton onClick={() => setFullscreen(true)} />
           </div>
@@ -547,13 +623,9 @@ function IlvlChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeFr
       <CardContent>
         <SnapshotLineChart
           key={yDomain.join(",")}
-          data={data}
-          lines={lines}
-          config={ilvlConfig}
+          data={data} lines={lines} config={ilvlConfig}
           valueFormatter={(v) => v.toFixed(1)}
           yDomainOverride={yDomain}
-          xLabel="Date"
-          yLabel="Item Level"
           timeFrame={timeFrame}
         />
       </CardContent>
@@ -561,16 +633,9 @@ function IlvlChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeFr
         <FullscreenOverlay title="Item Level" onClose={() => setFullscreen(false)}>
           <SnapshotLineChart
             key={yDomain.join(",")}
-            data={data}
-            lines={lines}
-            config={ilvlConfig}
+            data={data} lines={lines} config={ilvlConfig}
             valueFormatter={(v) => v.toFixed(1)}
-            className="h-full"
-            showLegend
-            yDomainOverride={yDomain}
-            xLabel="Date"
-            yLabel="Item Level"
-            timeFrame={timeFrame}
+            className="h-full" showLegend yDomainOverride={yDomain} timeFrame={timeFrame}
           />
         </FullscreenOverlay>
       )}
@@ -589,23 +654,18 @@ function MplusChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeF
       <CardHeader className="pb-0">
         <div className="flex items-center justify-between">
           <CardTitle className="text-sm font-medium flex items-center gap-1.5">
-            <Flame size={14} className="text-muted-foreground" />
-            M+ Score
+            <Flame size={14} className="text-muted-foreground" /> M+ Score
           </CardTitle>
           <div className="flex items-center gap-2">
-            <div className="flex items-center gap-1 rounded-md border text-xs overflow-hidden">
+            <div className="flex items-center rounded-md border text-xs overflow-hidden">
               <button
                 className={`px-2 py-0.5 transition-colors ${!zoomed ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
                 onClick={() => setZoomed(false)}
-              >
-                0–4500
-              </button>
+              >0–4500</button>
               <button
                 className={`px-2 py-0.5 transition-colors ${zoomed ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
                 onClick={() => setZoomed(true)}
-              >
-                2000–4500
-              </button>
+              >2k–4.5k</button>
             </div>
             <FullscreenButton onClick={() => setFullscreen(true)} />
           </div>
@@ -614,13 +674,9 @@ function MplusChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeF
       <CardContent>
         <SnapshotLineChart
           key={yDomain.join(",")}
-          data={data}
-          lines={lines}
-          config={mplusConfig}
+          data={data} lines={lines} config={mplusConfig}
           valueFormatter={(v) => v.toLocaleString()}
           yDomainOverride={yDomain}
-          xLabel="Date"
-          yLabel="M+ Score"
           timeFrame={timeFrame}
         />
       </CardContent>
@@ -628,16 +684,9 @@ function MplusChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeF
         <FullscreenOverlay title="M+ Score" onClose={() => setFullscreen(false)}>
           <SnapshotLineChart
             key={yDomain.join(",")}
-            data={data}
-            lines={lines}
-            config={mplusConfig}
+            data={data} lines={lines} config={mplusConfig}
             valueFormatter={(v) => v.toLocaleString()}
-            className="h-full"
-            showLegend
-            yDomainOverride={yDomain}
-            xLabel="Date"
-            yLabel="M+ Score"
-            timeFrame={timeFrame}
+            className="h-full" showLegend yDomainOverride={yDomain} timeFrame={timeFrame}
           />
         </FullscreenOverlay>
       )}
@@ -650,41 +699,28 @@ function GoldChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeFr
   const data = snapshots.map((s) => ({ date: s.takenAt, gold: s.gold }));
   const lines = [{ key: "gold", color: C.gold }];
   return (
-    <Card className="sm:col-span-2">
+    <Card>
       <CardHeader className="pb-0">
         <div className="flex items-center justify-between">
           <CardTitle className="text-sm font-medium flex items-center gap-1.5">
-            <Coins size={14} className="text-muted-foreground" />
-            Gold
+            <Coins size={14} className="text-muted-foreground" /> Gold
           </CardTitle>
           <FullscreenButton onClick={() => setFullscreen(true)} />
         </div>
       </CardHeader>
       <CardContent>
         <SnapshotLineChart
-          data={data}
-          lines={lines}
-          config={goldConfig}
+          data={data} lines={lines} config={goldConfig}
           valueFormatter={(v) => `${goldUnits(v).toLocaleString()}g`}
-          yDomainOverride={[0, 1000000]}
-          xLabel="Date"
-          yLabel="Gold"
           timeFrame={timeFrame}
         />
       </CardContent>
       {fullscreen && (
         <FullscreenOverlay title="Gold" onClose={() => setFullscreen(false)}>
           <SnapshotLineChart
-            data={data}
-            lines={lines}
-            config={goldConfig}
+            data={data} lines={lines} config={goldConfig}
             valueFormatter={(v) => `${goldUnits(v).toLocaleString()}g`}
-            yDomainOverride={[0, 1000000]}
-            className="h-full"
-            showLegend
-            xLabel="Date"
-            yLabel="Gold"
-            timeFrame={timeFrame}
+            className="h-full" showLegend timeFrame={timeFrame}
           />
         </FullscreenOverlay>
       )}
@@ -692,329 +728,612 @@ function GoldChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeFr
   );
 }
 
-// ---- Combat Stats card ----
+// ── Simple chart-only cards (no tabs, used in Overview sidebar area + Timeline) ──
 
-const radarConfig: ChartConfig = {
-  value: { label: "Value", color: C.blue },
-};
-
-function CombatStatsCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeFrame: TimeFrame }) {
-  const [mode, setMode] = useState<"current" | "chart" | "radar">("current");
-  const [fullscreen, setFullscreen] = useState(false);
-  const latest = snapshots[snapshots.length - 1];
-  if (!latest) return null;
-
-  const primaryStat =
-    latest.stats.strength > 0
-      ? { label: "Strength", value: latest.stats.strength }
-      : latest.stats.agility > 0
-        ? { label: "Agility", value: latest.stats.agility }
-        : latest.stats.intellect > 0
-          ? { label: "Intellect", value: latest.stats.intellect }
-          : null;
-
-  const chartData = snapshots.map((s) => ({
+function SecondaryStatsChartCard({
+  snapshots,
+  timeFrame,
+  className,
+}: {
+  snapshots: Snapshot[];
+  timeFrame: TimeFrame;
+  className?: string;
+}) {
+  const data = snapshots.map((s) => ({
     date: s.takenAt,
-    critPercent: s.stats.critPercent,
-    hastePercent: s.stats.hastePercent,
-    masteryPercent: s.stats.masteryPercent,
+    critPercent:        s.stats.critPercent,
+    hastePercent:       s.stats.hastePercent,
+    masteryPercent:     s.stats.masteryPercent,
     versatilityPercent: s.stats.versatilityPercent,
   }));
-
-  const radarData = [
-    { stat: "Crit", value: latest.stats.critPercent },
-    { stat: "Haste", value: latest.stats.hastePercent },
-    { stat: "Mastery", value: latest.stats.masteryPercent },
-    { stat: "Versatility", value: latest.stats.versatilityPercent },
-  ];
-
-  const chartLines = [
+  const lines = [
     { key: "critPercent",        color: C.red    },
     { key: "hastePercent",       color: C.green  },
     { key: "masteryPercent",     color: C.blue   },
     { key: "versatilityPercent", color: C.purple },
   ];
-
   return (
-    <Card>
-      <Tabs
-        value={mode}
-        onValueChange={(v) => setMode((v ?? "current") as typeof mode)}
-        className="gap-0"
-      >
-        <CardHeader className="border-b pb-3">
-          <div className="flex items-center justify-between">
-            <CardTitle className="text-sm font-medium flex items-center gap-1.5">
-              <Zap size={14} className="text-muted-foreground" />
-              Combat Stats
-            </CardTitle>
-            <div className="flex items-center gap-1.5">
-              {mode === "chart" && <FullscreenButton onClick={() => setFullscreen(true)} />}
-              <TabsList>
-                <TabsTrigger value="current">Current</TabsTrigger>
-                <TabsTrigger value="chart">Chart</TabsTrigger>
-                <TabsTrigger value="radar">Radar</TabsTrigger>
-              </TabsList>
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent className="pt-3">
-          <TabsContent value="current">
-            <div className="space-y-1.5">
-              <StatRow label="Stamina" value={latest.stats.stamina.toLocaleString()} />
-              {primaryStat && (
-                <StatRow label={primaryStat.label} value={primaryStat.value.toLocaleString()} />
-              )}
-              <div className="border-t border-border/50 my-2" />
-              <StatRow label="Crit" value={`${latest.stats.critPercent.toFixed(2)}%`} />
-              <StatRow label="Haste" value={`${latest.stats.hastePercent.toFixed(2)}%`} />
-              <StatRow label="Mastery" value={`${latest.stats.masteryPercent.toFixed(2)}%`} />
-              <StatRow
-                label="Versatility"
-                value={`${latest.stats.versatilityPercent.toFixed(2)}%`}
-              />
-            </div>
-          </TabsContent>
-          <TabsContent value="chart">
-            <SnapshotLineChart
-              data={chartData}
-              lines={chartLines}
-              config={secondaryStatsConfig}
-              valueFormatter={(v) => `${v.toFixed(1)}%`}
-              showLegend
-              timeFrame={timeFrame}
-            />
-          </TabsContent>
-          <TabsContent value="radar">
-            <ChartContainer config={radarConfig} className="w-full h-[200px]">
-              <RadarChart data={radarData}>
-                <PolarGrid />
-                <PolarAngleAxis dataKey="stat" tick={{ fontSize: 11 }} />
-                <ChartTooltip cursor={false} content={<ChartTooltipContent indicator="dot" />} />
-                <Radar
-                  dataKey="value"
-                  fill={C.blue}
-                  fillOpacity={0.25}
-                  stroke={C.blue}
-                  strokeWidth={2}
-                  dot={{ r: 3, fill: C.blue, strokeWidth: 0 }}
-                />
-              </RadarChart>
-            </ChartContainer>
-          </TabsContent>
-        </CardContent>
-      </Tabs>
-      {fullscreen && (
-        <FullscreenOverlay title="Combat Stats" onClose={() => setFullscreen(false)}>
-          <SnapshotLineChart
-            data={chartData}
-            lines={chartLines}
-            config={secondaryStatsConfig}
-            valueFormatter={(v) => `${v.toFixed(1)}%`}
-            className="h-full"
-            showLegend
-            timeFrame={timeFrame}
-          />
-        </FullscreenOverlay>
-      )}
+    <Card className={className}>
+      <CardHeader className="pb-0">
+        <CardTitle className="text-sm font-medium flex items-center gap-1.5">
+          <Zap size={14} className="text-muted-foreground" /> Secondary Stats
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <SnapshotLineChart
+          data={data} lines={lines} config={secondaryStatsConfig}
+          valueFormatter={(v) => `${v.toFixed(1)}%`}
+          showLegend timeFrame={timeFrame}
+        />
+      </CardContent>
     </Card>
   );
 }
 
-// ---- Currencies card ----
-
-function CurrenciesCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeFrame: TimeFrame }) {
-  const [mode, setMode] = useState<"current" | "chart">("current");
-  const [fullscreen, setFullscreen] = useState(false);
-  const latest = snapshots[snapshots.length - 1];
-  if (!latest) return null;
-
-  const chartData = snapshots.map((s) => ({
-    date: s.takenAt,
-    adventurerDawncrest: s.currencies.adventurerDawncrest,
-    veteranDawncrest: s.currencies.veteranDawncrest,
-    championDawncrest: s.currencies.championDawncrest,
-    heroDawncrest: s.currencies.heroDawncrest,
-    mythDawncrest: s.currencies.mythDawncrest,
-    radiantSparkDust: s.currencies.radiantSparkDust,
-  }));
-
-  const chartLines = [
-    { key: "adventurerDawncrest", color: C.blue   },
-    { key: "veteranDawncrest",    color: C.teal   },
-    { key: "championDawncrest",   color: C.green  },
-    { key: "heroDawncrest",       color: C.gold   },
-    { key: "mythDawncrest",       color: C.red    },
-    { key: "radiantSparkDust",    color: C.pink   },
+function CurrenciesChartCard({
+  snapshots,
+  timeFrame,
+  className,
+}: {
+  snapshots: Snapshot[];
+  timeFrame: TimeFrame;
+  className?: string;
+}) {
+  const data = snapshots.map((s) => ({ date: s.takenAt, ...s.currencies }));
+  const lines = [
+    { key: "adventurerDawncrest", color: C.blue  },
+    { key: "veteranDawncrest",    color: C.teal  },
+    { key: "championDawncrest",   color: C.green },
+    { key: "heroDawncrest",       color: C.gold  },
+    { key: "mythDawncrest",       color: C.red   },
+    { key: "radiantSparkDust",    color: C.pink  },
   ];
-
   return (
-    <Card>
-      <Tabs
-        value={mode}
-        onValueChange={(v) => setMode((v ?? "current") as "current" | "chart")}
-        className="gap-0"
-      >
-        <CardHeader className="border-b pb-3">
-          <div className="flex items-center justify-between">
-            <CardTitle className="text-sm font-medium flex items-center gap-1.5">
-              <Gem size={14} className="text-muted-foreground" />
-              Currencies
-            </CardTitle>
-            <div className="flex items-center gap-1.5">
-              {mode === "chart" && <FullscreenButton onClick={() => setFullscreen(true)} />}
-              <TabsList>
-                <TabsTrigger value="current">Current</TabsTrigger>
-                <TabsTrigger value="chart">Chart</TabsTrigger>
-              </TabsList>
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent className="pt-3">
-          <TabsContent value="current">
-            <div className="space-y-1.5">
-              <StatRow
-                label="Adventurer Crest"
-                value={latest.currencies.adventurerDawncrest.toLocaleString()}
-              />
-              <StatRow
-                label="Veteran Crest"
-                value={latest.currencies.veteranDawncrest.toLocaleString()}
-              />
-              <StatRow
-                label="Champion Crest"
-                value={latest.currencies.championDawncrest.toLocaleString()}
-              />
-              <StatRow
-                label="Hero Crest"
-                value={latest.currencies.heroDawncrest.toLocaleString()}
-              />
-              <StatRow
-                label="Myth Crest"
-                value={latest.currencies.mythDawncrest.toLocaleString()}
-              />
-              <div className="border-t border-border/50 my-2" />
-              <StatRow
-                label="Radiant Spark Dust"
-                value={latest.currencies.radiantSparkDust.toLocaleString()}
-              />
-            </div>
-          </TabsContent>
-          <TabsContent value="chart">
-            <SnapshotLineChart
-              data={chartData}
-              lines={chartLines}
-              config={currenciesConfig}
-              showLegend
-              timeFrame={timeFrame}
-            />
-          </TabsContent>
-        </CardContent>
-      </Tabs>
-      {fullscreen && (
-        <FullscreenOverlay title="Currencies" onClose={() => setFullscreen(false)}>
-          <SnapshotLineChart
-            data={chartData}
-            lines={chartLines}
-            config={currenciesConfig}
-            className="h-full"
-            showLegend
-            timeFrame={timeFrame}
-          />
-        </FullscreenOverlay>
-      )}
+    <Card className={className}>
+      <CardHeader className="pb-0">
+        <CardTitle className="text-sm font-medium flex items-center gap-1.5">
+          <Gem size={14} className="text-muted-foreground" /> Currencies
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <SnapshotLineChart
+          data={data} lines={lines} config={currenciesConfig}
+          showLegend timeFrame={timeFrame}
+        />
+      </CardContent>
     </Card>
   );
 }
 
-// ---- Playtime card ----
-
-function formatHours(totalHours: number) {
-  const d = Math.floor(totalHours / 24);
-  const h = totalHours % 24;
-  return d > 0 ? `${d}d ${h}h` : `${h}h`;
-}
-
-function PlaytimeCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeFrame: TimeFrame }) {
-  const [mode, setMode] = useState<"current" | "chart">("current");
-  const [fullscreen, setFullscreen] = useState(false);
-  const latest = snapshots[snapshots.length - 1];
-  if (!latest) return null;
-
-  const chartData = snapshots.map((s) => ({
+function PlaytimeChartCard({
+  snapshots,
+  timeFrame,
+  className,
+}: {
+  snapshots: Snapshot[];
+  timeFrame: TimeFrame;
+  className?: string;
+}) {
+  const data = snapshots.map((s) => ({
     date: s.takenAt,
     playtimeHours: Math.round(s.playtimeSeconds / 3600),
   }));
-
-  const chartLines = [{ key: "playtimeHours", color: C.purple }];
-
+  const lines = [{ key: "playtimeHours", color: C.purple }];
   return (
-    <Card>
-      <Tabs
-        value={mode}
-        onValueChange={(v) => setMode((v ?? "current") as "current" | "chart")}
-        className="gap-0"
-      >
-        <CardHeader className="border-b pb-3">
-          <div className="flex items-center justify-between">
-            <CardTitle className="text-sm font-medium flex items-center gap-1.5">
-              <Clock size={14} className="text-muted-foreground" />
-              Time Played
-            </CardTitle>
-            <div className="flex items-center gap-1.5">
-              {mode === "chart" && <FullscreenButton onClick={() => setFullscreen(true)} />}
-              <TabsList>
-                <TabsTrigger value="current">Current</TabsTrigger>
-                <TabsTrigger value="chart">Chart</TabsTrigger>
-              </TabsList>
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent className="pt-3">
-          <TabsContent value="current">
-            <div className="space-y-1.5">
-              <StatRow label="Total" value={formatPlaytime(latest.playtimeSeconds)} />
-              <StatRow
-                label="Hours"
-                value={`${Math.floor(latest.playtimeSeconds / 3600).toLocaleString()}h`}
-              />
-              <StatRow
-                label="Days"
-                value={`${Math.floor(latest.playtimeSeconds / 86400).toLocaleString()}d`}
-              />
-            </div>
-          </TabsContent>
-          <TabsContent value="chart">
-            <SnapshotLineChart
-              data={chartData}
-              lines={chartLines}
-              config={playtimeConfig}
-              valueFormatter={(v) => formatHours(v)}
-              yDomainOverride={[0, 4800]}
-              timeFrame={timeFrame}
-            />
-          </TabsContent>
-        </CardContent>
-      </Tabs>
-      {fullscreen && (
-        <FullscreenOverlay title="Time Played" onClose={() => setFullscreen(false)}>
-          <SnapshotLineChart
-            data={chartData}
-            lines={chartLines}
-            config={playtimeConfig}
-            valueFormatter={(v) => formatHours(v)}
-            yDomainOverride={[0, 4800]}
-            className="h-full"
-            showLegend
-            timeFrame={timeFrame}
-          />
-        </FullscreenOverlay>
-      )}
+    <Card className={className}>
+      <CardHeader className="pb-0">
+        <CardTitle className="text-sm font-medium flex items-center gap-1.5">
+          <Clock size={14} className="text-muted-foreground" /> Playtime
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <SnapshotLineChart
+          data={data} lines={lines} config={playtimeConfig}
+          valueFormatter={(v) => formatHours(v)}
+          yDomainOverride={[0, 4800]}
+          timeFrame={timeFrame}
+        />
+      </CardContent>
     </Card>
   );
 }
 
-// ---- Role / Spec switcher ----
+// ── Sidebar: current snapshot values ─────────────────────────────────────────
+
+function CurrentSnapshotCard({ snapshot }: { snapshot: Snapshot }) {
+  return (
+    <Card>
+      <CardHeader className="border-b pb-3">
+        <CardTitle className="text-sm font-medium">Current Values</CardTitle>
+      </CardHeader>
+      <CardContent className="pt-3 space-y-1.5">
+        <StatRow label="Gold"     value={<GoldDisplay value={snapshot.gold} />}              />
+        <StatRow label="Playtime" value={formatPlaytime(snapshot.playtimeSeconds)}            />
+        <div className="border-t border-border/50 my-2" />
+        <StatRow label="Adv. Crest"   value={snapshot.currencies.adventurerDawncrest.toLocaleString()} />
+        <StatRow label="Vet. Crest"   value={snapshot.currencies.veteranDawncrest.toLocaleString()}    />
+        <StatRow label="Champ. Crest" value={snapshot.currencies.championDawncrest.toLocaleString()}   />
+        <StatRow label="Hero Crest"   value={snapshot.currencies.heroDawncrest.toLocaleString()}       />
+        <StatRow label="Myth Crest"   value={snapshot.currencies.mythDawncrest.toLocaleString()}       />
+        <StatRow label="Spark Dust"   value={snapshot.currencies.radiantSparkDust.toLocaleString()}    />
+      </CardContent>
+    </Card>
+  );
+}
+
+// ── Snapshot history table ────────────────────────────────────────────────────
+
+function SnapshotHistoryTable({
+  snapshots,
+  paginated = false,
+}: {
+  snapshots: Snapshot[];
+  paginated?: boolean;
+}) {
+  const [visible, setVisible] = useState(paginated ? 5 : snapshots.length);
+
+  return (
+    <>
+      <div className="overflow-x-auto max-h-[360px] overflow-y-auto">
+        <table className="w-full text-xs">
+          <thead className="sticky top-0 bg-card z-10">
+            <tr className="border-b border-border/50">
+              <th className="text-left text-muted-foreground font-medium py-2 pr-4">Date</th>
+              <th className="text-right text-muted-foreground font-medium py-2 px-2">iLvl</th>
+              <th className="text-right text-muted-foreground font-medium py-2 px-2">M+</th>
+              <th className="text-right text-muted-foreground font-medium py-2 px-2">Gold</th>
+              <th className="text-left text-muted-foreground font-medium py-2 pl-2">Spec / Role</th>
+            </tr>
+          </thead>
+          <tbody>
+            {[...snapshots].reverse().slice(0, visible).map((s, i) => (
+              <tr
+                key={i}
+                className="border-b border-border/30 last:border-0 hover:bg-muted/20 transition-colors"
+              >
+                <td className="py-2 pr-4 text-muted-foreground">{formatDate(s.takenAt)}</td>
+                <td className="py-2 px-2 text-right tabular-nums">{s.itemLevel.toFixed(1)}</td>
+                <td className="py-2 px-2 text-right tabular-nums">{s.mythicPlusScore.toLocaleString()}</td>
+                <td className="py-2 px-2 text-right"><GoldDisplay value={s.gold} /></td>
+                <td className="py-2 pl-2 text-muted-foreground">
+                  {s.spec} <span className="opacity-60">({s.role})</span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {paginated && visible < snapshots.length && (
+        <div className="border-t pt-3 pb-3 px-6">
+          <Button
+            variant="outline"
+            size="sm"
+            className="w-full text-xs"
+            onClick={() => setVisible((v) => v + 5)}
+          >
+            Load more ({snapshots.length - visible} remaining)
+          </Button>
+        </div>
+      )}
+    </>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Layout A — Overview
+// Left sidebar: radar + current values (sticky)
+// Right: time picker + chart grid
+// Bottom: collapsible history
+// ════════════════════════════════════════════════════════════════════════════
+
+function OverviewLayout({ latest, chartSnapshots, filteredSnapshots, timeFrame, setTimeFrame }: LayoutProps) {
+  const [showHistory, setShowHistory] = useState(false);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-col md:flex-row gap-4 items-start">
+        {/* Sidebar */}
+        <div className="w-full md:w-72 shrink-0 md:sticky md:top-4 space-y-4">
+          <Card>
+            <CardHeader className="border-b pb-3">
+              <CardTitle className="text-sm font-medium flex items-center gap-1.5">
+                <Zap size={14} className="text-muted-foreground" /> Combat Stats
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="pt-3">
+              <RadarPanel snapshot={latest} />
+            </CardContent>
+          </Card>
+          <CurrentSnapshotCard snapshot={latest} />
+        </div>
+
+        {/* Main charts */}
+        <div className="flex-1 min-w-0 space-y-4">
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <TimeFramePicker value={timeFrame} onChange={setTimeFrame} />
+            <span className="text-muted-foreground text-xs">
+              {chartSnapshots.length} point{chartSnapshots.length !== 1 ? "s" : ""}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <IlvlChartCard    snapshots={chartSnapshots} timeFrame={timeFrame} />
+            <MplusChartCard   snapshots={chartSnapshots} timeFrame={timeFrame} />
+            <GoldChartCard    snapshots={chartSnapshots} timeFrame={timeFrame} />
+            <CurrenciesChartCard snapshots={chartSnapshots} timeFrame={timeFrame} />
+          </div>
+        </div>
+      </div>
+
+      {/* Collapsible history */}
+      {filteredSnapshots.length > 1 && (
+        <Card>
+          <CardHeader
+            className="border-b pb-3 cursor-pointer select-none"
+            onClick={() => setShowHistory((v) => !v)}
+          >
+            <CardTitle className="text-sm font-medium flex items-center justify-between">
+              <span className="flex items-center gap-1.5">
+                <History size={14} className="text-muted-foreground" />
+                Snapshot History ({filteredSnapshots.length})
+              </span>
+              <span className="text-muted-foreground text-xs font-normal">
+                {showHistory ? "Hide" : "Show"}
+              </span>
+            </CardTitle>
+          </CardHeader>
+          {showHistory && (
+            <CardContent className="pt-0">
+              <SnapshotHistoryTable snapshots={filteredSnapshots} paginated />
+            </CardContent>
+          )}
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Layout B — Focus
+// Metric tab bar → single large chart
+// Right sidebar: radar + key stats (sticky)
+// ════════════════════════════════════════════════════════════════════════════
+
+type FocusMetric = "ilvl" | "mplus" | "gold" | "stats" | "currencies" | "playtime";
+
+const FOCUS_METRICS: { value: FocusMetric; label: string; Icon: React.ElementType }[] = [
+  { value: "ilvl",        label: "Item Level",  Icon: Sword  },
+  { value: "mplus",       label: "M+ Score",    Icon: Flame  },
+  { value: "gold",        label: "Gold",         Icon: Coins  },
+  { value: "stats",       label: "Stats",        Icon: Zap    },
+  { value: "currencies",  label: "Currencies",   Icon: Gem    },
+  { value: "playtime",    label: "Playtime",     Icon: Clock  },
+];
+
+function FocusCurrentValue({ metric, snapshot }: { metric: FocusMetric; snapshot: Snapshot }) {
+  switch (metric) {
+    case "ilvl":
+      return <span className="text-4xl font-bold tabular-nums">{snapshot.itemLevel.toFixed(1)}</span>;
+    case "mplus":
+      return <span className="text-4xl font-bold tabular-nums">{snapshot.mythicPlusScore.toLocaleString()}</span>;
+    case "gold":
+      return <span className="text-2xl font-bold"><GoldDisplay value={snapshot.gold} /></span>;
+    case "stats":
+      return (
+        <div className="flex flex-wrap gap-4 text-sm">
+          {[
+            { l: "Crit",        v: snapshot.stats.critPercent        },
+            { l: "Haste",       v: snapshot.stats.hastePercent       },
+            { l: "Mastery",     v: snapshot.stats.masteryPercent     },
+            { l: "Versatility", v: snapshot.stats.versatilityPercent },
+          ].map(({ l, v }) => (
+            <span key={l}>
+              <span className="text-muted-foreground">{l} </span>
+              <strong className="tabular-nums">{v.toFixed(1)}%</strong>
+            </span>
+          ))}
+        </div>
+      );
+    case "currencies":
+      return (
+        <div className="flex flex-wrap gap-4 text-sm">
+          {[
+            { l: "Myth",       v: snapshot.currencies.mythDawncrest        },
+            { l: "Hero",       v: snapshot.currencies.heroDawncrest        },
+            { l: "Champion",   v: snapshot.currencies.championDawncrest    },
+            { l: "Spark Dust", v: snapshot.currencies.radiantSparkDust     },
+          ].map(({ l, v }) => (
+            <span key={l}>
+              <span className="text-muted-foreground">{l} </span>
+              <strong className="tabular-nums">{v.toLocaleString()}</strong>
+            </span>
+          ))}
+        </div>
+      );
+    case "playtime":
+      return <span className="text-4xl font-bold">{formatPlaytime(snapshot.playtimeSeconds)}</span>;
+    default:
+      return null;
+  }
+}
+
+function FocusChart({
+  metric,
+  snapshots,
+  timeFrame,
+}: {
+  metric: FocusMetric;
+  snapshots: Snapshot[];
+  timeFrame: TimeFrame;
+}) {
+  const h = "h-[420px]";
+  if (metric === "ilvl") {
+    return (
+      <SnapshotLineChart
+        data={snapshots.map((s) => ({ date: s.takenAt, itemLevel: s.itemLevel }))}
+        lines={[{ key: "itemLevel", color: C.blue }]}
+        config={ilvlConfig}
+        valueFormatter={(v) => v.toFixed(1)}
+        className={h}
+        timeFrame={timeFrame}
+      />
+    );
+  }
+  if (metric === "mplus") {
+    return (
+      <SnapshotLineChart
+        data={snapshots.map((s) => ({ date: s.takenAt, mythicPlusScore: s.mythicPlusScore }))}
+        lines={[{ key: "mythicPlusScore", color: C.red }]}
+        config={mplusConfig}
+        valueFormatter={(v) => v.toLocaleString()}
+        className={h}
+        timeFrame={timeFrame}
+      />
+    );
+  }
+  if (metric === "gold") {
+    return (
+      <SnapshotLineChart
+        data={snapshots.map((s) => ({ date: s.takenAt, gold: s.gold }))}
+        lines={[{ key: "gold", color: C.gold }]}
+        config={goldConfig}
+        valueFormatter={(v) => `${goldUnits(v).toLocaleString()}g`}
+        className={h}
+        timeFrame={timeFrame}
+      />
+    );
+  }
+  if (metric === "stats") {
+    return (
+      <SnapshotLineChart
+        data={snapshots.map((s) => ({
+          date: s.takenAt,
+          critPercent:        s.stats.critPercent,
+          hastePercent:       s.stats.hastePercent,
+          masteryPercent:     s.stats.masteryPercent,
+          versatilityPercent: s.stats.versatilityPercent,
+        }))}
+        lines={[
+          { key: "critPercent",        color: C.red    },
+          { key: "hastePercent",       color: C.green  },
+          { key: "masteryPercent",     color: C.blue   },
+          { key: "versatilityPercent", color: C.purple },
+        ]}
+        config={secondaryStatsConfig}
+        valueFormatter={(v) => `${v.toFixed(1)}%`}
+        className={h}
+        showLegend
+        timeFrame={timeFrame}
+      />
+    );
+  }
+  if (metric === "currencies") {
+    return (
+      <SnapshotLineChart
+        data={snapshots.map((s) => ({ date: s.takenAt, ...s.currencies }))}
+        lines={[
+          { key: "adventurerDawncrest", color: C.blue  },
+          { key: "veteranDawncrest",    color: C.teal  },
+          { key: "championDawncrest",   color: C.green },
+          { key: "heroDawncrest",       color: C.gold  },
+          { key: "mythDawncrest",       color: C.red   },
+          { key: "radiantSparkDust",    color: C.pink  },
+        ]}
+        config={currenciesConfig}
+        className={h}
+        showLegend
+        timeFrame={timeFrame}
+      />
+    );
+  }
+  if (metric === "playtime") {
+    return (
+      <SnapshotLineChart
+        data={snapshots.map((s) => ({ date: s.takenAt, playtimeHours: Math.round(s.playtimeSeconds / 3600) }))}
+        lines={[{ key: "playtimeHours", color: C.purple }]}
+        config={playtimeConfig}
+        valueFormatter={(v) => formatHours(v)}
+        yDomainOverride={[0, 4800]}
+        className={h}
+        timeFrame={timeFrame}
+      />
+    );
+  }
+  return null;
+}
+
+function FocusLayout({ latest, chartSnapshots, timeFrame, setTimeFrame }: LayoutProps) {
+  const [metric, setMetric] = useState<FocusMetric>("ilvl");
+
+  return (
+    <div className="flex flex-col lg:flex-row gap-4 items-start">
+      {/* Main chart area */}
+      <div className="flex-1 min-w-0 space-y-4">
+        {/* Metric selector */}
+        <div className="flex flex-wrap gap-1.5">
+          {FOCUS_METRICS.map(({ value, label, Icon }) => (
+            <button
+              key={value}
+              onClick={() => setMetric(value)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm border transition-colors ${
+                metric === value
+                  ? "bg-primary text-primary-foreground border-primary"
+                  : "text-muted-foreground border-border hover:text-foreground hover:bg-muted/50"
+              }`}
+            >
+              <Icon size={13} />
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {/* Current value spotlight */}
+        <div className="min-h-[2.5rem] flex items-center">
+          <FocusCurrentValue metric={metric} snapshot={latest} />
+        </div>
+
+        {/* Time picker + chart */}
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <TimeFramePicker value={timeFrame} onChange={setTimeFrame} />
+          <span className="text-muted-foreground text-xs">
+            {chartSnapshots.length} point{chartSnapshots.length !== 1 ? "s" : ""}
+          </span>
+        </div>
+        <Card>
+          <CardContent className="pt-4">
+            <FocusChart metric={metric} snapshots={chartSnapshots} timeFrame={timeFrame} />
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Right sidebar */}
+      <div className="w-full lg:w-64 shrink-0 lg:sticky lg:top-4 space-y-4">
+        <Card>
+          <CardHeader className="border-b pb-3">
+            <CardTitle className="text-sm font-medium flex items-center gap-1.5">
+              <Zap size={14} className="text-muted-foreground" /> Combat Stats
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="pt-3">
+            <RadarPanel snapshot={latest} />
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-4">
+            <div className="grid grid-cols-2 gap-2">
+              <StatGrid label="Item Level" value={latest.itemLevel.toFixed(1)}                   />
+              <StatGrid label="M+ Score"   value={latest.mythicPlusScore.toLocaleString()}        />
+              <StatGrid label="Gold"       value={<GoldDisplay value={latest.gold} />}            />
+              <StatGrid label="Playtime"   value={formatPlaytime(latest.playtimeSeconds)}         />
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Layout C — Timeline
+// Compact radar strip at top
+// All charts stacked full-width, taller
+// Full scrollable history at bottom (no pagination)
+// ════════════════════════════════════════════════════════════════════════════
+
+function TimelineLayout({ latest, chartSnapshots, filteredSnapshots, timeFrame, setTimeFrame }: LayoutProps) {
+  const chartH = "h-[260px]";
+
+  return (
+    <div className="space-y-4">
+      {/* Time picker — prominent at top */}
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <TimeFramePicker value={timeFrame} onChange={setTimeFrame} />
+        <span className="text-muted-foreground text-xs">
+          {chartSnapshots.length} point{chartSnapshots.length !== 1 ? "s" : ""}
+        </span>
+      </div>
+
+      {/* Radar strip */}
+      <RadarStrip snapshot={latest} />
+
+      {/* Stacked charts */}
+      <Card>
+        <CardHeader className="pb-0">
+          <CardTitle className="text-sm font-medium flex items-center gap-1.5">
+            <Sword size={14} className="text-muted-foreground" /> Item Level
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <SnapshotLineChart
+            data={chartSnapshots.map((s) => ({ date: s.takenAt, itemLevel: s.itemLevel }))}
+            lines={[{ key: "itemLevel", color: C.blue }]}
+            config={ilvlConfig}
+            valueFormatter={(v) => v.toFixed(1)}
+            className={chartH}
+            timeFrame={timeFrame}
+          />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-0">
+          <CardTitle className="text-sm font-medium flex items-center gap-1.5">
+            <Flame size={14} className="text-muted-foreground" /> M+ Score
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <SnapshotLineChart
+            data={chartSnapshots.map((s) => ({ date: s.takenAt, mythicPlusScore: s.mythicPlusScore }))}
+            lines={[{ key: "mythicPlusScore", color: C.red }]}
+            config={mplusConfig}
+            valueFormatter={(v) => v.toLocaleString()}
+            className={chartH}
+            timeFrame={timeFrame}
+          />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-0">
+          <CardTitle className="text-sm font-medium flex items-center gap-1.5">
+            <Coins size={14} className="text-muted-foreground" /> Gold
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <SnapshotLineChart
+            data={chartSnapshots.map((s) => ({ date: s.takenAt, gold: s.gold }))}
+            lines={[{ key: "gold", color: C.gold }]}
+            config={goldConfig}
+            valueFormatter={(v) => `${goldUnits(v).toLocaleString()}g`}
+            className={chartH}
+            timeFrame={timeFrame}
+          />
+        </CardContent>
+      </Card>
+
+      <SecondaryStatsChartCard snapshots={chartSnapshots} timeFrame={timeFrame} />
+      <CurrenciesChartCard     snapshots={chartSnapshots} timeFrame={timeFrame} />
+      <PlaytimeChartCard       snapshots={chartSnapshots} timeFrame={timeFrame} />
+
+      {/* Full history — always visible, scrollable */}
+      {filteredSnapshots.length > 1 && (
+        <Card>
+          <CardHeader className="border-b pb-3">
+            <CardTitle className="text-sm font-medium flex items-center gap-1.5">
+              <History size={14} className="text-muted-foreground" />
+              Snapshot History ({filteredSnapshots.length})
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="pt-0">
+            <SnapshotHistoryTable snapshots={filteredSnapshots} />
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ── Role / Spec switcher ──────────────────────────────────────────────────────
 
 function RoleSpecFilter({
   snapshots,
@@ -1037,7 +1356,6 @@ function RoleSpecFilter({
 
   const roles = [...roleMap.keys()];
   const totalUniqueSpecs = roles.reduce((n, r) => n + (roleMap.get(r)?.size ?? 0), 0);
-
   if (roles.length <= 1 && totalUniqueSpecs <= 1) return null;
 
   const specsInContext: { spec: string; role: string }[] = selectedRole
@@ -1054,22 +1372,14 @@ function RoleSpecFilter({
         <Button
           size="sm"
           variant={selectedRole === null ? "default" : "outline"}
-          onClick={() => {
-            onRoleChange(null);
-            onSpecChange(null);
-          }}
-        >
-          All
-        </Button>
+          onClick={() => { onRoleChange(null); onSpecChange(null); }}
+        >All</Button>
         {roles.map((role) => (
           <Button
             key={role}
             size="sm"
             variant={selectedRole === role ? "default" : "outline"}
-            onClick={() => {
-              onRoleChange(role);
-              onSpecChange(null);
-            }}
+            onClick={() => { onRoleChange(role); onSpecChange(null); }}
           >
             {ROLE_LABELS[role] ?? role}
             {(roleMap.get(role)?.size ?? 0) > 1 && (
@@ -1083,11 +1393,7 @@ function RoleSpecFilter({
         <div className="flex flex-wrap gap-1.5 items-center pl-1 border-l-2 border-border/30 ml-1">
           <span className="text-muted-foreground text-xs mr-1">Spec</span>
           {selectedRole && (
-            <Button
-              size="sm"
-              variant={selectedSpec === null ? "default" : "outline"}
-              onClick={() => onSpecChange(null)}
-            >
+            <Button size="sm" variant={selectedSpec === null ? "default" : "outline"} onClick={() => onSpecChange(null)}>
               All
             </Button>
           )}
@@ -1113,7 +1419,7 @@ function RoleSpecFilter({
   );
 }
 
-// ---- Main component ----
+// ── Main component ────────────────────────────────────────────────────────────
 
 function RouteComponent() {
   const { characterId } = Route.useParams();
@@ -1123,8 +1429,19 @@ function RouteComponent() {
 
   const [selectedRole, setSelectedRole] = useState<string | null>(null);
   const [selectedSpec, setSelectedSpec] = useState<string | null>(null);
-  const [timeFrame, setTimeFrame] = useState<TimeFrame>("1w");
-  const [visibleSnapshots, setVisibleSnapshots] = useState(5);
+  const [timeFrame, setTimeFrame] = useState<TimeFrame>("30d");
+  const [layoutMode, setLayoutMode] = useState<LayoutMode>(() => {
+    try {
+      return (localStorage.getItem("wow-char-layout") as LayoutMode) ?? "overview";
+    } catch {
+      return "overview";
+    }
+  });
+
+  function handleLayoutChange(mode: LayoutMode) {
+    setLayoutMode(mode);
+    try { localStorage.setItem("wow-char-layout", mode); } catch { /* ignore */ }
+  }
 
   if (data === undefined) {
     return (
@@ -1145,9 +1462,6 @@ function RouteComponent() {
 
   const { character, snapshots } = data;
 
-  const validSnapshots = snapshots;
-
-  // Filter by role/spec
   const filtered = snapshots.filter((s) => {
     if (selectedRole && s.role !== selectedRole) return false;
     if (selectedSpec && s.spec !== selectedSpec) return false;
@@ -1155,30 +1469,39 @@ function RouteComponent() {
   });
 
   const latest = filtered[filtered.length - 1] ?? null;
-
-  // Apply time frame filter then grouping for charts
   const timeFrameFiltered = filterByTimeFrame(filtered, timeFrame);
   const chartSnapshots = groupSnapshotsAuto(timeFrameFiltered);
 
+  const layoutProps: LayoutProps = {
+    latest: latest!,
+    chartSnapshots,
+    filteredSnapshots: filtered,
+    timeFrame,
+    setTimeFrame,
+  };
+
   return (
     <div className="w-full px-4 py-6 sm:px-6 lg:px-8 space-y-4">
-      {/* Character Header */}
+      {/* Character header */}
       <Card>
         <CardHeader className="border-b pb-3">
           <div className="flex items-baseline justify-between">
             <CardTitle className={`text-2xl font-bold ${classColor(character.class)}`}>
               {character.name}
             </CardTitle>
-            <Badge
-              variant="outline"
-              className={
-                character.faction === "alliance"
-                  ? "border-blue-500/40 text-blue-400 uppercase tracking-wider"
-                  : "border-red-500/40 text-red-400 uppercase tracking-wider"
-              }
-            >
-              {character.faction}
-            </Badge>
+            <div className="flex items-center gap-2">
+              <LayoutSwitcher value={layoutMode} onChange={handleLayoutChange} />
+              <Badge
+                variant="outline"
+                className={
+                  character.faction === "alliance"
+                    ? "border-blue-500/40 text-blue-400 uppercase tracking-wider"
+                    : "border-red-500/40 text-red-400 uppercase tracking-wider"
+                }
+              >
+                {character.faction}
+              </Badge>
+            </div>
           </div>
           <p className="text-muted-foreground text-sm mt-1">
             {character.race} {character.class} — {character.realm}-{character.region.toUpperCase()}
@@ -1188,24 +1511,24 @@ function RouteComponent() {
         {latest && (
           <CardContent className="pt-4">
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
-              <StatGrid label="Level" value={latest.level} />
-              <StatGrid label="Item Level" value={latest.itemLevel.toFixed(1)} />
-              <StatGrid label="M+ Score" value={latest.mythicPlusScore.toLocaleString()} />
-              <StatGrid label="Gold" value={<GoldDisplay value={latest.gold} />} />
+              <StatGrid label="Level"      value={latest.level}                                />
+              <StatGrid label="Item Level" value={latest.itemLevel.toFixed(1)}                 />
+              <StatGrid label="M+ Score"   value={latest.mythicPlusScore.toLocaleString()}     />
+              <StatGrid label="Gold"       value={<GoldDisplay value={latest.gold} />}         />
             </div>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-1">
-              <StatRow label="Spec" value={`${latest.spec} (${latest.role})`} />
-              <StatRow label="Playtime" value={formatPlaytime(latest.playtimeSeconds)} />
-              <StatRow label="Snapshot" value={formatDate(latest.takenAt)} />
+              <StatRow label="Spec"     value={`${latest.spec} (${latest.role})`}              />
+              <StatRow label="Playtime" value={formatPlaytime(latest.playtimeSeconds)}         />
+              <StatRow label="Snapshot" value={formatDate(latest.takenAt)}                    />
             </div>
           </CardContent>
         )}
       </Card>
 
       {/* Role / Spec filter */}
-      {validSnapshots.length > 0 && (
+      {snapshots.length > 0 && (
         <RoleSpecFilter
-          snapshots={validSnapshots}
+          snapshots={snapshots}
           selectedRole={selectedRole}
           selectedSpec={selectedSpec}
           onRoleChange={setSelectedRole}
@@ -1213,98 +1536,14 @@ function RouteComponent() {
         />
       )}
 
-      {/* Time frame + chart count info */}
-      {filtered.length > 0 && (
-        <div className="flex items-center justify-between flex-wrap gap-2">
-          <TimeFramePicker value={timeFrame} onChange={setTimeFrame} />
-          <span className="text-muted-foreground text-xs">
-            {chartSnapshots.length} data point{chartSnapshots.length !== 1 ? "s" : ""}
-            {timeFrameFiltered.length !== chartSnapshots.length &&
-              ` (grouped from ${timeFrameFiltered.length})`}
-          </span>
-        </div>
+      {/* Active layout */}
+      {latest && filtered.length > 0 && (
+        <>
+          {layoutMode === "overview"  && <OverviewLayout  {...layoutProps} />}
+          {layoutMode === "focus"     && <FocusLayout     {...layoutProps} />}
+          {layoutMode === "timeline"  && <TimelineLayout  {...layoutProps} />}
+        </>
       )}
-
-      {/* Main charts */}
-      {filtered.length > 0 && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-          <IlvlChartCard snapshots={chartSnapshots} timeFrame={timeFrame} />
-          <MplusChartCard snapshots={chartSnapshots} timeFrame={timeFrame} />
-          <GoldChartCard snapshots={chartSnapshots} timeFrame={timeFrame} />
-        </div>
-      )}
-
-      {/* Stats & Currencies with chart toggle */}
-      {latest && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          <CombatStatsCard snapshots={chartSnapshots} timeFrame={timeFrame} />
-          <CurrenciesCard snapshots={chartSnapshots} timeFrame={timeFrame} />
-          <PlaytimeCard snapshots={chartSnapshots} timeFrame={timeFrame} />
-        </div>
-      )}
-
-      {/* Snapshot History */}
-      {filtered.length > 1 && (
-        <Card>
-          <CardHeader className="border-b pb-3">
-            <CardTitle className="text-sm font-medium flex items-center gap-1.5">
-              <History size={14} className="text-muted-foreground" />
-              Snapshot History ({filtered.length})
-              {(selectedRole ?? selectedSpec) && (
-                <span className="text-muted-foreground font-normal ml-1">— filtered</span>
-              )}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="pt-0 overflow-x-auto max-h-[360px] overflow-y-auto">
-            <table className="w-full text-xs">
-              <thead className="sticky top-0 bg-card z-10">
-                <tr className="border-b border-border/50">
-                  <th className="text-left text-muted-foreground font-medium py-2 pr-4">Date</th>
-                  <th className="text-right text-muted-foreground font-medium py-2 px-2">iLvl</th>
-                  <th className="text-right text-muted-foreground font-medium py-2 px-2">M+</th>
-                  <th className="text-right text-muted-foreground font-medium py-2 px-2">Gold</th>
-                  <th className="text-left text-muted-foreground font-medium py-2 pl-2">
-                    Spec / Role
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {[...filtered].reverse().slice(0, visibleSnapshots).map((s, i) => (
-                  <tr
-                    key={i}
-                    className="border-b border-border/30 last:border-0 hover:bg-muted/20 transition-colors"
-                  >
-                    <td className="py-2 pr-4 text-muted-foreground">{formatDate(s.takenAt)}</td>
-                    <td className="py-2 px-2 text-right tabular-nums">{s.itemLevel.toFixed(1)}</td>
-                    <td className="py-2 px-2 text-right tabular-nums">
-                      {s.mythicPlusScore.toLocaleString()}
-                    </td>
-                    <td className="py-2 px-2 text-right">
-                      <GoldDisplay value={s.gold} />
-                    </td>
-                    <td className="py-2 pl-2 text-muted-foreground">
-                      {s.spec} <span className="opacity-60">({s.role})</span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </CardContent>
-          {visibleSnapshots < filtered.length && (
-            <CardFooter className="border-t pt-3 pb-3">
-              <Button
-                variant="outline"
-                size="sm"
-                className="w-full text-xs"
-                onClick={() => setVisibleSnapshots((v) => v + 5)}
-              >
-                Load more ({filtered.length - visibleSnapshots} remaining)
-              </Button>
-            </CardFooter>
-          )}
-        </Card>
-      )}
-
     </div>
   );
 }
