@@ -5,7 +5,7 @@ import { authComponent } from "./auth";
 import { internal } from "./_generated/api";
 
 // How long a login code is valid (milliseconds).
-const CODE_TTL_MS = 60_000; // 60 seconds
+const CODE_TTL_MS = 10_000; // 10 seconds
 
 // Expose the mutation for public use (requires a valid Convex auth token from the web session).
 export const storeLoginCode = mutation({
@@ -39,7 +39,7 @@ export const storeLoginCode = mutation({
 });
 
 // HTTP action: called by Electron to exchange a one-time code for the stored token.
-// This endpoint is public but the code is single-use and expires in 60 seconds.
+// This endpoint is public but the code is single-use and expires in 10 seconds.
 export const redeemCode = httpAction(async (ctx, request) => {
   let code: string;
   try {
