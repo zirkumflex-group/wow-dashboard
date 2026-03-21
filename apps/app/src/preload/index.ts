@@ -3,24 +3,23 @@ import { contextBridge, ipcRenderer } from "electron";
 contextBridge.exposeInMainWorld("electron", {
   version: process.versions.electron,
   auth: {
-    login: (siteUrl: string) => ipcRenderer.invoke("auth:login", siteUrl),
-    getToken: (siteUrl: string) => ipcRenderer.invoke("auth:getToken", siteUrl),
-    getSession: (siteUrl: string) => ipcRenderer.invoke("auth:getSession", siteUrl),
-    logout: (siteUrl: string) => ipcRenderer.invoke("auth:logout", siteUrl),
+    login: () => ipcRenderer.invoke("auth:login"),
+    getToken: () => ipcRenderer.invoke("auth:getToken"),
+    getSession: () => ipcRenderer.invoke("auth:getSession"),
+    logout: () => ipcRenderer.invoke("auth:logout"),
   },
   wow: {
     getRetailPath: () => ipcRenderer.invoke("wow:getRetailPath"),
     selectRetailFolder: () => ipcRenderer.invoke("wow:selectRetailFolder"),
-    readAddonData: (retailPath: string) => ipcRenderer.invoke("wow:readAddonData", retailPath),
-    checkAddonInstalled: (retailPath: string) =>
-      ipcRenderer.invoke("wow:checkAddonInstalled", retailPath),
-    getInstalledAddonVersion: (retailPath: string) =>
-      ipcRenderer.invoke("wow:getInstalledAddonVersion", retailPath) as Promise<string | null>,
-    installAddon: (retailPath: string, downloadUrl: string) =>
-      ipcRenderer.invoke("wow:installAddon", retailPath, downloadUrl),
+    readAddonData: () => ipcRenderer.invoke("wow:readAddonData"),
+    checkAddonInstalled: () => ipcRenderer.invoke("wow:checkAddonInstalled"),
+    getInstalledAddonVersion: () =>
+      ipcRenderer.invoke("wow:getInstalledAddonVersion") as Promise<string | null>,
+    installAddon: (downloadUrl: string) =>
+      ipcRenderer.invoke("wow:installAddon", downloadUrl),
     getLatestAddonRelease: () =>
       ipcRenderer.invoke("wow:getLatestAddonRelease") as Promise<{ url: string; version: string }>,
-    watchAddonFile: (retailPath: string) => ipcRenderer.invoke("wow:watchAddonFile", retailPath),
+    watchAddonFile: () => ipcRenderer.invoke("wow:watchAddonFile"),
     unwatchAddonFile: () => ipcRenderer.invoke("wow:unwatchAddonFile"),
     onAddonFileChanged: (cb: () => void) => {
       ipcRenderer.on("wow:addonFileChanged", () => cb());

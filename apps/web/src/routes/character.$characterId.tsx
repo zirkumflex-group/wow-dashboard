@@ -1142,12 +1142,10 @@ function RouteComponent() {
 
   const { character, snapshots } = data;
 
-  // Separate valid snapshots from unknown/invalid ones
-  const validSnapshots = snapshots.filter((s) => s.spec !== "Unknown" && s.role !== "Unknown");
-  const unknownSnapshots = snapshots.filter((s) => s.spec === "Unknown" || s.role === "Unknown");
+  const validSnapshots = snapshots;
 
   // Filter by role/spec
-  const filtered = validSnapshots.filter((s) => {
+  const filtered = snapshots.filter((s) => {
     if (selectedRole && s.role !== selectedRole) return false;
     if (selectedSpec && s.spec !== selectedSpec) return false;
     return true;
@@ -1304,55 +1302,6 @@ function RouteComponent() {
         </Card>
       )}
 
-      {/* Unknown / Invalid Snapshots */}
-      {unknownSnapshots.length > 0 && (
-        <Card className="border-dashed border-yellow-500/30">
-          <CardHeader className="border-b border-yellow-500/20 pb-3">
-            <CardTitle className="text-sm font-medium flex items-center gap-1.5 text-yellow-500/80">
-              <History size={14} />
-              Unknown / Invalid Snapshots ({unknownSnapshots.length})
-            </CardTitle>
-            <p className="text-muted-foreground text-xs mt-1">
-              These snapshots have an unknown spec or role and are excluded from charts and filters.
-            </p>
-          </CardHeader>
-          <CardContent className="pt-0 overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="border-b border-border/50">
-                  <th className="text-left text-muted-foreground font-medium py-2 pr-4">Date</th>
-                  <th className="text-right text-muted-foreground font-medium py-2 px-2">iLvl</th>
-                  <th className="text-right text-muted-foreground font-medium py-2 px-2">M+</th>
-                  <th className="text-right text-muted-foreground font-medium py-2 px-2">Gold</th>
-                  <th className="text-left text-muted-foreground font-medium py-2 pl-2">
-                    Spec / Role
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {[...unknownSnapshots].reverse().map((s, i) => (
-                  <tr
-                    key={i}
-                    className="border-b border-border/30 last:border-0 hover:bg-muted/20 transition-colors opacity-70"
-                  >
-                    <td className="py-2 pr-4 text-muted-foreground">{formatDate(s.takenAt)}</td>
-                    <td className="py-2 px-2 text-right tabular-nums">{s.itemLevel.toFixed(1)}</td>
-                    <td className="py-2 px-2 text-right tabular-nums">
-                      {s.mythicPlusScore.toLocaleString()}
-                    </td>
-                    <td className="py-2 px-2 text-right">
-                      <GoldDisplay value={s.gold} />
-                    </td>
-                    <td className="py-2 pl-2 text-yellow-500/70">
-                      {s.spec} <span className="opacity-60">({s.role})</span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </CardContent>
-        </Card>
-      )}
     </div>
   );
 }

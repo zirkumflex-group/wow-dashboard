@@ -54,24 +54,24 @@ declare global {
     electron: {
       version: string;
       auth: {
-        login: (siteUrl: string) => Promise<boolean>;
-        getToken: (siteUrl: string) => Promise<string | null>;
-        getSession: (siteUrl: string) => Promise<unknown>;
-        logout: (siteUrl: string) => Promise<boolean>;
+        login: () => Promise<boolean>;
+        getToken: () => Promise<string | null>;
+        getSession: () => Promise<unknown>;
+        logout: () => Promise<boolean>;
       };
       wow: {
         getRetailPath: () => Promise<string | null>;
         selectRetailFolder: () => Promise<string | null>;
-        readAddonData: (retailPath: string) => Promise<{
+        readAddonData: () => Promise<{
           characters: CharacterData[];
           accountsFound: string[];
           fileStats: { totalBytes: number; createdAt: number; modifiedAt: number; totalSnapshots: number } | null;
-        }>;
-        checkAddonInstalled: (retailPath: string) => Promise<boolean>;
-        getInstalledAddonVersion: (retailPath: string) => Promise<string | null>;
-        installAddon: (retailPath: string, downloadUrl: string) => Promise<void>;
+        } | null>;
+        checkAddonInstalled: () => Promise<boolean>;
+        getInstalledAddonVersion: () => Promise<string | null>;
+        installAddon: (downloadUrl: string) => Promise<void>;
         getLatestAddonRelease: () => Promise<{ url: string; version: string }>;
-        watchAddonFile: (retailPath: string) => Promise<void>;
+        watchAddonFile: () => Promise<void>;
         unwatchAddonFile: () => Promise<void>;
         onAddonFileChanged: (cb: () => void) => void;
       };
@@ -107,7 +107,7 @@ function _notify() {
 
 async function _fetchToken(): Promise<string | null> {
   try {
-    const t = await window.electron.auth.getToken(env.VITE_SITE_URL);
+    const t = await window.electron.auth.getToken();
     _token = t;
     _notify();
     return t;
@@ -367,13 +367,13 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
       setWatchingFile(false);
       return;
     }
-    window.electron.wow.watchAddonFile(retailPath);
+    window.electron.wow.watchAddonFile();
     setWatchingFile(true);
-    window.electron.wow.checkAddonInstalled(retailPath).then(setAddonInstalled);
-    window.electron.wow.getInstalledAddonVersion(retailPath).then(setAddonVersion);
+    window.electron.wow.checkAddonInstalled().then(setAddonInstalled);
+    window.electron.wow.getInstalledAddonVersion().then(setAddonVersion);
     // Read file to get pending snapshot count and file stats
     window.electron.wow
-      .readAddonData(retailPath)
+      .readAddonData()
       .then(({ characters: chars, fileStats }) => {
         const sinceTs = lastSyncedAtRef.current - 60;
         const pending = chars.reduce(
@@ -408,7 +408,7 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
     setInstallError(null);
     try {
       const { url, version } = await window.electron.wow.getLatestAddonRelease();
-      await window.electron.wow.installAddon(retailPath, url);
+      await window.electron.wow.installAddon(url);
       setAddonInstalled(true);
       setAddonVersion(version);
     } catch (e) {
@@ -453,7 +453,7 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
       setUploadError(null);
       setUploadWarn(null);
       setFileSnapshotCount(null);
-      const installed = await window.electron.wow.checkAddonInstalled(folder);
+      const installed = await window.electron.wow.checkAddonInstalled();
       setAddonInstalled(installed);
     }
   }
@@ -466,8 +466,9 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
     setUploadWarn(null);
     try {
       if (retailPath) {
-        const { characters: addonChars, accountsFound, fileStats } =
-          await window.electron.wow.readAddonData(retailPath);
+        const addonData = await window.electron.wow.readAddonData();
+        if (!addonData) return;
+        const { characters: addonChars, accountsFound, fileStats } = addonData;
         if (fileStats) setAddonFileStats(fileStats);
 
         if (addonChars.length === 0) {
@@ -799,12 +800,12 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
 // ---------------------------------------------------------------------------
 export default function App() {
   async function handleLogin() {
-    await window.electron.auth.login(env.VITE_SITE_URL);
+    await window.electron.auth.login();
     await _fetchToken();
   }
 
   async function handleLogout() {
-    await window.electron.auth.logout(env.VITE_SITE_URL);
+    await window.electron.auth.logout();
     _token = null;
     _notify();
   }

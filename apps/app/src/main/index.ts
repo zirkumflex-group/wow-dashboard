@@ -12,9 +12,10 @@ import {
 } from "electron";
 import { autoUpdater } from "electron-updater";
 import * as fs from "fs";
-import { join } from "path";
+import * as path from "path";
+import { join, resolve, sep } from "path";
 import * as os from "os";
-import { execFile } from "child_process";
+import * as unzipper from "unzipper";
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -27,6 +28,9 @@ let closeBehaviorCache: "tray" | "exit" = "tray";
 let launchMinimizedCache = true;
 let addonWatcher: ReturnType<typeof fs.watch> | null = null;
 let addonWatchDebounce: ReturnType<typeof setTimeout> | null = null;
+let cachedElectronToken: string | null = null;
+let pendingLoginResolve: ((token: string) => void) | null = null;
+let pendingLoginReject: ((err: Error) => void) | null = null;
 
 async function loadTrayIcon(): Promise<Electron.NativeImage> {
   try {
@@ -438,7 +442,7 @@ function createWindow(): void {
     show: process.platform !== "win32", // on Windows start hidden in tray; show immediately on other platforms
     webPreferences: {
       preload: join(__dirname, "../preload/index.js"),
-      sandbox: false,
+      sandbox: true,
     },
   });
 
@@ -478,54 +482,62 @@ function createWindow(): void {
   });
 }
 
-async function openOAuthPopup(url: string, callbackBase: string): Promise<void> {
-  return new Promise<void>((resolve) => {
-    const popup = new BrowserWindow({
-      width: 800,
-      height: 700,
-      parent: mainWindow ?? undefined,
-      webPreferences: { sandbox: true },
-    });
-
-    popup.loadURL(url);
-
-    const onNav = (_: Electron.Event, navUrl: string) => {
-      if (navUrl.startsWith(callbackBase) && !navUrl.includes("/api/auth/")) {
-        popup.close();
+function handleDeepLink(url: string): void {
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname === "auth") {
+      const token = parsed.searchParams.get("token");
+      if (token && pendingLoginResolve) {
+        pendingLoginResolve(token);
+        pendingLoginResolve = null;
+        pendingLoginReject = null;
       }
-    };
-
-    popup.webContents.on("will-redirect", onNav);
-    popup.webContents.on("did-navigate", onNav);
-    popup.on("closed", resolve);
-  });
+    }
+  } catch {
+    // ignore malformed deep-links
+  }
 }
 
 // ─── IPC handlers ─────────────────────────────────────────────────────────────
 
+// Trusted site URL — read from build-time env, never from renderer input.
+const SITE_URL: string = (import.meta as unknown as { env: Record<string, string> }).env
+  .VITE_SITE_URL ?? "";
+
 // Auth
-ipcMain.handle("auth:login", async (_, siteUrl: string) => {
-  const resp = await session.defaultSession.fetch(`${siteUrl}/api/auth/sign-in/social`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Origin: siteUrl },
-    body: JSON.stringify({ provider: "battlenet", callbackURL: `${siteUrl}/dashboard` }),
+ipcMain.handle("auth:login", () => {
+  return new Promise<boolean>((resolve, reject) => {
+    // Set up pending deep-link resolution with a 10-minute timeout.
+    const timeout = setTimeout(() => {
+      pendingLoginReject?.(new Error("Login timed out"));
+      pendingLoginResolve = null;
+      pendingLoginReject = null;
+    }, 10 * 60 * 1000);
+
+    pendingLoginResolve = (token: string) => {
+      clearTimeout(timeout);
+      cachedElectronToken = token;
+      resolve(true);
+    };
+    pendingLoginReject = (err: Error) => {
+      clearTimeout(timeout);
+      reject(err);
+    };
+
+    // Open the login page in the browser. The browser initiates the OAuth flow so the
+    // state cookie lands in the browser session (not Electron's), which means better-auth
+    // can validate the callback and honour the callbackURL → /auth/electron-callback.
+    void shell.openExternal(`${SITE_URL}/auth/electron-login`);
   });
-
-  if (!resp.ok) throw new Error(`Auth sign-in error: ${resp.status}`);
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const data: any = await resp.json();
-  const oauthUrl: string = data?.url;
-  if (!oauthUrl) throw new Error("No OAuth URL returned from auth server");
-
-  await openOAuthPopup(oauthUrl, siteUrl);
-  return true;
 });
 
-ipcMain.handle("auth:getToken", async (_, siteUrl: string) => {
+ipcMain.handle("auth:getToken", async () => {
+  // Return the token received via deep-link (system browser OAuth flow).
+  if (cachedElectronToken) return cachedElectronToken;
+  // Fallback: fetch from session cookies (legacy / future in-app flows).
   try {
-    const resp = await session.defaultSession.fetch(`${siteUrl}/api/auth/convex/token`, {
-      headers: { Origin: siteUrl },
+    const resp = await session.defaultSession.fetch(`${SITE_URL}/api/auth/convex/token`, {
+      headers: { Origin: SITE_URL },
     });
     if (!resp.ok) return null;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -536,10 +548,10 @@ ipcMain.handle("auth:getToken", async (_, siteUrl: string) => {
   }
 });
 
-ipcMain.handle("auth:getSession", async (_, siteUrl: string) => {
+ipcMain.handle("auth:getSession", async () => {
   try {
-    const resp = await session.defaultSession.fetch(`${siteUrl}/api/auth/get-session`, {
-      headers: { Origin: siteUrl },
+    const resp = await session.defaultSession.fetch(`${SITE_URL}/api/auth/get-session`, {
+      headers: { Origin: SITE_URL },
     });
     if (!resp.ok) return null;
     return await resp.json();
@@ -548,11 +560,13 @@ ipcMain.handle("auth:getSession", async (_, siteUrl: string) => {
   }
 });
 
-ipcMain.handle("auth:logout", async (_, siteUrl: string) => {
+ipcMain.handle("auth:logout", async () => {
+  cachedElectronToken = null;
   try {
-    await session.defaultSession.fetch(`${siteUrl}/api/auth/sign-out`, {
+    await session.defaultSession.fetch(`${SITE_URL}/api/auth/sign-out`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Origin: siteUrl },
+      headers: { "Content-Type": "application/json", Origin: SITE_URL },
+      body: JSON.stringify({}),
     });
     return true;
   } catch {
@@ -581,7 +595,10 @@ ipcMain.handle("wow:selectRetailFolder", async () => {
   return folder;
 });
 
-ipcMain.handle("wow:readAddonData", async (_, retailPath: string) => {
+ipcMain.handle("wow:readAddonData", async () => {
+  const settings = await getSettings();
+  const retailPath = settings.retailPath as string | undefined;
+  if (!retailPath) return null;
   return findAndParseAddonData(retailPath);
 });
 
@@ -596,8 +613,11 @@ function stopAddonWatcher() {
   }
 }
 
-ipcMain.handle("wow:watchAddonFile", (_, retailPath: string) => {
+ipcMain.handle("wow:watchAddonFile", async () => {
   stopAddonWatcher();
+  const settings = await getSettings();
+  const retailPath = settings.retailPath as string | undefined;
+  if (!retailPath) return;
   const watchPath = join(retailPath, "WTF", "Account");
   try {
     addonWatcher = fs.watch(watchPath, { recursive: true }, (_event, filename) => {
@@ -642,32 +662,31 @@ function downloadFile(url: string, destPath: string): Promise<void> {
   });
 }
 
-function extractZip(zipPath: string, destDir: string): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    if (process.platform === "win32") {
-      execFile(
-        "powershell",
-        [
-          "-NoProfile",
-          "-NonInteractive",
-          "-Command",
-          `Expand-Archive -LiteralPath "${zipPath}" -DestinationPath "${destDir}" -Force`,
-        ],
-        (error) => {
-          if (error) reject(error);
-          else resolve();
-        },
-      );
-    } else {
-      execFile("unzip", ["-o", zipPath, "-d", destDir], (error) => {
-        if (error) reject(error);
-        else resolve();
-      });
+async function extractZip(zipPath: string, destDir: string): Promise<void> {
+  const resolvedDest = resolve(destDir);
+  const directory = await unzipper.Open.file(zipPath);
+  for (const file of directory.files) {
+    const outPath = resolve(resolvedDest, file.path);
+    // Reject any entry whose resolved path escapes destDir.
+    const rel = path.relative(resolvedDest, outPath);
+    if (rel.startsWith("..") || path.isAbsolute(rel)) {
+      throw new Error(`Path traversal detected in zip entry: ${file.path}`);
     }
-  });
+    if (file.type === "Directory") {
+      await fs.promises.mkdir(outPath, { recursive: true });
+    } else {
+      await fs.promises.mkdir(path.dirname(outPath), { recursive: true });
+      await new Promise<void>((res, rej) =>
+        file.stream().pipe(fs.createWriteStream(outPath)).on("finish", res).on("error", rej),
+      );
+    }
+  }
 }
 
-ipcMain.handle("wow:checkAddonInstalled", async (_, retailPath: string) => {
+ipcMain.handle("wow:checkAddonInstalled", async () => {
+  const settings = await getSettings();
+  const retailPath = settings.retailPath as string | undefined;
+  if (!retailPath) return false;
   const addonPath = join(retailPath, "Interface", "AddOns", "wow-dashboard");
   try {
     await fs.promises.access(addonPath, fs.constants.F_OK);
@@ -677,7 +696,10 @@ ipcMain.handle("wow:checkAddonInstalled", async (_, retailPath: string) => {
   }
 });
 
-ipcMain.handle("wow:getInstalledAddonVersion", async (_, retailPath: string) => {
+ipcMain.handle("wow:getInstalledAddonVersion", async () => {
+  const settings = await getSettings();
+  const retailPath = settings.retailPath as string | undefined;
+  if (!retailPath) return null;
   const tocPath = join(retailPath, "Interface", "AddOns", "wow-dashboard", "wow-dashboard.toc");
   try {
     const content = await fs.promises.readFile(tocPath, "utf-8");
@@ -688,7 +710,25 @@ ipcMain.handle("wow:getInstalledAddonVersion", async (_, retailPath: string) => 
   }
 });
 
-ipcMain.handle("wow:installAddon", async (_, retailPath: string, downloadUrl: string) => {
+ipcMain.handle("wow:installAddon", async (_, downloadUrl: string) => {
+  // Validate the download URL comes from GitHub only.
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(downloadUrl);
+  } catch {
+    throw new Error("Invalid download URL");
+  }
+  if (
+    parsedUrl.hostname !== "objects.githubusercontent.com" &&
+    parsedUrl.hostname !== "github.com"
+  ) {
+    throw new Error(`Untrusted download host: ${parsedUrl.hostname}`);
+  }
+
+  const settings = await getSettings();
+  const retailPath = settings.retailPath as string | undefined;
+  if (!retailPath) throw new Error("WoW retail path is not configured");
+
   const tmpDir = os.tmpdir();
   const zipPath = join(tmpDir, "wow-dashboard-addon.zip");
   const extractDir = join(tmpDir, "wow-dashboard-addon-extract");
@@ -705,7 +745,16 @@ ipcMain.handle("wow:installAddon", async (_, retailPath: string, downloadUrl: st
 
     const entries = await fs.promises.readdir(extractDir, { withFileTypes: true });
     const dirs = entries.filter((e) => e.isDirectory());
-    const addonSrc = dirs.length === 1 ? join(extractDir, dirs[0].name) : extractDir;
+    const addonSrc =
+      dirs.length === 1
+        ? (() => {
+            const candidate = resolve(extractDir, dirs[0].name);
+            if (!candidate.startsWith(resolve(extractDir) + sep)) {
+              throw new Error("Path traversal detected in zip archive");
+            }
+            return candidate;
+          })()
+        : extractDir;
 
     await fs.promises.mkdir(addonsDir, { recursive: true });
     await fs.promises.rm(addonDest, { recursive: true, force: true });
@@ -740,7 +789,17 @@ ipcMain.handle("wow:getLatestAddonRelease", async () => {
 });
 
 // Shell
-ipcMain.handle("app:openExternal", (_, url: string) => shell.openExternal(url));
+ipcMain.handle("app:openExternal", (_, url: string) => {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return;
+  }
+  if (parsed.protocol === "https:" || parsed.protocol === "http:") {
+    shell.openExternal(url);
+  }
+});
 ipcMain.handle("app:getVersion", () => app.getVersion());
 
 // Trigger a silent install and relaunch — used by the "Restart Now" button in the renderer.
@@ -798,7 +857,38 @@ ipcMain.handle("settings:setLastSyncedAt", async (_, value: number) => {
 
 // ─── App lifecycle ────────────────────────────────────────────────────────────
 
+// macOS: deep-links arrive via open-url before the app is fully ready.
+app.on("open-url", (event, url) => {
+  event.preventDefault();
+  handleDeepLink(url);
+});
+
+// Windows/Linux: a second instance is launched with the deep-link URL in argv.
+// Grab the lock so only one instance runs; the second instance forwards its URL and quits.
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  app.quit();
+} else {
+  app.on("second-instance", (_, argv) => {
+    const url = argv.find((a) => a.startsWith("wow-dashboard://"));
+    if (url) handleDeepLink(url);
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  });
+}
+
 app.whenReady().then(async () => {
+  // In dev mode on Windows the app isn't packaged, so we must supply the Electron
+  // executable path and the app path explicitly for the registry entry to work.
+  if (!app.isPackaged) {
+    app.setAsDefaultProtocolClient("wow-dashboard", process.execPath, [
+      path.resolve(process.argv[1] ?? "."),
+    ]);
+  } else {
+    app.setAsDefaultProtocolClient("wow-dashboard");
+  }
   // Load settings before creating the window so closeBehaviorCache is populated and
   // the synchronous close handler has the correct value from the very first close event.
   const settings = await getSettings();

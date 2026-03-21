@@ -15,6 +15,8 @@ import { Route as DashboardRouteImport } from './routes/dashboard'
 import { Route as CompareRouteImport } from './routes/compare'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as CharacterCharacterIdRouteImport } from './routes/character.$characterId'
+import { Route as AuthElectronLoginRouteImport } from './routes/auth/electron-login'
+import { Route as AuthElectronCallbackRouteImport } from './routes/auth/electron-callback'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 
 const SettingsRoute = SettingsRouteImport.update({
@@ -47,6 +49,16 @@ const CharacterCharacterIdRoute = CharacterCharacterIdRouteImport.update({
   path: '/character/$characterId',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AuthElectronLoginRoute = AuthElectronLoginRouteImport.update({
+  id: '/auth/electron-login',
+  path: '/auth/electron-login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AuthElectronCallbackRoute = AuthElectronCallbackRouteImport.update({
+  id: '/auth/electron-callback',
+  path: '/auth/electron-callback',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   id: '/api/auth/$',
   path: '/api/auth/$',
@@ -59,6 +71,8 @@ export interface FileRoutesByFullPath {
   '/dashboard': typeof DashboardRoute
   '/scoreboard': typeof ScoreboardRoute
   '/settings': typeof SettingsRoute
+  '/auth/electron-callback': typeof AuthElectronCallbackRoute
+  '/auth/electron-login': typeof AuthElectronLoginRoute
   '/character/$characterId': typeof CharacterCharacterIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
 }
@@ -68,6 +82,8 @@ export interface FileRoutesByTo {
   '/dashboard': typeof DashboardRoute
   '/scoreboard': typeof ScoreboardRoute
   '/settings': typeof SettingsRoute
+  '/auth/electron-callback': typeof AuthElectronCallbackRoute
+  '/auth/electron-login': typeof AuthElectronLoginRoute
   '/character/$characterId': typeof CharacterCharacterIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
 }
@@ -78,6 +94,8 @@ export interface FileRoutesById {
   '/dashboard': typeof DashboardRoute
   '/scoreboard': typeof ScoreboardRoute
   '/settings': typeof SettingsRoute
+  '/auth/electron-callback': typeof AuthElectronCallbackRoute
+  '/auth/electron-login': typeof AuthElectronLoginRoute
   '/character/$characterId': typeof CharacterCharacterIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
 }
@@ -89,6 +107,8 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/scoreboard'
     | '/settings'
+    | '/auth/electron-callback'
+    | '/auth/electron-login'
     | '/character/$characterId'
     | '/api/auth/$'
   fileRoutesByTo: FileRoutesByTo
@@ -98,6 +118,8 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/scoreboard'
     | '/settings'
+    | '/auth/electron-callback'
+    | '/auth/electron-login'
     | '/character/$characterId'
     | '/api/auth/$'
   id:
@@ -107,6 +129,8 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/scoreboard'
     | '/settings'
+    | '/auth/electron-callback'
+    | '/auth/electron-login'
     | '/character/$characterId'
     | '/api/auth/$'
   fileRoutesById: FileRoutesById
@@ -117,6 +141,8 @@ export interface RootRouteChildren {
   DashboardRoute: typeof DashboardRoute
   ScoreboardRoute: typeof ScoreboardRoute
   SettingsRoute: typeof SettingsRoute
+  AuthElectronCallbackRoute: typeof AuthElectronCallbackRoute
+  AuthElectronLoginRoute: typeof AuthElectronLoginRoute
   CharacterCharacterIdRoute: typeof CharacterCharacterIdRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
 }
@@ -165,6 +191,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof CharacterCharacterIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/auth/electron-login': {
+      id: '/auth/electron-login'
+      path: '/auth/electron-login'
+      fullPath: '/auth/electron-login'
+      preLoaderRoute: typeof AuthElectronLoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/auth/electron-callback': {
+      id: '/auth/electron-callback'
+      path: '/auth/electron-callback'
+      fullPath: '/auth/electron-callback'
+      preLoaderRoute: typeof AuthElectronCallbackRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/auth/$': {
       id: '/api/auth/$'
       path: '/api/auth/$'
@@ -181,6 +221,8 @@ const rootRouteChildren: RootRouteChildren = {
   DashboardRoute: DashboardRoute,
   ScoreboardRoute: ScoreboardRoute,
   SettingsRoute: SettingsRoute,
+  AuthElectronCallbackRoute: AuthElectronCallbackRoute,
+  AuthElectronLoginRoute: AuthElectronLoginRoute,
   CharacterCharacterIdRoute: CharacterCharacterIdRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
 }

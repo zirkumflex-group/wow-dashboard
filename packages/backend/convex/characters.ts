@@ -82,8 +82,17 @@ export const resyncCharacters = mutation({
 export const getCharacterSnapshots = query({
   args: { characterId: v.id("characters") },
   handler: async (ctx, { characterId }) => {
+    const authUser = await authComponent.safeGetAuthUser(ctx);
+    if (!authUser) return null;
+
+    const player = await ctx.db
+      .query("players")
+      .withIndex("by_user", (q) => q.eq("userId", authUser._id as string))
+      .first();
+    if (!player) return null;
+
     const character = await ctx.db.get(characterId);
-    if (!character) return null;
+    if (!character || character.playerId !== player._id) return null;
 
     const snapshots = await ctx.db
       .query("snapshots")
@@ -98,6 +107,9 @@ export const getCharacterSnapshots = query({
 export const getScoreboard = query({
   args: {},
   handler: async (ctx) => {
+    const authUser = await authComponent.safeGetAuthUser(ctx);
+    if (!authUser) return null;
+
     const characters = await ctx.db.query("characters").collect();
 
     const withSnapshots = await Promise.all(
@@ -138,6 +150,9 @@ export const getScoreboard = query({
 export const getPlayerScoreboard = query({
   args: {},
   handler: async (ctx) => {
+    const authUser = await authComponent.safeGetAuthUser(ctx);
+    if (!authUser) return null;
+
     const characters = await ctx.db.query("characters").collect();
 
     const playerMap = new Map<

@@ -7,6 +7,7 @@ import {
   Scripts,
   createRootRouteWithContext,
   useRouteContext,
+  useRouterState,
 } from "@tanstack/react-router";
 import { lazy } from "react";
 import { createServerFn } from "@tanstack/react-start";
@@ -74,6 +75,8 @@ export const Route = createRootRouteWithContext<RouterAppContext>()({
 
 function RootDocument() {
   const context = useRouteContext({ from: Route.id });
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const noLayout = pathname.startsWith("/auth/electron");
   return (
     <ConvexBetterAuthProvider
       client={context.convexQueryClient.convexClient}
@@ -88,7 +91,7 @@ function RootDocument() {
         </head>
         <body>
           <ThemeProvider>
-            {context.isAuthenticated ? (
+            {context.isAuthenticated && !noLayout ? (
               <SidebarProvider>
                 <AppSidebar />
                 <SidebarInset>

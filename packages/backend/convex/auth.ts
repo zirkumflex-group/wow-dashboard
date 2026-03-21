@@ -9,7 +9,15 @@ import type { DataModel } from "./_generated/dataModel";
 import { query } from "./_generated/server";
 import authConfig from "./auth.config";
 
-const siteUrl = process.env.SITE_URL!;
+const siteUrl = process.env.SITE_URL;
+if (!siteUrl) throw new Error("SITE_URL environment variable is required");
+
+const battlenetClientId = process.env.BATTLENET_CLIENT_ID;
+if (!battlenetClientId) throw new Error("BATTLENET_CLIENT_ID environment variable is required");
+
+const battlenetClientSecret = process.env.BATTLENET_CLIENT_SECRET;
+if (!battlenetClientSecret)
+  throw new Error("BATTLENET_CLIENT_SECRET environment variable is required");
 
 export const authComponent = createClient<DataModel>(components.betterAuth);
 
@@ -19,8 +27,7 @@ function createAuth(ctx: GenericCtx<DataModel>) {
     trustedOrigins: [siteUrl],
     database: authComponent.adapter(ctx),
     emailAndPassword: {
-      enabled: true,
-      requireEmailVerification: false,
+      enabled: false,
     },
     databaseHooks: {
       user: {
@@ -69,8 +76,8 @@ function createAuth(ctx: GenericCtx<DataModel>) {
         config: [
           {
             providerId: "battlenet",
-            clientId: process.env.BATTLENET_CLIENT_ID!,
-            clientSecret: process.env.BATTLENET_CLIENT_SECRET!,
+            clientId: battlenetClientId,
+            clientSecret: battlenetClientSecret,
             authorizationUrl: "https://oauth.battle.net/authorize",
             tokenUrl: "https://oauth.battle.net/token",
             userInfoUrl: "https://oauth.battle.net/userinfo",

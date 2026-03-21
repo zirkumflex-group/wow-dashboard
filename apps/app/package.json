@@ -12,13 +12,15 @@
     "package": "electron-builder --win"
   },
   "dependencies": {
-    "electron-updater": "^6.8.3"
+    "electron-updater": "^6.8.3",
+    "unzipper": "^0.12.3"
   },
   "devDependencies": {
     "@convex-dev/better-auth": "catalog:",
     "@tailwindcss/vite": "^4.1.18",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
+    "@types/unzipper": "^0.10.11",
     "@vitejs/plugin-react": "^4.5.2",
     "@wow-dashboard/backend": "workspace:*",
     "@wow-dashboard/config": "workspace:*",
