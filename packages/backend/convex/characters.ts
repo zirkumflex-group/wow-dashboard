@@ -107,14 +107,8 @@ export const getCharacterSnapshots = query({
     const authUser = await authComponent.safeGetAuthUser(ctx);
     if (!authUser) return null;
 
-    const player = await ctx.db
-      .query("players")
-      .withIndex("by_user", (q) => q.eq("userId", authUser._id as string))
-      .first();
-    if (!player) return null;
-
     const character = await ctx.db.get(characterId);
-    if (!character || character.playerId !== player._id) return null;
+    if (!character) return null;
 
     const snapshots = await ctx.db
       .query("snapshots")
