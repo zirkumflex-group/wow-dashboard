@@ -44,21 +44,19 @@ function NavUser() {
     <SidebarMenu>
       <SidebarMenuItem>
         <DropdownMenu>
-          <DropdownMenuTrigger
-            render={
-              <SidebarMenuButton
-                size="lg"
-                className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
-              />
-            }
-          >
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold uppercase">
-              {user?.name?.[0] ?? "?"}
-            </div>
-            <div className="grid flex-1 text-left text-sm leading-tight">
-              <span className="truncate font-medium">{user?.name ?? "Loading…"}</span>
-            </div>
-            <ChevronUp className="ml-auto size-4" />
+          <DropdownMenuTrigger asChild>
+            <SidebarMenuButton
+              size="lg"
+              className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
+            >
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold uppercase">
+                {user?.name?.[0] ?? "?"}
+              </div>
+              <div className="grid flex-1 text-left text-sm leading-tight">
+                <span className="truncate font-medium">{user?.name ?? "Loading…"}</span>
+              </div>
+              <ChevronUp className="ml-auto size-4" />
+            </SidebarMenuButton>
           </DropdownMenuTrigger>
           <DropdownMenuContent
             side={isMobile ? "bottom" : "right"}
@@ -100,11 +98,13 @@ export function AppSidebar() {
       <SidebarHeader>
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton size="lg" render={<Link to="/dashboard" />}>
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground text-xs font-bold">
-                W
-              </div>
-              <span className="font-semibold">WoW Dashboard</span>
+            <SidebarMenuButton size="lg" asChild>
+              <Link to="/dashboard">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground text-xs font-bold">
+                  W
+                </div>
+                <span className="font-semibold">WoW Dashboard</span>
+              </Link>
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>
@@ -117,12 +117,14 @@ export function AppSidebar() {
               {navItems.map((item) => (
                 <SidebarMenuItem key={item.to}>
                   <SidebarMenuButton
-                    render={<Link to={item.to} />}
+                    asChild
                     isActive={pathname === item.to}
                     tooltip={item.label}
                   >
-                    <item.icon />
-                    <span>{item.label}</span>
+                    <Link to={item.to}>
+                      <item.icon />
+                      <span>{item.label}</span>
+                    </Link>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
               ))}
@@ -137,12 +139,14 @@ export function AppSidebar() {
               {bottomNavItems.map((item) => (
                 <SidebarMenuItem key={item.to}>
                   <SidebarMenuButton
-                    render={<Link to={item.to} />}
+                    asChild
                     isActive={pathname === item.to}
                     tooltip={item.label}
                   >
-                    <item.icon />
-                    <span>{item.label}</span>
+                    <Link to={item.to}>
+                      <item.icon />
+                      <span>{item.label}</span>
+                    </Link>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
               ))}
