@@ -1,4 +1,4 @@
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, redirect, useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { api } from "@wow-dashboard/backend/convex/_generated/api";
 import { Badge } from "@wow-dashboard/ui/components/badge";
@@ -18,6 +18,9 @@ const HIDE_NO_SNAPSHOT_KEY = "wow_dashboard_hide_no_snapshot";
 const DEFAULT_MIN_ILVL = 200;
 
 export const Route = createFileRoute("/dashboard")({
+  beforeLoad: ({ context }) => {
+    if (!context.isAuthenticated) throw redirect({ to: "/" });
+  },
   component: RouteComponent,
 });
 
@@ -116,33 +119,25 @@ function useFavorites() {
   return { favorites, toggle };
 }
 
-const COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
-const COOLDOWN_KEY = "resync_cooldown_until";
-
 function useResyncCooldown() {
-  const [cooldownUntil, setCooldownUntil] = useState<number>(() => {
-    const stored = localStorage.getItem(COOLDOWN_KEY);
-    return stored ? parseInt(stored, 10) : 0;
-  });
+  const [nextAllowedAt, setNextAllowedAt] = useState<number>(0);
   const [now, setNow] = useState(() => Date.now());
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
-    if (cooldownUntil > Date.now()) {
+    if (nextAllowedAt > Date.now()) {
       intervalRef.current = setInterval(() => setNow(Date.now()), 1000);
     }
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
-  }, [cooldownUntil]);
+  }, [nextAllowedAt]);
 
-  const remaining = Math.max(0, cooldownUntil - now);
+  const remaining = Math.max(0, nextAllowedAt - now);
   const isCoolingDown = remaining > 0;
 
-  function startCooldown() {
-    const until = Date.now() + COOLDOWN_MS;
-    localStorage.setItem(COOLDOWN_KEY, String(until));
-    setCooldownUntil(until);
+  function setCooldown(until: number) {
+    setNextAllowedAt(until);
     setNow(Date.now());
     if (intervalRef.current) clearInterval(intervalRef.current);
     intervalRef.current = setInterval(() => setNow(Date.now()), 1000);
@@ -155,7 +150,7 @@ function useResyncCooldown() {
     return `${m}:${String(s).padStart(2, "0")}`;
   }
 
-  return { isCoolingDown, remaining, startCooldown, formatRemaining };
+  return { isCoolingDown, remaining, setCooldown, formatRemaining };
 }
 
 type Character = {
@@ -346,7 +341,7 @@ function Dashboard() {
   const characters = useQuery(api.characters.getMyCharactersWithSnapshot);
   const resync = useMutation(api.characters.resyncCharacters);
   const [syncing, setSyncing] = useState(false);
-  const { isCoolingDown, remaining, startCooldown, formatRemaining } = useResyncCooldown();
+  const { isCoolingDown, remaining, setCooldown, formatRemaining } = useResyncCooldown();
   const { favorites, toggle: toggleFavorite } = useFavorites();
 
   const [hideBelow90, setHideBelow90] = useState<boolean>(() => {
@@ -407,13 +402,14 @@ function Dashboard() {
     if (isCoolingDown || syncing) return;
     setSyncing(true);
     try {
-      await resync();
-      startCooldown();
+      const result = await resync();
+      if (result?.nextAllowedAt) {
+        setCooldown(result.nextAllowedAt);
+        toast.error("Too many requests — please wait before trying again.");
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      if (msg.includes("RateLimited") || msg.includes("Too many")) {
-        toast.error("Too many requests — please wait a moment before trying again.");
-      }
+      toast.error(msg || "Resync failed — please try again.");
     } finally {
       setSyncing(false);
     }

@@ -15,4 +15,21 @@ export default defineSchema({
     playerId: v.id("players"),
     characterIds: v.array(v.id("characters")),
   }),
+  // Full audit trail of auth events, data mutations, and errors.
+  auditLog: defineTable({
+    userId: v.optional(v.string()),
+    event: v.string(),
+    metadata: v.optional(v.any()),
+    error: v.optional(v.string()),
+    timestamp: v.number(),
+  })
+    .index("by_user_and_time", ["userId", "timestamp"])
+    .index("by_time", ["timestamp"]),
+  // Short-lived one-time codes used for the Electron OAuth token handoff.
+  loginCodes: defineTable({
+    code: v.string(),
+    token: v.string(),
+    expiresAt: v.number(),
+    used: v.boolean(),
+  }).index("by_code", ["code"]),
 });

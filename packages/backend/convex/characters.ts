@@ -61,12 +61,21 @@ export const resyncCharacters = mutation({
   args: {},
   handler: async (ctx) => {
     const authUser = await authComponent.safeGetAuthUser(ctx);
-    if (!authUser) return;
+    if (!authUser) return { ok: false, nextAllowedAt: null };
 
-    await rateLimiter.limit(ctx, "battlenetSync", {
+    const { ok, retryAfter } = await rateLimiter.limit(ctx, "battlenetSync", {
       key: authUser._id as string,
-      throws: true,
+      throws: false,
     });
+
+    if (!ok) {
+      await ctx.runMutation(internal.audit.log, {
+        userId: authUser._id as string,
+        event: "battlenet.resync.rate_limited",
+        metadata: { retryAfter },
+      });
+      return { ok: false, nextAllowedAt: Date.now() + (retryAfter ?? 60_000) };
+    }
 
     const account = await ctx.runQuery(components.betterAuth.adapter.findOne, {
       model: "account",
@@ -76,12 +85,19 @@ export const resyncCharacters = mutation({
       ],
     });
 
-    if (!account?.accessToken) return;
+    if (!account?.accessToken) return { ok: false, nextAllowedAt: null };
 
     await ctx.scheduler.runAfter(0, internal.battlenet.syncCharacters, {
       userId: authUser._id as string,
       accessToken: account.accessToken as string,
     });
+
+    await ctx.runMutation(internal.audit.log, {
+      userId: authUser._id as string,
+      event: "battlenet.resync",
+    });
+
+    return { ok: true, nextAllowedAt: null };
   },
 });
 

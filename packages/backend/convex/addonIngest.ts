@@ -4,6 +4,7 @@ import { mutation } from "./_generated/server";
 import { authComponent } from "./auth";
 import { rateLimiter } from "./rateLimiter";
 import { specValidator } from "./schemas/snapshots";
+import { internal } from "./_generated/api";
 
 const currenciesValidator = v.object({
   adventurerDawncrest: v.number(),
@@ -70,6 +71,10 @@ export const ingestAddonData = mutation({
       );
     }
 
+    const now = Date.now();
+    const MAX_FUTURE_MS = 5 * 60 * 1000; // 5 minutes clock skew tolerance
+    const MAX_PAST_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+
     let newChars = 0;
     let newSnapshots = 0;
 
@@ -106,6 +111,19 @@ export const ingestAddonData = mutation({
       }
 
       for (const snap of charData.snapshots) {
+        // takenAt is in seconds (WoW addon format); Date.now() is in milliseconds.
+        const takenAtMs = snap.takenAt * 1000;
+        if (takenAtMs > now + MAX_FUTURE_MS) {
+          throw new Error(
+            `Snapshot timestamp is in the future (takenAt=${snap.takenAt}s, now=${Math.floor(now / 1000)}s)`,
+          );
+        }
+        if (takenAtMs < now - MAX_PAST_MS) {
+          throw new Error(
+            `Snapshot timestamp is older than 30 days (takenAt=${snap.takenAt}s, now=${Math.floor(now / 1000)}s)`,
+          );
+        }
+
         const existingSnap = await ctx.db
           .query("snapshots")
           .withIndex("by_character_and_time", (q) =>
@@ -131,6 +149,12 @@ export const ingestAddonData = mutation({
         }
       }
     }
+
+    await ctx.runMutation(internal.audit.log, {
+      userId: authUser._id as string,
+      event: "addon.ingest",
+      metadata: { newChars, newSnapshots, totalCharacters: characters.length },
+    });
 
     return { newChars, newSnapshots };
   },

@@ -9,12 +9,14 @@
  */
 
 import type * as addonIngest from "../addonIngest.js";
+import type * as audit from "../audit.js";
 import type * as auth from "../auth.js";
 import type * as battlenet from "../battlenet.js";
 import type * as characters from "../characters.js";
 import type * as crons from "../crons.js";
 import type * as healthCheck from "../healthCheck.js";
 import type * as http from "../http.js";
+import type * as loginCodes from "../loginCodes.js";
 import type * as players from "../players.js";
 import type * as rateLimiter from "../rateLimiter.js";
 import type * as schemas_characters from "../schemas/characters.js";
@@ -31,12 +33,14 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   addonIngest: typeof addonIngest;
+  audit: typeof audit;
   auth: typeof auth;
   battlenet: typeof battlenet;
   characters: typeof characters;
   crons: typeof crons;
   healthCheck: typeof healthCheck;
   http: typeof http;
+  loginCodes: typeof loginCodes;
   players: typeof players;
   rateLimiter: typeof rateLimiter;
   "schemas/characters": typeof schemas_characters;

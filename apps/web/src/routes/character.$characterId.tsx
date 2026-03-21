@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 import { api } from "@wow-dashboard/backend/convex/_generated/api";
 import type { Id } from "@wow-dashboard/backend/convex/_generated/dataModel";
 import { Badge } from "@wow-dashboard/ui/components/badge";
@@ -30,6 +30,9 @@ import {
 } from "recharts";
 
 export const Route = createFileRoute("/character/$characterId")({
+  beforeLoad: ({ context }) => {
+    if (!context.isAuthenticated) throw redirect({ to: "/" });
+  },
   component: RouteComponent,
 });
 

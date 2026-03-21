@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 import { api } from "@wow-dashboard/backend/convex/_generated/api";
 import type { Id } from "@wow-dashboard/backend/convex/_generated/dataModel";
 import { Button } from "@wow-dashboard/ui/components/button";
@@ -17,6 +17,9 @@ import { useState } from "react";
 import { Area, AreaChart, CartesianGrid, XAxis, YAxis } from "recharts";
 
 export const Route = createFileRoute("/compare")({
+  beforeLoad: ({ context }) => {
+    if (!context.isAuthenticated) throw redirect({ to: "/" });
+  },
   component: RouteComponent,
 });
 

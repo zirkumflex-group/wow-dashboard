@@ -15,10 +15,10 @@ contextBridge.exposeInMainWorld("electron", {
     checkAddonInstalled: () => ipcRenderer.invoke("wow:checkAddonInstalled"),
     getInstalledAddonVersion: () =>
       ipcRenderer.invoke("wow:getInstalledAddonVersion") as Promise<string | null>,
-    installAddon: (downloadUrl: string) =>
-      ipcRenderer.invoke("wow:installAddon", downloadUrl),
+    installAddon: (downloadUrl: string, checksumUrl: string | null) =>
+      ipcRenderer.invoke("wow:installAddon", downloadUrl, checksumUrl),
     getLatestAddonRelease: () =>
-      ipcRenderer.invoke("wow:getLatestAddonRelease") as Promise<{ url: string; version: string }>,
+      ipcRenderer.invoke("wow:getLatestAddonRelease") as Promise<{ url: string; checksumUrl: string | null; version: string }>,
     watchAddonFile: () => ipcRenderer.invoke("wow:watchAddonFile"),
     unwatchAddonFile: () => ipcRenderer.invoke("wow:unwatchAddonFile"),
     onAddonFileChanged: (cb: () => void) => {

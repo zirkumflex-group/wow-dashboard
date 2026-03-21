@@ -269,7 +269,9 @@ jobs:
           done
           cd apps/addon/dist
           zip -r "${ADDON_NAME}.zip" "${ADDON_NAME}/"
+          sha256sum "${ADDON_NAME}.zip" > "${ADDON_NAME}.zip.sha256"
           echo "ZIP=apps/addon/dist/${ADDON_NAME}.zip" >> $GITHUB_ENV
+          echo "CHECKSUM=apps/addon/dist/${ADDON_NAME}.zip.sha256" >> $GITHUB_ENV
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
@@ -277,6 +279,8 @@ jobs:
           tag_name: addon-v${{ needs.bump-versions.outputs.addon_version }}
           name: Addon v${{ needs.bump-versions.outputs.addon_version }}
           prerelease: false
-          files: ${{ env.ZIP }}
+          files: |
+            ${{ env.ZIP }}
+            ${{ env.CHECKSUM }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

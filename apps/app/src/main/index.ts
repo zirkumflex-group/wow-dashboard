@@ -4,6 +4,7 @@ import {
   dialog,
   ipcMain,
   net,
+  safeStorage,
   session,
   shell,
   Tray,
@@ -14,6 +15,7 @@ import { autoUpdater } from "electron-updater";
 import * as fs from "fs";
 import * as path from "path";
 import { join, resolve, sep } from "path";
+import * as crypto from "crypto";
 import * as os from "os";
 import * as unzipper from "unzipper";
 
@@ -31,6 +33,40 @@ let addonWatchDebounce: ReturnType<typeof setTimeout> | null = null;
 let cachedElectronToken: string | null = null;
 let pendingLoginResolve: ((token: string) => void) | null = null;
 let pendingLoginReject: ((err: Error) => void) | null = null;
+
+// ─── Token persistence via OS keychain (safeStorage) ──────────────────────────
+
+function getTokenPath(): string {
+  return join(app.getPath("userData"), "auth-token.bin");
+}
+
+function loadStoredToken(): string | null {
+  if (!safeStorage.isEncryptionAvailable()) return null;
+  try {
+    const buf = fs.readFileSync(getTokenPath());
+    return safeStorage.decryptString(buf);
+  } catch {
+    return null;
+  }
+}
+
+function saveToken(token: string | null): void {
+  if (!safeStorage.isEncryptionAvailable()) return;
+  const tokenPath = getTokenPath();
+  if (!token) {
+    try {
+      fs.unlinkSync(tokenPath);
+    } catch {
+      // file may not exist
+    }
+    return;
+  }
+  try {
+    fs.writeFileSync(tokenPath, safeStorage.encryptString(token));
+  } catch (err) {
+    console.warn("[wow-dashboard] Failed to persist token:", err);
+  }
+}
 
 async function loadTrayIcon(): Promise<Electron.NativeImage> {
   try {
@@ -483,16 +519,39 @@ function createWindow(): void {
   });
 }
 
+// Build-time constants from .env — never read from renderer input.
+const CONVEX_SITE_URL: string = (import.meta as unknown as { env: Record<string, string> }).env
+  .VITE_CONVEX_SITE_URL ?? "";
+
 function handleDeepLink(url: string): void {
   try {
     const parsed = new URL(url);
     if (parsed.hostname === "auth") {
-      const fragment = parsed.hash.slice(1); // remove leading #
-      const token = new URLSearchParams(fragment).get("token");
-      if (token && pendingLoginResolve) {
-        pendingLoginResolve(token);
+      const code = parsed.searchParams.get("code");
+      if (code && pendingLoginResolve) {
+        const resolve = pendingLoginResolve;
+        const reject = pendingLoginReject;
         pendingLoginResolve = null;
         pendingLoginReject = null;
+
+        // Exchange the one-time code for the actual token via the Convex HTTP action.
+        net
+          .fetch(`${CONVEX_SITE_URL}/api/auth/redeem-code`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ code }),
+          })
+          .then(async (resp) => {
+            if (!resp.ok) throw new Error(`Code exchange failed: ${resp.status}`);
+            const data = (await resp.json()) as { token?: string; error?: string };
+            if (!data.token) throw new Error(data.error ?? "No token in response");
+            cachedElectronToken = data.token;
+            saveToken(data.token);
+            resolve(data.token);
+          })
+          .catch((err: Error) => {
+            reject?.(err);
+          });
       }
     }
   } catch {
@@ -519,6 +578,7 @@ ipcMain.handle("auth:login", () => {
     pendingLoginResolve = (token: string) => {
       clearTimeout(timeout);
       cachedElectronToken = token;
+      saveToken(token);
       resolve(true);
     };
     pendingLoginReject = (err: Error) => {
@@ -564,6 +624,7 @@ ipcMain.handle("auth:getSession", async () => {
 
 ipcMain.handle("auth:logout", async () => {
   cachedElectronToken = null;
+  saveToken(null);
   try {
     await session.defaultSession.fetch(`${SITE_URL}/api/auth/sign-out`, {
       method: "POST",
@@ -712,13 +773,12 @@ ipcMain.handle("wow:getInstalledAddonVersion", async () => {
   }
 });
 
-ipcMain.handle("wow:installAddon", async (_, downloadUrl: string) => {
-  // Validate the download URL comes from GitHub only.
+function validateGitHubUrl(url: string): void {
   let parsedUrl: URL;
   try {
-    parsedUrl = new URL(downloadUrl);
+    parsedUrl = new URL(url);
   } catch {
-    throw new Error("Invalid download URL");
+    throw new Error("Invalid URL");
   }
   if (
     parsedUrl.hostname !== "objects.githubusercontent.com" &&
@@ -726,6 +786,22 @@ ipcMain.handle("wow:installAddon", async (_, downloadUrl: string) => {
   ) {
     throw new Error(`Untrusted download host: ${parsedUrl.hostname}`);
   }
+}
+
+async function computeFileSha256(filePath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash("sha256");
+    const stream = fs.createReadStream(filePath);
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("end", () => resolve(hash.digest("hex")));
+    stream.on("error", reject);
+  });
+}
+
+ipcMain.handle("wow:installAddon", async (_, downloadUrl: string, checksumUrl: string) => {
+  // Validate both URLs come from GitHub only.
+  validateGitHubUrl(downloadUrl);
+  if (checksumUrl) validateGitHubUrl(checksumUrl);
 
   const settings = await getSettings();
   const retailPath = settings.retailPath as string | undefined;
@@ -733,12 +809,26 @@ ipcMain.handle("wow:installAddon", async (_, downloadUrl: string) => {
 
   const tmpDir = os.tmpdir();
   const zipPath = join(tmpDir, "wow-dashboard-addon.zip");
+  const checksumPath = join(tmpDir, "wow-dashboard-addon.zip.sha256");
   const extractDir = join(tmpDir, "wow-dashboard-addon-extract");
   const addonsDir = join(retailPath, "Interface", "AddOns");
   const addonDest = join(addonsDir, "wow-dashboard");
 
   try {
     await downloadFile(downloadUrl, zipPath);
+
+    // Verify SHA256 checksum if a checksum URL was provided.
+    if (checksumUrl) {
+      await downloadFile(checksumUrl, checksumPath);
+      const checksumContent = await fs.promises.readFile(checksumPath, "utf-8");
+      const expectedHash = checksumContent.trim().split(/\s+/)[0];
+      const actualHash = await computeFileSha256(zipPath);
+      if (actualHash !== expectedHash) {
+        throw new Error(
+          `Checksum mismatch — addon package may be corrupted or tampered with.\nExpected: ${expectedHash}\nGot: ${actualHash}`,
+        );
+      }
+    }
 
     await fs.promises.rm(extractDir, { recursive: true, force: true });
     await fs.promises.mkdir(extractDir, { recursive: true });
@@ -763,6 +853,7 @@ ipcMain.handle("wow:installAddon", async (_, downloadUrl: string) => {
     await fs.promises.cp(addonSrc, addonDest, { recursive: true });
   } finally {
     await fs.promises.rm(zipPath, { force: true }).catch(() => {});
+    await fs.promises.rm(checksumPath, { force: true }).catch(() => {});
     await fs.promises.rm(extractDir, { recursive: true, force: true }).catch(() => {});
   }
 });
@@ -784,8 +875,11 @@ ipcMain.handle("wow:getLatestAddonRelease", async () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const asset = addonRelease.assets.find((a: any) => a.name === "wow-dashboard.zip");
   if (!asset) throw new Error("No wow-dashboard.zip asset found in latest addon release");
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const checksumAsset = addonRelease.assets.find((a: any) => a.name === "wow-dashboard.zip.sha256");
   return {
     url: asset.browser_download_url as string,
+    checksumUrl: checksumAsset ? (checksumAsset.browser_download_url as string) : null,
     version: (addonRelease.tag_name as string).replace("addon-v", ""),
   };
 });
@@ -891,6 +985,9 @@ app.whenReady().then(async () => {
   } else {
     app.setAsDefaultProtocolClient("wow-dashboard");
   }
+  // Restore persisted token from OS keychain (safeStorage).
+  cachedElectronToken = loadStoredToken();
+
   // Load settings before creating the window so closeBehaviorCache is populated and
   // the synchronous close handler has the correct value from the very first close event.
   const settings = await getSettings();

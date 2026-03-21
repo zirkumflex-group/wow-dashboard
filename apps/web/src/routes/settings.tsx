@@ -1,10 +1,13 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 import { Card, CardContent, CardHeader, CardTitle } from "@wow-dashboard/ui/components/card";
 import { CheckIcon } from "lucide-react";
 import { cn } from "@wow-dashboard/ui/lib/utils";
 import { type Theme, THEMES, useTheme } from "@/components/theme-provider";
 
 export const Route = createFileRoute("/settings")({
+  beforeLoad: ({ context }) => {
+    if (!context.isAuthenticated) throw redirect({ to: "/" });
+  },
   component: SettingsPage,
 });
 

@@ -40,6 +40,11 @@ function createAuth(ctx: GenericCtx<DataModel>) {
               userId: user.id,
               battleTag: user.name ?? "",
             });
+            await ctx.runMutation(internal.audit.log, {
+              userId: user.id,
+              event: "auth.user.created",
+              metadata: { name: user.name },
+            });
           },
         },
       },
@@ -53,6 +58,11 @@ function createAuth(ctx: GenericCtx<DataModel>) {
               userId: account.userId,
               accessToken: account.accessToken,
             });
+            await ctx.runMutation(internal.audit.log, {
+              userId: account.userId,
+              event: "auth.account.created",
+              metadata: { providerId: account.providerId },
+            });
           },
         },
         update: {
@@ -63,6 +73,11 @@ function createAuth(ctx: GenericCtx<DataModel>) {
             await ctx.scheduler.runAfter(0, internal.battlenet.syncCharacters, {
               userId: account.userId,
               accessToken: account.accessToken,
+            });
+            await ctx.runMutation(internal.audit.log, {
+              userId: account.userId,
+              event: "auth.account.updated",
+              metadata: { providerId: account.providerId },
             });
           },
         },

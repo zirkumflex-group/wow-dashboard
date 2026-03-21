@@ -10,4 +10,12 @@ crons.daily(
   internal.snapshots.deduplicateSnapshots,
 );
 
+// Clean up expired one-time login codes every hour.
+crons.cron(
+  "cleanup expired login codes",
+  "0 * * * *",
+  internal.loginCodes.cleanupExpiredCodes,
+  {},
+);
+
 export default crons;

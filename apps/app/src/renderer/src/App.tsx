@@ -69,7 +69,7 @@ declare global {
         } | null>;
         checkAddonInstalled: () => Promise<boolean>;
         getInstalledAddonVersion: () => Promise<string | null>;
-        installAddon: (downloadUrl: string) => Promise<void>;
+        installAddon: (downloadUrl: string, checksumUrl: string | null) => Promise<void>;
         getLatestAddonRelease: () => Promise<{ url: string; version: string }>;
         watchAddonFile: () => Promise<void>;
         unwatchAddonFile: () => Promise<void>;
@@ -407,8 +407,8 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
     setInstalling(true);
     setInstallError(null);
     try {
-      const { url, version } = await window.electron.wow.getLatestAddonRelease();
-      await window.electron.wow.installAddon(url);
+      const { url, checksumUrl, version } = await window.electron.wow.getLatestAddonRelease();
+      await window.electron.wow.installAddon(url, checksumUrl ?? null);
       setAddonInstalled(true);
       setAddonVersion(version);
     } catch (e) {

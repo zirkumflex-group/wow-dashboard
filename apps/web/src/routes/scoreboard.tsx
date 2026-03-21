@@ -1,4 +1,4 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, redirect } from "@tanstack/react-router";
 import { api } from "@wow-dashboard/backend/convex/_generated/api";
 import { Card, CardContent } from "@wow-dashboard/ui/components/card";
 import { Checkbox } from "@wow-dashboard/ui/components/checkbox";
@@ -40,6 +40,9 @@ function readMinIlvl() {
 }
 
 export const Route = createFileRoute("/scoreboard")({
+  beforeLoad: ({ context }) => {
+    if (!context.isAuthenticated) throw redirect({ to: "/" });
+  },
   component: RouteComponent,
 });
 
