@@ -30,3 +30,4 @@ ignoredBuiltDependencies:
   - msw
 onlyBuiltDependencies:
   - electron
+forceLegacyDeploy: true
