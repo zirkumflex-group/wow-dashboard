@@ -9,6 +9,8 @@ import Loader from "./components/loader";
 import "./index.css";
 import { routeTree } from "./routeTree.gen";
 
+//upload
+
 export function getRouter() {
   const convexUrl = env.VITE_CONVEX_URL;
   if (!convexUrl) {
