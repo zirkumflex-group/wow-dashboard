@@ -17,6 +17,7 @@ import {
   Clock,
   Coins,
   Columns,
+  ExternalLink,
   Flame,
   Gem,
   History,
@@ -1421,6 +1422,62 @@ function RoleSpecFilter({
 
 // ── Main component ────────────────────────────────────────────────────────────
 
+// ── External site links ───────────────────────────────────────────────────────
+
+const EXTERNAL_LINKS = [
+  {
+    label: "Raider.IO",
+    color: "hover:text-orange-400",
+    url: (region: string, realm: string, name: string) =>
+      `https://raider.io/characters/${region}/${realm}/${name}`,
+  },
+  {
+    label: "Armory",
+    color: "hover:text-blue-400",
+    url: (region: string, realm: string, name: string) =>
+      `https://worldofwarcraft.blizzard.com/en-${region}/character/${region}/${encodeURIComponent(realm.toLowerCase())}/${encodeURIComponent(name.toLowerCase())}`,
+  },
+  {
+    label: "WoWProgress",
+    color: "hover:text-green-400",
+    url: (region: string, realm: string, name: string) =>
+      `https://www.wowprogress.com/character/${region}/${realm}/${name}`,
+  },
+  {
+    label: "WarcraftLogs",
+    color: "hover:text-purple-400",
+    url: (region: string, realm: string, name: string) =>
+      `https://www.warcraftlogs.com/character/${region}/${realm}/${name}`,
+  },
+] as const;
+
+function CharacterLinks({
+  region,
+  realm,
+  name,
+}: {
+  region: string;
+  realm: string;
+  name: string;
+}) {
+  return (
+    <div className="flex items-center gap-3 mt-2 flex-wrap">
+      {EXTERNAL_LINKS.map(({ label, color, url }) => (
+        <a
+          key={label}
+          href={url(region.toLowerCase(), realm, name)}
+          target="_blank"
+          rel="noopener noreferrer"
+          className={`flex items-center gap-1 text-xs text-muted-foreground transition-colors ${color}`}
+        >
+          <ExternalLink size={11} />
+          {label}
+        </a>
+      ))}
+    </div>
+  );
+}
+
 function RouteComponent() {
   const { characterId } = Route.useParams();
   const data = useQuery(api.characters.getCharacterSnapshots, {
@@ -1506,6 +1563,7 @@ function RouteComponent() {
           <p className="text-muted-foreground text-sm mt-1">
             {character.race} {character.class} — {character.realm}-{character.region.toUpperCase()}
           </p>
+          <CharacterLinks region={character.region} realm={character.realm} name={character.name} />
         </CardHeader>
 
         {latest && (
