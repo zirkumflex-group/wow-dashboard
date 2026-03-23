@@ -1,0 +1,6 @@
+[build]
+buildCommand = "pnpm --filter web build"
+watchPatterns = ["apps/web/**","packages/**"]
+
+[deploy]
+startCommand = "node apps/web/.output/server/index.mjs"
