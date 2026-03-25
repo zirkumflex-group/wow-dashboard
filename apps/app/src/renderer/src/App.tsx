@@ -481,7 +481,10 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
           // Only send snapshots newer than the last successful sync (60s buffer for clock skew).
           const sinceTs = lastSyncedAtRef.current - 60;
           const pendingChars = addonChars
-            .map((c) => ({ ...c, snapshots: c.snapshots.filter((s) => s.takenAt > sinceTs) }))
+            .map((c) => ({
+              ...c,
+              snapshots: c.snapshots.filter((s) => s.takenAt > sinceTs && s.spec !== "Unknown"),
+            }))
             .filter((c) => c.snapshots.length > 0);
 
           const pendingCount = pendingChars.reduce((sum, c) => sum + c.snapshots.length, 0);
