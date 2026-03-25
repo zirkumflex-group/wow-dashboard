@@ -27,6 +27,7 @@
     "lucide-react": "catalog:",
     "next-themes": "catalog:",
     "react": "catalog:",
+    "nitro": "3.0.260311-beta",
     "react-dom": "catalog:",
     "recharts": "^3.8.0",
     "sonner": "catalog:",
