@@ -43,6 +43,7 @@
   "devDependencies": {
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
+    "@types/node": "^25.2.0",
     "@wow-dashboard/config": "workspace:*",
     "tailwindcss": "catalog:",
     "typescript": "^5.9.3"
