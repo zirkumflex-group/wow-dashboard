@@ -88,6 +88,7 @@ export const redeemCodeInternal = internalMutation({
     }
 
     if (record.used) {
+      await ctx.db.delete(record._id);
       return { ok: false, error: "Code has already been used" };
     }
 
@@ -100,10 +101,13 @@ export const redeemCodeInternal = internalMutation({
       return { ok: false, error: "Code has expired" };
     }
 
-    await ctx.db.patch(record._id, { used: true });
+    // Delete the code on successful redemption so the stored bearer token
+    // doesn't linger in Convex after the desktop app receives it.
+    await ctx.db.delete(record._id);
 
     await ctx.runMutation(internal.audit.log, {
       event: "auth.code.redeemed",
+      metadata: { codeId: record._id },
     });
 
     return { ok: true, token: record.token };
@@ -115,11 +119,16 @@ export const cleanupExpiredCodes = internalMutation({
   args: {},
   handler: async (ctx) => {
     const now = Date.now();
-    const stale = await ctx.db
+    const expired = await ctx.db
       .query("loginCodes")
       .filter((q) => q.lt(q.field("expiresAt"), now))
       .take(500);
-    for (const record of stale) {
+    const used = await ctx.db
+      .query("loginCodes")
+      .filter((q) => q.eq(q.field("used"), true))
+      .take(500);
+    const stale = new Map([...expired, ...used].map((record) => [record._id, record]));
+    for (const record of stale.values()) {
       await ctx.db.delete(record._id);
     }
   },
