@@ -31,6 +31,8 @@ let launchMinimizedCache = true;
 let addonWatcher: ReturnType<typeof fs.watch> | null = null;
 let addonWatchDebounce: ReturnType<typeof setTimeout> | null = null;
 let cachedElectronToken: string | null = null;
+let cachedElectronTokenExpiresAt: number | null = null;
+let storedSessionToken: string | null = null;
 let pendingLoginResolve: ((token: string) => void) | null = null;
 let pendingLoginReject: ((err: Error) => void) | null = null;
 
@@ -40,18 +42,29 @@ function getTokenPath(): string {
   return join(app.getPath("userData"), "auth-token.bin");
 }
 
-function loadStoredToken(): string | null {
-  if (!safeStorage.isEncryptionAvailable()) return null;
+function loadStoredAuth(): void {
+  if (!safeStorage.isEncryptionAvailable()) return;
   try {
     const buf = fs.readFileSync(getTokenPath());
-    return safeStorage.decryptString(buf);
+    const raw = safeStorage.decryptString(buf);
+    try {
+      const parsed = JSON.parse(raw) as { sessionToken?: string };
+      if (typeof parsed.sessionToken === "string") {
+        storedSessionToken = parsed.sessionToken;
+        return;
+      }
+    } catch {
+      cachedElectronToken = raw;
+      cachedElectronTokenExpiresAt = getJwtExpirationMs(raw);
+    }
   } catch {
-    return null;
+    return;
   }
 }
 
-function saveToken(token: string | null): void {
+function saveSessionToken(token: string | null): void {
   if (!safeStorage.isEncryptionAvailable()) return;
+  storedSessionToken = token;
   const tokenPath = getTokenPath();
   if (!token) {
     try {
@@ -62,9 +75,53 @@ function saveToken(token: string | null): void {
     return;
   }
   try {
-    fs.writeFileSync(tokenPath, safeStorage.encryptString(token));
+    fs.writeFileSync(tokenPath, safeStorage.encryptString(JSON.stringify({ sessionToken: token })));
   } catch (err) {
     console.warn("[wow-dashboard] Failed to persist token:", err);
+  }
+}
+
+function getJwtExpirationMs(token: string): number | null {
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")) as {
+      exp?: number;
+    };
+    return typeof payload.exp === "number" ? payload.exp * 1000 : null;
+  } catch {
+    return null;
+  }
+}
+
+function isJwtExpired(token: string, nowMs = Date.now(), skewMs = 60_000): boolean {
+  const exp = getJwtExpirationMs(token);
+  if (!exp) return true;
+  return nowMs >= exp - skewMs;
+}
+
+async function fetchFreshConvexToken(): Promise<string | null> {
+  if (!storedSessionToken) return null;
+  try {
+    const resp = await net.fetch(`${SITE_URL}/api/auth/convex/token`, {
+      headers: {
+        Origin: SITE_URL,
+        Authorization: `Bearer ${storedSessionToken}`,
+      },
+    });
+    if (!resp.ok) {
+      if (resp.status === 401 || resp.status === 403) {
+        storedSessionToken = null;
+        saveSessionToken(null);
+      }
+      return null;
+    }
+    const data = (await resp.json()) as { token?: string };
+    cachedElectronToken = data?.token ?? null;
+    cachedElectronTokenExpiresAt = cachedElectronToken ? getJwtExpirationMs(cachedElectronToken) : null;
+    return cachedElectronToken;
+  } catch {
+    return null;
   }
 }
 
@@ -545,8 +602,10 @@ function handleDeepLink(url: string): void {
             if (!resp.ok) throw new Error(`Code exchange failed: ${resp.status}`);
             const data = (await resp.json()) as { token?: string; error?: string };
             if (!data.token) throw new Error(data.error ?? "No token in response");
-            cachedElectronToken = data.token;
-            saveToken(data.token);
+            storedSessionToken = data.token;
+            cachedElectronToken = null;
+            cachedElectronTokenExpiresAt = null;
+            saveSessionToken(data.token);
             resolve(data.token);
           })
           .catch((err: Error) => {
@@ -575,10 +634,8 @@ ipcMain.handle("auth:login", () => {
       pendingLoginReject = null;
     }, 10 * 60 * 1000);
 
-    pendingLoginResolve = (token: string) => {
+    pendingLoginResolve = (_token: string) => {
       clearTimeout(timeout);
-      cachedElectronToken = token;
-      saveToken(token);
       resolve(true);
     };
     pendingLoginReject = (err: Error) => {
@@ -594,8 +651,11 @@ ipcMain.handle("auth:login", () => {
 });
 
 ipcMain.handle("auth:getToken", async () => {
-  // Return the token received via deep-link (system browser OAuth flow).
-  if (cachedElectronToken) return cachedElectronToken;
+  if (cachedElectronToken && !isJwtExpired(cachedElectronToken)) return cachedElectronToken;
+
+  const refreshed = await fetchFreshConvexToken();
+  if (refreshed) return refreshed;
+
   // Fallback: fetch from session cookies (legacy / future in-app flows).
   try {
     const resp = await session.defaultSession.fetch(`${SITE_URL}/api/auth/convex/token`, {
@@ -604,7 +664,9 @@ ipcMain.handle("auth:getToken", async () => {
     if (!resp.ok) return null;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const data: any = await resp.json();
-    return data?.token ?? null;
+    cachedElectronToken = data?.token ?? null;
+    cachedElectronTokenExpiresAt = cachedElectronToken ? getJwtExpirationMs(cachedElectronToken) : null;
+    return cachedElectronToken;
   } catch {
     return null;
   }
@@ -613,7 +675,10 @@ ipcMain.handle("auth:getToken", async () => {
 ipcMain.handle("auth:getSession", async () => {
   try {
     const resp = await session.defaultSession.fetch(`${SITE_URL}/api/auth/get-session`, {
-      headers: { Origin: SITE_URL },
+      headers: {
+        Origin: SITE_URL,
+        ...(storedSessionToken ? { Authorization: `Bearer ${storedSessionToken}` } : {}),
+      },
     });
     if (!resp.ok) return null;
     return await resp.json();
@@ -623,12 +688,19 @@ ipcMain.handle("auth:getSession", async () => {
 });
 
 ipcMain.handle("auth:logout", async () => {
+  const sessionToken = storedSessionToken;
   cachedElectronToken = null;
-  saveToken(null);
+  cachedElectronTokenExpiresAt = null;
+  storedSessionToken = null;
+  saveSessionToken(null);
   try {
     await session.defaultSession.fetch(`${SITE_URL}/api/auth/sign-out`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Origin: SITE_URL },
+      headers: {
+        "Content-Type": "application/json",
+        Origin: SITE_URL,
+        ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
+      },
       body: JSON.stringify({}),
     });
     return true;
@@ -985,8 +1057,8 @@ app.whenReady().then(async () => {
   } else {
     app.setAsDefaultProtocolClient("wow-dashboard");
   }
-  // Restore persisted token from OS keychain (safeStorage).
-  cachedElectronToken = loadStoredToken();
+  // Restore persisted desktop auth state from OS keychain (safeStorage).
+  loadStoredAuth();
 
   // Load settings before creating the window so closeBehaviorCache is populated and
   // the synchronous close handler has the correct value from the very first close event.
