@@ -223,7 +223,9 @@ local nextSnapshotAt       = 0      -- GetTime() when next auto-snapshot fires
 local snapshotTicker       = nil    -- C_Timer handle, cancelled on force-refresh
 local refreshCooldownUntil = 0      -- GetTime() when force-refresh cooldown ends
 local lastSnapshotAt       = 0      -- GetTime() when last snapshot was committed
-local lastKnownPlaytimeSeconds = 0
+local waitingForPlaytime   = false
+local queuedFreshSnapshot  = false
+local suppressedTimePlayedFrames = nil
 local initialized          = false  -- true after first PLAYER_ENTERING_WORLD
 
 -- UI widgets — assigned after frames are built; used by the ticker
@@ -231,6 +233,7 @@ local timerLabel = nil
 local refreshBtn = nil
 local minimapToggle = nil
 local RefreshLog = nil  -- assigned after Snapshots panel is built
+local StartSnapshotTicker = nil
 
 local function GetCharKey()
     local name, realm = UnitFullName("player")
@@ -310,30 +313,39 @@ local function BuildPendingSnapshot()
     }
 end
 
-local function GetSavedPlaytimeSeconds(key)
-    if lastKnownPlaytimeSeconds > 0 then
-        return lastKnownPlaytimeSeconds
+local function SuppressTimePlayedMessages()
+    if suppressedTimePlayedFrames then
+        return
     end
 
-    local entry = WowDashboardDB and WowDashboardDB.characters and WowDashboardDB.characters[key]
-    if not entry or not entry.snapshots then
-        return 0
+    suppressedTimePlayedFrames = {}
+    for i = 1, NUM_CHAT_WINDOWS do
+        local frame = _G["ChatFrame" .. i]
+        if frame and frame:IsEventRegistered("TIME_PLAYED_MSG") then
+            suppressedTimePlayedFrames[#suppressedTimePlayedFrames + 1] = frame
+            frame:UnregisterEvent("TIME_PLAYED_MSG")
+        end
     end
-
-    local snapshot = entry.snapshots[#entry.snapshots]
-    if snapshot and snapshot.playtimeSeconds then
-        return snapshot.playtimeSeconds
-    end
-
-    return 0
 end
 
-local function CommitSnapshot(totalSeconds, skipRefreshLog)
+local function RestoreTimePlayedMessages()
+    if not suppressedTimePlayedFrames then
+        return
+    end
+
+    for _, frame in ipairs(suppressedTimePlayedFrames) do
+        if frame then
+            frame:RegisterEvent("TIME_PLAYED_MSG")
+        end
+    end
+    suppressedTimePlayedFrames = nil
+end
+
+local function CommitSnapshot(totalSeconds)
     if not pendingSnapshot then return end
     local p         = pendingSnapshot
     pendingSnapshot = nil
     p.snap.playtimeSeconds = totalSeconds or 0
-    lastKnownPlaytimeSeconds = p.snap.playtimeSeconds
 
     local db = WowDashboardDB
     if not db.characters then db.characters = {} end
@@ -359,42 +371,43 @@ local function CommitSnapshot(totalSeconds, skipRefreshLog)
 
     table.insert(entry.snapshots, p.snap)
     lastSnapshotAt = GetTime()
-    if RefreshLog and not skipRefreshLog then
+    if RefreshLog then
         RefreshLog()
     end
 end
 
-local function CollectSnapshot()
+local function CollectSnapshot(forceFresh)
     if not IsLoggedIn() then return false end
-    if pendingSnapshot then return false end
-    pendingSnapshot = BuildPendingSnapshot()
-    if not pendingSnapshot then return false end
+    if waitingForPlaytime then
+        if forceFresh then
+            queuedFreshSnapshot = true
+            return true
+        end
+        return false
+    end
+    if pendingSnapshot and not forceFresh then return false end
+
+    local snapshot = BuildPendingSnapshot()
+    if not snapshot then return false end
+    pendingSnapshot = snapshot
 
     -- Suppress the default chat output by temporarily unregistering
     -- all chat frames from TIME_PLAYED_MSG before requesting.
-    for i = 1, NUM_CHAT_WINDOWS do
-        local frame = _G["ChatFrame" .. i]
-        if frame and frame:IsEventRegistered("TIME_PLAYED_MSG") then
-            frame:UnregisterEvent("TIME_PLAYED_MSG")
-        end
-    end
+    SuppressTimePlayedMessages()
+    waitingForPlaytime = true
     RequestTimePlayed()
     return true
 end
 
-local function CollectSnapshotAndReload()
-    local snapshot = pendingSnapshot or BuildPendingSnapshot()
-    if not snapshot then
-        ReloadUI()
-        return
+local function RequestFreshSnapshot()
+    local requested = CollectSnapshot(true)
+    if requested then
+        StartSnapshotTicker()
     end
-
-    pendingSnapshot = snapshot
-    CommitSnapshot(GetSavedPlaytimeSeconds(snapshot.key), true)
-    ReloadUI()
+    return requested
 end
 
-local function StartSnapshotTicker()
+StartSnapshotTicker = function()
     if snapshotTicker then snapshotTicker:Cancel() end
     nextSnapshotAt = GetTime() + SNAPSHOT_INTERVAL
     snapshotTicker = C_Timer.NewTicker(SNAPSHOT_INTERVAL, function()
@@ -556,18 +569,24 @@ local function CreateMinimapButton()
 
     button:SetScript("OnClick", function(_, mouseButton)
         if mouseButton == "RightButton" then
-            CollectSnapshotAndReload()
+            ReloadUI()
+            return
+        end
+
+        if mouseButton == "MiddleButton" then
+            RequestFreshSnapshot()
             return
         end
 
         ToggleDashboard()
     end)
+
     button:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_LEFT")
         GameTooltip:SetText("WoW Dashboard", 1, 1, 1)
         GameTooltip:AddLine("|cff00ff00Left click|r to open WoW Dashboard.", NORMAL_FONT_COLOR.r, NORMAL_FONT_COLOR.g, NORMAL_FONT_COLOR.b)
-        GameTooltip:AddLine("|cff00ff00Right click|r to save a snapshot and reload the UI.", NORMAL_FONT_COLOR.r, NORMAL_FONT_COLOR.g, NORMAL_FONT_COLOR.b)
-        GameTooltip:AddLine("|cff00ff00Drag|r to move this icon.", NORMAL_FONT_COLOR.r, NORMAL_FONT_COLOR.g, NORMAL_FONT_COLOR.b)
+        GameTooltip:AddLine("|cff00ff00Middle click|r to save a fresh snapshot.", NORMAL_FONT_COLOR.r, NORMAL_FONT_COLOR.g, NORMAL_FONT_COLOR.b)
+        GameTooltip:AddLine("|cff00ff00Right click|r to reload and flush SavedVariables to disk.", NORMAL_FONT_COLOR.r, NORMAL_FONT_COLOR.g, NORMAL_FONT_COLOR.b)
         GameTooltip:Show()
     end)
     button:SetScript("OnLeave", GameTooltip_Hide)
@@ -722,19 +741,18 @@ refreshBtn:SetFrameLevel(overviewPanel:GetFrameLevel() + 2)
 refreshBtn:SetScript("OnClick", function()
     if GetTime() < refreshCooldownUntil then return end
     refreshCooldownUntil = GetTime() + 15
-    CollectSnapshot()
-    StartSnapshotTicker()   -- reset the 15-minute window from now
+    RequestFreshSnapshot()
 end)
 
--- Upload button — reloads UI so WoW flushes SavedVariables to disk
+-- Manual snapshot button
 local uploadBtn = CreateFrame("Button", nil, overviewPanel, "UIPanelButtonTemplate")
 uploadBtn:SetSize(160, 30)
 uploadBtn:SetPoint("TOP", refreshBtn, "BOTTOM", 0, -10)
-uploadBtn:SetText("Upload")
+uploadBtn:SetText("Save Snapshot")
 uploadBtn:GetFontString():SetFont(FONT_BOLD, 11, "")
 uploadBtn:SetFrameLevel(overviewPanel:GetFrameLevel() + 2)
 uploadBtn:SetScript("OnClick", function()
-    CollectSnapshotAndReload()
+    RequestFreshSnapshot()
 end)
 
 minimapToggle = CreateFrame("CheckButton", nil, overviewPanel, "UICheckButtonTemplate")
@@ -958,13 +976,14 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
 
     elseif event == "TIME_PLAYED_MSG" then
         local totalSeconds = ...
-        -- Restore chat frames so future /played commands still show in chat
-        for i = 1, NUM_CHAT_WINDOWS do
-            local frame = _G["ChatFrame" .. i]
-            if frame then
-                frame:RegisterEvent("TIME_PLAYED_MSG")
-            end
+        if waitingForPlaytime then
+            waitingForPlaytime = false
+            RestoreTimePlayedMessages()
         end
         CommitSnapshot(totalSeconds)
+        if queuedFreshSnapshot then
+            queuedFreshSnapshot = false
+            CollectSnapshot(true)
+        end
     end
 end)
