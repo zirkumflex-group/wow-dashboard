@@ -1,0 +1,15 @@
+{
+    "extends": "@wow-dashboard/config/tsconfig.base.json",
+    "compilerOptions": {
+        "paths": {
+            "~/*": [
+                "./convex/*"
+            ]
+        }
+    },
+    "include": [
+        "convex/**/*.ts",
+        "convex/**/*.json",
+        "scripts/**/*.ts"
+    ]
+}
