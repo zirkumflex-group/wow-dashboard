@@ -21,12 +21,12 @@ function ElectronCallback() {
       return;
     }
 
-    // Fetch the Convex token from the session, then store it as a short-lived
-    // one-time code. Only the code (not the token) goes into the deep-link URL.
-    fetch("/api/auth/convex/token")
+    // Hand the desktop app the Better Auth session token so it can mint
+    // fresh Convex JWTs after cold start instead of persisting an expired JWT.
+    fetch("/api/auth/get-session")
       .then((r) => r.json())
       .then(async (data: unknown) => {
-        const token = (data as { token?: string })?.token;
+        const token = (data as { session?: { token?: string } })?.session?.token;
         if (!token) {
           setError(true);
           return;
