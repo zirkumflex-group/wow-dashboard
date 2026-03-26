@@ -4,9 +4,10 @@ local addonName, addon = ...
 -- WoW Dashboard — Expansion Overview Panel Style
 -- ============================================================
 
-local ADDON_PATH = "Interface\\AddOns\\wow-dashboard"
-local FONT_BOLD  = ADDON_PATH .. "\\Fonts\\Lato-Bold.ttf"
-local BORDER_TEX = ADDON_PATH .. "\\Art\\ExpansionLandingPage\\ExpansionBorder_TWW"
+local ADDON_PATH   = "Interface\\AddOns\\wow-dashboard"
+local FONT_BOLD    = ADDON_PATH .. "\\Fonts\\Lato-Bold.ttf"
+local BORDER_TEX   = ADDON_PATH .. "\\Art\\ExpansionLandingPage\\ExpansionBorder_TWW"
+local MINIMAP_ICON = ADDON_PATH .. "\\Art\\Logo\\WDIconTransparent"
 
 local BG_R, BG_G, BG_B = 0.067, 0.040, 0.024
 
@@ -164,6 +165,10 @@ end
 --
 -- Schema (WowDashboardDB):
 --   version        number   -- bump when layout changes
+--   panelOpen      boolean
+--   minimap        table
+--     minimapPos   number
+--     hide         boolean
 --   characters     table    -- keyed by "Name-Realm"
 --     name         string
 --     realm        string
@@ -198,8 +203,10 @@ end
 --         versatilityPercent   number
 -- ============================================================
 
-local DB_VERSION        = 1
-local SNAPSHOT_INTERVAL = 15 * 60  -- seconds
+local DB_VERSION            = 1
+local SNAPSHOT_INTERVAL     = 15 * 60  -- seconds
+local DEFAULT_MINIMAP_POS   = 225
+local MINIMAP_BUTTON_RADIUS = 5
 
 -- Midnight S1 currency IDs.
 local CURRENCY_IDS = {
@@ -216,11 +223,13 @@ local nextSnapshotAt       = 0      -- GetTime() when next auto-snapshot fires
 local snapshotTicker       = nil    -- C_Timer handle, cancelled on force-refresh
 local refreshCooldownUntil = 0      -- GetTime() when force-refresh cooldown ends
 local lastSnapshotAt       = 0      -- GetTime() when last snapshot was committed
+local lastKnownPlaytimeSeconds = 0
 local initialized          = false  -- true after first PLAYER_ENTERING_WORLD
 
 -- UI widgets — assigned after frames are built; used by the ticker
 local timerLabel = nil
 local refreshBtn = nil
+local minimapToggle = nil
 local RefreshLog = nil  -- assigned after Snapshots panel is built
 
 local function GetCharKey()
@@ -236,52 +245,16 @@ local function GetRegion()
     return "us"
 end
 
-local function CommitSnapshot(totalSeconds)
-    if not pendingSnapshot then return end
-    local p         = pendingSnapshot
-    pendingSnapshot = nil
-    p.snap.playtimeSeconds = totalSeconds or 0
-
-    local db = WowDashboardDB
-    if not db.characters then db.characters = {} end
-
-    local entry = db.characters[p.key]
-    if not entry then
-        db.characters[p.key] = {
-            name      = p.name,
-            realm     = p.realm,
-            region    = p.charInfo.region,
-            class     = p.charInfo.class,
-            race      = p.charInfo.race,
-            faction   = p.charInfo.faction,
-            snapshots = {},
-        }
-        entry = db.characters[p.key]
-    else
-        entry.region  = p.charInfo.region
-        entry.class   = p.charInfo.class
-        entry.race    = p.charInfo.race
-        entry.faction = p.charInfo.faction
-    end
-
-    table.insert(entry.snapshots, p.snap)
-    lastSnapshotAt = GetTime()
-    if RefreshLog then RefreshLog() end
-end
-
-local function CollectSnapshot()
-    if not IsLoggedIn() then return end
-    if pendingSnapshot then return end
-
+local function BuildPendingSnapshot()
     local key, name, realm = GetCharKey()
     local _, classFilename = UnitClass("player")
     local _, raceFilename  = UnitRace("player")
     local factionGroup     = UnitFactionGroup("player") or "Alliance"
 
     local specIndex      = GetSpecialization()
-    if not specIndex or specIndex <= 0 then return end
+    if not specIndex or specIndex <= 0 then return nil end
     local _, sName, _, _, sRole = GetSpecializationInfo(specIndex)
-    if not sName then return end
+    if not sName then return nil end
     local specName = sName
     local role     = "dps"
     if     sRole == "TANK"   then role = "tank"
@@ -312,7 +285,7 @@ local function CollectSnapshot()
         mplusScore = C_ChallengeMode.GetOverallDungeonScore() or 0
     end
 
-    pendingSnapshot = {
+    return {
         key      = key,
         name     = name,
         realm    = realm,
@@ -335,6 +308,67 @@ local function CollectSnapshot()
             stats           = stats,
         },
     }
+end
+
+local function GetSavedPlaytimeSeconds(key)
+    if lastKnownPlaytimeSeconds > 0 then
+        return lastKnownPlaytimeSeconds
+    end
+
+    local entry = WowDashboardDB and WowDashboardDB.characters and WowDashboardDB.characters[key]
+    if not entry or not entry.snapshots then
+        return 0
+    end
+
+    local snapshot = entry.snapshots[#entry.snapshots]
+    if snapshot and snapshot.playtimeSeconds then
+        return snapshot.playtimeSeconds
+    end
+
+    return 0
+end
+
+local function CommitSnapshot(totalSeconds, skipRefreshLog)
+    if not pendingSnapshot then return end
+    local p         = pendingSnapshot
+    pendingSnapshot = nil
+    p.snap.playtimeSeconds = totalSeconds or 0
+    lastKnownPlaytimeSeconds = p.snap.playtimeSeconds
+
+    local db = WowDashboardDB
+    if not db.characters then db.characters = {} end
+
+    local entry = db.characters[p.key]
+    if not entry then
+        db.characters[p.key] = {
+            name      = p.name,
+            realm     = p.realm,
+            region    = p.charInfo.region,
+            class     = p.charInfo.class,
+            race      = p.charInfo.race,
+            faction   = p.charInfo.faction,
+            snapshots = {},
+        }
+        entry = db.characters[p.key]
+    else
+        entry.region  = p.charInfo.region
+        entry.class   = p.charInfo.class
+        entry.race    = p.charInfo.race
+        entry.faction = p.charInfo.faction
+    end
+
+    table.insert(entry.snapshots, p.snap)
+    lastSnapshotAt = GetTime()
+    if RefreshLog and not skipRefreshLog then
+        RefreshLog()
+    end
+end
+
+local function CollectSnapshot()
+    if not IsLoggedIn() then return false end
+    if pendingSnapshot then return false end
+    pendingSnapshot = BuildPendingSnapshot()
+    if not pendingSnapshot then return false end
 
     -- Suppress the default chat output by temporarily unregistering
     -- all chat frames from TIME_PLAYED_MSG before requesting.
@@ -345,6 +379,19 @@ local function CollectSnapshot()
         end
     end
     RequestTimePlayed()
+    return true
+end
+
+local function CollectSnapshotAndReload()
+    local snapshot = pendingSnapshot or BuildPendingSnapshot()
+    if not snapshot then
+        ReloadUI()
+        return
+    end
+
+    pendingSnapshot = snapshot
+    CommitSnapshot(GetSavedPlaytimeSeconds(snapshot.key), true)
+    ReloadUI()
 end
 
 local function StartSnapshotTicker()
@@ -375,6 +422,170 @@ MainFrame:Hide()
 
 table.insert(UISpecialFrames, "WowDashboardFrame")
 
+MainFrame:SetScript("OnShow", function()
+    if WowDashboardDB then
+        WowDashboardDB.panelOpen = true
+    end
+end)
+
+MainFrame:SetScript("OnHide", function()
+    if WowDashboardDB then
+        WowDashboardDB.panelOpen = false
+    end
+end)
+
+local function SetDashboardShown(shown)
+    MainFrame:SetShown(shown)
+end
+
+local function ToggleDashboard()
+    SetDashboardShown(not MainFrame:IsShown())
+end
+
+-- ============================================================
+-- Minimap Button
+-- ============================================================
+
+local minimapShapes = {
+    ["ROUND"] = { true, true, true, true },
+    ["SQUARE"] = { false, false, false, false },
+    ["CORNER-TOPLEFT"] = { false, false, false, true },
+    ["CORNER-TOPRIGHT"] = { false, false, true, false },
+    ["CORNER-BOTTOMLEFT"] = { false, true, false, false },
+    ["CORNER-BOTTOMRIGHT"] = { true, false, false, false },
+    ["SIDE-LEFT"] = { false, true, false, true },
+    ["SIDE-RIGHT"] = { true, false, true, false },
+    ["SIDE-TOP"] = { false, false, true, true },
+    ["SIDE-BOTTOM"] = { true, true, false, false },
+    ["TRICORNER-TOPLEFT"] = { false, true, true, true },
+    ["TRICORNER-TOPRIGHT"] = { true, false, true, true },
+    ["TRICORNER-BOTTOMLEFT"] = { true, true, false, true },
+    ["TRICORNER-BOTTOMRIGHT"] = { true, true, true, false },
+}
+
+local MinimapButton = nil
+
+local function EnsureMinimapSettings()
+    if type(WowDashboardDB.minimap) ~= "table" then
+        WowDashboardDB.minimap = {}
+    end
+    if WowDashboardDB.minimap.minimapPos == nil then
+        WowDashboardDB.minimap.minimapPos = DEFAULT_MINIMAP_POS
+    end
+    if WowDashboardDB.minimap.hide == nil then
+        WowDashboardDB.minimap.hide = false
+    end
+end
+
+local function UpdateMinimapButtonPosition(position)
+    if not MinimapButton then return end
+
+    local angle = math.rad(position or DEFAULT_MINIMAP_POS)
+    local x, y = math.cos(angle), math.sin(angle)
+    local quadrant = 1
+
+    if x < 0 then quadrant = quadrant + 1 end
+    if y > 0 then quadrant = quadrant + 2 end
+
+    local minimapShape = GetMinimapShape and GetMinimapShape() or "ROUND"
+    local quadrantInfo = minimapShapes[minimapShape] or minimapShapes["ROUND"]
+    local w = (Minimap:GetWidth() / 2) + MINIMAP_BUTTON_RADIUS
+    local h = (Minimap:GetHeight() / 2) + MINIMAP_BUTTON_RADIUS
+
+    if quadrantInfo[quadrant] then
+        x, y = x * w, y * h
+    else
+        local diagRadiusW = math.sqrt(2 * (w ^ 2)) - 10
+        local diagRadiusH = math.sqrt(2 * (h ^ 2)) - 10
+        x = math.max(-w, math.min(x * diagRadiusW, w))
+        y = math.max(-h, math.min(y * diagRadiusH, h))
+    end
+
+    MinimapButton:ClearAllPoints()
+    MinimapButton:SetPoint("CENTER", Minimap, "CENTER", x, y)
+end
+
+local function RefreshMinimapButton()
+    if not MinimapButton or not WowDashboardDB or not WowDashboardDB.minimap then return end
+
+    UpdateMinimapButtonPosition(WowDashboardDB.minimap.minimapPos)
+    MinimapButton:SetShown(not WowDashboardDB.minimap.hide)
+
+    if minimapToggle then
+        minimapToggle:SetChecked(not WowDashboardDB.minimap.hide)
+    end
+end
+
+local function UpdateDraggedMinimapButtonPosition()
+    local mx, my = Minimap:GetCenter()
+    local px, py = GetCursorPosition()
+    local scale = Minimap:GetEffectiveScale()
+
+    px, py = px / scale, py / scale
+
+    local position = math.deg(math.atan2(py - my, px - mx)) % 360
+    WowDashboardDB.minimap.minimapPos = position
+    UpdateMinimapButtonPosition(position)
+end
+
+local function CreateMinimapButton()
+    if MinimapButton then return MinimapButton end
+
+    local button = CreateFrame("Button", "WowDashboardMinimapButton", Minimap)
+    button:SetFrameStrata("MEDIUM")
+    button:SetFrameLevel(8)
+    button:SetSize(31, 31)
+    button:RegisterForClicks("AnyUp")
+    button:RegisterForDrag("LeftButton")
+    button:SetHighlightTexture(136477)
+
+    local overlay = button:CreateTexture(nil, "OVERLAY")
+    overlay:SetSize(50, 50)
+    overlay:SetTexture(136430)
+    overlay:SetPoint("TOPLEFT", button, "TOPLEFT")
+
+    local background = button:CreateTexture(nil, "BACKGROUND")
+    background:SetSize(24, 24)
+    background:SetTexture(136467)
+    background:SetPoint("CENTER", button, "CENTER")
+
+    local icon = button:CreateTexture(nil, "ARTWORK")
+    icon:SetSize(18, 18)
+    icon:SetTexture(MINIMAP_ICON)
+    icon:SetPoint("CENTER", button, "CENTER")
+
+    button:SetScript("OnClick", function(_, mouseButton)
+        if mouseButton == "RightButton" then
+            CollectSnapshotAndReload()
+            return
+        end
+
+        ToggleDashboard()
+    end)
+    button:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+        GameTooltip:SetText("WoW Dashboard", 1, 1, 1)
+        GameTooltip:AddLine("|cff00ff00Left click|r to open WoW Dashboard.", NORMAL_FONT_COLOR.r, NORMAL_FONT_COLOR.g, NORMAL_FONT_COLOR.b)
+        GameTooltip:AddLine("|cff00ff00Right click|r to save a snapshot and reload the UI.", NORMAL_FONT_COLOR.r, NORMAL_FONT_COLOR.g, NORMAL_FONT_COLOR.b)
+        GameTooltip:AddLine("|cff00ff00Drag|r to move this icon.", NORMAL_FONT_COLOR.r, NORMAL_FONT_COLOR.g, NORMAL_FONT_COLOR.b)
+        GameTooltip:Show()
+    end)
+    button:SetScript("OnLeave", GameTooltip_Hide)
+    button:SetScript("OnDragStart", function(self)
+        self:LockHighlight()
+        self:SetScript("OnUpdate", UpdateDraggedMinimapButtonPosition)
+        GameTooltip:Hide()
+    end)
+    button:SetScript("OnDragStop", function(self)
+        self:SetScript("OnUpdate", nil)
+        self:UnlockHighlight()
+    end)
+    button:Hide()
+
+    MinimapButton = button
+    return button
+end
+
 -- ============================================================
 -- Left Section
 -- ============================================================
@@ -404,8 +615,7 @@ twwBG:SetAtlas("thewarwithin-landingpage-background", false)
 twwBG:SetVertexColor(0.25, 0.25, 0.25)
 
 RightSection.NineSlice.CloseButton:SetScript("OnClick", function()
-    MainFrame:Hide()
-    WowDashboardDB.panelOpen = false
+    SetDashboardShown(false)
 end)
 
 -- Header title
@@ -524,7 +734,22 @@ uploadBtn:SetText("Upload")
 uploadBtn:GetFontString():SetFont(FONT_BOLD, 11, "")
 uploadBtn:SetFrameLevel(overviewPanel:GetFrameLevel() + 2)
 uploadBtn:SetScript("OnClick", function()
-    ReloadUI()
+    CollectSnapshotAndReload()
+end)
+
+minimapToggle = CreateFrame("CheckButton", nil, overviewPanel, "UICheckButtonTemplate")
+minimapToggle:SetPoint("TOPLEFT", uploadBtn, "BOTTOMLEFT", 0, -18)
+minimapToggle:SetSize(24, 24)
+minimapToggle.Label = overviewPanel:CreateFontString(nil, "OVERLAY")
+minimapToggle.Label:SetFont(FONT_BOLD, 11, "")
+minimapToggle.Label:SetTextColor(0.80, 0.80, 0.80)
+minimapToggle.Label:SetPoint("LEFT", minimapToggle, "RIGHT", 4, 0)
+minimapToggle.Label:SetText("Show minimap icon")
+minimapToggle:SetScript("OnClick", function(self)
+    if not WowDashboardDB or not WowDashboardDB.minimap then return end
+
+    WowDashboardDB.minimap.hide = not self:GetChecked()
+    RefreshMinimapButton()
 end)
 
 -- ============================================================
@@ -676,9 +901,7 @@ end
 SLASH_WOWDASHBOARD1 = "/wd"
 SLASH_WOWDASHBOARD2 = "/wowdashboard"
 SlashCmdList["WOWDASHBOARD"] = function()
-    local shown = not MainFrame:IsShown()
-    MainFrame:SetShown(shown)
-    WowDashboardDB.panelOpen = shown
+    ToggleDashboard()
 end
 
 local eventFrame = CreateFrame("Frame")
@@ -689,17 +912,31 @@ eventFrame:RegisterEvent("TIME_PLAYED_MSG")
 eventFrame:SetScript("OnEvent", function(self, event, ...)
     if event == "ADDON_LOADED" and ... == addonName then
         if not WowDashboardDB then
-            WowDashboardDB = { version = DB_VERSION, characters = {}, panelOpen = false }
+            WowDashboardDB = {
+                version = DB_VERSION,
+                characters = {},
+                panelOpen = false,
+                minimap = {
+                    minimapPos = DEFAULT_MINIMAP_POS,
+                    hide = false,
+                },
+            }
         end
         if not WowDashboardDB.version    then WowDashboardDB.version    = DB_VERSION end
         if not WowDashboardDB.characters then WowDashboardDB.characters = {} end
         if WowDashboardDB.panelOpen == nil then WowDashboardDB.panelOpen = false end
+        EnsureMinimapSettings()
+        if minimapToggle then
+            minimapToggle:SetChecked(not WowDashboardDB.minimap.hide)
+        end
+        CreateMinimapButton()
 
     elseif event == "PLAYER_ENTERING_WORLD" then
+        RefreshMinimapButton()
         if not initialized then
             initialized = true
             print("|cff00ccff[WoW Dashboard]|r Loaded — type |cffffffff/wowdashboard|r to open.")
-            MainFrame:SetShown(WowDashboardDB.panelOpen == true)
+            SetDashboardShown(WowDashboardDB.panelOpen == true)
             C_Timer.NewTicker(1, OnSecondTick)
             -- First snapshot in 5 s, then every 15 min
             nextSnapshotAt = GetTime() + 5
