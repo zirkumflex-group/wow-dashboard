@@ -33,6 +33,9 @@
       ],
       "@wow-dashboard/ui/*": [
         "../../packages/ui/src/*"
+      ],
+      "@wow-dashboard/backend/*": [
+        "../../packages/backend/*"
       ]
     }
   }
