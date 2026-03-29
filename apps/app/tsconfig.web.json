@@ -5,6 +5,6 @@
     "composite": true,
     "lib": ["ESNext", "DOM", "DOM.Iterable"],
     "jsx": "react-jsx",
-    "types": []
+    "types": ["vite/client"]
   }
 }

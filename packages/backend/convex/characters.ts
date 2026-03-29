@@ -116,7 +116,13 @@ export const getCharacterSnapshots = query({
       .order("asc")
       .collect();
 
-    return { character, snapshots };
+    const mythicPlusRuns = await ctx.db
+      .query("mythicPlusRuns")
+      .withIndex("by_character_and_observedAt", (q) => q.eq("characterId", characterId))
+      .order("asc")
+      .collect();
+
+    return { character, snapshots, mythicPlusRuns };
   },
 });
 

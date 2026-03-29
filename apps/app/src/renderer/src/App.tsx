@@ -36,6 +36,24 @@ interface SnapshotData {
   };
 }
 
+interface MythicPlusRunData {
+  fingerprint: string;
+  source?: string;
+  observedAt: number;
+  seasonID?: number;
+  mapChallengeModeID?: number;
+  level?: number;
+  completed?: boolean;
+  completedInTime?: boolean;
+  durationMs?: number;
+  runScore?: number;
+  startDate?: number;
+  completedAt?: number;
+  thisWeek?: boolean;
+  members?: unknown;
+  raw?: unknown;
+}
+
 interface CharacterData {
   name: string;
   realm: string;
@@ -44,6 +62,36 @@ interface CharacterData {
   race: string;
   faction: "alliance" | "horde";
   snapshots: SnapshotData[];
+  mythicPlusRuns: MythicPlusRunData[];
+}
+
+interface AddonFileStats {
+  totalBytes: number;
+  createdAt: number;
+  modifiedAt: number;
+  totalSnapshots: number;
+  totalMythicPlusRuns: number;
+}
+
+interface CompactAddonResult {
+  status: "completed" | "blocked";
+  wowProcesses: string[];
+  filesProcessed: number;
+  filesChanged: number;
+  backupsWritten: number;
+  bytesBefore: number;
+  bytesAfter: number;
+  snapshotsBefore: number;
+  snapshotsAfter: number;
+  mythicPlusRunsBefore: number;
+  mythicPlusRunsAfter: number;
+  rawRunsTrimmed: number;
+  membersTrimmed: number;
+}
+
+interface PendingUploadCounts {
+  snapshots: number;
+  mythicPlusRuns: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -65,12 +113,13 @@ declare global {
         readAddonData: () => Promise<{
           characters: CharacterData[];
           accountsFound: string[];
-          fileStats: { totalBytes: number; createdAt: number; modifiedAt: number; totalSnapshots: number } | null;
+          fileStats: AddonFileStats | null;
         } | null>;
+        compactAddonData: (forceIfRunning?: boolean) => Promise<CompactAddonResult>;
         checkAddonInstalled: () => Promise<boolean>;
         getInstalledAddonVersion: () => Promise<string | null>;
         installAddon: (downloadUrl: string, checksumUrl: string | null) => Promise<void>;
-        getLatestAddonRelease: () => Promise<{ url: string; version: string }>;
+        getLatestAddonRelease: () => Promise<{ url: string; checksumUrl: string | null; version: string }>;
         watchAddonFile: () => Promise<void>;
         unwatchAddonFile: () => Promise<void>;
         onAddonFileChanged: (cb: () => void) => void;
@@ -206,6 +255,19 @@ function formatDateTime(ms: number) {
   return new Date(ms).toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
+function getPendingUploadCounts(chars: CharacterData[], sinceTs: number): PendingUploadCounts {
+  return chars.reduce(
+    (totals, char) => ({
+      snapshots:
+        totals.snapshots + char.snapshots.filter((snapshot) => snapshot.takenAt > sinceTs).length,
+      mythicPlusRuns:
+        totals.mythicPlusRuns +
+        char.mythicPlusRuns.filter((run) => run.observedAt > sinceTs).length,
+    }),
+    { snapshots: 0, mythicPlusRuns: 0 },
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Components
 // ---------------------------------------------------------------------------
@@ -311,26 +373,50 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
   const [addonUpToDate, setAddonUpToDate] = useState(false);
 
   // Upload / file status
-  const [fileSnapshotCount, setFileSnapshotCount] = useState<number | null>(null);
+  const [pendingUploadCounts, setPendingUploadCounts] = useState<PendingUploadCounts | null>(null);
   const [watchingFile, setWatchingFile] = useState(false);
-  const [addonFileStats, setAddonFileStats] = useState<{
-    totalBytes: number;
-    createdAt: number;
-    modifiedAt: number;
-    totalSnapshots: number;
-  } | null>(null);
+  const [addonFileStats, setAddonFileStats] = useState<AddonFileStats | null>(null);
   const [lastUploadResult, setLastUploadResult] = useState<{
     newChars: number;
     newSnapshots: number;
+    newMythicPlusRuns: number;
   } | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadWarn, setUploadWarn] = useState<string | null>(null);
+  const [compacting, setCompacting] = useState(false);
+  const [compactionResult, setCompactionResult] = useState<CompactAddonResult | null>(null);
+  const [compactionError, setCompactionError] = useState<string | null>(null);
 
   const syncingRef = useRef(false);
   const lastSyncedAtRef = useRef(0);
   // Always points to the latest doUpload closure so stale-closure effects stay current.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const doUploadRef = useRef<() => Promise<void>>(null as any);
+
+  const refreshAddonFileState = useCallback(async () => {
+    if (!retailPath) {
+      setPendingUploadCounts(null);
+      setAddonFileStats(null);
+      return;
+    }
+
+    try {
+      const addonData = await window.electron.wow.readAddonData();
+      if (!addonData) {
+        setPendingUploadCounts(null);
+        setAddonFileStats(null);
+        return;
+      }
+
+      const { characters: chars, fileStats } = addonData;
+      const sinceTs = lastSyncedAtRef.current - 60;
+      setPendingUploadCounts(getPendingUploadCounts(chars, sinceTs));
+      setAddonFileStats(fileStats);
+    } catch {
+      setPendingUploadCounts({ snapshots: 0, mythicPlusRuns: 0 });
+      setAddonFileStats(null);
+    }
+  }, [retailPath]);
 
   // Load persisted settings on mount
   useEffect(() => {
@@ -361,7 +447,7 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
     if (!retailPath) {
       setAddonInstalled(null);
       setAddonVersion(null);
-      setFileSnapshotCount(null);
+      setPendingUploadCounts(null);
       setAddonFileStats(null);
       window.electron.wow.unwatchAddonFile();
       setWatchingFile(false);
@@ -371,20 +457,8 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
     setWatchingFile(true);
     window.electron.wow.checkAddonInstalled().then(setAddonInstalled);
     window.electron.wow.getInstalledAddonVersion().then(setAddonVersion);
-    // Read file to get pending snapshot count and file stats
-    window.electron.wow
-      .readAddonData()
-      .then(({ characters: chars, fileStats }) => {
-        const sinceTs = lastSyncedAtRef.current - 60;
-        const pending = chars.reduce(
-          (sum, c) => sum + c.snapshots.filter((s) => s.takenAt > sinceTs).length,
-          0,
-        );
-        setFileSnapshotCount(pending);
-        setAddonFileStats(fileStats);
-      })
-      .catch(() => { setFileSnapshotCount(0); setAddonFileStats(null); });
-  }, [retailPath]);
+    void refreshAddonFileState();
+  }, [refreshAddonFileState, retailPath]);
 
   async function handleCloseBehaviorChange(value: boolean) {
     const behavior = value ? "tray" : "exit";
@@ -452,9 +526,40 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
       setLastUploadResult(null);
       setUploadError(null);
       setUploadWarn(null);
-      setFileSnapshotCount(null);
+      setPendingUploadCounts(null);
+      setCompactionResult(null);
+      setCompactionError(null);
       const installed = await window.electron.wow.checkAddonInstalled();
       setAddonInstalled(installed);
+    }
+  }
+
+  async function handleCompactAddon(forceIfRunning = false) {
+    if (!retailPath) return;
+
+    setCompacting(true);
+    setCompactionError(null);
+    setCompactionResult(null);
+
+    try {
+      const result = await window.electron.wow.compactAddonData(forceIfRunning);
+      if (result.status === "blocked" && !forceIfRunning) {
+        setCompacting(false);
+        const confirmed = window.confirm(
+          `World of Warcraft appears to be running (${result.wowProcesses.join(", ")}).\n\nCompacting while the game is open is not recommended because the client can overwrite the file. Continue anyway?`,
+        );
+        if (confirmed) {
+          await handleCompactAddon(true);
+        }
+        return;
+      }
+
+      setCompactionResult(result);
+      await refreshAddonFileState();
+    } catch (e) {
+      setCompactionError(e instanceof Error ? e.message : "Compaction failed");
+    } finally {
+      setCompacting(false);
     }
   }
 
@@ -478,27 +583,34 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
               : `Parsed ${accountsFound.length} account(s) but no characters found`,
           );
         } else {
-          // Only send snapshots newer than the last successful sync (60s buffer for clock skew).
+          // Only send records newer than the last successful sync (60s buffer for clock skew).
           const sinceTs = lastSyncedAtRef.current - 60;
           const pendingChars = addonChars
             .map((c) => ({
               ...c,
               snapshots: c.snapshots.filter((s) => s.takenAt > sinceTs && s.spec !== "Unknown"),
+              mythicPlusRuns: c.mythicPlusRuns.filter((run) => run.observedAt > sinceTs),
             }))
-            .filter((c) => c.snapshots.length > 0);
+            .filter((c) => c.snapshots.length > 0 || c.mythicPlusRuns.length > 0);
 
-          const pendingCount = pendingChars.reduce((sum, c) => sum + c.snapshots.length, 0);
-          setFileSnapshotCount(pendingCount);
+          setPendingUploadCounts(getPendingUploadCounts(addonChars, sinceTs));
 
           if (pendingChars.length > 0) {
-            const result = await uploadAddon({ characters: pendingChars });
-            setLastUploadResult({ newChars: result.newChars, newSnapshots: result.newSnapshots });
+            const result = await uploadAddon({
+              characters: pendingChars as Parameters<typeof uploadAddon>[0]["characters"],
+            });
+            setLastUploadResult({
+              newChars: result.newChars,
+              newSnapshots: result.newSnapshots,
+              newMythicPlusRuns: result.newMythicPlusRuns,
+            });
             const now = Math.floor(Date.now() / 1000);
             setLastSyncedAt(now);
             lastSyncedAtRef.current = now;
             await window.electron.settings.setLastSyncedAt(now);
+            await refreshAddonFileState();
           } else {
-            setLastUploadResult({ newChars: 0, newSnapshots: 0 });
+            setLastUploadResult({ newChars: 0, newSnapshots: 0, newMythicPlusRuns: 0 });
           }
         }
       } else {
@@ -691,8 +803,15 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
             </div>
             <div className="flex items-center gap-3">
               <button
+                onClick={() => handleCompactAddon()}
+                disabled={compacting || syncing || !retailPath}
+                className="rounded bg-gray-700 px-3 py-1.5 text-sm font-medium hover:bg-gray-600 disabled:opacity-50"
+              >
+                {compacting ? "Compacting..." : "Compact File"}
+              </button>
+              <button
                 onClick={() => doUpload()}
-                disabled={syncing}
+                disabled={syncing || compacting}
                 className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
               >
                 {syncing ? "Syncing..." : "Sync Now"}
@@ -700,7 +819,10 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
             </div>
           </div>
           <p className="text-xs text-gray-500">
-            Manual sync uploads addon snapshots and refreshes Battle.net character data.
+            Manual sync uploads addon snapshots and Mythic+ runs, then refreshes Battle.net character data.
+          </p>
+          <p className="text-xs text-gray-500">
+            Fallback sync in {formatTime(timeLeft)} if no addon file change is detected.
           </p>
 
           {/* Status area */}
@@ -718,25 +840,44 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
             <div className="flex items-center gap-2">
               <span className="text-green-400 text-base">✓</span>
               <p className="text-sm text-green-400">All clear</p>
-              {lastUploadResult.newSnapshots > 0 && (
+              {(lastUploadResult.newSnapshots > 0 || lastUploadResult.newMythicPlusRuns > 0) && (
                 <span className="text-xs text-gray-500">
                   ({lastUploadResult.newSnapshots} new snapshot
-                  {lastUploadResult.newSnapshots !== 1 ? "s" : ""} uploaded)
+                  {lastUploadResult.newSnapshots !== 1 ? "s" : ""}, {lastUploadResult.newMythicPlusRuns} new M+ run
+                  {lastUploadResult.newMythicPlusRuns !== 1 ? "s" : ""} uploaded)
                 </span>
               )}
             </div>
           ) : !retailPath ? (
             <p className="text-sm text-gray-500">Select the WoW folder to enable uploads.</p>
-          ) : fileSnapshotCount === null ? (
+          ) : pendingUploadCounts === null ? (
             <p className="text-sm text-gray-400">Checking file…</p>
-          ) : fileSnapshotCount === 0 ? (
+          ) : pendingUploadCounts.snapshots === 0 && pendingUploadCounts.mythicPlusRuns === 0 ? (
             <p className="text-sm text-gray-500">
-              No snapshots found in file. Run the addon in-game first.
+              No pending addon data found. Run the addon in-game first or sync after new activity.
             </p>
           ) : (
             <p className="text-sm text-yellow-400">
-              {fileSnapshotCount} snapshot{fileSnapshotCount !== 1 ? "s" : ""} pending upload
+              {pendingUploadCounts.snapshots} snapshot{pendingUploadCounts.snapshots !== 1 ? "s" : ""} and{" "}
+              {pendingUploadCounts.mythicPlusRuns} M+ run
+              {pendingUploadCounts.mythicPlusRuns !== 1 ? "s" : ""} pending upload
             </p>
+          )}
+
+          {compactionError && (
+            <div className="rounded border border-red-700 bg-red-950 px-3 py-2 text-sm text-red-400">
+              {compactionError}
+            </div>
+          )}
+
+          {compactionResult?.status === "completed" && (
+            <div className="rounded border border-gray-800 bg-gray-900 px-3 py-2 text-xs text-gray-400">
+              Compaction: {compactionResult.filesChanged}/{compactionResult.filesProcessed} file
+              {compactionResult.filesProcessed !== 1 ? "s" : ""} rewritten, {formatBytes(compactionResult.bytesBefore)} to{" "}
+              {formatBytes(compactionResult.bytesAfter)}, snapshots {compactionResult.snapshotsBefore.toLocaleString()} to{" "}
+              {compactionResult.snapshotsAfter.toLocaleString()}, M+ runs {compactionResult.mythicPlusRunsBefore.toLocaleString()} to{" "}
+              {compactionResult.mythicPlusRunsAfter.toLocaleString()}.
+            </div>
           )}
 
           {/* Addon file metadata */}
@@ -744,6 +885,8 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
             <div className="grid grid-cols-2 gap-x-4 gap-y-1 pt-1 text-xs text-gray-500">
               <span>Total snapshots</span>
               <span className="text-gray-400">{addonFileStats.totalSnapshots.toLocaleString()}</span>
+              <span>Total M+ runs</span>
+              <span className="text-gray-400">{addonFileStats.totalMythicPlusRuns.toLocaleString()}</span>
               <span>File size</span>
               <span className="text-gray-400">{formatBytes(addonFileStats.totalBytes)}</span>
               <span>Created</span>

@@ -3,6 +3,7 @@ import { v } from "convex/values";
 import { mutation } from "./_generated/server";
 import { authComponent } from "./auth";
 import { rateLimiter } from "./rateLimiter";
+import { mythicPlusRunValidator } from "./schemas/mythicPlusRuns";
 import { specValidator } from "./schemas/snapshots";
 import { internal } from "./_generated/api";
 
@@ -47,6 +48,7 @@ const characterValidator = v.object({
   race: v.string(),
   faction: v.union(v.literal("alliance"), v.literal("horde")),
   snapshots: v.array(snapshotValidator),
+  mythicPlusRuns: v.optional(v.array(mythicPlusRunValidator)),
 });
 
 export const ingestAddonData = mutation({
@@ -77,6 +79,7 @@ export const ingestAddonData = mutation({
 
     let newChars = 0;
     let newSnapshots = 0;
+    let newMythicPlusRuns = 0;
 
     for (const charData of characters) {
       const existing = await ctx.db
@@ -148,14 +151,45 @@ export const ingestAddonData = mutation({
           newSnapshots++;
         }
       }
+
+      for (const run of charData.mythicPlusRuns ?? []) {
+        const existingRun = await ctx.db
+          .query("mythicPlusRuns")
+          .withIndex("by_character_and_fingerprint", (q) =>
+            q.eq("characterId", characterId).eq("fingerprint", run.fingerprint),
+          )
+          .first();
+
+        if (!existingRun) {
+          await ctx.db.insert("mythicPlusRuns", {
+            characterId,
+            fingerprint: run.fingerprint,
+            source: run.source,
+            observedAt: run.observedAt,
+            seasonID: run.seasonID,
+            mapChallengeModeID: run.mapChallengeModeID,
+            level: run.level,
+            completed: run.completed,
+            completedInTime: run.completedInTime,
+            durationMs: run.durationMs,
+            runScore: run.runScore,
+            startDate: run.startDate,
+            completedAt: run.completedAt,
+            thisWeek: run.thisWeek,
+            members: run.members,
+            raw: run.raw,
+          });
+          newMythicPlusRuns++;
+        }
+      }
     }
 
     await ctx.runMutation(internal.audit.log, {
       userId: authUser._id as string,
       event: "addon.ingest",
-      metadata: { newChars, newSnapshots, totalCharacters: characters.length },
+      metadata: { newChars, newSnapshots, newMythicPlusRuns, totalCharacters: characters.length },
     });
 
-    return { newChars, newSnapshots };
+    return { newChars, newSnapshots, newMythicPlusRuns };
   },
 });

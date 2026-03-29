@@ -9,10 +9,15 @@ import type { Id } from "./_generated/dataModel";
 
 async function deleteSeedCharacterData(ctx: MutationCtx, characterIds: Id<"characters">[]) {
   for (const charId of characterIds) {
+    const mythicPlusRuns = await ctx.db
+      .query("mythicPlusRuns")
+      .withIndex("by_character", (q) => q.eq("characterId", charId))
+      .collect();
     const snapshots = await ctx.db
       .query("snapshots")
       .withIndex("by_character", (q) => q.eq("characterId", charId))
       .collect();
+    await Promise.all(mythicPlusRuns.map((run) => ctx.db.delete(run._id)));
     await Promise.all(snapshots.map((s) => ctx.db.delete(s._id)));
     await ctx.db.delete(charId);
   }
