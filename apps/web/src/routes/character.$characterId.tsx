@@ -237,6 +237,12 @@ function formatAverageValue(value?: number | null, digits = 1) {
   return value.toFixed(digits);
 }
 
+function formatSeasonLabel(seasonID: number | null) {
+  if (seasonID === null) return null;
+  if (seasonID === 17) return "Midnight Season 1";
+  return `Season ${seasonID}`;
+}
+
 function getRunLabel(run: MythicPlusRun) {
   if (run.mapName && run.mapName.trim() !== "") return run.mapName;
   if (run.mapChallengeModeID !== undefined) return `Dungeon ${run.mapChallengeModeID}`;
@@ -331,8 +337,8 @@ function MythicPlusSection({ data }: { data: MythicPlusData | null | undefined }
               <History size={16} className="text-muted-foreground" />
               Mythic+ Summary
             </CardTitle>
-            {summary.latestSeasonID !== null && (
-              <Badge variant="outline">Season {summary.latestSeasonID}</Badge>
+            {formatSeasonLabel(summary.latestSeasonID) && (
+              <Badge variant="outline">{formatSeasonLabel(summary.latestSeasonID)}</Badge>
             )}
           </div>
         </CardHeader>
@@ -350,28 +356,11 @@ function MythicPlusSection({ data }: { data: MythicPlusData | null | undefined }
                 <StatGrid label="Best Timed" value={formatKeyLevel(currentSeason.bestTimedLevel)} />
                 <StatGrid label="5+ Timed" value={currentSeason.timed5Plus.toLocaleString()} />
                 <StatGrid label="2+ Timed" value={currentSeason.timed2Plus.toLocaleString()} />
-                <StatGrid label="Best Key" value={formatKeyLevel(currentSeason.bestLevel)} />
+                <StatGrid label="Completed" value={currentSeason.completedRuns.toLocaleString()} />
                 <StatGrid label="Best Score" value={formatAverageValue(currentSeason.bestScore, 0)} />
               </div>
             </div>
           )}
-
-          <div className="space-y-3">
-            <div className="flex items-center gap-2">
-              <Zap size={14} className="text-muted-foreground" />
-              <h3 className="text-sm font-semibold">All Time</h3>
-            </div>
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-              <StatGrid label="Runs" value={summary.overall.totalRuns.toLocaleString()} />
-              <StatGrid label="Timed" value={summary.overall.timedRuns.toLocaleString()} />
-              <StatGrid label="Avg Key" value={formatAverageValue(summary.overall.averageLevel, 1)} />
-              <StatGrid label="Avg Score" value={formatAverageValue(summary.overall.averageScore, 0)} />
-              <StatGrid label="Completed" value={summary.overall.completedRuns.toLocaleString()} />
-              <StatGrid label="Best Timed" value={formatKeyLevel(summary.overall.bestTimedLevel)} />
-              <StatGrid label="Best Key" value={formatKeyLevel(summary.overall.bestLevel)} />
-              <StatGrid label="Last Run" value={formatRunDate(summary.overall.lastRunAt)} />
-            </div>
-          </div>
 
           {summary.currentSeasonDungeons.length > 0 && (
             <div className="space-y-3">
@@ -386,7 +375,6 @@ function MythicPlusSection({ data }: { data: MythicPlusData | null | undefined }
                       <th className="px-3 py-2 text-left font-medium">Dungeon</th>
                       <th className="px-3 py-2 text-right font-medium">Timed</th>
                       <th className="px-3 py-2 text-right font-medium">Best Timed</th>
-                      <th className="px-3 py-2 text-right font-medium">Best Key</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -396,9 +384,6 @@ function MythicPlusSection({ data }: { data: MythicPlusData | null | undefined }
                         <td className="px-3 py-2 text-right tabular-nums">{dungeon.timedRuns}</td>
                         <td className="px-3 py-2 text-right tabular-nums">
                           {formatKeyLevel(dungeon.bestTimedLevel)}
-                        </td>
-                        <td className="px-3 py-2 text-right tabular-nums">
-                          {formatKeyLevel(dungeon.bestLevel)}
                         </td>
                       </tr>
                     ))}
