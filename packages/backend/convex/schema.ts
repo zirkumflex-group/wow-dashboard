@@ -2,11 +2,13 @@ import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 import { playersTable } from "./schemas/players";
 import { charactersTable } from "./schemas/characters";
+import { mythicPlusRunsTable } from "./schemas/mythicPlusRuns";
 import { snapshotsTable } from "./schemas/snapshots";
 
 export default defineSchema({
   players: playersTable,
   characters: charactersTable,
+  mythicPlusRuns: mythicPlusRunsTable,
   snapshots: snapshotsTable,
   // Singleton that tracks which IDs were created by the seed so they can be
   // surgically removed on re-seed without touching real user data.

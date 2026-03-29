@@ -176,6 +176,21 @@ end
 --     class        string   -- e.g. "WARRIOR"
 --     race         string   -- e.g. "Human"
 --     faction      string   -- "alliance" | "horde"
+--     mythicPlusRuns    array
+--       fingerprint         string
+--       observedAt          number
+--       seasonID            number?
+--       mapChallengeModeID  number?
+--       mapName             string?
+--       level               number?
+--       completed           boolean?
+--       completedInTime     boolean?
+--       durationMs          number?
+--       runScore            number?
+--       startDate           number?
+--       completedAt         number?
+--       thisWeek            boolean?
+--     mythicPlusRunKeys table -- keyed by fingerprint for dedupe
 --     snapshots    array
 --       takenAt           number  -- Unix timestamp
 --       level             number
@@ -203,10 +218,11 @@ end
 --         versatilityPercent   number
 -- ============================================================
 
-local DB_VERSION            = 1
+local DB_VERSION            = 2
 local SNAPSHOT_INTERVAL     = 15 * 60  -- seconds
 local DEFAULT_MINIMAP_POS   = 225
 local MINIMAP_BUTTON_RADIUS = 5
+local MPLUS_SYNC_INTERVAL   = 30       -- seconds
 
 -- Midnight S1 currency IDs.
 local CURRENCY_IDS = {
@@ -227,6 +243,8 @@ local waitingForPlaytime   = false
 local queuedFreshSnapshot  = false
 local suppressedTimePlayedFrames = nil
 local initialized          = false  -- true after first PLAYER_ENTERING_WORLD
+local pendingMPlusSync     = false
+local lastMPlusSyncAt      = 0
 
 -- UI widgets — assigned after frames are built; used by the ticker
 local timerLabel = nil
@@ -248,11 +266,414 @@ local function GetRegion()
     return "us"
 end
 
-local function BuildPendingSnapshot()
+local function PrintAddonMessage(message)
+    print("|cff00ccff[WoW Dashboard]|r " .. message)
+end
+
+local function GetCharacterIdentity()
     local key, name, realm = GetCharKey()
     local _, classFilename = UnitClass("player")
     local _, raceFilename  = UnitRace("player")
     local factionGroup     = UnitFactionGroup("player") or "Alliance"
+
+    return key, name, realm, {
+        region  = GetRegion(),
+        class   = classFilename or "UNKNOWN",
+        race    = raceFilename or "UNKNOWN",
+        faction = factionGroup:lower(),
+    }
+end
+
+local GetRunSortValue
+local NormalizeStoredMythicPlusRun
+
+local function EnsureCharacterEntry(key, name, realm, charInfo)
+    local db = WowDashboardDB
+    if not db.characters then
+        db.characters = {}
+    end
+
+    local entry = db.characters[key]
+    if not entry then
+        entry = {
+            name              = name,
+            realm             = realm,
+            region            = charInfo.region,
+            class             = charInfo.class,
+            race              = charInfo.race,
+            faction           = charInfo.faction,
+            snapshots         = {},
+            mythicPlusRuns    = {},
+            mythicPlusRunKeys = {},
+        }
+        db.characters[key] = entry
+    else
+        entry.region  = charInfo.region
+        entry.class   = charInfo.class
+        entry.race    = charInfo.race
+        entry.faction = charInfo.faction
+        if type(entry.snapshots) ~= "table" then
+            entry.snapshots = {}
+        end
+        if type(entry.mythicPlusRuns) ~= "table" then
+            entry.mythicPlusRuns = {}
+        end
+        if type(entry.mythicPlusRunKeys) ~= "table" then
+            entry.mythicPlusRunKeys = {}
+        end
+    end
+    entry.mythicPlusDebug = nil
+
+    local normalizedRuns = {}
+    local normalizedKeys = {}
+    for _, run in ipairs(entry.mythicPlusRuns) do
+        local normalized = NormalizeStoredMythicPlusRun(run)
+        if normalized and normalized.fingerprint and not normalizedKeys[normalized.fingerprint] then
+            normalizedKeys[normalized.fingerprint] = true
+            normalizedRuns[#normalizedRuns + 1] = normalized
+        end
+    end
+    table.sort(normalizedRuns, function(a, b)
+        return GetRunSortValue(a) > GetRunSortValue(b)
+    end)
+    entry.mythicPlusRuns = normalizedRuns
+    entry.mythicPlusRunKeys = normalizedKeys
+
+    return entry
+end
+
+local function IsSequentialArray(value)
+    if type(value) ~= "table" then
+        return false
+    end
+
+    local count = 0
+    local maxIndex = 0
+    for key in pairs(value) do
+        if type(key) ~= "number" or key < 1 or math.floor(key) ~= key then
+            return false
+        end
+        count = count + 1
+        if key > maxIndex then
+            maxIndex = key
+        end
+    end
+
+    return maxIndex == count
+end
+
+local function GetFirstField(record, fieldNames)
+    if type(record) ~= "table" then
+        return nil
+    end
+
+    for _, fieldName in ipairs(fieldNames) do
+        local value = record[fieldName]
+        if value ~= nil then
+            return value
+        end
+    end
+
+    return nil
+end
+
+GetRunSortValue = function(run)
+    return tonumber(run.completedAt)
+        or tonumber(run.completionDate)
+        or tonumber(run.startDate)
+        or tonumber(run.observedAt)
+        or 0
+end
+
+local function GetChallengeModeMapName(mapChallengeModeID)
+    if not mapChallengeModeID then
+        return nil
+    end
+    if not C_ChallengeMode or type(C_ChallengeMode.GetMapUIInfo) ~= "function" then
+        return nil
+    end
+
+    local ok, mapName = pcall(C_ChallengeMode.GetMapUIInfo, mapChallengeModeID)
+    if ok and type(mapName) == "string" and mapName ~= "" then
+        return mapName
+    end
+
+    return nil
+end
+
+local function ToFingerprintToken(value)
+    if value == nil then
+        return ""
+    end
+    if type(value) == "boolean" then
+        return value and "1" or "0"
+    end
+    if type(value) == "number" then
+        return string.format("%.17g", value)
+    end
+    return tostring(value)
+end
+
+local function BuildRunFingerprint(run)
+    return table.concat({
+        ToFingerprintToken(run.seasonID),
+        ToFingerprintToken(run.mapChallengeModeID),
+        ToFingerprintToken(run.level),
+        ToFingerprintToken(run.completed),
+        ToFingerprintToken(run.completedInTime),
+        ToFingerprintToken(run.durationMs),
+        ToFingerprintToken(run.runScore),
+        ToFingerprintToken(run.completedAt),
+        ToFingerprintToken(run.startDate),
+    }, "|")
+end
+
+NormalizeStoredMythicPlusRun = function(run)
+    if type(run) ~= "table" then
+        return nil
+    end
+
+    if run.durationMs == nil then
+        local durationSeconds = GetFirstField(run, {
+            "durationSec",
+            "durationSeconds",
+            "time",
+            "runDuration",
+        })
+        if type(durationSeconds) == "number" then
+            run.durationMs = math.floor(durationSeconds * 1000 + 0.5)
+        end
+    end
+
+    if run.completedAt == nil then
+        run.completedAt = GetFirstField(run, {
+            "completionDate",
+            "completedDate",
+            "endTime",
+            "startDate",
+        })
+    end
+
+    if run.mapChallengeModeID == nil then
+        run.mapChallengeModeID = GetFirstField(run, { "challengeModeID", "mapID" })
+    end
+    if run.mapName == nil or run.mapName == "" then
+        run.mapName = GetFirstField(run, { "mapName", "name", "zoneName", "shortName" })
+            or GetChallengeModeMapName(run.mapChallengeModeID)
+    end
+
+    if run.level == nil then
+        run.level = GetFirstField(run, { "keystoneLevel" })
+    end
+
+    if run.completed == nil then
+        run.completed = GetFirstField(run, { "finishedSuccess", "isCompleted" })
+    end
+
+    if run.completedInTime == nil then
+        run.completedInTime = GetFirstField(run, { "intime", "onTime" })
+    end
+
+    if run.runScore == nil then
+        run.runScore = GetFirstField(run, { "score", "mythicRating" })
+    end
+
+    if run.completedInTime == nil and type(run.completed) == "boolean" then
+        run.completedInTime = run.completed
+    end
+    if run.completed ~= true and (run.durationMs ~= nil or run.runScore ~= nil or run.completedAt ~= nil) then
+        run.completed = true
+    end
+
+    run.source = nil
+    run.members = nil
+    run.raw = nil
+    run.fingerprint = BuildRunFingerprint(run)
+    return run
+end
+
+local function CallAddonApi(apiFunc, ...)
+    if type(apiFunc) ~= "function" then
+        return nil
+    end
+
+    local packed = { pcall(apiFunc, ...) }
+    local ok = table.remove(packed, 1)
+    if not ok then
+        return nil
+    end
+    return packed
+end
+
+local function NormalizeMythicPlusRun(rawRun, seasonID)
+    if type(rawRun) ~= "table" then
+        return nil
+    end
+
+    local durationMs = GetFirstField(rawRun, {
+        "durationMs",
+        "completionMilliseconds",
+        "mapChallengeModeDuration",
+        "runDurationMs",
+    })
+    if durationMs == nil then
+        local durationSeconds = GetFirstField(rawRun, {
+            "durationSec",
+            "durationSeconds",
+            "time",
+            "runDuration",
+        })
+        if type(durationSeconds) == "number" then
+            durationMs = math.floor(durationSeconds * 1000 + 0.5)
+        end
+    end
+
+    local mapChallengeModeID = GetFirstField(rawRun, { "mapChallengeModeID", "challengeModeID", "mapID" })
+    local completedAt = GetFirstField(rawRun, {
+        "completedAt",
+        "completionDate",
+        "completedDate",
+        "endTime",
+        "startDate",
+    })
+
+    local run = {
+        observedAt          = time(),
+        seasonID            = seasonID,
+        mapChallengeModeID  = mapChallengeModeID,
+        mapName             = GetFirstField(rawRun, { "mapName", "name", "zoneName", "shortName" })
+            or GetChallengeModeMapName(mapChallengeModeID),
+        level               = GetFirstField(rawRun, { "level", "keystoneLevel" }),
+        completed           = GetFirstField(rawRun, { "completed", "finishedSuccess", "isCompleted" }),
+        completedInTime     = GetFirstField(rawRun, { "completedInTime", "intime", "onTime" }),
+        durationMs          = durationMs,
+        runScore            = GetFirstField(rawRun, { "runScore", "score", "mythicRating" }),
+        startDate           = GetFirstField(rawRun, { "startDate", "startedAt" }),
+        completedAt         = completedAt,
+        thisWeek            = GetFirstField(rawRun, { "thisWeek", "isThisWeek" }),
+    }
+
+    if run.completedInTime == nil and type(run.completed) == "boolean" then
+        run.completedInTime = run.completed
+    end
+    if run.completed ~= true and (run.durationMs ~= nil or run.runScore ~= nil or run.completedAt ~= nil) then
+        run.completed = true
+    end
+
+    run.fingerprint = BuildRunFingerprint(run)
+
+    return run
+end
+
+local function SelectBestRunHistory(calls)
+    local bestRuns = nil
+    local bestCount = -1
+
+    for _, results in ipairs(calls) do
+        if type(results) == "table" then
+            for _, value in ipairs(results) do
+                if type(value) == "table" and IsSequentialArray(value) then
+                    local count = #value
+                    local firstValue = value[1]
+                    if (count == 0 or type(firstValue) == "table") and count > bestCount then
+                        bestRuns = value
+                        bestCount = count
+                    end
+                end
+            end
+        end
+    end
+
+    return bestRuns or {}
+end
+
+local function CollectMythicPlusHistory()
+    local calls = {}
+
+    local function AddCall(apiFunc, ...)
+        local results = CallAddonApi(apiFunc, ...)
+        if results then
+            calls[#calls + 1] = results
+        end
+    end
+
+    local seasonID = nil
+    if C_MythicPlus and type(C_MythicPlus.GetCurrentSeason) == "function" then
+        local ok, result = pcall(C_MythicPlus.GetCurrentSeason)
+        if ok then
+            seasonID = result
+        end
+    end
+
+    AddCall(C_MythicPlus and C_MythicPlus.GetRunHistory)
+    AddCall(C_MythicPlus and C_MythicPlus.GetRunHistory, false, false)
+    AddCall(C_MythicPlus and C_MythicPlus.GetRunHistory, true, false)
+    AddCall(C_MythicPlus and C_MythicPlus.GetRunHistory, false, true)
+    AddCall(C_MythicPlus and C_MythicPlus.GetRunHistory, true, true)
+
+    local rawRuns = SelectBestRunHistory(calls)
+    local normalizedRuns = {}
+    for _, rawRun in ipairs(rawRuns) do
+        local normalized = NormalizeMythicPlusRun(rawRun, seasonID)
+        if normalized then
+            normalizedRuns[#normalizedRuns + 1] = normalized
+        end
+    end
+
+    return normalizedRuns
+end
+
+local function SyncMythicPlusHistory(reason, options)
+    options = options or {}
+    if not IsLoggedIn() then
+        return false
+    end
+
+    local key, name, realm, charInfo = GetCharacterIdentity()
+    local entry = EnsureCharacterEntry(key, name, realm, charInfo)
+    local beforeCount = #entry.mythicPlusRuns
+    local runs = CollectMythicPlusHistory()
+    local added = 0
+
+    for _, run in ipairs(runs) do
+        if run.fingerprint and not entry.mythicPlusRunKeys[run.fingerprint] then
+            entry.mythicPlusRunKeys[run.fingerprint] = true
+            entry.mythicPlusRuns[#entry.mythicPlusRuns + 1] = run
+            added = added + 1
+        end
+    end
+
+    if added > 0 then
+        table.sort(entry.mythicPlusRuns, function(a, b)
+            return GetRunSortValue(a) > GetRunSortValue(b)
+        end)
+    end
+
+    lastMPlusSyncAt = GetTime()
+
+    return added > 0 or beforeCount ~= #entry.mythicPlusRuns
+end
+
+local function ScheduleMythicPlusHistorySync(reason, delaySeconds, options)
+    options = options or {}
+    delaySeconds = delaySeconds or 0
+
+    if pendingMPlusSync and not options.force then
+        return
+    end
+    if not options.force and lastMPlusSyncAt > 0 and (GetTime() - lastMPlusSyncAt) < MPLUS_SYNC_INTERVAL then
+        return
+    end
+
+    pendingMPlusSync = true
+    C_Timer.After(delaySeconds, function()
+        pendingMPlusSync = false
+        SyncMythicPlusHistory(reason, options)
+    end)
+end
+
+local function BuildPendingSnapshot()
+    local key, name, realm, charInfo = GetCharacterIdentity()
 
     local specIndex      = GetSpecialization()
     if not specIndex or specIndex <= 0 then return nil end
@@ -292,12 +713,7 @@ local function BuildPendingSnapshot()
         key      = key,
         name     = name,
         realm    = realm,
-        charInfo = {
-            region  = GetRegion(),
-            class   = classFilename,
-            race    = raceFilename,
-            faction = factionGroup:lower(),
-        },
+        charInfo = charInfo,
         snap = {
             takenAt         = time(),
             level           = UnitLevel("player"),
@@ -348,26 +764,7 @@ local function CommitSnapshot(totalSeconds)
     p.snap.playtimeSeconds = totalSeconds or 0
 
     local db = WowDashboardDB
-    if not db.characters then db.characters = {} end
-
-    local entry = db.characters[p.key]
-    if not entry then
-        db.characters[p.key] = {
-            name      = p.name,
-            realm     = p.realm,
-            region    = p.charInfo.region,
-            class     = p.charInfo.class,
-            race      = p.charInfo.race,
-            faction   = p.charInfo.faction,
-            snapshots = {},
-        }
-        entry = db.characters[p.key]
-    else
-        entry.region  = p.charInfo.region
-        entry.class   = p.charInfo.class
-        entry.race    = p.charInfo.race
-        entry.faction = p.charInfo.faction
-    end
+    local entry = EnsureCharacterEntry(p.key, p.name, p.realm, p.charInfo)
 
     table.insert(entry.snapshots, p.snap)
     lastSnapshotAt = GetTime()
@@ -619,8 +1016,8 @@ BuildInfoRow(LeftSection, "Interface",  "120001",       114)
 BuildInfoRow(LeftSection, "Expansion",  "TWW",          132)
 
 BuildCategoryBar(LeftSection, "Commands", 158)
-BuildInfoRow(LeftSection, "/wowdashboard", "open",     198)
-BuildInfoRow(LeftSection, "/wd",           "shortcut", 216)
+BuildInfoRow(LeftSection, "/wowdashboard", "open/help", 198)
+BuildInfoRow(LeftSection, "/wd",           "toggle",    216)
 
 -- ============================================================
 -- Right Section
@@ -918,14 +1315,38 @@ end
 
 SLASH_WOWDASHBOARD1 = "/wd"
 SLASH_WOWDASHBOARD2 = "/wowdashboard"
-SlashCmdList["WOWDASHBOARD"] = function()
-    ToggleDashboard()
+local function PrintSlashHelp()
+    PrintAddonMessage("Commands: /wd, /wd help, /wd open")
+end
+
+SlashCmdList["WOWDASHBOARD"] = function(msg)
+    local input = msg and msg:match("^%s*(.-)%s*$") or ""
+    if input == "" then
+        ToggleDashboard()
+        return
+    end
+
+    local command, rest = input:match("^(%S+)%s*(.-)$")
+    command = command and command:lower() or ""
+
+    if command == "open" then
+        SetDashboardShown(true)
+        return
+    end
+
+    if command == "help" then
+        PrintSlashHelp()
+        return
+    end
+
+    PrintSlashHelp()
 end
 
 local eventFrame = CreateFrame("Frame")
 eventFrame:RegisterEvent("ADDON_LOADED")
 eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
 eventFrame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
+eventFrame:RegisterEvent("CHALLENGE_MODE_COMPLETED")
 eventFrame:RegisterEvent("TIME_PLAYED_MSG")
 eventFrame:SetScript("OnEvent", function(self, event, ...)
     if event == "ADDON_LOADED" and ... == addonName then
@@ -962,17 +1383,22 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
                 CollectSnapshot()
                 StartSnapshotTicker()
             end)
+            ScheduleMythicPlusHistorySync("initial_login", 8)
         else
             -- Re-entering world (dungeon entry/exit, zone transfer)
             if GetTime() - lastSnapshotAt > 60 then
                 C_Timer.After(2, CollectSnapshot)
             end
+            ScheduleMythicPlusHistorySync("player_entering_world", 4)
         end
 
     elseif event == "ZONE_CHANGED_NEW_AREA" then
         if GetTime() - lastSnapshotAt > 60 then
             C_Timer.After(2, CollectSnapshot)
         end
+
+    elseif event == "CHALLENGE_MODE_COMPLETED" then
+        ScheduleMythicPlusHistorySync("challenge_mode_completed", 5)
 
     elseif event == "TIME_PLAYED_MSG" then
         local totalSeconds = ...

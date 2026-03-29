@@ -8,7 +8,12 @@ const metadataValidator = v.optional(
     v.object({ providerId: v.string() }),                                                    // auth.account.created / updated
     v.object({ codeId: v.string() }),                                                        // auth.code.expired
     v.object({ retryAfter: v.number() }),                                                    // battlenet.resync.rate_limited
-    v.object({ newChars: v.number(), newSnapshots: v.number(), totalCharacters: v.number() }) // addon.ingest
+    v.object({
+      newChars: v.number(),
+      newSnapshots: v.number(),
+      newMythicPlusRuns: v.number(),
+      totalCharacters: v.number(),
+    }) // addon.ingest
   )
 );
 

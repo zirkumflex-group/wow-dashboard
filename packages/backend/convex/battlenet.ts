@@ -41,7 +41,7 @@ async function fetchCharactersForRegion(
     return null;
   }
 
-  const data: BattleNetWowProfileResponse = await resp.json();
+  const data = (await resp.json()) as BattleNetWowProfileResponse;
   const characters = (data.wow_accounts ?? []).flatMap((acct) => acct.characters ?? []);
   return { region, characters };
 }

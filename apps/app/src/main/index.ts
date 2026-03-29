@@ -12,12 +12,14 @@ import {
   nativeImage,
 } from "electron";
 import { autoUpdater } from "electron-updater";
+import { execFile } from "node:child_process";
 import * as fs from "fs";
 import * as path from "path";
 import { join, resolve, sep } from "path";
 import * as crypto from "crypto";
 import * as os from "os";
 import * as unzipper from "unzipper";
+import { promisify } from "node:util";
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -31,10 +33,12 @@ let launchMinimizedCache = true;
 let addonWatcher: ReturnType<typeof fs.watch> | null = null;
 let addonWatchDebounce: ReturnType<typeof setTimeout> | null = null;
 let cachedElectronToken: string | null = null;
-let cachedElectronTokenExpiresAt: number | null = null;
 let storedSessionToken: string | null = null;
 let pendingLoginResolve: ((token: string) => void) | null = null;
 let pendingLoginReject: ((err: Error) => void) | null = null;
+let ignoreAddonWatchEventsUntil = 0;
+
+const execFileAsync = promisify(execFile);
 
 // ─── Token persistence via OS keychain (safeStorage) ──────────────────────────
 
@@ -55,7 +59,6 @@ function loadStoredAuth(): void {
       }
     } catch {
       cachedElectronToken = raw;
-      cachedElectronTokenExpiresAt = getJwtExpirationMs(raw);
     }
   } catch {
     return;
@@ -84,8 +87,10 @@ function saveSessionToken(token: string | null): void {
 function getJwtExpirationMs(token: string): number | null {
   const parts = token.split(".");
   if (parts.length !== 3) return null;
+  const payloadPart = parts[1];
+  if (!payloadPart) return null;
   try {
-    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")) as {
+    const payload = JSON.parse(Buffer.from(payloadPart, "base64url").toString("utf8")) as {
       exp?: number;
     };
     return typeof payload.exp === "number" ? payload.exp * 1000 : null;
@@ -118,7 +123,6 @@ async function fetchFreshConvexToken(): Promise<string | null> {
     }
     const data = (await resp.json()) as { token?: string };
     cachedElectronToken = data?.token ?? null;
-    cachedElectronTokenExpiresAt = cachedElectronToken ? getJwtExpirationMs(cachedElectronToken) : null;
     return cachedElectronToken;
   } catch {
     return null;
@@ -233,9 +237,10 @@ class LuaParser {
 
   private skip(): void {
     while (this.pos < this.src.length) {
-      if (/\s/.test(this.src[this.pos])) {
+      const current = this.src[this.pos] ?? "";
+      if (/\s/.test(current)) {
         this.pos++;
-      } else if (this.src[this.pos] === "-" && this.src[this.pos + 1] === "-") {
+      } else if (current === "-" && this.src[this.pos + 1] === "-") {
         while (this.pos < this.src.length && this.src[this.pos] !== "\n") this.pos++;
       } else {
         break;
@@ -245,7 +250,7 @@ class LuaParser {
 
   private parseValue(): unknown {
     this.skip();
-    const ch = this.src[this.pos];
+    const ch = this.src[this.pos] ?? "";
     if (ch === "{") return this.parseTable();
     if (ch === '"') return this.parseString();
     if (ch === "-" || /\d/.test(ch)) return this.parseNumber();
@@ -340,6 +345,23 @@ class LuaParser {
 type Role = "tank" | "healer" | "dps";
 type Region = "us" | "eu" | "kr" | "tw";
 type Faction = "alliance" | "horde";
+type LuaTable = Record<string, unknown>;
+
+interface MythicPlusRunData {
+  fingerprint: string;
+  observedAt: number;
+  seasonID?: number;
+  mapChallengeModeID?: number;
+  mapName?: string;
+  level?: number;
+  completed?: boolean;
+  completedInTime?: boolean;
+  durationMs?: number;
+  runScore?: number;
+  startDate?: number;
+  completedAt?: number;
+  thisWeek?: boolean;
+}
 
 interface SnapshotData {
   takenAt: number;
@@ -378,6 +400,142 @@ interface CharacterData {
   race: string;
   faction: Faction;
   snapshots: SnapshotData[];
+  mythicPlusRuns: MythicPlusRunData[];
+}
+
+interface AddonFileStats {
+  totalBytes: number;
+  createdAt: number;
+  modifiedAt: number;
+  totalSnapshots: number;
+  totalMythicPlusRuns: number;
+}
+
+interface CompactAddonResult {
+  status: "completed" | "blocked";
+  wowProcesses: string[];
+  filesProcessed: number;
+  filesChanged: number;
+  backupsWritten: number;
+  bytesBefore: number;
+  bytesAfter: number;
+  snapshotsBefore: number;
+  snapshotsAfter: number;
+  mythicPlusRunsBefore: number;
+  mythicPlusRunsAfter: number;
+  rawRunsTrimmed: number;
+  membersTrimmed: number;
+}
+
+function isRecord(value: unknown): value is LuaTable {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function toOptionalNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function toOptionalBoolean(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function toOptionalString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function toFingerprintToken(value: unknown): string {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "boolean") return value ? "1" : "0";
+  if (typeof value === "number") return Number.isFinite(value) ? String(value) : "";
+  return String(value);
+}
+
+function buildRunFingerprint(run: Partial<MythicPlusRunData>): string {
+  return [
+    toFingerprintToken(run.seasonID),
+    toFingerprintToken(run.mapChallengeModeID),
+    toFingerprintToken(run.level),
+    toFingerprintToken(run.completed),
+    toFingerprintToken(run.completedInTime),
+    toFingerprintToken(run.durationMs),
+    toFingerprintToken(run.runScore),
+    toFingerprintToken(run.completedAt),
+    toFingerprintToken(run.startDate),
+  ].join("|");
+}
+
+function normalizeStoredMythicPlusRun(runRaw: LuaTable): MythicPlusRunData {
+  const legacyRaw = isRecord(runRaw.raw) ? runRaw.raw : null;
+  const durationMs =
+    toOptionalNumber(runRaw.durationMs) ??
+    (toOptionalNumber(runRaw.durationSec) !== undefined
+      ? Math.round((runRaw.durationSec as number) * 1000)
+      : undefined) ??
+    (toOptionalNumber(runRaw.durationSeconds) !== undefined
+      ? Math.round((runRaw.durationSeconds as number) * 1000)
+      : undefined) ??
+    toOptionalNumber(runRaw.time) ??
+    toOptionalNumber(runRaw.runDuration);
+
+  const run: MythicPlusRunData = {
+    fingerprint: "",
+    observedAt:
+      toOptionalNumber(runRaw.observedAt) ??
+      toOptionalNumber(runRaw.completedAt) ??
+      toOptionalNumber(runRaw.startDate) ??
+      0,
+    seasonID: toOptionalNumber(runRaw.seasonID),
+    mapChallengeModeID:
+      toOptionalNumber(runRaw.mapChallengeModeID) ??
+      toOptionalNumber(runRaw.challengeModeID) ??
+      toOptionalNumber(runRaw.mapID) ??
+      (legacyRaw ? toOptionalNumber(legacyRaw.mapChallengeModeID ?? legacyRaw.challengeModeID ?? legacyRaw.mapID) : undefined),
+    mapName:
+      toOptionalString(runRaw.mapName) ??
+      toOptionalString(runRaw.name) ??
+      toOptionalString(runRaw.zoneName) ??
+      toOptionalString(runRaw.shortName) ??
+      (legacyRaw
+        ? toOptionalString(
+            legacyRaw.mapName ?? legacyRaw.name ?? legacyRaw.zoneName ?? legacyRaw.shortName,
+          )
+        : undefined),
+    level: toOptionalNumber(runRaw.level) ?? toOptionalNumber(runRaw.keystoneLevel),
+    completed:
+      toOptionalBoolean(runRaw.completed) ??
+      toOptionalBoolean(runRaw.finishedSuccess) ??
+      toOptionalBoolean(runRaw.isCompleted),
+    completedInTime:
+      toOptionalBoolean(runRaw.completedInTime) ??
+      toOptionalBoolean(runRaw.intime) ??
+      toOptionalBoolean(runRaw.onTime),
+    durationMs,
+    runScore:
+      toOptionalNumber(runRaw.runScore) ??
+      toOptionalNumber(runRaw.score) ??
+      toOptionalNumber(runRaw.mythicRating),
+    startDate: toOptionalNumber(runRaw.startDate) ?? toOptionalNumber(runRaw.startedAt),
+    completedAt:
+      toOptionalNumber(runRaw.completedAt) ??
+      toOptionalNumber(runRaw.completionDate) ??
+      toOptionalNumber(runRaw.completedDate) ??
+      toOptionalNumber(runRaw.endTime) ??
+      toOptionalNumber(runRaw.startDate),
+    thisWeek: toOptionalBoolean(runRaw.thisWeek) ?? toOptionalBoolean(runRaw.isThisWeek),
+  };
+
+  if (run.completedInTime === undefined && typeof run.completed === "boolean") {
+    run.completedInTime = run.completed;
+  }
+  if (
+    run.completed !== true &&
+    (run.durationMs !== undefined || run.runScore !== undefined || run.completedAt !== undefined)
+  ) {
+    run.completed = true;
+  }
+
+  run.fingerprint = toOptionalString(runRaw.fingerprint) ?? buildRunFingerprint(run);
+  return run;
 }
 
 function extractCharacters(db: Record<string, unknown>): CharacterData[] {
@@ -432,6 +590,19 @@ function extractCharacters(db: Record<string, unknown>): CharacterData[] {
       });
     }
 
+    const mythicPlusRuns: MythicPlusRunData[] = [];
+    const knownFingerprints = new Set<string>();
+    for (const runRaw of (char.mythicPlusRuns as unknown[]) ?? []) {
+      if (!isRecord(runRaw)) continue;
+      const run = normalizeStoredMythicPlusRun(runRaw);
+      if (!run.fingerprint || knownFingerprints.has(run.fingerprint)) continue;
+      knownFingerprints.add(run.fingerprint);
+      mythicPlusRuns.push(run);
+    }
+    mythicPlusRuns.sort(
+      (a, b) => (b.completedAt ?? b.startDate ?? b.observedAt ?? 0) - (a.completedAt ?? a.startDate ?? a.observedAt ?? 0),
+    );
+
     result.push({
       name: String(char.name),
       realm: String(char.realm),
@@ -440,6 +611,7 @@ function extractCharacters(db: Record<string, unknown>): CharacterData[] {
       race: String(char.race),
       faction,
       snapshots,
+      mythicPlusRuns,
     });
   }
 
@@ -451,7 +623,7 @@ async function findAndParseAddonData(
 ): Promise<{
   characters: CharacterData[];
   accountsFound: string[];
-  fileStats: { totalBytes: number; createdAt: number; modifiedAt: number; totalSnapshots: number } | null;
+  fileStats: AddonFileStats | null;
 }> {
   const wtfAccountPath = join(retailPath, "WTF", "Account");
   let accounts: string[];
@@ -509,18 +681,476 @@ async function findAndParseAddonData(
             knownTimes.add(snap.takenAt);
           }
         }
+
+        const knownFingerprints = new Set(existing.mythicPlusRuns.map((run) => run.fingerprint));
+        for (const run of char.mythicPlusRuns) {
+          if (!knownFingerprints.has(run.fingerprint)) {
+            existing.mythicPlusRuns.push(run);
+            knownFingerprints.add(run.fingerprint);
+          }
+        }
+        existing.mythicPlusRuns.sort(
+          (a, b) =>
+            (b.completedAt ?? b.startDate ?? b.observedAt ?? 0) -
+            (a.completedAt ?? a.startDate ?? a.observedAt ?? 0),
+        );
       }
     }
   }
 
   const characters = Array.from(allChars.values());
   const totalSnapshots = characters.reduce((sum, c) => sum + c.snapshots.length, 0);
+  const totalMythicPlusRuns = characters.reduce((sum, c) => sum + c.mythicPlusRuns.length, 0);
   const fileStats =
     accountsFound.length > 0
-      ? { totalBytes, createdAt, modifiedAt, totalSnapshots }
+      ? { totalBytes, createdAt, modifiedAt, totalSnapshots, totalMythicPlusRuns }
       : null;
 
   return { characters, accountsFound, fileStats };
+}
+
+const SYNC_BUFFER_SECONDS = 60;
+const SNAPSHOT_FULL_RETENTION_DAYS = 7;
+
+function getDayBucket(timestampSeconds: number): string {
+  return new Date(timestampSeconds * 1000).toISOString().slice(0, 10);
+}
+
+function sortByTimestampAsc(records: unknown[], field: string): unknown[] {
+  return records.sort((a, b) => {
+    const left = isRecord(a) ? toOptionalNumber(a[field]) ?? 0 : 0;
+    const right = isRecord(b) ? toOptionalNumber(b[field]) ?? 0 : 0;
+    return left - right;
+  });
+}
+
+function sortRunsDesc(records: unknown[]): unknown[] {
+  return records.sort((a, b) => {
+    const left = isRecord(a)
+      ? toOptionalNumber(a.completedAt) ?? toOptionalNumber(a.startDate) ?? toOptionalNumber(a.observedAt) ?? 0
+      : 0;
+    const right = isRecord(b)
+      ? toOptionalNumber(b.completedAt) ?? toOptionalNumber(b.startDate) ?? toOptionalNumber(b.observedAt) ?? 0
+      : 0;
+    return right - left;
+  });
+}
+
+function compactSnapshotsInPlace(
+  entry: LuaTable,
+  lastSyncedAt: number,
+  nowSeconds: number,
+): { before: number; after: number; changed: boolean } {
+  const hadSnapshotsArray = Array.isArray(entry.snapshots);
+  const snapshots = hadSnapshotsArray ? (entry.snapshots as unknown[]).slice() : [];
+  if (!hadSnapshotsArray) {
+    entry.snapshots = snapshots;
+  }
+
+  const before = snapshots.length;
+  if (before === 0 || lastSyncedAt <= 0) {
+    return { before, after: before, changed: !hadSnapshotsArray };
+  }
+
+  const uploadedCutoff = Math.max(0, lastSyncedAt - SYNC_BUFFER_SECONDS);
+  const keepFullSince = nowSeconds - SNAPSHOT_FULL_RETENTION_DAYS * 86_400;
+  const keep = snapshots.filter((snapshot) => {
+    if (!isRecord(snapshot)) return true;
+    const takenAt = toOptionalNumber(snapshot.takenAt);
+    return takenAt === undefined || takenAt > uploadedCutoff || takenAt >= keepFullSince;
+  });
+
+  const buckets = new Map<string, { takenAt: number; snapshot: unknown }>();
+  for (const snapshot of snapshots) {
+    if (!isRecord(snapshot)) continue;
+    const takenAt = toOptionalNumber(snapshot.takenAt);
+    if (takenAt === undefined || takenAt > uploadedCutoff || takenAt >= keepFullSince) {
+      continue;
+    }
+
+    const bucketKey = getDayBucket(takenAt);
+    const existing = buckets.get(bucketKey);
+    if (!existing || takenAt > existing.takenAt) {
+      buckets.set(bucketKey, { takenAt, snapshot });
+    }
+  }
+
+  for (const { snapshot } of buckets.values()) {
+    keep.push(snapshot);
+  }
+
+  entry.snapshots = sortByTimestampAsc(keep, "takenAt");
+  return {
+    before,
+    after: Array.isArray(entry.snapshots) ? entry.snapshots.length : before,
+    changed: !hadSnapshotsArray || keep.length !== before,
+  };
+}
+
+function compactMythicPlusDebugInPlace(entry: LuaTable): boolean {
+  if (!("mythicPlusDebug" in entry)) return false;
+  delete entry.mythicPlusDebug;
+  return true;
+}
+
+function compactMythicPlusRunsInPlace(
+  entry: LuaTable,
+  _lastSyncedAt: number,
+  _nowSeconds: number,
+): {
+  before: number;
+  after: number;
+  changed: boolean;
+  rawRunsTrimmed: number;
+  membersTrimmed: number;
+} {
+  const hadRunsArray = Array.isArray(entry.mythicPlusRuns);
+  const runs = hadRunsArray ? (entry.mythicPlusRuns as unknown[]).slice() : [];
+  if (!hadRunsArray) {
+    entry.mythicPlusRuns = runs;
+  }
+
+  const before = runs.length;
+  let changed = !hadRunsArray;
+  let rawRunsTrimmed = 0;
+  let membersTrimmed = 0;
+
+  const dedupedRuns: unknown[] = [];
+  const dedupeKeys: Record<string, boolean> = {};
+
+  for (const runValue of runs) {
+    if (!isRecord(runValue)) {
+      changed = true;
+      continue;
+    }
+
+    const normalized = normalizeStoredMythicPlusRun(runValue);
+
+    if (runValue.fingerprint !== normalized.fingerprint) {
+      runValue.fingerprint = normalized.fingerprint;
+      changed = true;
+    }
+    if (normalized.observedAt > 0 && runValue.observedAt !== normalized.observedAt) {
+      runValue.observedAt = normalized.observedAt;
+      changed = true;
+    }
+    if (normalized.seasonID !== undefined && runValue.seasonID !== normalized.seasonID) {
+      runValue.seasonID = normalized.seasonID;
+      changed = true;
+    }
+    if (
+      normalized.mapChallengeModeID !== undefined &&
+      runValue.mapChallengeModeID !== normalized.mapChallengeModeID
+    ) {
+      runValue.mapChallengeModeID = normalized.mapChallengeModeID;
+      changed = true;
+    }
+    if (normalized.mapName && runValue.mapName !== normalized.mapName) {
+      runValue.mapName = normalized.mapName;
+      changed = true;
+    }
+    if (normalized.level !== undefined && runValue.level !== normalized.level) {
+      runValue.level = normalized.level;
+      changed = true;
+    }
+    if (normalized.durationMs !== undefined && runValue.durationMs !== normalized.durationMs) {
+      runValue.durationMs = normalized.durationMs;
+      changed = true;
+    }
+    if (normalized.runScore !== undefined && runValue.runScore !== normalized.runScore) {
+      runValue.runScore = normalized.runScore;
+      changed = true;
+    }
+    if (normalized.completedAt !== undefined && runValue.completedAt !== normalized.completedAt) {
+      runValue.completedAt = normalized.completedAt;
+      changed = true;
+    }
+    if (normalized.startDate !== undefined && runValue.startDate !== normalized.startDate) {
+      runValue.startDate = normalized.startDate;
+      changed = true;
+    }
+    if (normalized.completed !== undefined && runValue.completed !== normalized.completed) {
+      runValue.completed = normalized.completed;
+      changed = true;
+    }
+    if (
+      normalized.completedInTime !== undefined &&
+      runValue.completedInTime !== normalized.completedInTime
+    ) {
+      runValue.completedInTime = normalized.completedInTime;
+      changed = true;
+    }
+
+    if (!runValue.fingerprint || dedupeKeys[String(runValue.fingerprint)]) {
+      changed = true;
+      continue;
+    }
+    dedupeKeys[String(runValue.fingerprint)] = true;
+
+    if ("source" in runValue) {
+      delete runValue.source;
+      changed = true;
+    }
+    if ("raw" in runValue) {
+      delete runValue.raw;
+      rawRunsTrimmed++;
+      changed = true;
+    }
+    if ("members" in runValue) {
+      delete runValue.members;
+      membersTrimmed++;
+      changed = true;
+    }
+
+    dedupedRuns.push(runValue);
+  }
+
+  entry.mythicPlusRuns = sortRunsDesc(dedupedRuns);
+  entry.mythicPlusRunKeys = dedupeKeys;
+
+  if (compactMythicPlusDebugInPlace(entry)) {
+    changed = true;
+  }
+
+  return {
+    before,
+    after: Array.isArray(entry.mythicPlusRuns) ? entry.mythicPlusRuns.length : before,
+    changed: changed || before !== dedupedRuns.length,
+    rawRunsTrimmed,
+    membersTrimmed,
+  };
+}
+
+function compactAddonDb(
+  db: LuaTable,
+  lastSyncedAt: number,
+  nowSeconds: number,
+): Omit<
+  CompactAddonResult,
+  | "status"
+  | "wowProcesses"
+  | "filesProcessed"
+  | "filesChanged"
+  | "backupsWritten"
+  | "bytesBefore"
+  | "bytesAfter"
+> & { changed: boolean } {
+  const characters = isRecord(db.characters) ? db.characters : {};
+  if (!isRecord(db.characters)) {
+    db.characters = characters;
+  }
+
+  let snapshotsBefore = 0;
+  let snapshotsAfter = 0;
+  let mythicPlusRunsBefore = 0;
+  let mythicPlusRunsAfter = 0;
+  let rawRunsTrimmed = 0;
+  let membersTrimmed = 0;
+  let changed = false;
+
+  for (const value of Object.values(characters)) {
+    if (!isRecord(value)) continue;
+
+    const snapshotStats = compactSnapshotsInPlace(value, lastSyncedAt, nowSeconds);
+    const mythicPlusStats = compactMythicPlusRunsInPlace(value, lastSyncedAt, nowSeconds);
+
+    snapshotsBefore += snapshotStats.before;
+    snapshotsAfter += snapshotStats.after;
+    mythicPlusRunsBefore += mythicPlusStats.before;
+    mythicPlusRunsAfter += mythicPlusStats.after;
+    rawRunsTrimmed += mythicPlusStats.rawRunsTrimmed;
+    membersTrimmed += mythicPlusStats.membersTrimmed;
+    changed = changed || snapshotStats.changed || mythicPlusStats.changed;
+  }
+
+  return {
+    changed,
+    snapshotsBefore,
+    snapshotsAfter,
+    mythicPlusRunsBefore,
+    mythicPlusRunsAfter,
+    rawRunsTrimmed,
+    membersTrimmed,
+  };
+}
+
+function serializeLuaValue(value: unknown, indent = 0): string {
+  const spacing = "  ".repeat(indent);
+  const innerSpacing = "  ".repeat(indent + 1);
+
+  if (value === null || value === undefined) return "nil";
+  if (typeof value === "number") return Number.isFinite(value) ? String(value) : "0";
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "string") return JSON.stringify(value);
+
+  if (Array.isArray(value)) {
+    if (value.length === 0) return "{}";
+    return `{\n${value
+      .map((entry) => `${innerSpacing}${serializeLuaValue(entry, indent + 1)}`)
+      .join(",\n")}\n${spacing}}`;
+  }
+
+  if (isRecord(value)) {
+    const entries = Object.entries(value)
+      .filter(([, entryValue]) => entryValue !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right));
+    if (entries.length === 0) return "{}";
+
+    return `{\n${entries
+      .map(
+        ([key, entryValue]) =>
+          `${innerSpacing}[${JSON.stringify(key)}] = ${serializeLuaValue(entryValue, indent + 1)}`,
+      )
+      .join(",\n")}\n${spacing}}`;
+  }
+
+  return "nil";
+}
+
+function serializeAddonDb(db: LuaTable): string {
+  return `WowDashboardDB = ${serializeLuaValue(db)}\n`;
+}
+
+async function findAddonDataFiles(retailPath: string): Promise<string[]> {
+  const wtfAccountPath = join(retailPath, "WTF", "Account");
+  let accounts: string[];
+  try {
+    accounts = await fs.promises.readdir(wtfAccountPath);
+  } catch {
+    return [];
+  }
+
+  const files: string[] = [];
+  for (const account of accounts) {
+    const luaPath = join(wtfAccountPath, account, "SavedVariables", "wow-dashboard.lua");
+    try {
+      await fs.promises.access(luaPath, fs.constants.F_OK);
+      files.push(luaPath);
+    } catch {
+      // ignore missing files
+    }
+  }
+
+  return files;
+}
+
+async function parseAddonDbFile(luaPath: string): Promise<{ content: string; db: LuaTable | null }> {
+  const content = await fs.promises.readFile(luaPath, "utf-8");
+  let db: LuaTable | null = null;
+  try {
+    db = new LuaParser(content).parseFile();
+  } catch (error) {
+    console.error(`[wow-dashboard] Lua parse error for ${luaPath}:`, error);
+  }
+  return { content, db };
+}
+
+async function listRunningProcesses(): Promise<string[]> {
+  try {
+    if (process.platform === "win32") {
+      const { stdout } = await execFileAsync("tasklist", ["/fo", "csv", "/nh"]);
+      return stdout
+        .split(/\r?\n/)
+        .map((line) => {
+          const match = line.match(/^"([^"]+)"/);
+          return match?.[1] ?? "";
+        })
+        .filter(Boolean);
+    }
+
+    const { stdout } = await execFileAsync("ps", ["-A", "-o", "comm="]);
+    return stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function getWowProcesses(processNames: string[]): string[] {
+  const wowProcessPattern =
+    /^(wow(?:classic(?:era)?|b|t|ptr)?(?:-64)?\.exe|world of warcraft.*)$/i;
+  return processNames.filter((processName) => wowProcessPattern.test(processName));
+}
+
+async function compactAddonData(
+  retailPath: string,
+  lastSyncedAt: number,
+  forceIfRunning: boolean,
+): Promise<CompactAddonResult> {
+  const wowProcesses = getWowProcesses(await listRunningProcesses());
+  if (wowProcesses.length > 0 && !forceIfRunning) {
+    return {
+      status: "blocked",
+      wowProcesses,
+      filesProcessed: 0,
+      filesChanged: 0,
+      backupsWritten: 0,
+      bytesBefore: 0,
+      bytesAfter: 0,
+      snapshotsBefore: 0,
+      snapshotsAfter: 0,
+      mythicPlusRunsBefore: 0,
+      mythicPlusRunsAfter: 0,
+      rawRunsTrimmed: 0,
+      membersTrimmed: 0,
+    };
+  }
+
+  const files = await findAddonDataFiles(retailPath);
+  const result: CompactAddonResult = {
+    status: "completed",
+    wowProcesses,
+    filesProcessed: files.length,
+    filesChanged: 0,
+    backupsWritten: 0,
+    bytesBefore: 0,
+    bytesAfter: 0,
+    snapshotsBefore: 0,
+    snapshotsAfter: 0,
+    mythicPlusRunsBefore: 0,
+    mythicPlusRunsAfter: 0,
+    rawRunsTrimmed: 0,
+    membersTrimmed: 0,
+  };
+
+  if (files.length === 0) return result;
+
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  ignoreAddonWatchEventsUntil = Date.now() + 10_000;
+
+  for (const luaPath of files) {
+    const { content, db } = await parseAddonDbFile(luaPath);
+    if (!db) continue;
+
+    const beforeBytes = Buffer.byteLength(content, "utf-8");
+    const compacted = compactAddonDb(db, lastSyncedAt, nowSeconds);
+
+    result.bytesBefore += beforeBytes;
+    result.snapshotsBefore += compacted.snapshotsBefore;
+    result.snapshotsAfter += compacted.snapshotsAfter;
+    result.mythicPlusRunsBefore += compacted.mythicPlusRunsBefore;
+    result.mythicPlusRunsAfter += compacted.mythicPlusRunsAfter;
+    result.rawRunsTrimmed += compacted.rawRunsTrimmed;
+    result.membersTrimmed += compacted.membersTrimmed;
+
+    if (!compacted.changed) {
+      result.bytesAfter += beforeBytes;
+      continue;
+    }
+
+    const serialized = serializeAddonDb(db);
+    const backupPath = `${luaPath}.bak`;
+    await fs.promises.copyFile(luaPath, backupPath);
+    result.backupsWritten += 1;
+    await fs.promises.writeFile(luaPath, serialized, "utf-8");
+
+    result.filesChanged += 1;
+    result.bytesAfter += Buffer.byteLength(serialized, "utf-8");
+  }
+
+  return result;
 }
 
 // ─── Window ───────────────────────────────────────────────────────────────────
@@ -604,7 +1234,6 @@ function handleDeepLink(url: string): void {
             if (!data.token) throw new Error(data.error ?? "No token in response");
             storedSessionToken = data.token;
             cachedElectronToken = null;
-            cachedElectronTokenExpiresAt = null;
             saveSessionToken(data.token);
             resolve(data.token);
           })
@@ -665,7 +1294,6 @@ ipcMain.handle("auth:getToken", async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const data: any = await resp.json();
     cachedElectronToken = data?.token ?? null;
-    cachedElectronTokenExpiresAt = cachedElectronToken ? getJwtExpirationMs(cachedElectronToken) : null;
     return cachedElectronToken;
   } catch {
     return null;
@@ -690,7 +1318,6 @@ ipcMain.handle("auth:getSession", async () => {
 ipcMain.handle("auth:logout", async () => {
   const sessionToken = storedSessionToken;
   cachedElectronToken = null;
-  cachedElectronTokenExpiresAt = null;
   storedSessionToken = null;
   saveSessionToken(null);
   try {
@@ -737,6 +1364,17 @@ ipcMain.handle("wow:readAddonData", async () => {
   return findAndParseAddonData(retailPath);
 });
 
+ipcMain.handle("wow:compactAddonData", async (_, forceIfRunning = false) => {
+  const settings = await getSettings();
+  const retailPath = settings.retailPath as string | undefined;
+  if (!retailPath) {
+    throw new Error("WoW retail path is not configured");
+  }
+
+  const lastSyncedAt = (settings.lastSyncedAt as number) ?? 0;
+  return compactAddonData(retailPath, lastSyncedAt, forceIfRunning);
+});
+
 function stopAddonWatcher() {
   if (addonWatchDebounce) {
     clearTimeout(addonWatchDebounce);
@@ -757,6 +1395,7 @@ ipcMain.handle("wow:watchAddonFile", async () => {
   try {
     addonWatcher = fs.watch(watchPath, { recursive: true }, (_event, filename) => {
       if (!filename?.endsWith("wow-dashboard.lua")) return;
+      if (Date.now() < ignoreAddonWatchEventsUntil) return;
       if (addonWatchDebounce) clearTimeout(addonWatchDebounce);
       addonWatchDebounce = setTimeout(() => {
         mainWindow?.webContents.send("wow:addonFileChanged");
@@ -839,7 +1478,7 @@ ipcMain.handle("wow:getInstalledAddonVersion", async () => {
   try {
     const content = await fs.promises.readFile(tocPath, "utf-8");
     const match = content.match(/^##\s*Version:\s*(.+)$/m);
-    return match ? match[1].trim() : null;
+    return match?.[1]?.trim() ?? null;
   } catch {
     return null;
   }
@@ -912,7 +1551,9 @@ ipcMain.handle("wow:installAddon", async (_, downloadUrl: string, checksumUrl: s
     const addonSrc =
       dirs.length === 1
         ? (() => {
-            const candidate = resolve(extractDir, dirs[0].name);
+            const dir = dirs[0];
+            if (!dir) return extractDir;
+            const candidate = resolve(extractDir, dir.name);
             if (!candidate.startsWith(resolve(extractDir) + sep)) {
               throw new Error("Path traversal detected in zip archive");
             }

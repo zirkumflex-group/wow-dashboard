@@ -1,8 +1,9 @@
 import { v } from "convex/values";
 
-import { mutation } from "./_generated/server";
+import { mutation, query } from "./_generated/server";
 import { authComponent } from "./auth";
 import { rateLimiter } from "./rateLimiter";
+import { mythicPlusRunValidator } from "./schemas/mythicPlusRuns";
 import { specValidator } from "./schemas/snapshots";
 import { internal } from "./_generated/api";
 
@@ -47,6 +48,54 @@ const characterValidator = v.object({
   race: v.string(),
   faction: v.union(v.literal("alliance"), v.literal("horde")),
   snapshots: v.array(snapshotValidator),
+  mythicPlusRuns: v.optional(v.array(mythicPlusRunValidator)),
+});
+
+export const getMythicPlusBackfillStatus = query({
+  args: {},
+  handler: async (ctx) => {
+    const authUser = await authComponent.safeGetAuthUser(ctx);
+    if (!authUser) {
+      return { needsBackfill: false, missingMapNameRuns: 0 };
+    }
+
+    const player = await ctx.db
+      .query("players")
+      .withIndex("by_user", (q) => q.eq("userId", authUser._id as string))
+      .first();
+
+    if (!player) {
+      return { needsBackfill: false, missingMapNameRuns: 0 };
+    }
+
+    const characters = await ctx.db
+      .query("characters")
+      .withIndex("by_player", (q) => q.eq("playerId", player._id))
+      .collect();
+
+    const runsByCharacter = await Promise.all(
+      characters.map((character) =>
+        ctx.db
+          .query("mythicPlusRuns")
+          .withIndex("by_character", (q) => q.eq("characterId", character._id))
+          .collect(),
+      ),
+    );
+
+    let missingMapNameRuns = 0;
+    for (const runs of runsByCharacter) {
+      for (const run of runs) {
+        if (!run.mapName || run.mapName.trim() === "") {
+          missingMapNameRuns += 1;
+        }
+      }
+    }
+
+    return {
+      needsBackfill: missingMapNameRuns > 0,
+      missingMapNameRuns,
+    };
+  },
 });
 
 export const ingestAddonData = mutation({
@@ -77,6 +126,7 @@ export const ingestAddonData = mutation({
 
     let newChars = 0;
     let newSnapshots = 0;
+    let newMythicPlusRuns = 0;
 
     for (const charData of characters) {
       const existing = await ctx.db
@@ -148,14 +198,87 @@ export const ingestAddonData = mutation({
           newSnapshots++;
         }
       }
+
+      for (const run of charData.mythicPlusRuns ?? []) {
+        const existingRun = await ctx.db
+          .query("mythicPlusRuns")
+          .withIndex("by_character_and_fingerprint", (q) =>
+            q.eq("characterId", characterId).eq("fingerprint", run.fingerprint),
+          )
+          .first();
+
+        if (!existingRun) {
+          await ctx.db.insert("mythicPlusRuns", {
+            characterId,
+            fingerprint: run.fingerprint,
+            observedAt: run.observedAt,
+            seasonID: run.seasonID,
+            mapChallengeModeID: run.mapChallengeModeID,
+            mapName: run.mapName,
+            level: run.level,
+            completed: run.completed,
+            completedInTime: run.completedInTime,
+            durationMs: run.durationMs,
+            runScore: run.runScore,
+            startDate: run.startDate,
+            completedAt: run.completedAt,
+            thisWeek: run.thisWeek,
+          });
+          newMythicPlusRuns++;
+        } else {
+          const patch: {
+            seasonID?: number;
+            mapChallengeModeID?: number;
+            mapName?: string;
+            level?: number;
+            completed?: boolean;
+            completedInTime?: boolean;
+            durationMs?: number;
+            runScore?: number;
+            startDate?: number;
+            completedAt?: number;
+            thisWeek?: boolean;
+          } = {};
+
+          if (existingRun.seasonID === undefined && run.seasonID !== undefined) patch.seasonID = run.seasonID;
+          if (
+            existingRun.mapChallengeModeID === undefined &&
+            run.mapChallengeModeID !== undefined
+          ) {
+            patch.mapChallengeModeID = run.mapChallengeModeID;
+          }
+          if (!existingRun.mapName && run.mapName) patch.mapName = run.mapName;
+          if (existingRun.level === undefined && run.level !== undefined) patch.level = run.level;
+          if (existingRun.completed === undefined && run.completed !== undefined) patch.completed = run.completed;
+          if (
+            existingRun.completedInTime === undefined &&
+            run.completedInTime !== undefined
+          ) {
+            patch.completedInTime = run.completedInTime;
+          }
+          if (existingRun.durationMs === undefined && run.durationMs !== undefined) {
+            patch.durationMs = run.durationMs;
+          }
+          if (existingRun.runScore === undefined && run.runScore !== undefined) patch.runScore = run.runScore;
+          if (existingRun.startDate === undefined && run.startDate !== undefined) patch.startDate = run.startDate;
+          if (existingRun.completedAt === undefined && run.completedAt !== undefined) {
+            patch.completedAt = run.completedAt;
+          }
+          if (existingRun.thisWeek === undefined && run.thisWeek !== undefined) patch.thisWeek = run.thisWeek;
+
+          if (Object.keys(patch).length > 0) {
+            await ctx.db.patch(existingRun._id, patch);
+          }
+        }
+      }
     }
 
     await ctx.runMutation(internal.audit.log, {
       userId: authUser._id as string,
       event: "addon.ingest",
-      metadata: { newChars, newSnapshots, totalCharacters: characters.length },
+      metadata: { newChars, newSnapshots, newMythicPlusRuns, totalCharacters: characters.length },
     });
 
-    return { newChars, newSnapshots };
+    return { newChars, newSnapshots, newMythicPlusRuns };
   },
 });

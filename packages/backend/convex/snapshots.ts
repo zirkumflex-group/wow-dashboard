@@ -1,4 +1,4 @@
-import { Id } from "./_generated/dataModel";
+import type { Id } from "./_generated/dataModel";
 import { internalMutation } from "./_generated/server";
 
 function snapshotKey(snap: {
