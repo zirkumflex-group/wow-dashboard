@@ -18,6 +18,19 @@ function getMapLabel(run: MythicPlusRunDoc): string {
   return "Unknown Dungeon";
 }
 
+function hasRecordedCompletionEvidence(run: MythicPlusRunDoc): boolean {
+  return run.durationMs !== undefined || run.runScore !== undefined || run.completedAt !== undefined;
+}
+
+function isCompletedRun(run: MythicPlusRunDoc): boolean {
+  return run.completed === true || hasRecordedCompletionEvidence(run);
+}
+
+function isTimedRun(run: MythicPlusRunDoc): boolean {
+  if (run.completedInTime !== undefined) return run.completedInTime;
+  return run.completed === true;
+}
+
 function buildMythicPlusBucketSummary(runs: MythicPlusRunDoc[]) {
   let completedRuns = 0;
   let timedRuns = 0;
@@ -37,8 +50,8 @@ function buildMythicPlusBucketSummary(runs: MythicPlusRunDoc[]) {
     const runAt = getRunTimestamp(run);
     if (lastRunAt === null || runAt > lastRunAt) lastRunAt = runAt;
 
-    if (run.completed) completedRuns += 1;
-    if (run.completedInTime) {
+    if (isCompletedRun(run)) completedRuns += 1;
+    if (isTimedRun(run)) {
       timedRuns += 1;
       if ((run.level ?? 0) >= 2) timed2Plus += 1;
       if ((run.level ?? 0) >= 5) timed5Plus += 1;
@@ -49,7 +62,7 @@ function buildMythicPlusBucketSummary(runs: MythicPlusRunDoc[]) {
       bestLevel = bestLevel === null ? run.level : Math.max(bestLevel, run.level);
       totalLevel += run.level;
       levelCount += 1;
-      if (run.completedInTime) {
+      if (isTimedRun(run)) {
         bestTimedLevel = bestTimedLevel === null ? run.level : Math.max(bestTimedLevel, run.level);
       }
     }
@@ -106,10 +119,10 @@ function buildDungeonSummaries(runs: MythicPlusRunDoc[]) {
     };
 
     current.totalRuns += 1;
-    if (run.completedInTime) current.timedRuns += 1;
+    if (isTimedRun(run)) current.timedRuns += 1;
     if (run.level !== undefined) {
       current.bestLevel = current.bestLevel === null ? run.level : Math.max(current.bestLevel, run.level);
-      if (run.completedInTime) {
+      if (isTimedRun(run)) {
         current.bestTimedLevel =
           current.bestTimedLevel === null ? run.level : Math.max(current.bestTimedLevel, run.level);
       }

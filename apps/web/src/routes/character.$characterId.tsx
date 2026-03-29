@@ -243,6 +243,15 @@ function getRunLabel(run: MythicPlusRun) {
   return "Unknown Dungeon";
 }
 
+function isCompletedMythicPlusRun(run: MythicPlusRun) {
+  return run.completed === true || run.durationMs !== undefined || run.runScore !== undefined || run.completedAt !== undefined;
+}
+
+function isTimedMythicPlusRun(run: MythicPlusRun) {
+  if (run.completedInTime !== undefined) return run.completedInTime;
+  return run.completed === true;
+}
+
 // ── Shared display components ─────────────────────────────────────────────────
 
 function GoldDisplay({ value }: { value: number }) {
@@ -277,10 +286,10 @@ function StatGrid({ label, value }: { label: string; value: React.ReactNode }) {
 }
 
 function MythicPlusResultBadge({ run }: { run: MythicPlusRun }) {
-  if (run.completedInTime) {
+  if (isTimedMythicPlusRun(run)) {
     return <Badge className="bg-emerald-500/15 text-emerald-300 border-emerald-500/30">Timed</Badge>;
   }
-  if (run.completed) {
+  if (isCompletedMythicPlusRun(run)) {
     return <Badge className="bg-amber-500/15 text-amber-300 border-amber-500/30">Completed</Badge>;
   }
   return <Badge className="bg-rose-500/15 text-rose-300 border-rose-500/30">Failed</Badge>;
@@ -1186,9 +1195,7 @@ function SnapshotHistoryTable({
 // Bottom: collapsible history
 // ════════════════════════════════════════════════════════════════════════════
 
-function OverviewLayout({ latest, chartSnapshots, filteredSnapshots, timeFrame, setTimeFrame }: LayoutProps) {
-  const [showHistory, setShowHistory] = useState(false);
-
+function OverviewLayout({ latest, chartSnapshots, timeFrame, setTimeFrame }: LayoutProps) {
   return (
     <div className="space-y-4">
       <div className="flex flex-col md:flex-row gap-4 items-start">
@@ -1224,31 +1231,6 @@ function OverviewLayout({ latest, chartSnapshots, filteredSnapshots, timeFrame, 
           </div>
         </div>
       </div>
-
-      {/* Collapsible history */}
-      {filteredSnapshots.length > 1 && (
-        <Card>
-          <CardHeader
-            className="border-b pb-3 cursor-pointer select-none"
-            onClick={() => setShowHistory((v) => !v)}
-          >
-            <CardTitle className="text-sm font-medium flex items-center justify-between">
-              <span className="flex items-center gap-1.5">
-                <History size={14} className="text-muted-foreground" />
-                Snapshot History ({filteredSnapshots.length})
-              </span>
-              <span className="text-muted-foreground text-xs font-normal">
-                {showHistory ? "Hide" : "Show"}
-              </span>
-            </CardTitle>
-          </CardHeader>
-          {showHistory && (
-            <CardContent className="pt-0">
-              <SnapshotHistoryTable snapshots={filteredSnapshots} paginated />
-            </CardContent>
-          )}
-        </Card>
-      )}
     </div>
   );
 }
@@ -1500,7 +1482,7 @@ function FocusLayout({ latest, chartSnapshots, timeFrame, setTimeFrame }: Layout
 // Full scrollable history at bottom (no pagination)
 // ════════════════════════════════════════════════════════════════════════════
 
-function TimelineLayout({ latest, chartSnapshots, filteredSnapshots, timeFrame, setTimeFrame }: LayoutProps) {
+function TimelineLayout({ latest, chartSnapshots, timeFrame, setTimeFrame }: LayoutProps) {
   const chartH = "h-[260px]";
 
   return (
@@ -1574,21 +1556,6 @@ function TimelineLayout({ latest, chartSnapshots, filteredSnapshots, timeFrame, 
       <SecondaryStatsChartCard snapshots={chartSnapshots} timeFrame={timeFrame} />
       <CurrenciesChartCard     snapshots={chartSnapshots} timeFrame={timeFrame} />
       <PlaytimeChartCard       snapshots={chartSnapshots} timeFrame={timeFrame} />
-
-      {/* Full history — always visible, scrollable */}
-      {filteredSnapshots.length > 1 && (
-        <Card>
-          <CardHeader className="border-b pb-3">
-            <CardTitle className="text-sm font-medium flex items-center gap-1.5">
-              <History size={14} className="text-muted-foreground" />
-              Snapshot History ({filteredSnapshots.length})
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="pt-0">
-            <SnapshotHistoryTable snapshots={filteredSnapshots} />
-          </CardContent>
-        </Card>
-      )}
     </div>
   );
 }
@@ -1866,6 +1833,59 @@ function RouteComponent() {
       )}
 
       <MythicPlusSection data={mythicPlus as MythicPlusData | null | undefined} />
+      <SnapshotHistorySection snapshots={filtered} layoutMode={layoutMode} />
     </div>
+  );
+}
+
+function SnapshotHistorySection({
+  snapshots,
+  layoutMode,
+}: {
+  snapshots: Snapshot[];
+  layoutMode: LayoutMode;
+}) {
+  const [showHistory, setShowHistory] = useState(false);
+
+  if (snapshots.length <= 1) return null;
+
+  if (layoutMode === "timeline") {
+    return (
+      <Card>
+        <CardHeader className="border-b pb-3">
+          <CardTitle className="text-sm font-medium flex items-center gap-1.5">
+            <History size={14} className="text-muted-foreground" />
+            Snapshot History ({snapshots.length})
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="pt-0">
+          <SnapshotHistoryTable snapshots={snapshots} />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader
+        className="border-b pb-3 cursor-pointer select-none"
+        onClick={() => setShowHistory((v) => !v)}
+      >
+        <CardTitle className="text-sm font-medium flex items-center justify-between">
+          <span className="flex items-center gap-1.5">
+            <History size={14} className="text-muted-foreground" />
+            Snapshot History ({snapshots.length})
+          </span>
+          <span className="text-muted-foreground text-xs font-normal">
+            {showHistory ? "Hide" : "Show"}
+          </span>
+        </CardTitle>
+      </CardHeader>
+      {showHistory && (
+        <CardContent className="pt-0">
+          <SnapshotHistoryTable snapshots={snapshots} paginated />
+        </CardContent>
+      )}
+    </Card>
   );
 }

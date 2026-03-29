@@ -478,6 +478,13 @@ NormalizeStoredMythicPlusRun = function(run)
         run.runScore = GetFirstField(run, { "score", "mythicRating" })
     end
 
+    if run.completedInTime == nil and type(run.completed) == "boolean" then
+        run.completedInTime = run.completed
+    end
+    if run.completed ~= true and (run.durationMs ~= nil or run.runScore ~= nil or run.completedAt ~= nil) then
+        run.completed = true
+    end
+
     run.source = nil
     run.members = nil
     run.raw = nil
@@ -545,6 +552,13 @@ local function NormalizeMythicPlusRun(rawRun, seasonID)
         completedAt         = completedAt,
         thisWeek            = GetFirstField(rawRun, { "thisWeek", "isThisWeek" }),
     }
+
+    if run.completedInTime == nil and type(run.completed) == "boolean" then
+        run.completedInTime = run.completed
+    end
+    if run.completed ~= true and (run.durationMs ~= nil or run.runScore ~= nil or run.completedAt ~= nil) then
+        run.completed = true
+    end
 
     run.fingerprint = BuildRunFingerprint(run)
 

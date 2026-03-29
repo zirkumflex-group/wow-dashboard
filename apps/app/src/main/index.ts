@@ -524,6 +524,16 @@ function normalizeStoredMythicPlusRun(runRaw: LuaTable): MythicPlusRunData {
     thisWeek: toOptionalBoolean(runRaw.thisWeek) ?? toOptionalBoolean(runRaw.isThisWeek),
   };
 
+  if (run.completedInTime === undefined && typeof run.completed === "boolean") {
+    run.completedInTime = run.completed;
+  }
+  if (
+    run.completed !== true &&
+    (run.durationMs !== undefined || run.runScore !== undefined || run.completedAt !== undefined)
+  ) {
+    run.completed = true;
+  }
+
   run.fingerprint = toOptionalString(runRaw.fingerprint) ?? buildRunFingerprint(run);
   return run;
 }
