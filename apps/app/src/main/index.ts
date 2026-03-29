@@ -349,10 +349,10 @@ type LuaTable = Record<string, unknown>;
 
 interface MythicPlusRunData {
   fingerprint: string;
-  source?: string;
   observedAt: number;
   seasonID?: number;
   mapChallengeModeID?: number;
+  mapName?: string;
   level?: number;
   completed?: boolean;
   completedInTime?: boolean;
@@ -361,8 +361,6 @@ interface MythicPlusRunData {
   startDate?: number;
   completedAt?: number;
   thisWeek?: boolean;
-  members?: unknown;
-  raw?: unknown;
 }
 
 interface SnapshotData {
@@ -467,6 +465,7 @@ function buildRunFingerprint(run: Partial<MythicPlusRunData>): string {
 }
 
 function normalizeStoredMythicPlusRun(runRaw: LuaTable): MythicPlusRunData {
+  const legacyRaw = isRecord(runRaw.raw) ? runRaw.raw : null;
   const durationMs =
     toOptionalNumber(runRaw.durationMs) ??
     (toOptionalNumber(runRaw.durationSec) !== undefined
@@ -480,7 +479,6 @@ function normalizeStoredMythicPlusRun(runRaw: LuaTable): MythicPlusRunData {
 
   const run: MythicPlusRunData = {
     fingerprint: "",
-    source: toOptionalString(runRaw.source),
     observedAt:
       toOptionalNumber(runRaw.observedAt) ??
       toOptionalNumber(runRaw.completedAt) ??
@@ -490,7 +488,18 @@ function normalizeStoredMythicPlusRun(runRaw: LuaTable): MythicPlusRunData {
     mapChallengeModeID:
       toOptionalNumber(runRaw.mapChallengeModeID) ??
       toOptionalNumber(runRaw.challengeModeID) ??
-      toOptionalNumber(runRaw.mapID),
+      toOptionalNumber(runRaw.mapID) ??
+      (legacyRaw ? toOptionalNumber(legacyRaw.mapChallengeModeID ?? legacyRaw.challengeModeID ?? legacyRaw.mapID) : undefined),
+    mapName:
+      toOptionalString(runRaw.mapName) ??
+      toOptionalString(runRaw.name) ??
+      toOptionalString(runRaw.zoneName) ??
+      toOptionalString(runRaw.shortName) ??
+      (legacyRaw
+        ? toOptionalString(
+            legacyRaw.mapName ?? legacyRaw.name ?? legacyRaw.zoneName ?? legacyRaw.shortName,
+          )
+        : undefined),
     level: toOptionalNumber(runRaw.level) ?? toOptionalNumber(runRaw.keystoneLevel),
     completed:
       toOptionalBoolean(runRaw.completed) ??
@@ -513,8 +522,6 @@ function normalizeStoredMythicPlusRun(runRaw: LuaTable): MythicPlusRunData {
       toOptionalNumber(runRaw.endTime) ??
       toOptionalNumber(runRaw.startDate),
     thisWeek: toOptionalBoolean(runRaw.thisWeek) ?? toOptionalBoolean(runRaw.isThisWeek),
-    members: runRaw.members ?? runRaw.partyMembers,
-    raw: runRaw.raw,
   };
 
   run.fingerprint = toOptionalString(runRaw.fingerprint) ?? buildRunFingerprint(run);
@@ -694,7 +701,6 @@ async function findAndParseAddonData(
 
 const SYNC_BUFFER_SECONDS = 60;
 const SNAPSHOT_FULL_RETENTION_DAYS = 7;
-const MYTHIC_PLUS_RAW_RETENTION_DAYS = 14;
 
 function getDayBucket(timestampSeconds: number): string {
   return new Date(timestampSeconds * 1000).toISOString().slice(0, 10);
@@ -772,38 +778,15 @@ function compactSnapshotsInPlace(
 }
 
 function compactMythicPlusDebugInPlace(entry: LuaTable): boolean {
-  if (!isRecord(entry.mythicPlusDebug)) return false;
-
-  let changed = false;
-  const lastProbe = isRecord(entry.mythicPlusDebug.lastProbe)
-    ? entry.mythicPlusDebug.lastProbe
-    : null;
-  if (!lastProbe) return false;
-
-  if ("selectedRunSample" in lastProbe) {
-    delete lastProbe.selectedRunSample;
-    changed = true;
-  }
-
-  if (Array.isArray(lastProbe.calls)) {
-    for (const call of lastProbe.calls) {
-      if (!isRecord(call) || !Array.isArray(call.arrayResults)) continue;
-      for (const result of call.arrayResults) {
-        if (isRecord(result) && "sample" in result) {
-          delete result.sample;
-          changed = true;
-        }
-      }
-    }
-  }
-
-  return changed;
+  if (!("mythicPlusDebug" in entry)) return false;
+  delete entry.mythicPlusDebug;
+  return true;
 }
 
 function compactMythicPlusRunsInPlace(
   entry: LuaTable,
-  lastSyncedAt: number,
-  nowSeconds: number,
+  _lastSyncedAt: number,
+  _nowSeconds: number,
 ): {
   before: number;
   after: number;
@@ -818,8 +801,6 @@ function compactMythicPlusRunsInPlace(
   }
 
   const before = runs.length;
-  const uploadedCutoff = lastSyncedAt > 0 ? Math.max(0, lastSyncedAt - SYNC_BUFFER_SECONDS) : null;
-  const trimRawBefore = nowSeconds - MYTHIC_PLUS_RAW_RETENTION_DAYS * 86_400;
   let changed = !hadRunsArray;
   let rawRunsTrimmed = 0;
   let membersTrimmed = 0;
@@ -892,19 +873,16 @@ function compactMythicPlusRunsInPlace(
     }
     dedupeKeys[String(runValue.fingerprint)] = true;
 
-    const observedAt = normalized.observedAt;
-    const shouldTrimRaw =
-      uploadedCutoff !== null &&
-      observedAt > 0 &&
-      observedAt <= uploadedCutoff &&
-      observedAt < trimRawBefore;
-
-    if (shouldTrimRaw && "raw" in runValue) {
+    if ("source" in runValue) {
+      delete runValue.source;
+      changed = true;
+    }
+    if ("raw" in runValue) {
       delete runValue.raw;
       rawRunsTrimmed++;
       changed = true;
     }
-    if (shouldTrimRaw && "members" in runValue) {
+    if ("members" in runValue) {
       delete runValue.members;
       membersTrimmed++;
       changed = true;

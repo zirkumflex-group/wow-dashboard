@@ -211,6 +211,38 @@ function formatHours(totalHours: number) {
   return d > 0 ? `${d}d ${h}h` : `${h}h`;
 }
 
+function formatRunDate(ts?: number | null) {
+  if (!ts) return "—";
+  return new Date(ts * 1000).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
+}
+
+function formatRunDuration(durationMs?: number | null) {
+  if (!durationMs || durationMs <= 0) return "—";
+  const totalSeconds = Math.floor(durationMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
+function formatKeyLevel(level?: number | null) {
+  if (level === undefined || level === null) return "—";
+  return `+${level}`;
+}
+
+function formatAverageValue(value?: number | null, digits = 1) {
+  if (value === undefined || value === null) return "—";
+  return value.toFixed(digits);
+}
+
+function getRunLabel(run: MythicPlusRun) {
+  if (run.mapName && run.mapName.trim() !== "") return run.mapName;
+  if (run.mapChallengeModeID !== undefined) return `Dungeon ${run.mapChallengeModeID}`;
+  return "Unknown Dungeon";
+}
+
 // ── Shared display components ─────────────────────────────────────────────────
 
 function GoldDisplay({ value }: { value: number }) {
@@ -240,6 +272,179 @@ function StatGrid({ label, value }: { label: string; value: React.ReactNode }) {
     <div className="bg-muted/30 rounded-md p-2 text-center">
       <div className="text-muted-foreground text-xs">{label}</div>
       <div className="font-semibold text-sm mt-0.5">{value}</div>
+    </div>
+  );
+}
+
+function MythicPlusResultBadge({ run }: { run: MythicPlusRun }) {
+  if (run.completedInTime) {
+    return <Badge className="bg-emerald-500/15 text-emerald-300 border-emerald-500/30">Timed</Badge>;
+  }
+  if (run.completed) {
+    return <Badge className="bg-amber-500/15 text-amber-300 border-amber-500/30">Completed</Badge>;
+  }
+  return <Badge className="bg-rose-500/15 text-rose-300 border-rose-500/30">Failed</Badge>;
+}
+
+function MythicPlusSection({ data }: { data: MythicPlusData | null | undefined }) {
+  if (data === undefined) {
+    return <div className="h-72 animate-pulse rounded-lg bg-muted" />;
+  }
+
+  if (!data || data.runs.length === 0) {
+    return (
+      <Card>
+        <CardHeader className="border-b pb-3">
+          <CardTitle className="flex items-center gap-2 text-lg">
+            <History size={16} className="text-muted-foreground" />
+            Mythic+ History
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="pt-4">
+          <p className="text-sm text-muted-foreground">
+            No Mythic+ run history uploaded for this character yet.
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const { summary, runs } = data;
+  const currentSeason = summary.currentSeason;
+  const recentRuns = runs.slice(0, 12);
+
+  return (
+    <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
+      <Card>
+        <CardHeader className="border-b pb-3">
+          <div className="flex items-center justify-between gap-3">
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <History size={16} className="text-muted-foreground" />
+              Mythic+ Summary
+            </CardTitle>
+            {summary.latestSeasonID !== null && (
+              <Badge variant="outline">Season {summary.latestSeasonID}</Badge>
+            )}
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4 pt-4">
+          {currentSeason && (
+            <div className="space-y-3">
+              <div className="flex items-center gap-2">
+                <Flame size={14} className="text-muted-foreground" />
+                <h3 className="text-sm font-semibold">Current Season</h3>
+              </div>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <StatGrid label="Runs" value={currentSeason.totalRuns.toLocaleString()} />
+                <StatGrid label="Timed" value={currentSeason.timedRuns.toLocaleString()} />
+                <StatGrid label="10+ Timed" value={currentSeason.timed10Plus.toLocaleString()} />
+                <StatGrid label="Best Timed" value={formatKeyLevel(currentSeason.bestTimedLevel)} />
+                <StatGrid label="5+ Timed" value={currentSeason.timed5Plus.toLocaleString()} />
+                <StatGrid label="2+ Timed" value={currentSeason.timed2Plus.toLocaleString()} />
+                <StatGrid label="Best Key" value={formatKeyLevel(currentSeason.bestLevel)} />
+                <StatGrid label="Best Score" value={formatAverageValue(currentSeason.bestScore, 0)} />
+              </div>
+            </div>
+          )}
+
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <Zap size={14} className="text-muted-foreground" />
+              <h3 className="text-sm font-semibold">All Time</h3>
+            </div>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              <StatGrid label="Runs" value={summary.overall.totalRuns.toLocaleString()} />
+              <StatGrid label="Timed" value={summary.overall.timedRuns.toLocaleString()} />
+              <StatGrid label="Avg Key" value={formatAverageValue(summary.overall.averageLevel, 1)} />
+              <StatGrid label="Avg Score" value={formatAverageValue(summary.overall.averageScore, 0)} />
+              <StatGrid label="Completed" value={summary.overall.completedRuns.toLocaleString()} />
+              <StatGrid label="Best Timed" value={formatKeyLevel(summary.overall.bestTimedLevel)} />
+              <StatGrid label="Best Key" value={formatKeyLevel(summary.overall.bestLevel)} />
+              <StatGrid label="Last Run" value={formatRunDate(summary.overall.lastRunAt)} />
+            </div>
+          </div>
+
+          {summary.currentSeasonDungeons.length > 0 && (
+            <div className="space-y-3">
+              <div className="flex items-center gap-2">
+                <Sword size={14} className="text-muted-foreground" />
+                <h3 className="text-sm font-semibold">Dungeon Bests</h3>
+              </div>
+              <div className="overflow-x-auto rounded-md border">
+                <table className="w-full min-w-[480px] text-sm">
+                  <thead className="bg-muted/40 text-muted-foreground">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-medium">Dungeon</th>
+                      <th className="px-3 py-2 text-right font-medium">Timed</th>
+                      <th className="px-3 py-2 text-right font-medium">Best Timed</th>
+                      <th className="px-3 py-2 text-right font-medium">Best Key</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {summary.currentSeasonDungeons.map((dungeon) => (
+                      <tr key={`${dungeon.mapChallengeModeID ?? "map"}-${dungeon.mapName}`} className="border-t">
+                        <td className="px-3 py-2">{dungeon.mapName}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{dungeon.timedRuns}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">
+                          {formatKeyLevel(dungeon.bestTimedLevel)}
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums">
+                          {formatKeyLevel(dungeon.bestLevel)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="border-b pb-3">
+          <CardTitle className="flex items-center gap-2 text-lg">
+            <Clock size={16} className="text-muted-foreground" />
+            Recent Runs
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="pt-4">
+          <div className="overflow-x-auto rounded-md border">
+            <table className="w-full min-w-[560px] text-sm">
+              <thead className="bg-muted/40 text-muted-foreground">
+                <tr>
+                  <th className="px-3 py-2 text-left font-medium">Date</th>
+                  <th className="px-3 py-2 text-left font-medium">Dungeon</th>
+                  <th className="px-3 py-2 text-right font-medium">Key</th>
+                  <th className="px-3 py-2 text-left font-medium">Result</th>
+                  <th className="px-3 py-2 text-right font-medium">Score</th>
+                  <th className="px-3 py-2 text-right font-medium">Time</th>
+                </tr>
+              </thead>
+              <tbody>
+                {recentRuns.map((run) => (
+                  <tr key={run.fingerprint} className="border-t">
+                    <td className="px-3 py-2 text-muted-foreground">
+                      {formatRunDate(run.completedAt ?? run.observedAt)}
+                    </td>
+                    <td className="px-3 py-2">{getRunLabel(run)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{formatKeyLevel(run.level)}</td>
+                    <td className="px-3 py-2">
+                      <MythicPlusResultBadge run={run} />
+                    </td>
+                    <td className="px-3 py-2 text-right tabular-nums">
+                      {formatAverageValue(run.runScore, 0)}
+                    </td>
+                    <td className="px-3 py-2 text-right tabular-nums">
+                      {formatRunDuration(run.durationMs)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }
@@ -336,6 +541,60 @@ type LayoutProps = {
   filteredSnapshots: Snapshot[];
   timeFrame: TimeFrame;
   setTimeFrame: (f: TimeFrame) => void;
+};
+
+type MythicPlusRun = {
+  fingerprint: string;
+  observedAt: number;
+  seasonID?: number;
+  mapChallengeModeID?: number;
+  mapName?: string;
+  level?: number;
+  completed?: boolean;
+  completedInTime?: boolean;
+  durationMs?: number;
+  runScore?: number;
+  startDate?: number;
+  completedAt?: number;
+  thisWeek?: boolean;
+};
+
+type MythicPlusBucketSummary = {
+  totalRuns: number;
+  completedRuns: number;
+  timedRuns: number;
+  timed2Plus: number;
+  timed5Plus: number;
+  timed10Plus: number;
+  bestLevel: number | null;
+  bestTimedLevel: number | null;
+  bestScore: number | null;
+  averageLevel: number | null;
+  averageScore: number | null;
+  lastRunAt: number | null;
+};
+
+type MythicPlusDungeonSummary = {
+  mapChallengeModeID: number | null;
+  mapName: string;
+  totalRuns: number;
+  timedRuns: number;
+  bestLevel: number | null;
+  bestTimedLevel: number | null;
+  bestScore: number | null;
+  lastRunAt: number | null;
+};
+
+type MythicPlusSummary = {
+  latestSeasonID: number | null;
+  overall: MythicPlusBucketSummary;
+  currentSeason: MythicPlusBucketSummary | null;
+  currentSeasonDungeons: MythicPlusDungeonSummary[];
+};
+
+type MythicPlusData = {
+  runs: MythicPlusRun[];
+  summary: MythicPlusSummary;
 };
 
 // ── Snapshot grouping ─────────────────────────────────────────────────────────
@@ -1483,6 +1742,9 @@ function RouteComponent() {
   const data = useQuery(api.characters.getCharacterSnapshots, {
     characterId: characterId as Id<"characters">,
   });
+  const mythicPlus = useQuery(api.characters.getCharacterMythicPlus, {
+    characterId: characterId as Id<"characters">,
+  });
 
   const [selectedRole, setSelectedRole] = useState<string | null>(null);
   const [selectedSpec, setSelectedSpec] = useState<string | null>(null);
@@ -1602,6 +1864,8 @@ function RouteComponent() {
           {layoutMode === "timeline"  && <TimelineLayout  {...layoutProps} />}
         </>
       )}
+
+      <MythicPlusSection data={mythicPlus as MythicPlusData | null | undefined} />
     </div>
   );
 }

@@ -176,12 +176,12 @@ end
 --     class        string   -- e.g. "WARRIOR"
 --     race         string   -- e.g. "Human"
 --     faction      string   -- "alliance" | "horde"
---     mythicPlusRuns    array   -- raw addon-side run history probe store
+--     mythicPlusRuns    array
 --       fingerprint         string
---       source              string
 --       observedAt          number
 --       seasonID            number?
 --       mapChallengeModeID  number?
+--       mapName             string?
 --       level               number?
 --       completed           boolean?
 --       completedInTime     boolean?
@@ -190,10 +190,7 @@ end
 --       startDate           number?
 --       completedAt         number?
 --       thisWeek            boolean?
---       members             table?
---       raw                 table
 --     mythicPlusRunKeys table -- keyed by fingerprint for dedupe
---     mythicPlusDebug   table -- last probe summary for local testing
 --     snapshots    array
 --       takenAt           number  -- Unix timestamp
 --       level             number
@@ -308,7 +305,6 @@ local function EnsureCharacterEntry(key, name, realm, charInfo)
             snapshots         = {},
             mythicPlusRuns    = {},
             mythicPlusRunKeys = {},
-            mythicPlusDebug   = {},
         }
         db.characters[key] = entry
     else
@@ -325,10 +321,8 @@ local function EnsureCharacterEntry(key, name, realm, charInfo)
         if type(entry.mythicPlusRunKeys) ~= "table" then
             entry.mythicPlusRunKeys = {}
         end
-        if type(entry.mythicPlusDebug) ~= "table" then
-            entry.mythicPlusDebug = {}
-        end
     end
+    entry.mythicPlusDebug = nil
 
     local normalizedRuns = {}
     local normalizedKeys = {}
@@ -368,94 +362,6 @@ local function IsSequentialArray(value)
     return maxIndex == count
 end
 
-local function CopySavedVarValue(value, depth, seen)
-    local valueType = type(value)
-    if valueType == "nil" or valueType == "number" or valueType == "string" or valueType == "boolean" then
-        return value
-    end
-    if valueType ~= "table" or depth <= 0 then
-        return nil
-    end
-    if seen[value] then
-        return nil
-    end
-
-    seen[value] = true
-    local out = {}
-
-    if IsSequentialArray(value) then
-        for i = 1, #value do
-            out[#out + 1] = CopySavedVarValue(value[i], depth - 1, seen)
-        end
-    else
-        local keys = {}
-        for key in pairs(value) do
-            if type(key) == "string" or type(key) == "number" then
-                keys[#keys + 1] = key
-            end
-        end
-        table.sort(keys, function(a, b)
-            if type(a) == type(b) then
-                return a < b
-            end
-            return tostring(a) < tostring(b)
-        end)
-
-        for _, key in ipairs(keys) do
-            local child = CopySavedVarValue(value[key], depth - 1, seen)
-            if child ~= nil then
-                out[key] = child
-            end
-        end
-    end
-
-    seen[value] = nil
-    return out
-end
-
-local function StableSerialize(value)
-    local valueType = type(value)
-    if valueType == "nil" then
-        return "nil"
-    end
-    if valueType == "number" then
-        return string.format("%.17g", value)
-    end
-    if valueType == "boolean" then
-        return value and "true" or "false"
-    end
-    if valueType == "string" then
-        return string.format("%q", value)
-    end
-    if valueType ~= "table" then
-        return string.format("%q", "<" .. valueType .. ">")
-    end
-
-    local parts = {}
-    if IsSequentialArray(value) then
-        for i = 1, #value do
-            parts[#parts + 1] = StableSerialize(value[i])
-        end
-        return "[" .. table.concat(parts, ",") .. "]"
-    end
-
-    local keys = {}
-    for key in pairs(value) do
-        keys[#keys + 1] = key
-    end
-    table.sort(keys, function(a, b)
-        if type(a) == type(b) then
-            return a < b
-        end
-        return tostring(a) < tostring(b)
-    end)
-
-    for _, key in ipairs(keys) do
-        parts[#parts + 1] = StableSerialize(key) .. ":" .. StableSerialize(value[key])
-    end
-    return "{" .. table.concat(parts, ",") .. "}"
-end
-
 local function GetFirstField(record, fieldNames)
     if type(record) ~= "table" then
         return nil
@@ -477,6 +383,22 @@ GetRunSortValue = function(run)
         or tonumber(run.startDate)
         or tonumber(run.observedAt)
         or 0
+end
+
+local function GetChallengeModeMapName(mapChallengeModeID)
+    if not mapChallengeModeID then
+        return nil
+    end
+    if not C_ChallengeMode or type(C_ChallengeMode.GetMapUIInfo) ~= "function" then
+        return nil
+    end
+
+    local ok, mapName = pcall(C_ChallengeMode.GetMapUIInfo, mapChallengeModeID)
+    if ok and type(mapName) == "string" and mapName ~= "" then
+        return mapName
+    end
+
+    return nil
 end
 
 local function ToFingerprintToken(value)
@@ -535,6 +457,10 @@ NormalizeStoredMythicPlusRun = function(run)
     if run.mapChallengeModeID == nil then
         run.mapChallengeModeID = GetFirstField(run, { "challengeModeID", "mapID" })
     end
+    if run.mapName == nil or run.mapName == "" then
+        run.mapName = GetFirstField(run, { "mapName", "name", "zoneName", "shortName" })
+            or GetChallengeModeMapName(run.mapChallengeModeID)
+    end
 
     if run.level == nil then
         run.level = GetFirstField(run, { "keystoneLevel" })
@@ -552,87 +478,39 @@ NormalizeStoredMythicPlusRun = function(run)
         run.runScore = GetFirstField(run, { "score", "mythicRating" })
     end
 
+    run.source = nil
+    run.members = nil
+    run.raw = nil
     run.fingerprint = BuildRunFingerprint(run)
     return run
 end
 
-local function CaptureApiCall(label, apiFunc, ...)
-    local call = {
-        label        = label,
-        args         = { ... },
-        ok           = false,
-        returnCount  = 0,
-        returnTypes  = {},
-        arrayResults = {},
-        scalarValues = {},
-    }
-
+local function CallAddonApi(apiFunc, ...)
     if type(apiFunc) ~= "function" then
-        call.error = "unavailable"
-        return call
+        return nil
     end
 
     local packed = { pcall(apiFunc, ...) }
-    call.ok = table.remove(packed, 1)
-    if not call.ok then
-        call.error = tostring(packed[1])
-        return call
+    local ok = table.remove(packed, 1)
+    if not ok then
+        return nil
     end
-
-    call.rawResults = packed
-    call.returnCount = #packed
-
-    for index, value in ipairs(packed) do
-        local valueType = type(value)
-        if valueType == "table" and IsSequentialArray(value) then
-            local sample = nil
-            if type(value[1]) == "table" then
-                sample = CopySavedVarValue(value[1], 3, {})
-            else
-                sample = CopySavedVarValue(value[1], 2, {}) or value[1]
-            end
-            call.returnTypes[index] = "array(" .. tostring(#value) .. ")"
-            call.arrayResults[#call.arrayResults + 1] = {
-                index = index,
-                count = #value,
-                sample = sample,
-            }
-        else
-            call.returnTypes[index] = valueType
-            call.scalarValues[index] = CopySavedVarValue(value, 2, {}) or value
-        end
-    end
-
-    return call
+    return packed
 end
 
-local function BuildCallDebugRecord(call)
-    return {
-        label        = call.label,
-        args         = call.args,
-        ok           = call.ok,
-        error        = call.error,
-        returnCount  = call.returnCount,
-        returnTypes  = call.returnTypes,
-        arrayResults = call.arrayResults,
-        scalarValues = call.scalarValues,
-    }
-end
-
-local function NormalizeMythicPlusRun(rawRun, sourceLabel, seasonID)
+local function NormalizeMythicPlusRun(rawRun, seasonID)
     if type(rawRun) ~= "table" then
         return nil
     end
 
-    local raw = CopySavedVarValue(rawRun, 4, {}) or {}
-    local durationMs = GetFirstField(raw, {
+    local durationMs = GetFirstField(rawRun, {
         "durationMs",
         "completionMilliseconds",
         "mapChallengeModeDuration",
         "runDurationMs",
     })
     if durationMs == nil then
-        local durationSeconds = GetFirstField(raw, {
+        local durationSeconds = GetFirstField(rawRun, {
             "durationSec",
             "durationSeconds",
             "time",
@@ -643,7 +521,8 @@ local function NormalizeMythicPlusRun(rawRun, sourceLabel, seasonID)
         end
     end
 
-    local completedAt = GetFirstField(raw, {
+    local mapChallengeModeID = GetFirstField(rawRun, { "mapChallengeModeID", "challengeModeID", "mapID" })
+    local completedAt = GetFirstField(rawRun, {
         "completedAt",
         "completionDate",
         "completedDate",
@@ -652,20 +531,19 @@ local function NormalizeMythicPlusRun(rawRun, sourceLabel, seasonID)
     })
 
     local run = {
-        source              = sourceLabel,
         observedAt          = time(),
         seasonID            = seasonID,
-        mapChallengeModeID  = GetFirstField(raw, { "mapChallengeModeID", "challengeModeID", "mapID" }),
-        level               = GetFirstField(raw, { "level", "keystoneLevel" }),
-        completed           = GetFirstField(raw, { "completed", "finishedSuccess", "isCompleted" }),
-        completedInTime     = GetFirstField(raw, { "completedInTime", "intime", "onTime" }),
+        mapChallengeModeID  = mapChallengeModeID,
+        mapName             = GetFirstField(rawRun, { "mapName", "name", "zoneName", "shortName" })
+            or GetChallengeModeMapName(mapChallengeModeID),
+        level               = GetFirstField(rawRun, { "level", "keystoneLevel" }),
+        completed           = GetFirstField(rawRun, { "completed", "finishedSuccess", "isCompleted" }),
+        completedInTime     = GetFirstField(rawRun, { "completedInTime", "intime", "onTime" }),
         durationMs          = durationMs,
-        runScore            = GetFirstField(raw, { "runScore", "score", "mythicRating" }),
-        startDate           = GetFirstField(raw, { "startDate", "startedAt" }),
+        runScore            = GetFirstField(rawRun, { "runScore", "score", "mythicRating" }),
+        startDate           = GetFirstField(rawRun, { "startDate", "startedAt" }),
         completedAt         = completedAt,
-        thisWeek            = GetFirstField(raw, { "thisWeek", "isThisWeek" }),
-        members             = GetFirstField(raw, { "members", "partyMembers" }),
-        raw                 = raw,
+        thisWeek            = GetFirstField(rawRun, { "thisWeek", "isThisWeek" }),
     }
 
     run.fingerprint = BuildRunFingerprint(run)
@@ -673,47 +551,36 @@ local function NormalizeMythicPlusRun(rawRun, sourceLabel, seasonID)
     return run
 end
 
-local function SelectBestRunHistoryCall(calls)
-    local bestCall = nil
+local function SelectBestRunHistory(calls)
     local bestRuns = nil
-    local bestIndex = nil
     local bestCount = -1
 
-    for _, call in ipairs(calls) do
-        if call.ok and type(call.rawResults) == "table" then
-            for index, value in ipairs(call.rawResults) do
+    for _, results in ipairs(calls) do
+        if type(results) == "table" then
+            for _, value in ipairs(results) do
                 if type(value) == "table" and IsSequentialArray(value) then
                     local count = #value
                     local firstValue = value[1]
-                    if count == 0 or type(firstValue) == "table" then
-                        if count > bestCount then
-                            bestCall = call
-                            bestRuns = value
-                            bestIndex = index
-                            bestCount = count
-                        end
+                    if (count == 0 or type(firstValue) == "table") and count > bestCount then
+                        bestRuns = value
+                        bestCount = count
                     end
                 end
             end
         end
     end
 
-    return bestCall, bestRuns or {}, bestIndex
+    return bestRuns or {}
 end
 
-local function CollectMythicPlusHistory(reason)
+local function CollectMythicPlusHistory()
     local calls = {}
-    local debugCalls = {}
 
-    local function AddCall(label, apiFunc, ...)
-        local call = CaptureApiCall(label, apiFunc, ...)
-        calls[#calls + 1] = call
-        debugCalls[#debugCalls + 1] = BuildCallDebugRecord(call)
-    end
-
-    local score = 0
-    if C_ChallengeMode and C_ChallengeMode.GetOverallDungeonScore then
-        score = C_ChallengeMode.GetOverallDungeonScore() or 0
+    local function AddCall(apiFunc, ...)
+        local results = CallAddonApi(apiFunc, ...)
+        if results then
+            calls[#calls + 1] = results
+        end
     end
 
     local seasonID = nil
@@ -724,63 +591,22 @@ local function CollectMythicPlusHistory(reason)
         end
     end
 
-    AddCall("C_MythicPlus.GetRunHistory()", C_MythicPlus and C_MythicPlus.GetRunHistory)
-    AddCall("C_MythicPlus.GetRunHistory(false, false)", C_MythicPlus and C_MythicPlus.GetRunHistory, false, false)
-    AddCall("C_MythicPlus.GetRunHistory(true, false)", C_MythicPlus and C_MythicPlus.GetRunHistory, true, false)
-    AddCall("C_MythicPlus.GetRunHistory(false, true)", C_MythicPlus and C_MythicPlus.GetRunHistory, false, true)
-    AddCall("C_MythicPlus.GetRunHistory(true, true)", C_MythicPlus and C_MythicPlus.GetRunHistory, true, true)
-    AddCall("C_MythicPlus.GetCurrentSeason()", C_MythicPlus and C_MythicPlus.GetCurrentSeason)
-    AddCall("C_MythicPlus.GetCurrentSeasonValues()", C_MythicPlus and C_MythicPlus.GetCurrentSeasonValues)
-    AddCall("C_ChallengeMode.GetMapTable()", C_ChallengeMode and C_ChallengeMode.GetMapTable)
-    AddCall("C_ChallengeMode.GetOverallDungeonScore()", C_ChallengeMode and C_ChallengeMode.GetOverallDungeonScore)
+    AddCall(C_MythicPlus and C_MythicPlus.GetRunHistory)
+    AddCall(C_MythicPlus and C_MythicPlus.GetRunHistory, false, false)
+    AddCall(C_MythicPlus and C_MythicPlus.GetRunHistory, true, false)
+    AddCall(C_MythicPlus and C_MythicPlus.GetRunHistory, false, true)
+    AddCall(C_MythicPlus and C_MythicPlus.GetRunHistory, true, true)
 
-    local selectedCall, rawRuns, selectedIndex = SelectBestRunHistoryCall(calls)
+    local rawRuns = SelectBestRunHistory(calls)
     local normalizedRuns = {}
     for _, rawRun in ipairs(rawRuns) do
-        local normalized = NormalizeMythicPlusRun(rawRun, selectedCall and selectedCall.label or "unknown", seasonID)
+        local normalized = NormalizeMythicPlusRun(rawRun, seasonID)
         if normalized then
             normalizedRuns[#normalizedRuns + 1] = normalized
         end
     end
 
-    return normalizedRuns, {
-        takenAt             = time(),
-        reason              = reason,
-        score               = score,
-        seasonID            = seasonID,
-        selectedSource      = selectedCall and selectedCall.label or nil,
-        selectedReturnIndex = selectedIndex,
-        selectedRunCount    = #normalizedRuns,
-        selectedRunSample   = normalizedRuns[1] and CopySavedVarValue(normalizedRuns[1], 3, {}) or nil,
-        calls               = debugCalls,
-    }
-end
-
-local function PrintMythicPlusProbe(debugInfo)
-    if not debugInfo then
-        PrintAddonMessage("No Mythic+ probe data captured yet.")
-        return
-    end
-
-    PrintAddonMessage(string.format(
-        "Mythic+ probe: score=%s season=%s source=%s runs=%d",
-        tostring(debugInfo.score or "nil"),
-        tostring(debugInfo.seasonID or "nil"),
-        tostring(debugInfo.selectedSource or "none"),
-        tonumber(debugInfo.selectedRunCount or 0)
-    ))
-
-    for _, call in ipairs(debugInfo.calls or {}) do
-        if call.ok then
-            PrintAddonMessage(string.format(
-                "%s -> %s",
-                call.label,
-                table.concat(call.returnTypes or {}, ", ")
-            ))
-        else
-            PrintAddonMessage(string.format("%s -> error: %s", call.label, tostring(call.error)))
-        end
-    end
+    return normalizedRuns
 end
 
 local function SyncMythicPlusHistory(reason, options)
@@ -792,7 +618,7 @@ local function SyncMythicPlusHistory(reason, options)
     local key, name, realm, charInfo = GetCharacterIdentity()
     local entry = EnsureCharacterEntry(key, name, realm, charInfo)
     local beforeCount = #entry.mythicPlusRuns
-    local runs, debugInfo = CollectMythicPlusHistory(reason)
+    local runs = CollectMythicPlusHistory()
     local added = 0
 
     for _, run in ipairs(runs) do
@@ -809,23 +635,7 @@ local function SyncMythicPlusHistory(reason, options)
         end)
     end
 
-    entry.mythicPlusDebug.lastProbe = debugInfo
-    entry.mythicPlusDebug.lastSyncAt = debugInfo.takenAt
-    entry.mythicPlusDebug.lastSyncReason = reason
-    entry.mythicPlusDebug.lastAdded = added
-    entry.mythicPlusDebug.totalStoredRuns = #entry.mythicPlusRuns
     lastMPlusSyncAt = GetTime()
-
-    if options.verbose or added > 0 then
-        PrintAddonMessage(string.format(
-            "Mythic+ history sync complete: +%d new runs, %d total stored.",
-            added,
-            #entry.mythicPlusRuns
-        ))
-    end
-    if options.printProbe then
-        PrintMythicPlusProbe(debugInfo)
-    end
 
     return added > 0 or beforeCount ~= #entry.mythicPlusRuns
 end
@@ -846,39 +656,6 @@ local function ScheduleMythicPlusHistorySync(reason, delaySeconds, options)
         pendingMPlusSync = false
         SyncMythicPlusHistory(reason, options)
     end)
-end
-
-local function DumpStoredMythicPlusRuns(limit)
-    if not IsLoggedIn() then
-        PrintAddonMessage("You must be logged in to inspect Mythic+ history.")
-        return
-    end
-
-    limit = math.max(1, math.floor(tonumber(limit) or 5))
-
-    local key, name, realm, charInfo = GetCharacterIdentity()
-    local entry = EnsureCharacterEntry(key, name, realm, charInfo)
-    local runs = entry.mythicPlusRuns or {}
-    if #runs == 0 then
-        PrintAddonMessage("No stored Mythic+ runs for this character yet.")
-        return
-    end
-
-    PrintAddonMessage(string.format("Showing %d of %d stored Mythic+ runs for %s.", math.min(limit, #runs), #runs, key))
-    for i = 1, math.min(limit, #runs) do
-        local run = runs[i]
-        PrintAddonMessage(string.format(
-            "#%d map=%s key=%s completed=%s intime=%s score=%s durationMs=%s source=%s",
-            i,
-            tostring(run.mapChallengeModeID or "nil"),
-            tostring(run.level or "nil"),
-            tostring(run.completed),
-            tostring(run.completedInTime),
-            tostring(run.runScore or "nil"),
-            tostring(run.durationMs or "nil"),
-            tostring(run.source or "unknown")
-        ))
-    end
 end
 
 local function BuildPendingSnapshot()
@@ -1226,7 +1003,7 @@ BuildInfoRow(LeftSection, "Expansion",  "TWW",          132)
 
 BuildCategoryBar(LeftSection, "Commands", 158)
 BuildInfoRow(LeftSection, "/wowdashboard", "open/help", 198)
-BuildInfoRow(LeftSection, "/wd mplus",     "probe",     216)
+BuildInfoRow(LeftSection, "/wd",           "toggle",    216)
 
 -- ============================================================
 -- Right Section
@@ -1525,35 +1302,7 @@ end
 SLASH_WOWDASHBOARD1 = "/wd"
 SLASH_WOWDASHBOARD2 = "/wowdashboard"
 local function PrintSlashHelp()
-    PrintAddonMessage("Commands: /wd, /wd help, /wd open, /wd mplus probe, /wd mplus sync, /wd mplus dump [count]")
-end
-
-local function HandleMythicPlusSlash(rawArgs)
-    local args = rawArgs and rawArgs:match("^%s*(.-)%s*$") or ""
-    local subcommand, rest = args:match("^(%S+)%s*(.-)$")
-    subcommand = subcommand and subcommand:lower() or "help"
-
-    if subcommand == "" or subcommand == "help" then
-        PrintAddonMessage("Mythic+ commands: probe, sync, dump [count]")
-        return
-    end
-
-    if subcommand == "probe" then
-        SyncMythicPlusHistory("slash:probe", { force = true, verbose = true, printProbe = true })
-        return
-    end
-
-    if subcommand == "sync" then
-        SyncMythicPlusHistory("slash:sync", { force = true, verbose = true })
-        return
-    end
-
-    if subcommand == "dump" then
-        DumpStoredMythicPlusRuns(rest)
-        return
-    end
-
-    PrintAddonMessage("Unknown Mythic+ subcommand: " .. tostring(subcommand))
+    PrintAddonMessage("Commands: /wd, /wd help, /wd open")
 end
 
 SlashCmdList["WOWDASHBOARD"] = function(msg)
@@ -1573,11 +1322,6 @@ SlashCmdList["WOWDASHBOARD"] = function(msg)
 
     if command == "help" then
         PrintSlashHelp()
-        return
-    end
-
-    if command == "mplus" then
-        HandleMythicPlusSlash(rest)
         return
     end
 
@@ -1640,7 +1384,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         end
 
     elseif event == "CHALLENGE_MODE_COMPLETED" then
-        ScheduleMythicPlusHistorySync("challenge_mode_completed", 5, { verbose = true })
+        ScheduleMythicPlusHistorySync("challenge_mode_completed", 5)
 
     elseif event == "TIME_PLAYED_MSG" then
         local totalSeconds = ...

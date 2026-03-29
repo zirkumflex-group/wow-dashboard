@@ -164,10 +164,10 @@ export const ingestAddonData = mutation({
           await ctx.db.insert("mythicPlusRuns", {
             characterId,
             fingerprint: run.fingerprint,
-            source: run.source,
             observedAt: run.observedAt,
             seasonID: run.seasonID,
             mapChallengeModeID: run.mapChallengeModeID,
+            mapName: run.mapName,
             level: run.level,
             completed: run.completed,
             completedInTime: run.completedInTime,
@@ -176,10 +176,52 @@ export const ingestAddonData = mutation({
             startDate: run.startDate,
             completedAt: run.completedAt,
             thisWeek: run.thisWeek,
-            members: run.members,
-            raw: run.raw,
           });
           newMythicPlusRuns++;
+        } else {
+          const patch: {
+            seasonID?: number;
+            mapChallengeModeID?: number;
+            mapName?: string;
+            level?: number;
+            completed?: boolean;
+            completedInTime?: boolean;
+            durationMs?: number;
+            runScore?: number;
+            startDate?: number;
+            completedAt?: number;
+            thisWeek?: boolean;
+          } = {};
+
+          if (existingRun.seasonID === undefined && run.seasonID !== undefined) patch.seasonID = run.seasonID;
+          if (
+            existingRun.mapChallengeModeID === undefined &&
+            run.mapChallengeModeID !== undefined
+          ) {
+            patch.mapChallengeModeID = run.mapChallengeModeID;
+          }
+          if (!existingRun.mapName && run.mapName) patch.mapName = run.mapName;
+          if (existingRun.level === undefined && run.level !== undefined) patch.level = run.level;
+          if (existingRun.completed === undefined && run.completed !== undefined) patch.completed = run.completed;
+          if (
+            existingRun.completedInTime === undefined &&
+            run.completedInTime !== undefined
+          ) {
+            patch.completedInTime = run.completedInTime;
+          }
+          if (existingRun.durationMs === undefined && run.durationMs !== undefined) {
+            patch.durationMs = run.durationMs;
+          }
+          if (existingRun.runScore === undefined && run.runScore !== undefined) patch.runScore = run.runScore;
+          if (existingRun.startDate === undefined && run.startDate !== undefined) patch.startDate = run.startDate;
+          if (existingRun.completedAt === undefined && run.completedAt !== undefined) {
+            patch.completedAt = run.completedAt;
+          }
+          if (existingRun.thisWeek === undefined && run.thisWeek !== undefined) patch.thisWeek = run.thisWeek;
+
+          if (Object.keys(patch).length > 0) {
+            await ctx.db.patch(existingRun._id, patch);
+          }
         }
       }
     }

@@ -38,10 +38,10 @@ interface SnapshotData {
 
 interface MythicPlusRunData {
   fingerprint: string;
-  source?: string;
   observedAt: number;
   seasonID?: number;
   mapChallengeModeID?: number;
+  mapName?: string;
   level?: number;
   completed?: boolean;
   completedInTime?: boolean;
@@ -50,8 +50,6 @@ interface MythicPlusRunData {
   startDate?: number;
   completedAt?: number;
   thisWeek?: boolean;
-  members?: unknown;
-  raw?: unknown;
 }
 
 interface CharacterData {
