@@ -835,6 +835,10 @@ function compactMythicPlusRunsInPlace(
       runValue.mapChallengeModeID = normalized.mapChallengeModeID;
       changed = true;
     }
+    if (normalized.mapName && runValue.mapName !== normalized.mapName) {
+      runValue.mapName = normalized.mapName;
+      changed = true;
+    }
     if (normalized.level !== undefined && runValue.level !== normalized.level) {
       runValue.level = normalized.level;
       changed = true;

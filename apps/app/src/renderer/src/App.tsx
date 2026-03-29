@@ -92,6 +92,11 @@ interface PendingUploadCounts {
   mythicPlusRuns: number;
 }
 
+interface MythicPlusBackfillStatus {
+  needsBackfill: boolean;
+  missingMapNameRuns: number;
+}
+
 // ---------------------------------------------------------------------------
 // Type augmentation for window.electron
 // ---------------------------------------------------------------------------
@@ -253,14 +258,20 @@ function formatDateTime(ms: number) {
   return new Date(ms).toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
-function getPendingUploadCounts(chars: CharacterData[], sinceTs: number): PendingUploadCounts {
+function getPendingUploadCounts(
+  chars: CharacterData[],
+  sinceTs: number,
+  includeAllMythicPlusRuns = false,
+): PendingUploadCounts {
   return chars.reduce(
     (totals, char) => ({
       snapshots:
         totals.snapshots + char.snapshots.filter((snapshot) => snapshot.takenAt > sinceTs).length,
       mythicPlusRuns:
         totals.mythicPlusRuns +
-        char.mythicPlusRuns.filter((run) => run.observedAt > sinceTs).length,
+        (includeAllMythicPlusRuns
+          ? char.mythicPlusRuns.length
+          : char.mythicPlusRuns.filter((run) => run.observedAt > sinceTs).length),
     }),
     { snapshots: 0, mythicPlusRuns: 0 },
   );
@@ -349,6 +360,11 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
   const uploadAddon = useMutation(api.addonIngest.ingestAddonData);
   const resync = useMutation(api.characters.resyncCharacters);
   const characters = useQuery(api.characters.getMyCharactersWithSnapshot);
+  // The checked-in Convex API typings lag the local module exports, so this
+  // query reference is cast until codegen is cleaned up separately.
+  const mythicPlusBackfillStatus = useQuery(
+    (api as any).addonIngest.getMythicPlusBackfillStatus,
+  ) as MythicPlusBackfillStatus | undefined;
 
   const [syncing, setSyncing] = useState(false);
   const [timeLeft, setTimeLeft] = useState(15 * 60);
@@ -390,6 +406,7 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
   // Always points to the latest doUpload closure so stale-closure effects stay current.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const doUploadRef = useRef<() => Promise<void>>(null as any);
+  const needsMythicPlusBackfill = mythicPlusBackfillStatus?.needsBackfill === true;
 
   const refreshAddonFileState = useCallback(async () => {
     if (!retailPath) {
@@ -408,13 +425,13 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
 
       const { characters: chars, fileStats } = addonData;
       const sinceTs = lastSyncedAtRef.current - 60;
-      setPendingUploadCounts(getPendingUploadCounts(chars, sinceTs));
+      setPendingUploadCounts(getPendingUploadCounts(chars, sinceTs, needsMythicPlusBackfill));
       setAddonFileStats(fileStats);
     } catch {
       setPendingUploadCounts({ snapshots: 0, mythicPlusRuns: 0 });
       setAddonFileStats(null);
     }
-  }, [retailPath]);
+  }, [needsMythicPlusBackfill, retailPath]);
 
   // Load persisted settings on mount
   useEffect(() => {
@@ -587,11 +604,15 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
             .map((c) => ({
               ...c,
               snapshots: c.snapshots.filter((s) => s.takenAt > sinceTs && s.spec !== "Unknown"),
-              mythicPlusRuns: c.mythicPlusRuns.filter((run) => run.observedAt > sinceTs),
+              mythicPlusRuns: needsMythicPlusBackfill
+                ? c.mythicPlusRuns
+                : c.mythicPlusRuns.filter((run) => run.observedAt > sinceTs),
             }))
             .filter((c) => c.snapshots.length > 0 || c.mythicPlusRuns.length > 0);
 
-          setPendingUploadCounts(getPendingUploadCounts(addonChars, sinceTs));
+          setPendingUploadCounts(
+            getPendingUploadCounts(addonChars, sinceTs, needsMythicPlusBackfill),
+          );
 
           if (pendingChars.length > 0) {
             const result = await uploadAddon({

@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 
-import { mutation } from "./_generated/server";
+import { mutation, query } from "./_generated/server";
 import { authComponent } from "./auth";
 import { rateLimiter } from "./rateLimiter";
 import { mythicPlusRunValidator } from "./schemas/mythicPlusRuns";
@@ -49,6 +49,53 @@ const characterValidator = v.object({
   faction: v.union(v.literal("alliance"), v.literal("horde")),
   snapshots: v.array(snapshotValidator),
   mythicPlusRuns: v.optional(v.array(mythicPlusRunValidator)),
+});
+
+export const getMythicPlusBackfillStatus = query({
+  args: {},
+  handler: async (ctx) => {
+    const authUser = await authComponent.safeGetAuthUser(ctx);
+    if (!authUser) {
+      return { needsBackfill: false, missingMapNameRuns: 0 };
+    }
+
+    const player = await ctx.db
+      .query("players")
+      .withIndex("by_user", (q) => q.eq("userId", authUser._id as string))
+      .first();
+
+    if (!player) {
+      return { needsBackfill: false, missingMapNameRuns: 0 };
+    }
+
+    const characters = await ctx.db
+      .query("characters")
+      .withIndex("by_player", (q) => q.eq("playerId", player._id))
+      .collect();
+
+    const runsByCharacter = await Promise.all(
+      characters.map((character) =>
+        ctx.db
+          .query("mythicPlusRuns")
+          .withIndex("by_character", (q) => q.eq("characterId", character._id))
+          .collect(),
+      ),
+    );
+
+    let missingMapNameRuns = 0;
+    for (const runs of runsByCharacter) {
+      for (const run of runs) {
+        if (!run.mapName || run.mapName.trim() === "") {
+          missingMapNameRuns += 1;
+        }
+      }
+    }
+
+    return {
+      needsBackfill: missingMapNameRuns > 0,
+      missingMapNameRuns,
+    };
+  },
 });
 
 export const ingestAddonData = mutation({
