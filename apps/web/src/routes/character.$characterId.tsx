@@ -285,6 +285,15 @@ function formatRunScore(value?: number | null) {
   });
 }
 
+function formatRunScoreIncrease(value?: number | null) {
+  if (value === undefined || value === null || value <= 0) return null;
+  const hasFraction = Math.abs(value % 1) > 0.001;
+  return value.toLocaleString(undefined, {
+    minimumFractionDigits: hasFraction ? 1 : 0,
+    maximumFractionDigits: 1,
+  });
+}
+
 function formatSeasonLabel(seasonID: number | null) {
   if (seasonID === null) return null;
   if (seasonID === 17) return "Midnight Season 1";
@@ -594,7 +603,7 @@ function MythicPlusSection({ data }: { data: MythicPlusData | null | undefined }
                 <StatGrid compact label="Total Runs" value={currentSeason.totalRuns.toLocaleString()} />
               </div>
               <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
-                <StatGrid compact label="5+ Timed" value={currentSeason.timed5To9.toLocaleString()} />
+                <StatGrid compact label="2+ Timed" value={currentSeason.timed2To9.toLocaleString()} />
                 <StatGrid compact label="10+ Timed" value={currentSeason.timed10To11.toLocaleString()} />
                 <StatGrid compact label="12+ Timed" value={currentSeason.timed12To13.toLocaleString()} />
                 <StatGrid compact label="14+ Timed" value={currentSeason.timed14Plus.toLocaleString()} />
@@ -705,8 +714,15 @@ function MythicPlusSection({ data }: { data: MythicPlusData | null | undefined }
                     <td className="px-3 py-2">
                       <MythicPlusResultBadge run={run} />
                     </td>
-                    <td className="px-3 py-2 text-right tabular-nums">
-                      {formatRunScore(run.runScore)}
+                    <td className="px-3 py-2 text-right">
+                      <div className="flex items-center justify-end gap-1.5 tabular-nums">
+                        <span>{formatRunScore(run.runScore)}</span>
+                        {formatRunScoreIncrease(run.scoreIncrease) && (
+                          <span className="text-xs font-medium text-emerald-300">
+                            (+{formatRunScoreIncrease(run.scoreIncrease)})
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="px-3 py-2 text-right tabular-nums">
                       {formatRunDuration(run.durationMs)}
@@ -843,13 +859,14 @@ type MythicPlusRun = {
   startDate?: number;
   completedAt?: number;
   thisWeek?: boolean;
+  scoreIncrease?: number | null;
 };
 
 type MythicPlusBucketSummary = {
   totalRuns: number;
   completedRuns: number;
   timedRuns: number;
-  timed5To9: number;
+  timed2To9: number;
   timed10To11: number;
   timed12To13: number;
   timed14Plus: number;

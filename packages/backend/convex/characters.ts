@@ -25,6 +25,15 @@ function getMapLabel(run: MythicPlusRunDoc): string {
   return "Unknown Dungeon";
 }
 
+function getMythicPlusRunProgressionKey(run: MythicPlusRunDoc): string {
+  const mapToken =
+    run.mapChallengeModeID !== undefined
+      ? String(run.mapChallengeModeID)
+      : getMapLabel(run).trim().toLowerCase();
+  const seasonToken = run.seasonID !== undefined ? String(run.seasonID) : "unknown";
+  return `${seasonToken}|${mapToken}`;
+}
+
 function hasRecordedCompletionEvidence(run: MythicPlusRunDoc): boolean {
   return run.durationMs !== undefined || run.runScore !== undefined || run.completedAt !== undefined;
 }
@@ -112,7 +121,7 @@ function dedupeSnapshotsByTakenAt(snapshots: SnapshotDoc[]) {
 function buildMythicPlusBucketSummary(runs: MythicPlusRunDoc[]) {
   let completedRuns = 0;
   let timedRuns = 0;
-  let timed5To9 = 0;
+  let timed2To9 = 0;
   let timed10To11 = 0;
   let timed12To13 = 0;
   let timed14Plus = 0;
@@ -143,8 +152,8 @@ function buildMythicPlusBucketSummary(runs: MythicPlusRunDoc[]) {
         timed12To13 += 1;
       } else if (level >= 10) {
         timed10To11 += 1;
-      } else if (level >= 5) {
-        timed5To9 += 1;
+      } else if (level >= 2) {
+        timed2To9 += 1;
       }
     }
 
@@ -165,7 +174,7 @@ function buildMythicPlusBucketSummary(runs: MythicPlusRunDoc[]) {
     totalRuns: runs.length,
     completedRuns,
     timedRuns,
-    timed5To9,
+    timed2To9,
     timed10To11,
     timed12To13,
     timed14Plus,
@@ -289,6 +298,39 @@ function buildMythicPlusSummary(runs: MythicPlusRunDoc[], currentScore: number |
       latestSeasonID === null ? null : buildMythicPlusBucketSummary(currentSeasonRuns),
     currentSeasonDungeons: buildDungeonSummaries(currentSeasonRuns),
   };
+}
+
+function buildRecentRuns(runs: MythicPlusRunDoc[]) {
+  const bestPreviousScoreByDungeon = new Map<string, number>();
+  const scoreIncreaseByRunId = new Map<string, number>();
+
+  for (let index = runs.length - 1; index >= 0; index -= 1) {
+    const run = runs[index];
+
+    if (!isCompletedRun(run) || run.runScore === undefined) {
+      continue;
+    }
+
+    const progressionKey = getMythicPlusRunProgressionKey(run);
+    const bestPreviousScore = bestPreviousScoreByDungeon.get(progressionKey);
+    if (bestPreviousScore === undefined) {
+      if (run.runScore > 0) {
+        scoreIncreaseByRunId.set(run._id, run.runScore);
+      }
+    } else if (run.runScore > bestPreviousScore) {
+      scoreIncreaseByRunId.set(run._id, run.runScore - bestPreviousScore);
+    }
+
+    bestPreviousScoreByDungeon.set(
+      progressionKey,
+      bestPreviousScore === undefined ? run.runScore : Math.max(bestPreviousScore, run.runScore),
+    );
+  }
+
+  return runs.map((run) => ({
+    ...run,
+    scoreIncrease: scoreIncreaseByRunId.get(run._id) ?? null,
+  }));
 }
 
 function dedupeMythicPlusRuns(runs: MythicPlusRunDoc[]) {
@@ -449,7 +491,7 @@ export const getCharacterMythicPlus = query({
     const sortedRuns = dedupeMythicPlusRuns(runs);
 
     return {
-      runs: sortedRuns,
+      runs: buildRecentRuns(sortedRuns),
       summary: buildMythicPlusSummary(sortedRuns, latestSnapshot?.mythicPlusScore ?? null),
     };
   },
