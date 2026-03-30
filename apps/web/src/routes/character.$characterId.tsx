@@ -593,6 +593,7 @@ type LayoutProps = {
   latest: Snapshot;
   chartSnapshots: Snapshot[];
   filteredSnapshots: Snapshot[];
+  mythicPlus?: MythicPlusData | null;
   timeFrame: TimeFrame;
   setTimeFrame: (f: TimeFrame) => void;
 };
@@ -721,6 +722,114 @@ const currenciesConfig: ChartConfig = {
 
 // ── Reusable line chart ───────────────────────────────────────────────────────
 
+type YScaleOptions = {
+  includeZero?: boolean;
+  minSpan?: number;
+  minPadding?: number;
+  padRatio?: number;
+  stepFloor?: number;
+  tickCount?: number;
+};
+
+const ITEM_LEVEL_AUTO_SCALE: YScaleOptions = {
+  minSpan: 4,
+  minPadding: 0.5,
+  padRatio: 0.18,
+  stepFloor: 0.5,
+};
+const ITEM_LEVEL_WIDE_DOMAIN: [number, number] = [0, 300];
+const MPLUS_AUTO_SCALE: YScaleOptions = {
+  minSpan: 150,
+  minPadding: 40,
+  padRatio: 0.16,
+  stepFloor: 25,
+};
+const MPLUS_WIDE_DOMAIN: [number, number] = [0, 4500];
+const GOLD_SCALE: YScaleOptions = {
+  minSpan: 20,
+  minPadding: 2,
+  padRatio: 0.2,
+  stepFloor: 1,
+};
+const SECONDARY_STATS_SCALE: YScaleOptions = {
+  minSpan: 6,
+  minPadding: 0.4,
+  padRatio: 0.14,
+  stepFloor: 0.5,
+};
+const CURRENCIES_SCALE: YScaleOptions = {
+  includeZero: true,
+  minSpan: 40,
+  minPadding: 5,
+  padRatio: 0.14,
+  stepFloor: 5,
+};
+const PLAYTIME_SCALE: YScaleOptions = {
+  minSpan: 24,
+  minPadding: 6,
+  padRatio: 0.14,
+  stepFloor: 6,
+};
+
+function getNiceStep(rawStep: number, stepFloor = 1) {
+  const minimum = Math.max(stepFloor, Number.EPSILON);
+  const safeStep = Math.max(rawStep, minimum);
+  const magnitude = 10 ** Math.floor(Math.log10(safeStep));
+  const normalized = safeStep / magnitude;
+
+  if (normalized <= 1) return Math.max(stepFloor, magnitude);
+  if (normalized <= 2) return Math.max(stepFloor, 2 * magnitude);
+  if (normalized <= 2.5) return Math.max(stepFloor, 2.5 * magnitude);
+  if (normalized <= 5) return Math.max(stepFloor, 5 * magnitude);
+  return Math.max(stepFloor, 10 * magnitude);
+}
+
+function getAdaptiveYDomain(
+  values: number[],
+  pointCount: number,
+  options: YScaleOptions = {},
+): [number, number] {
+  const safeValues = values.filter((value) => Number.isFinite(value));
+  if (safeValues.length === 0) return [0, 1];
+
+  const tickCount = Math.max(options.tickCount ?? 5, 2);
+  let minValue = Math.min(...safeValues);
+  let maxValue = Math.max(...safeValues);
+
+  if (options.includeZero) {
+    minValue = Math.min(minValue, 0);
+    maxValue = Math.max(maxValue, 0);
+  }
+
+  const rawSpan = maxValue - minValue;
+  const minSpan = options.minSpan ?? 1;
+  const effectiveSpan =
+    rawSpan > 0 ? Math.max(rawSpan, minSpan) : Math.max(minSpan, Math.abs(maxValue) * 0.04, 1);
+  const padRatio = options.padRatio ?? (pointCount <= 3 ? 0.18 : 0.12);
+  const minPadding = options.minPadding ?? Math.max(effectiveSpan * 0.08, 0.5);
+  const padding = Math.max(effectiveSpan * padRatio, minPadding);
+  const step = getNiceStep(
+    (effectiveSpan + padding * 2) / (tickCount - 1),
+    options.stepFloor ?? 1,
+  );
+
+  let domainMin = Math.floor((minValue - padding) / step) * step;
+  let domainMax = Math.ceil((maxValue + padding) / step) * step;
+
+  if (options.includeZero && minValue >= 0 && domainMin < 0) {
+    domainMin = 0;
+  }
+  if (options.includeZero && maxValue <= 0 && domainMax > 0) {
+    domainMax = 0;
+  }
+
+  if (domainMin === domainMax) {
+    return [domainMin - step, domainMax + step];
+  }
+
+  return [domainMin, domainMax];
+}
+
 function SnapshotLineChart({
   data,
   lines,
@@ -729,7 +838,7 @@ function SnapshotLineChart({
   className,
   showLegend,
   yDomainOverride,
-  yPadMaxFactor,
+  yScaleOptions,
   timeFrame,
 }: {
   data: Record<string, number>[];
@@ -739,7 +848,7 @@ function SnapshotLineChart({
   className?: string;
   showLegend?: boolean;
   yDomainOverride?: [number, number];
-  yPadMaxFactor?: number;
+  yScaleOptions?: YScaleOptions;
   timeFrame?: TimeFrame;
 }) {
   if (data.length < 2) {
@@ -754,16 +863,8 @@ function SnapshotLineChart({
   const allValues = data
     .flatMap((d) => lines.map((l) => d[l.key]))
     .filter((v) => typeof v === "number" && !isNaN(v));
-  const minVal = allValues.length ? Math.min(...allValues) : 0;
-  const maxVal = allValues.length ? Math.max(...allValues) : 0;
-  const range = maxVal - minVal;
-  const pad =
-    yPadMaxFactor != null
-      ? Math.abs(maxVal) * yPadMaxFactor || 1
-      : range > 0
-        ? range * 0.1
-        : Math.abs(maxVal) * 0.05 || 1;
-  const yDomain: [number, number] = yDomainOverride ?? [Math.floor(minVal - pad), Math.ceil(maxVal + pad)];
+  const yDomain: [number, number] =
+    yDomainOverride ?? getAdaptiveYDomain(allValues, data.length, yScaleOptions);
 
   return (
     <ChartContainer config={config} className={`w-full ${className ?? "h-[200px]"}`}>
@@ -786,6 +887,7 @@ function SnapshotLineChart({
           tickFormatter={valueFormatter}
           width={52}
           domain={yDomain}
+          tickCount={yScaleOptions?.tickCount ?? 5}
           allowDataOverflow={!!yDomainOverride}
         />
         <ChartTooltip
@@ -925,10 +1027,10 @@ function RadarStrip({ snapshot }: { snapshot: Snapshot }) {
 
 function IlvlChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeFrame: TimeFrame }) {
   const [fullscreen, setFullscreen] = useState(false);
-  const [zoomed, setZoomed] = useState(false);
+  const [zoomed, setZoomed] = useState(true);
   const data = snapshots.map((s) => ({ date: s.takenAt, itemLevel: s.itemLevel }));
   const lines = [{ key: "itemLevel", color: C.blue }];
-  const yDomain: [number, number] = zoomed ? [200, 300] : [0, 300];
+  const yDomain = zoomed ? undefined : ITEM_LEVEL_WIDE_DOMAIN;
   return (
     <Card>
       <CardHeader className="pb-0">
@@ -953,20 +1055,25 @@ function IlvlChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeFr
       </CardHeader>
       <CardContent>
         <SnapshotLineChart
-          key={yDomain.join(",")}
+          key={zoomed ? "zoomed" : "wide"}
           data={data} lines={lines} config={ilvlConfig}
           valueFormatter={(v) => v.toFixed(1)}
           yDomainOverride={yDomain}
+          yScaleOptions={ITEM_LEVEL_AUTO_SCALE}
           timeFrame={timeFrame}
         />
       </CardContent>
       {fullscreen && (
         <FullscreenOverlay title="Item Level" onClose={() => setFullscreen(false)}>
           <SnapshotLineChart
-            key={yDomain.join(",")}
+            key={zoomed ? "zoomed" : "wide"}
             data={data} lines={lines} config={ilvlConfig}
             valueFormatter={(v) => v.toFixed(1)}
-            className="h-full" showLegend yDomainOverride={yDomain} timeFrame={timeFrame}
+            className="h-full"
+            showLegend
+            yDomainOverride={yDomain}
+            yScaleOptions={ITEM_LEVEL_AUTO_SCALE}
+            timeFrame={timeFrame}
           />
         </FullscreenOverlay>
       )}
@@ -976,10 +1083,10 @@ function IlvlChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeFr
 
 function MplusChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeFrame: TimeFrame }) {
   const [fullscreen, setFullscreen] = useState(false);
-  const [zoomed, setZoomed] = useState(false);
+  const [zoomed, setZoomed] = useState(true);
   const data = snapshots.map((s) => ({ date: s.takenAt, mythicPlusScore: s.mythicPlusScore }));
   const lines = [{ key: "mythicPlusScore", color: C.red }];
-  const yDomain: [number, number] = zoomed ? [2000, 4500] : [0, 4500];
+  const yDomain = zoomed ? undefined : MPLUS_WIDE_DOMAIN;
   return (
     <Card>
       <CardHeader className="pb-0">
@@ -1004,20 +1111,25 @@ function MplusChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeF
       </CardHeader>
       <CardContent>
         <SnapshotLineChart
-          key={yDomain.join(",")}
+          key={zoomed ? "zoomed" : "wide"}
           data={data} lines={lines} config={mplusConfig}
           valueFormatter={(v) => v.toLocaleString()}
           yDomainOverride={yDomain}
+          yScaleOptions={MPLUS_AUTO_SCALE}
           timeFrame={timeFrame}
         />
       </CardContent>
       {fullscreen && (
         <FullscreenOverlay title="M+ Score" onClose={() => setFullscreen(false)}>
           <SnapshotLineChart
-            key={yDomain.join(",")}
+            key={zoomed ? "zoomed" : "wide"}
             data={data} lines={lines} config={mplusConfig}
             valueFormatter={(v) => v.toLocaleString()}
-            className="h-full" showLegend yDomainOverride={yDomain} timeFrame={timeFrame}
+            className="h-full"
+            showLegend
+            yDomainOverride={yDomain}
+            yScaleOptions={MPLUS_AUTO_SCALE}
+            timeFrame={timeFrame}
           />
         </FullscreenOverlay>
       )}
@@ -1043,6 +1155,7 @@ function GoldChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeFr
         <SnapshotLineChart
           data={data} lines={lines} config={goldConfig}
           valueFormatter={(v) => `${goldUnits(v).toLocaleString()}g`}
+          yScaleOptions={GOLD_SCALE}
           timeFrame={timeFrame}
         />
       </CardContent>
@@ -1051,7 +1164,10 @@ function GoldChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeFr
           <SnapshotLineChart
             data={data} lines={lines} config={goldConfig}
             valueFormatter={(v) => `${goldUnits(v).toLocaleString()}g`}
-            className="h-full" showLegend timeFrame={timeFrame}
+            className="h-full"
+            showLegend
+            yScaleOptions={GOLD_SCALE}
+            timeFrame={timeFrame}
           />
         </FullscreenOverlay>
       )}
@@ -1094,7 +1210,9 @@ function SecondaryStatsChartCard({
         <SnapshotLineChart
           data={data} lines={lines} config={secondaryStatsConfig}
           valueFormatter={(v) => `${v.toFixed(1)}%`}
-          showLegend timeFrame={timeFrame}
+          showLegend
+          yScaleOptions={SECONDARY_STATS_SCALE}
+          timeFrame={timeFrame}
         />
       </CardContent>
     </Card>
@@ -1128,7 +1246,9 @@ function CurrenciesChartCard({
       <CardContent>
         <SnapshotLineChart
           data={data} lines={lines} config={currenciesConfig}
-          showLegend timeFrame={timeFrame}
+          showLegend
+          yScaleOptions={CURRENCIES_SCALE}
+          timeFrame={timeFrame}
         />
       </CardContent>
     </Card>
@@ -1160,7 +1280,7 @@ function PlaytimeChartCard({
         <SnapshotLineChart
           data={data} lines={lines} config={playtimeConfig}
           valueFormatter={(v) => formatHours(v)}
-          yDomainOverride={[0, 4800]}
+          yScaleOptions={PLAYTIME_SCALE}
           timeFrame={timeFrame}
         />
       </CardContent>
@@ -1255,12 +1375,12 @@ function SnapshotHistoryTable({
 // Bottom: collapsible history
 // ════════════════════════════════════════════════════════════════════════════
 
-function OverviewLayout({ latest, chartSnapshots, timeFrame, setTimeFrame }: LayoutProps) {
+function OverviewLayout({ latest, chartSnapshots, mythicPlus, timeFrame, setTimeFrame }: LayoutProps) {
   return (
     <div className="space-y-4">
-      <div className="flex flex-col md:flex-row gap-4 items-start">
+      <div className="grid gap-4 lg:grid-cols-[18rem_minmax(0,1fr)] items-start">
         {/* Sidebar */}
-        <div className="w-full md:w-72 shrink-0 md:sticky md:top-4 space-y-4">
+        <div className="w-full lg:sticky lg:top-4 space-y-4">
           <Card>
             <CardHeader className="border-b pb-3">
               <CardTitle className="text-sm font-medium flex items-center gap-1.5">
@@ -1275,7 +1395,7 @@ function OverviewLayout({ latest, chartSnapshots, timeFrame, setTimeFrame }: Lay
         </div>
 
         {/* Main charts */}
-        <div className="flex-1 min-w-0 space-y-4">
+        <div className="min-w-0 space-y-4">
           <div className="flex items-center justify-between flex-wrap gap-2">
             <TimeFramePicker value={timeFrame} onChange={setTimeFrame} />
             <span className="text-muted-foreground text-xs">
@@ -1289,6 +1409,8 @@ function OverviewLayout({ latest, chartSnapshots, timeFrame, setTimeFrame }: Lay
             <GoldChartCard    snapshots={chartSnapshots} timeFrame={timeFrame} />
             <CurrenciesChartCard snapshots={chartSnapshots} timeFrame={timeFrame} />
           </div>
+
+          <MythicPlusSection data={mythicPlus} />
         </div>
       </div>
     </div>
@@ -1376,6 +1498,7 @@ function FocusChart({
         config={ilvlConfig}
         valueFormatter={(v) => v.toFixed(1)}
         className={h}
+        yScaleOptions={ITEM_LEVEL_AUTO_SCALE}
         timeFrame={timeFrame}
       />
     );
@@ -1388,6 +1511,7 @@ function FocusChart({
         config={mplusConfig}
         valueFormatter={(v) => v.toLocaleString()}
         className={h}
+        yScaleOptions={MPLUS_AUTO_SCALE}
         timeFrame={timeFrame}
       />
     );
@@ -1400,6 +1524,7 @@ function FocusChart({
         config={goldConfig}
         valueFormatter={(v) => `${goldUnits(v).toLocaleString()}g`}
         className={h}
+        yScaleOptions={GOLD_SCALE}
         timeFrame={timeFrame}
       />
     );
@@ -1424,6 +1549,7 @@ function FocusChart({
         valueFormatter={(v) => `${v.toFixed(1)}%`}
         className={h}
         showLegend
+        yScaleOptions={SECONDARY_STATS_SCALE}
         timeFrame={timeFrame}
       />
     );
@@ -1442,6 +1568,7 @@ function FocusChart({
         config={currenciesConfig}
         className={h}
         showLegend
+        yScaleOptions={CURRENCIES_SCALE}
         timeFrame={timeFrame}
       />
     );
@@ -1453,8 +1580,8 @@ function FocusChart({
         lines={[{ key: "playtimeHours", color: C.purple }]}
         config={playtimeConfig}
         valueFormatter={(v) => formatHours(v)}
-        yDomainOverride={[0, 4800]}
         className={h}
+        yScaleOptions={PLAYTIME_SCALE}
         timeFrame={timeFrame}
       />
     );
@@ -1570,6 +1697,7 @@ function TimelineLayout({ latest, chartSnapshots, timeFrame, setTimeFrame }: Lay
             config={ilvlConfig}
             valueFormatter={(v) => v.toFixed(1)}
             className={chartH}
+            yScaleOptions={ITEM_LEVEL_AUTO_SCALE}
             timeFrame={timeFrame}
           />
         </CardContent>
@@ -1588,6 +1716,7 @@ function TimelineLayout({ latest, chartSnapshots, timeFrame, setTimeFrame }: Lay
             config={mplusConfig}
             valueFormatter={(v) => v.toLocaleString()}
             className={chartH}
+            yScaleOptions={MPLUS_AUTO_SCALE}
             timeFrame={timeFrame}
           />
         </CardContent>
@@ -1606,6 +1735,7 @@ function TimelineLayout({ latest, chartSnapshots, timeFrame, setTimeFrame }: Lay
             config={goldConfig}
             valueFormatter={(v) => `${goldUnits(v).toLocaleString()}g`}
             className={chartH}
+            yScaleOptions={GOLD_SCALE}
             timeFrame={timeFrame}
           />
         </CardContent>
@@ -1820,6 +1950,7 @@ function RouteComponent() {
     latest: latest!,
     chartSnapshots,
     filteredSnapshots: filtered,
+    mythicPlus: mythicPlus as MythicPlusData | null | undefined,
     timeFrame,
     setTimeFrame,
   };
@@ -1890,7 +2021,9 @@ function RouteComponent() {
         </>
       )}
 
-      <MythicPlusSection data={mythicPlus as MythicPlusData | null | undefined} />
+      {layoutMode !== "overview" && (
+        <MythicPlusSection data={mythicPlus as MythicPlusData | null | undefined} />
+      )}
       <SnapshotHistorySection snapshots={filtered} layoutMode={layoutMode} />
     </div>
   );
