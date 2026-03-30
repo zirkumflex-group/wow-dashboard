@@ -389,6 +389,9 @@ interface SnapshotData {
     hastePercent: number;
     masteryPercent: number;
     versatilityPercent: number;
+    speedPercent?: number;
+    leechPercent?: number;
+    avoidancePercent?: number;
   };
 }
 
@@ -425,6 +428,35 @@ interface CompactAddonResult {
   mythicPlusRunsAfter: number;
   rawRunsTrimmed: number;
   membersTrimmed: number;
+}
+
+function getSnapshotCompletenessScore(snapshot: SnapshotData): number {
+  let score = 0;
+
+  if (snapshot.playtimeSeconds > 0) score += 1;
+  if (snapshot.stats.speedPercent !== undefined) score += 2;
+  if (snapshot.stats.leechPercent !== undefined) score += 2;
+  if (snapshot.stats.avoidancePercent !== undefined) score += 2;
+
+  return score;
+}
+
+function mergeSnapshotData(current: SnapshotData, candidate: SnapshotData): SnapshotData {
+  const currentScore = getSnapshotCompletenessScore(current);
+  const candidateScore = getSnapshotCompletenessScore(candidate);
+  const preferred = candidateScore >= currentScore ? candidate : current;
+  const fallback = preferred === candidate ? current : candidate;
+
+  return {
+    ...preferred,
+    playtimeSeconds: preferred.playtimeSeconds > 0 ? preferred.playtimeSeconds : fallback.playtimeSeconds,
+    stats: {
+      ...preferred.stats,
+      speedPercent: preferred.stats.speedPercent ?? fallback.stats.speedPercent,
+      leechPercent: preferred.stats.leechPercent ?? fallback.stats.leechPercent,
+      avoidancePercent: preferred.stats.avoidancePercent ?? fallback.stats.avoidancePercent,
+    },
+  };
 }
 
 function isRecord(value: unknown): value is LuaTable {
@@ -586,6 +618,9 @@ function extractCharacters(db: Record<string, unknown>): CharacterData[] {
           hastePercent: Number(stats.hastePercent ?? 0),
           masteryPercent: Number(stats.masteryPercent ?? 0),
           versatilityPercent: Number(stats.versatilityPercent ?? 0),
+          speedPercent: toOptionalNumber(stats.speedPercent),
+          leechPercent: toOptionalNumber(stats.leechPercent),
+          avoidancePercent: toOptionalNumber(stats.avoidancePercent),
         },
       });
     }
@@ -674,12 +709,17 @@ async function findAndParseAddonData(
       if (!existing) {
         allChars.set(key, char);
       } else {
-        const knownTimes = new Set(existing.snapshots.map((s) => s.takenAt));
+        const snapshotsByTime = new Map(existing.snapshots.map((snapshot) => [snapshot.takenAt, snapshot]));
         for (const snap of char.snapshots) {
-          if (!knownTimes.has(snap.takenAt)) {
+          const current = snapshotsByTime.get(snap.takenAt);
+          if (!current) {
             existing.snapshots.push(snap);
-            knownTimes.add(snap.takenAt);
+            snapshotsByTime.set(snap.takenAt, snap);
+            continue;
           }
+
+          const mergedSnapshot = mergeSnapshotData(current, snap);
+          Object.assign(current, mergedSnapshot);
         }
 
         const knownFingerprints = new Set(existing.mythicPlusRuns.map((run) => run.fingerprint));

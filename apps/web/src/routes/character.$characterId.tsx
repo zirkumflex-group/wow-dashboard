@@ -858,6 +858,7 @@ function RadarPanel({ snapshot }: { snapshot: Snapshot }) {
         <StatRow label="Haste"       value={`${snapshot.stats.hastePercent.toFixed(2)}%`}       />
         <StatRow label="Mastery"     value={`${snapshot.stats.masteryPercent.toFixed(2)}%`}     />
         <StatRow label="Versatility" value={`${snapshot.stats.versatilityPercent.toFixed(2)}%`} />
+        {tertiaryStats.length > 0 && <div className="border-t border-border/50 my-1" />}
         {tertiaryStats.map((stat) => (
           <StatRow key={stat.label} label={stat.label} value={`${stat.value.toFixed(2)}%`} />
         ))}

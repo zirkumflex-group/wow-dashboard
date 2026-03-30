@@ -1,4 +1,5 @@
 import { v } from "convex/values";
+import type { Doc } from "./_generated/dataModel";
 
 import { mutation, query } from "./_generated/server";
 import { authComponent } from "./auth";
@@ -46,6 +47,54 @@ const snapshotValidator = v.object({
   currencies: currenciesValidator,
   stats: statsValidator,
 });
+
+type SnapshotDoc = Doc<"snapshots">;
+type SnapshotFields = Pick<
+  SnapshotDoc,
+  | "takenAt"
+  | "level"
+  | "spec"
+  | "role"
+  | "itemLevel"
+  | "gold"
+  | "playtimeSeconds"
+  | "mythicPlusScore"
+  | "currencies"
+  | "stats"
+>;
+
+function toSnapshotFields(snapshot: SnapshotFields): SnapshotFields {
+  return {
+    takenAt: snapshot.takenAt,
+    level: snapshot.level,
+    spec: snapshot.spec,
+    role: snapshot.role,
+    itemLevel: snapshot.itemLevel,
+    gold: snapshot.gold,
+    playtimeSeconds: snapshot.playtimeSeconds,
+    mythicPlusScore: snapshot.mythicPlusScore,
+    currencies: snapshot.currencies,
+    stats: snapshot.stats,
+  };
+}
+
+function mergeSnapshotFields(existingSnapshot: SnapshotFields, incomingSnapshot: SnapshotFields): SnapshotFields {
+  return {
+    ...incomingSnapshot,
+    playtimeSeconds:
+      incomingSnapshot.playtimeSeconds > 0 ? incomingSnapshot.playtimeSeconds : existingSnapshot.playtimeSeconds,
+    stats: {
+      ...incomingSnapshot.stats,
+      speedPercent: incomingSnapshot.stats.speedPercent ?? existingSnapshot.stats.speedPercent,
+      leechPercent: incomingSnapshot.stats.leechPercent ?? existingSnapshot.stats.leechPercent,
+      avoidancePercent: incomingSnapshot.stats.avoidancePercent ?? existingSnapshot.stats.avoidancePercent,
+    },
+  };
+}
+
+function snapshotFieldsEqual(a: SnapshotFields, b: SnapshotFields) {
+  return JSON.stringify(toSnapshotFields(a)) === JSON.stringify(toSnapshotFields(b));
+}
 
 const characterValidator = v.object({
   name: v.string(),
@@ -181,6 +230,19 @@ export const ingestAddonData = mutation({
           );
         }
 
+        const nextSnapshot: SnapshotFields = {
+          takenAt: snap.takenAt,
+          level: snap.level,
+          spec: snap.spec,
+          role: snap.role,
+          itemLevel: snap.itemLevel,
+          gold: snap.gold,
+          playtimeSeconds: snap.playtimeSeconds,
+          mythicPlusScore: snap.mythicPlusScore,
+          currencies: snap.currencies,
+          stats: snap.stats,
+        };
+
         const existingSnap = await ctx.db
           .query("snapshots")
           .withIndex("by_character_and_time", (q) =>
@@ -191,18 +253,16 @@ export const ingestAddonData = mutation({
         if (!existingSnap) {
           await ctx.db.insert("snapshots", {
             characterId,
-            takenAt: snap.takenAt,
-            level: snap.level,
-            spec: snap.spec,
-            role: snap.role,
-            itemLevel: snap.itemLevel,
-            gold: snap.gold,
-            playtimeSeconds: snap.playtimeSeconds,
-            mythicPlusScore: snap.mythicPlusScore,
-            currencies: snap.currencies,
-            stats: snap.stats,
+            ...nextSnapshot,
           });
           newSnapshots++;
+          continue;
+        }
+
+        const existingSnapshotFields = toSnapshotFields(existingSnap);
+        const mergedSnapshot = mergeSnapshotFields(existingSnapshotFields, nextSnapshot);
+        if (!snapshotFieldsEqual(existingSnapshotFields, mergedSnapshot)) {
+          await ctx.db.patch(existingSnap._id, mergedSnapshot);
         }
       }
 

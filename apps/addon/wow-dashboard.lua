@@ -289,6 +289,7 @@ end
 
 local GetRunSortValue
 local NormalizeStoredMythicPlusRun
+local ShouldReplaceStoredRun
 
 local function EnsureCharacterEntry(key, name, realm, charInfo)
     local db = WowDashboardDB
@@ -505,7 +506,7 @@ local function GetRunCompletenessScore(run)
     return score
 end
 
-local function ShouldReplaceStoredRun(currentRun, candidateRun)
+ShouldReplaceStoredRun = function(currentRun, candidateRun)
     if not currentRun then
         return true
     end

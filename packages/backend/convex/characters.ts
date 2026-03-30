@@ -12,6 +12,7 @@ import {
 import { rateLimiter } from "./rateLimiter";
 
 type MythicPlusRunDoc = Doc<"mythicPlusRuns">;
+type SnapshotDoc = Doc<"snapshots">;
 
 function getRunTimestamp(run: MythicPlusRunDoc): number {
   return getMythicPlusRunSortValue(run);
@@ -34,6 +35,44 @@ function isCompletedRun(run: MythicPlusRunDoc): boolean {
 function isTimedRun(run: MythicPlusRunDoc): boolean {
   if (run.completedInTime !== undefined) return run.completedInTime;
   return run.completed === true;
+}
+
+function getSnapshotCompletenessScore(snapshot: SnapshotDoc) {
+  let score = 0;
+
+  if (snapshot.playtimeSeconds > 0) score += 1;
+  if (snapshot.stats.speedPercent !== undefined) score += 2;
+  if (snapshot.stats.leechPercent !== undefined) score += 2;
+  if (snapshot.stats.avoidancePercent !== undefined) score += 2;
+
+  return score;
+}
+
+function shouldReplaceSnapshot(currentSnapshot: SnapshotDoc | undefined, candidateSnapshot: SnapshotDoc) {
+  if (!currentSnapshot) return true;
+
+  const currentScore = getSnapshotCompletenessScore(currentSnapshot);
+  const candidateScore = getSnapshotCompletenessScore(candidateSnapshot);
+  if (candidateScore !== currentScore) {
+    return candidateScore > currentScore;
+  }
+
+  return candidateSnapshot._creationTime > currentSnapshot._creationTime;
+}
+
+function dedupeSnapshotsByTakenAt(snapshots: SnapshotDoc[]) {
+  const dedupedSnapshots = new Map<number, SnapshotDoc>();
+
+  for (const snapshot of snapshots) {
+    const current = dedupedSnapshots.get(snapshot.takenAt);
+    if (shouldReplaceSnapshot(current, snapshot)) {
+      dedupedSnapshots.set(snapshot.takenAt, snapshot);
+    }
+  }
+
+  return Array.from(dedupedSnapshots.values()).sort(
+    (a, b) => a.takenAt - b.takenAt || a._creationTime - b._creationTime,
+  );
 }
 
 function buildMythicPlusBucketSummary(runs: MythicPlusRunDoc[]) {
@@ -312,7 +351,7 @@ export const getCharacterSnapshots = query({
       .order("asc")
       .collect();
 
-    return { character, snapshots };
+    return { character, snapshots: dedupeSnapshotsByTakenAt(snapshots) };
   },
 });
 
