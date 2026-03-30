@@ -622,3 +622,32 @@ export const getMyCharactersWithSnapshot = query({
     );
   },
 });
+
+export const getCharactersWithLatestSnapshot = query({
+  args: {
+    characterIds: v.array(v.id("characters")),
+  },
+  handler: async (ctx, { characterIds }) => {
+    const authUser = await authComponent.safeGetAuthUser(ctx);
+    if (!authUser) return null;
+
+    const uniqueCharacterIds = [...new Set(characterIds)];
+
+    return (
+      await Promise.all(
+        uniqueCharacterIds.map(async (characterId) => {
+          const char = await ctx.db.get(characterId);
+          if (!char) return null;
+
+          const snapshot = await ctx.db
+            .query("snapshots")
+            .withIndex("by_character_and_time", (q) => q.eq("characterId", char._id))
+            .order("desc")
+            .first();
+
+          return { ...char, snapshot: snapshot ?? null };
+        }),
+      )
+    ).filter((char): char is NonNullable<typeof char> => char !== null);
+  },
+});

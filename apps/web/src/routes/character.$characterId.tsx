@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { api } from "@wow-dashboard/backend/convex/_generated/api";
 import type { Id } from "@wow-dashboard/backend/convex/_generated/dataModel";
 import { getMythicPlusDungeonMeta, getRaiderIoScoreColor } from "../lib/mythic-plus-static";
+import { usePinnedCharacters } from "../lib/pinned-characters";
 import { Badge } from "@wow-dashboard/ui/components/badge";
 import { Button } from "@wow-dashboard/ui/components/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@wow-dashboard/ui/components/card";
@@ -25,6 +26,7 @@ import {
   LayoutGrid,
   LayoutList,
   Maximize2,
+  Star,
   Sword,
   X,
   Zap,
@@ -2118,6 +2120,7 @@ function RouteComponent() {
   const [selectedRole, setSelectedRole] = useState<string | null>(null);
   const [selectedSpec, setSelectedSpec] = useState<string | null>(null);
   const [timeFrame, setTimeFrame] = useState<TimeFrame>("30d");
+  const { pinnedCharacterIdSet, togglePinnedCharacter } = usePinnedCharacters();
   const [layoutMode, setLayoutMode] = useState<LayoutMode>(() => {
     try {
       return (localStorage.getItem("wow-char-layout") as LayoutMode) ?? "overview";
@@ -2149,6 +2152,7 @@ function RouteComponent() {
   }
 
   const { character, snapshots } = data;
+  const isPinnedToQuickAccess = pinnedCharacterIdSet.has(characterId);
 
   const filtered = snapshots.filter((s) => {
     if (selectedRole && s.role !== selectedRole) return false;
@@ -2185,6 +2189,23 @@ function RouteComponent() {
               <CharacterLinks region={character.region} realm={character.realm} name={character.name} />
             </div>
             <div className="flex items-center gap-2 self-start lg:self-auto">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => togglePinnedCharacter(characterId)}
+                className={
+                  isPinnedToQuickAccess
+                    ? "border-yellow-400/40 bg-yellow-400/10 text-yellow-300 hover:bg-yellow-400/15 hover:text-yellow-200"
+                    : "border-border/60 text-muted-foreground hover:text-foreground"
+                }
+              >
+                <Star
+                  size={14}
+                  className={isPinnedToQuickAccess ? "fill-current text-yellow-400" : ""}
+                />
+                {isPinnedToQuickAccess ? "Pinned" : "Pin"}
+              </Button>
               <LayoutSwitcher value={layoutMode} onChange={handleLayoutChange} />
               <Badge
                 variant="outline"

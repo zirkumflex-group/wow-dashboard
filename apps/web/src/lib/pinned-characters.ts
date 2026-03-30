@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useSyncExternalStore } from "react";
 
-const PINNED_CHARACTERS_KEY = "wow_dashboard_favorites";
+const PINNED_CHARACTERS_KEY = "wow_dashboard_quick_access_pins";
 const PINNED_CHARACTERS_EVENT = "wow-dashboard:pinned-characters";
 const EMPTY_PINNED_CHARACTER_IDS: string[] = [];
 

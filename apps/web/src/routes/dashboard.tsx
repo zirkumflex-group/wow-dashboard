@@ -9,14 +9,14 @@ import { Input } from "@wow-dashboard/ui/components/input";
 import { Skeleton } from "@wow-dashboard/ui/components/skeleton";
 import { Authenticated, AuthLoading, Unauthenticated, useMutation, useQuery } from "convex/react";
 import { HeartPulse, RefreshCw, Shield, Star, Swords } from "lucide-react";
-import { usePinnedCharacters } from "@/lib/pinned-characters";
 import type React from "react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 const HIDE_BELOW_90_KEY = "wow_dashboard_hide_below_90";
 const MIN_ILVL_KEY = "wow_dashboard_min_ilvl";
 const HIDE_NO_SNAPSHOT_KEY = "wow_dashboard_hide_no_snapshot";
 const DEFAULT_MIN_ILVL = 200;
+const FAVORITES_KEY = "wow_dashboard_favorites";
 
 export const Route = createFileRoute("/dashboard")({
   beforeLoad: ({ context }) => {
@@ -90,6 +90,32 @@ function formatGold(value: number) {
   if (s > 0) parts.push(`${s}s`);
   if (c > 0 || parts.length === 0) parts.push(`${c}c`);
   return parts.join(" ");
+}
+
+function useFavorites() {
+  const [favorites, setFavorites] = useState<Set<string>>(() => {
+    try {
+      const stored = localStorage.getItem(FAVORITES_KEY);
+      return stored ? new Set<string>(JSON.parse(stored) as string[]) : new Set();
+    } catch {
+      return new Set();
+    }
+  });
+
+  const toggle = useCallback((id: string) => {
+    setFavorites((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      localStorage.setItem(FAVORITES_KEY, JSON.stringify([...next]));
+      return next;
+    });
+  }, []);
+
+  return { favorites, toggle };
 }
 
 function useResyncCooldown() {
@@ -184,8 +210,8 @@ function CharacterCard({
             e.stopPropagation();
             onToggleFavorite(char._id);
           }}
-          aria-label={isFavorite ? "Remove from quick access" : "Pin to quick access"}
-          title={isFavorite ? "Remove from quick access" : "Pin to quick access"}
+          aria-label={isFavorite ? "Remove from favorites" : "Add to favorites"}
+          title={isFavorite ? "Remove from favorites" : "Add to favorites"}
           className={`absolute right-3 top-3 z-10 rounded-full p-1 transition-colors hover:bg-white/10 ${
             isFavorite ? "text-yellow-400" : "text-muted-foreground hover:text-yellow-400"
           }`}
@@ -316,10 +342,7 @@ function Dashboard() {
   const resync = useMutation(api.characters.resyncCharacters);
   const [syncing, setSyncing] = useState(false);
   const { isCoolingDown, remaining, setCooldown, formatRemaining } = useResyncCooldown();
-  const {
-    pinnedCharacterIdSet: favorites,
-    togglePinnedCharacter: toggleFavorite,
-  } = usePinnedCharacters();
+  const { favorites, toggle: toggleFavorite } = useFavorites();
 
   const [hideBelow90, setHideBelow90] = useState<boolean>(() => {
     try {

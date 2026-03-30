@@ -1,4 +1,5 @@
 import { api } from "@wow-dashboard/backend/convex/_generated/api";
+import type { Id } from "@wow-dashboard/backend/convex/_generated/dataModel";
 import {
   Sidebar,
   SidebarContent,
@@ -98,8 +99,10 @@ export function AppSidebar() {
   const pathname = router.location.pathname;
   const { pinnedCharacterIds } = usePinnedCharacters();
   const characters = useQuery(
-    api.characters.getMyCharactersWithSnapshot,
-    pinnedCharacterIds.length > 0 ? {} : "skip",
+    api.characters.getCharactersWithLatestSnapshot,
+    pinnedCharacterIds.length > 0
+      ? { characterIds: pinnedCharacterIds as Id<"characters">[] }
+      : "skip",
   );
   const quickAccessCharacters = useMemo(() => {
     if (characters === undefined || characters === null || pinnedCharacterIds.length === 0) {
