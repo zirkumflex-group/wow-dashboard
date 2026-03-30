@@ -216,6 +216,9 @@ end
 --         hastePercent         number
 --         masteryPercent       number
 --         versatilityPercent   number
+--         speedPercent         number
+--         leechPercent         number
+--         avoidancePercent     number
 -- ============================================================
 
 local DB_VERSION            = 2
@@ -325,13 +328,20 @@ local function EnsureCharacterEntry(key, name, realm, charInfo)
     entry.mythicPlusDebug = nil
 
     local normalizedRuns = {}
-    local normalizedKeys = {}
+    local normalizedRunsByFingerprint = {}
     for _, run in ipairs(entry.mythicPlusRuns) do
         local normalized = NormalizeStoredMythicPlusRun(run)
-        if normalized and normalized.fingerprint and not normalizedKeys[normalized.fingerprint] then
-            normalizedKeys[normalized.fingerprint] = true
-            normalizedRuns[#normalizedRuns + 1] = normalized
+        if normalized and normalized.fingerprint then
+            local current = normalizedRunsByFingerprint[normalized.fingerprint]
+            if ShouldReplaceStoredRun(current, normalized) then
+                normalizedRunsByFingerprint[normalized.fingerprint] = normalized
+            end
         end
+    end
+    local normalizedKeys = {}
+    for fingerprint, run in pairs(normalizedRunsByFingerprint) do
+        normalizedKeys[fingerprint] = true
+        normalizedRuns[#normalizedRuns + 1] = run
     end
     table.sort(normalizedRuns, function(a, b)
         return GetRunSortValue(a) > GetRunSortValue(b)
@@ -414,10 +424,29 @@ local function ToFingerprintToken(value)
     return tostring(value)
 end
 
-local function BuildRunFingerprint(run)
+local function GetRunMapFingerprintToken(run)
+    if run.mapChallengeModeID ~= nil then
+        return ToFingerprintToken(run.mapChallengeModeID)
+    end
+
+    if type(run.mapName) == "string" then
+        local normalizedName = strtrim(run.mapName)
+        if normalizedName ~= "" then
+            return string.lower(normalizedName)
+        end
+    end
+
+    return ""
+end
+
+local function GetRunIdentityTimestamp(run)
+    return tonumber(run.startDate) or tonumber(run.completedAt)
+end
+
+local function BuildLegacyRunFingerprint(run)
     return table.concat({
         ToFingerprintToken(run.seasonID),
-        ToFingerprintToken(run.mapChallengeModeID),
+        GetRunMapFingerprintToken(run),
         ToFingerprintToken(run.level),
         ToFingerprintToken(run.completed),
         ToFingerprintToken(run.completedInTime),
@@ -426,6 +455,74 @@ local function BuildRunFingerprint(run)
         ToFingerprintToken(run.completedAt),
         ToFingerprintToken(run.startDate),
     }, "|")
+end
+
+local function BuildRunFingerprint(run)
+    local mapToken = GetRunMapFingerprintToken(run)
+    local identityTimestamp = GetRunIdentityTimestamp(run)
+
+    if mapToken == "" or run.level == nil then
+        return BuildLegacyRunFingerprint(run)
+    end
+
+    if identityTimestamp ~= nil then
+        return table.concat({
+            ToFingerprintToken(run.seasonID),
+            mapToken,
+            ToFingerprintToken(run.level),
+            ToFingerprintToken(identityTimestamp),
+        }, "|")
+    end
+
+    if run.durationMs ~= nil or run.runScore ~= nil then
+        return table.concat({
+            ToFingerprintToken(run.seasonID),
+            mapToken,
+            ToFingerprintToken(run.level),
+            ToFingerprintToken(run.durationMs),
+            ToFingerprintToken(run.runScore),
+        }, "|")
+    end
+
+    return BuildLegacyRunFingerprint(run)
+end
+
+local function GetRunCompletenessScore(run)
+    local score = 0
+
+    if run.seasonID ~= nil then score = score + 1 end
+    if run.mapChallengeModeID ~= nil then score = score + 3 end
+    if type(run.mapName) == "string" and run.mapName ~= "" then score = score + 1 end
+    if run.level ~= nil then score = score + 2 end
+    if run.startDate ~= nil then score = score + 4 end
+    if run.completedAt ~= nil then score = score + 4 end
+    if run.durationMs ~= nil then score = score + 3 end
+    if run.runScore ~= nil then score = score + 3 end
+    if run.completedInTime ~= nil then score = score + 2 end
+    if run.completed ~= nil then score = score + 1 end
+    if run.thisWeek ~= nil then score = score + 1 end
+
+    return score
+end
+
+local function ShouldReplaceStoredRun(currentRun, candidateRun)
+    if not currentRun then
+        return true
+    end
+
+    local currentScore = GetRunCompletenessScore(currentRun)
+    local candidateScore = GetRunCompletenessScore(candidateRun)
+    if candidateScore ~= currentScore then
+        return candidateScore > currentScore
+    end
+
+    local candidateSort = GetRunSortValue(candidateRun)
+    local currentSort = GetRunSortValue(currentRun)
+    if candidateSort ~= currentSort then
+        return candidateSort > currentSort
+    end
+
+    return (tonumber(candidateRun.observedAt) or 0) > (tonumber(currentRun.observedAt) or 0)
 end
 
 NormalizeStoredMythicPlusRun = function(run)
@@ -450,7 +547,6 @@ NormalizeStoredMythicPlusRun = function(run)
             "completionDate",
             "completedDate",
             "endTime",
-            "startDate",
         })
     end
 
@@ -534,7 +630,6 @@ local function NormalizeMythicPlusRun(rawRun, seasonID)
         "completionDate",
         "completedDate",
         "endTime",
-        "startDate",
     })
 
     local run = {
@@ -634,16 +729,31 @@ local function SyncMythicPlusHistory(reason, options)
     local beforeCount = #entry.mythicPlusRuns
     local runs = CollectMythicPlusHistory()
     local added = 0
+    local updated = false
 
-    for _, run in ipairs(runs) do
-        if run.fingerprint and not entry.mythicPlusRunKeys[run.fingerprint] then
-            entry.mythicPlusRunKeys[run.fingerprint] = true
-            entry.mythicPlusRuns[#entry.mythicPlusRuns + 1] = run
-            added = added + 1
+    local runIndicesByFingerprint = {}
+    for index, existingRun in ipairs(entry.mythicPlusRuns) do
+        if existingRun.fingerprint then
+            runIndicesByFingerprint[existingRun.fingerprint] = index
         end
     end
 
-    if added > 0 then
+    for _, run in ipairs(runs) do
+        if run.fingerprint then
+            local existingIndex = runIndicesByFingerprint[run.fingerprint]
+            if existingIndex == nil then
+                entry.mythicPlusRunKeys[run.fingerprint] = true
+                entry.mythicPlusRuns[#entry.mythicPlusRuns + 1] = run
+                runIndicesByFingerprint[run.fingerprint] = #entry.mythicPlusRuns
+                added = added + 1
+            elseif ShouldReplaceStoredRun(entry.mythicPlusRuns[existingIndex], run) then
+                entry.mythicPlusRuns[existingIndex] = run
+                updated = true
+            end
+        end
+    end
+
+    if added > 0 or updated then
         table.sort(entry.mythicPlusRuns, function(a, b)
             return GetRunSortValue(a) > GetRunSortValue(b)
         end)
@@ -651,7 +761,7 @@ local function SyncMythicPlusHistory(reason, options)
 
     lastMPlusSyncAt = GetTime()
 
-    return added > 0 or beforeCount ~= #entry.mythicPlusRuns
+    return added > 0 or updated or beforeCount ~= #entry.mythicPlusRuns
 end
 
 local function ScheduleMythicPlusHistorySync(reason, delaySeconds, options)
@@ -693,15 +803,23 @@ local function BuildPendingSnapshot()
         currencies[fieldName] = info and info.quantity or 0
     end
 
+    local _, stamina = UnitStat("player", LE_UNIT_STAT_STAMINA)
+    local _, strength = UnitStat("player", LE_UNIT_STAT_STRENGTH)
+    local _, agility = UnitStat("player", LE_UNIT_STAT_AGILITY)
+    local _, intellect = UnitStat("player", LE_UNIT_STAT_INTELLECT)
+
     local stats = {
-        stamina            = UnitStat("player", LE_UNIT_STAT_STAMINA)   or 0,
-        strength           = UnitStat("player", LE_UNIT_STAT_STRENGTH)  or 0,
-        agility            = UnitStat("player", LE_UNIT_STAT_AGILITY)   or 0,
-        intellect          = UnitStat("player", LE_UNIT_STAT_INTELLECT) or 0,
+        stamina            = stamina or 0,
+        strength           = strength or 0,
+        agility            = agility or 0,
+        intellect          = intellect or 0,
         critPercent        = GetCritChance()    or 0,
         hastePercent       = GetMeleeHaste()    or 0,
         masteryPercent     = GetMasteryEffect() or 0,
         versatilityPercent = GetCombatRatingBonus(CR_VERSATILITY_DAMAGE_DONE) or 0,
+        speedPercent       = CR_SPEED and GetCombatRatingBonus(CR_SPEED) or 0,
+        leechPercent       = CR_LIFESTEAL and GetCombatRatingBonus(CR_LIFESTEAL) or 0,
+        avoidancePercent   = CR_AVOIDANCE and GetCombatRatingBonus(CR_AVOIDANCE) or 0,
     }
 
     local mplusScore = 0

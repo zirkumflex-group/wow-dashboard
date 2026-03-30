@@ -2,6 +2,10 @@ import { v } from "convex/values";
 
 import { mutation, query } from "./_generated/server";
 import { authComponent } from "./auth";
+import {
+  buildCanonicalMythicPlusRunFingerprint,
+  shouldReplaceMythicPlusRun,
+} from "./mythicPlus";
 import { rateLimiter } from "./rateLimiter";
 import { mythicPlusRunValidator } from "./schemas/mythicPlusRuns";
 import { specValidator } from "./schemas/snapshots";
@@ -25,6 +29,9 @@ const statsValidator = v.object({
   hastePercent: v.number(),
   masteryPercent: v.number(),
   versatilityPercent: v.number(),
+  speedPercent: v.optional(v.number()),
+  leechPercent: v.optional(v.number()),
+  avoidancePercent: v.optional(v.number()),
 });
 
 const snapshotValidator = v.object({
@@ -199,18 +206,52 @@ export const ingestAddonData = mutation({
         }
       }
 
+      const existingCharacterRuns = await ctx.db
+        .query("mythicPlusRuns")
+        .withIndex("by_character", (q) => q.eq("characterId", characterId))
+        .collect();
+
+      const existingRunsByCanonical = new Map<string, (typeof existingCharacterRuns)[number]>();
+      const existingRunsByLegacyFingerprint = new Map<string, (typeof existingCharacterRuns)[number]>();
+
+      for (const existingRun of existingCharacterRuns) {
+        if (existingRun.fingerprint) {
+          const currentLegacy = existingRunsByLegacyFingerprint.get(existingRun.fingerprint);
+          if (shouldReplaceMythicPlusRun(currentLegacy, existingRun)) {
+            existingRunsByLegacyFingerprint.set(existingRun.fingerprint, existingRun);
+          }
+        }
+
+        const canonicalFingerprint = buildCanonicalMythicPlusRunFingerprint(existingRun);
+        if (canonicalFingerprint) {
+          const currentCanonical = existingRunsByCanonical.get(canonicalFingerprint);
+          if (shouldReplaceMythicPlusRun(currentCanonical, existingRun)) {
+            existingRunsByCanonical.set(canonicalFingerprint, existingRun);
+          }
+        }
+      }
+
+      const incomingRunsByDedupKey = new Map<string, NonNullable<typeof charData.mythicPlusRuns>[number]>();
       for (const run of charData.mythicPlusRuns ?? []) {
-        const existingRun = await ctx.db
-          .query("mythicPlusRuns")
-          .withIndex("by_character_and_fingerprint", (q) =>
-            q.eq("characterId", characterId).eq("fingerprint", run.fingerprint),
-          )
-          .first();
+        const canonicalFingerprint = buildCanonicalMythicPlusRunFingerprint(run);
+        const dedupKey = canonicalFingerprint ?? run.fingerprint;
+        const current = incomingRunsByDedupKey.get(dedupKey);
+        if (shouldReplaceMythicPlusRun(current, run)) {
+          incomingRunsByDedupKey.set(dedupKey, run);
+        }
+      }
+
+      for (const run of incomingRunsByDedupKey.values()) {
+        const canonicalFingerprint = buildCanonicalMythicPlusRunFingerprint(run);
+        const nextFingerprint = canonicalFingerprint ?? run.fingerprint;
+        const existingRun =
+          (canonicalFingerprint ? existingRunsByCanonical.get(canonicalFingerprint) : undefined) ??
+          existingRunsByLegacyFingerprint.get(run.fingerprint);
 
         if (!existingRun) {
           await ctx.db.insert("mythicPlusRuns", {
             characterId,
-            fingerprint: run.fingerprint,
+            fingerprint: nextFingerprint,
             observedAt: run.observedAt,
             seasonID: run.seasonID,
             mapChallengeModeID: run.mapChallengeModeID,
@@ -227,6 +268,7 @@ export const ingestAddonData = mutation({
           newMythicPlusRuns++;
         } else {
           const patch: {
+            fingerprint?: string;
             seasonID?: number;
             mapChallengeModeID?: number;
             mapName?: string;
@@ -240,6 +282,7 @@ export const ingestAddonData = mutation({
             thisWeek?: boolean;
           } = {};
 
+          if (existingRun.fingerprint !== nextFingerprint) patch.fingerprint = nextFingerprint;
           if (existingRun.seasonID === undefined && run.seasonID !== undefined) patch.seasonID = run.seasonID;
           if (
             existingRun.mapChallengeModeID === undefined &&
@@ -268,6 +311,15 @@ export const ingestAddonData = mutation({
 
           if (Object.keys(patch).length > 0) {
             await ctx.db.patch(existingRun._id, patch);
+          }
+
+          const mergedRun = { ...existingRun, ...patch };
+          existingRunsByLegacyFingerprint.set(mergedRun.fingerprint, mergedRun);
+          if (canonicalFingerprint) {
+            const currentCanonical = existingRunsByCanonical.get(canonicalFingerprint);
+            if (shouldReplaceMythicPlusRun(currentCanonical, mergedRun)) {
+              existingRunsByCanonical.set(canonicalFingerprint, mergedRun);
+            }
           }
         }
       }

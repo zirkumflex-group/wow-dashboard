@@ -127,6 +127,9 @@ export const seed = internalMutation({
           hastePercent: 14.0 + i * 0.15,
           masteryPercent: 22.0 + i * 0.1,
           versatilityPercent: 8.0 + i * 0.05,
+          speedPercent: 4.8 + i * 0.02,
+          leechPercent: 2.1 + i * 0.03,
+          avoidancePercent: 1.4 + i * 0.02,
         },
       });
 
@@ -157,6 +160,9 @@ export const seed = internalMutation({
           hastePercent: 19.5 + i * 0.2,
           masteryPercent: 16.0 + i * 0.1,
           versatilityPercent: 10.0 + i * 0.08,
+          speedPercent: 3.2 + i * 0.03,
+          leechPercent: 0,
+          avoidancePercent: 1.1 + i * 0.02,
         },
       });
     }

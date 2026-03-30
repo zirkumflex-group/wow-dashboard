@@ -80,6 +80,9 @@ export const snapshotsTable = defineTable({
     hastePercent: v.number(),
     masteryPercent: v.number(),
     versatilityPercent: v.number(),
+    speedPercent: v.optional(v.number()),
+    leechPercent: v.optional(v.number()),
+    avoidancePercent: v.optional(v.number()),
   }),
 })
   .index("by_character", ["characterId"])

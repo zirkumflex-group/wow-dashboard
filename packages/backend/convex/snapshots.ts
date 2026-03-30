@@ -27,6 +27,9 @@ function snapshotKey(snap: {
     hastePercent: number;
     masteryPercent: number;
     versatilityPercent: number;
+    speedPercent?: number;
+    leechPercent?: number;
+    avoidancePercent?: number;
   };
 }): string {
   return JSON.stringify({

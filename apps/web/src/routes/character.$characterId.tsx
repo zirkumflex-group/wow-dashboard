@@ -326,6 +326,28 @@ function StatGrid({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
+function getPrimaryStat(snapshot: Snapshot) {
+  const primaryStats = [
+    { label: "Strength", value: snapshot.stats.strength },
+    { label: "Agility", value: snapshot.stats.agility },
+    { label: "Intellect", value: snapshot.stats.intellect },
+  ];
+
+  const primaryStat = primaryStats.reduce((highest, current) =>
+    current.value > highest.value ? current : highest,
+  );
+
+  return primaryStat.value > 0 ? primaryStat : null;
+}
+
+function getTertiaryStats(snapshot: Snapshot) {
+  return [
+    { label: "Speed", value: snapshot.stats.speedPercent ?? 0 },
+    { label: "Leech", value: snapshot.stats.leechPercent ?? 0 },
+    { label: "Avoidance", value: snapshot.stats.avoidancePercent ?? 0 },
+  ].filter((stat) => stat.value > 0);
+}
+
 function MythicPlusResultBadge({ run }: { run: MythicPlusRun }) {
   if (isTimedMythicPlusRun(run)) {
     return <Badge className="bg-emerald-500/15 text-emerald-300 border-emerald-500/30">Timed</Badge>;
@@ -454,7 +476,7 @@ function MythicPlusSection({ data }: { data: MythicPlusData | null | undefined }
                 {recentRuns.map((run) => (
                   <tr key={run.fingerprint} className="border-t">
                     <td className="px-3 py-2 text-muted-foreground">
-                      {formatRunDate(run.completedAt ?? run.observedAt)}
+                      {formatRunDate(run.completedAt ?? run.startDate ?? run.observedAt)}
                     </td>
                     <td className="px-3 py-2">{getRunLabel(run)}</td>
                     <td className="px-3 py-2 text-right tabular-nums">{formatKeyLevel(run.level)}</td>
@@ -561,6 +583,9 @@ type Snapshot = {
     hastePercent: number;
     masteryPercent: number;
     versatilityPercent: number;
+    speedPercent?: number;
+    leechPercent?: number;
+    avoidancePercent?: number;
   };
 };
 
@@ -805,11 +830,8 @@ function RadarPanel({ snapshot }: { snapshot: Snapshot }) {
     { stat: "Mastery",     value: snapshot.stats.masteryPercent     },
     { stat: "Versatility", value: snapshot.stats.versatilityPercent },
   ];
-  const primaryStat =
-    snapshot.stats.strength > 0  ? { label: "Strength",  value: snapshot.stats.strength  } :
-    snapshot.stats.agility > 0   ? { label: "Agility",   value: snapshot.stats.agility   } :
-    snapshot.stats.intellect > 0 ? { label: "Intellect", value: snapshot.stats.intellect } :
-    null;
+  const tertiaryStats = getTertiaryStats(snapshot);
+  const primaryStat = getPrimaryStat(snapshot);
 
   return (
     <div className="space-y-3">
@@ -836,6 +858,9 @@ function RadarPanel({ snapshot }: { snapshot: Snapshot }) {
         <StatRow label="Haste"       value={`${snapshot.stats.hastePercent.toFixed(2)}%`}       />
         <StatRow label="Mastery"     value={`${snapshot.stats.masteryPercent.toFixed(2)}%`}     />
         <StatRow label="Versatility" value={`${snapshot.stats.versatilityPercent.toFixed(2)}%`} />
+        {tertiaryStats.map((stat) => (
+          <StatRow key={stat.label} label={stat.label} value={`${stat.value.toFixed(2)}%`} />
+        ))}
       </div>
     </div>
   );
@@ -849,6 +874,8 @@ function RadarStrip({ snapshot }: { snapshot: Snapshot }) {
     { stat: "Mastery",     value: snapshot.stats.masteryPercent     },
     { stat: "Versatility", value: snapshot.stats.versatilityPercent },
   ];
+  const tertiaryStats = getTertiaryStats(snapshot);
+  const primaryStat = getPrimaryStat(snapshot);
   return (
     <Card>
       <CardContent className="py-4">
@@ -870,15 +897,22 @@ function RadarStrip({ snapshot }: { snapshot: Snapshot }) {
               </RadarChart>
             </ChartContainer>
           </div>
-          <div className="grid grid-cols-2 gap-x-8 gap-y-1.5 flex-1 text-sm">
-            <StatRow label="Crit"        value={`${snapshot.stats.critPercent.toFixed(2)}%`}        />
-            <StatRow label="Haste"       value={`${snapshot.stats.hastePercent.toFixed(2)}%`}       />
-            <StatRow label="Mastery"     value={`${snapshot.stats.masteryPercent.toFixed(2)}%`}     />
-            <StatRow label="Versatility" value={`${snapshot.stats.versatilityPercent.toFixed(2)}%`} />
-            <StatRow label="Stamina"     value={snapshot.stats.stamina.toLocaleString()}             />
-            {snapshot.stats.strength > 0  && <StatRow label="Strength"  value={snapshot.stats.strength.toLocaleString()}  />}
-            {snapshot.stats.agility > 0   && <StatRow label="Agility"   value={snapshot.stats.agility.toLocaleString()}   />}
-            {snapshot.stats.intellect > 0 && <StatRow label="Intellect" value={snapshot.stats.intellect.toLocaleString()} />}
+          <div className="flex-1 space-y-2">
+            <div className="grid grid-cols-2 gap-x-8 gap-y-1.5 text-sm">
+              <StatRow label="Crit"        value={`${snapshot.stats.critPercent.toFixed(2)}%`}        />
+              <StatRow label="Haste"       value={`${snapshot.stats.hastePercent.toFixed(2)}%`}       />
+              <StatRow label="Mastery"     value={`${snapshot.stats.masteryPercent.toFixed(2)}%`}     />
+              <StatRow label="Versatility" value={`${snapshot.stats.versatilityPercent.toFixed(2)}%`} />
+              <StatRow label="Stamina"     value={snapshot.stats.stamina.toLocaleString()}             />
+              {primaryStat && <StatRow label={primaryStat.label} value={primaryStat.value.toLocaleString()} />}
+            </div>
+            {tertiaryStats.length > 0 && (
+              <div className="grid grid-cols-2 gap-x-8 gap-y-1.5 border-t border-border/50 pt-2 text-sm">
+                {tertiaryStats.map((stat) => (
+                  <StatRow key={stat.label} label={stat.label} value={`${stat.value.toFixed(2)}%`} />
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </CardContent>

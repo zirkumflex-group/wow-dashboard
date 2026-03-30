@@ -4,12 +4,17 @@ import type { Doc } from "./_generated/dataModel";
 import { components, internal } from "./_generated/api";
 import { internalMutation, mutation, query } from "./_generated/server";
 import { authComponent } from "./auth";
+import {
+  getMythicPlusRunDedupKey,
+  getMythicPlusRunSortValue,
+  shouldReplaceMythicPlusRun,
+} from "./mythicPlus";
 import { rateLimiter } from "./rateLimiter";
 
 type MythicPlusRunDoc = Doc<"mythicPlusRuns">;
 
 function getRunTimestamp(run: MythicPlusRunDoc): number {
-  return run.completedAt ?? run.observedAt ?? run.startDate ?? 0;
+  return getMythicPlusRunSortValue(run);
 }
 
 function getMapLabel(run: MythicPlusRunDoc): string {
@@ -178,6 +183,24 @@ function buildMythicPlusSummary(runs: MythicPlusRunDoc[], currentScore: number |
   };
 }
 
+function dedupeMythicPlusRuns(runs: MythicPlusRunDoc[]) {
+  const dedupedRuns = new Map<string, MythicPlusRunDoc>();
+
+  for (const run of runs) {
+    const dedupKey = getMythicPlusRunDedupKey(run) ?? run._id;
+    const current = dedupedRuns.get(dedupKey);
+    if (shouldReplaceMythicPlusRun(current, run)) {
+      dedupedRuns.set(dedupKey, run);
+    }
+  }
+
+  return Array.from(dedupedRuns.values()).sort((a, b) => {
+    const timeDiff = getRunTimestamp(b) - getRunTimestamp(a);
+    if (timeDiff !== 0) return timeDiff;
+    return b.observedAt - a.observedAt;
+  });
+}
+
 export const upsertFromBattleNet = internalMutation({
   args: {
     userId: v.string(),
@@ -315,11 +338,7 @@ export const getCharacterMythicPlus = query({
         .first(),
     ]);
 
-    const sortedRuns = runs.slice().sort((a, b) => {
-      const timeDiff = getRunTimestamp(b) - getRunTimestamp(a);
-      if (timeDiff !== 0) return timeDiff;
-      return b.observedAt - a.observedAt;
-    });
+    const sortedRuns = dedupeMythicPlusRuns(runs);
 
     return {
       runs: sortedRuns,

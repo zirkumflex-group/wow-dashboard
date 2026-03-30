@@ -17,6 +17,7 @@ import type * as crons from "../crons.js";
 import type * as healthCheck from "../healthCheck.js";
 import type * as http from "../http.js";
 import type * as loginCodes from "../loginCodes.js";
+import type * as mythicPlus from "../mythicPlus.js";
 import type * as players from "../players.js";
 import type * as rateLimiter from "../rateLimiter.js";
 import type * as schemas_characters from "../schemas/characters.js";
@@ -42,6 +43,7 @@ declare const fullApi: ApiFromModules<{
   healthCheck: typeof healthCheck;
   http: typeof http;
   loginCodes: typeof loginCodes;
+  mythicPlus: typeof mythicPlus;
   players: typeof players;
   rateLimiter: typeof rateLimiter;
   "schemas/characters": typeof schemas_characters;
