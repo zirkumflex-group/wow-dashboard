@@ -475,6 +475,31 @@ function toOptionalString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
+function toOptionalMythicPlusTimestamp(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  const year = toOptionalNumber(value.year);
+  const month = toOptionalNumber(value.month);
+  const day = toOptionalNumber(value.day);
+  if (year === undefined || month === undefined || day === undefined) {
+    return undefined;
+  }
+
+  const fullYear = year < 100 ? 2000 + year : year;
+  const hour = toOptionalNumber(value.hour) ?? 0;
+  const minute = toOptionalNumber(value.minute) ?? toOptionalNumber(value.min) ?? 0;
+  const second = toOptionalNumber(value.second) ?? toOptionalNumber(value.sec) ?? 0;
+  const timestampMs = new Date(fullYear, month, day + 1, hour, minute, second).getTime();
+
+  return Number.isFinite(timestampMs) ? Math.floor(timestampMs / 1000) : undefined;
+}
+
 function toFingerprintToken(value: unknown): string {
   if (value === undefined || value === null) return "";
   if (typeof value === "boolean") return value ? "1" : "0";
@@ -513,8 +538,8 @@ function normalizeStoredMythicPlusRun(runRaw: LuaTable): MythicPlusRunData {
     fingerprint: "",
     observedAt:
       toOptionalNumber(runRaw.observedAt) ??
-      toOptionalNumber(runRaw.completedAt) ??
-      toOptionalNumber(runRaw.startDate) ??
+      toOptionalMythicPlusTimestamp(runRaw.completedAt) ??
+      toOptionalMythicPlusTimestamp(runRaw.startDate) ??
       0,
     seasonID: toOptionalNumber(runRaw.seasonID),
     mapChallengeModeID:
@@ -546,13 +571,15 @@ function normalizeStoredMythicPlusRun(runRaw: LuaTable): MythicPlusRunData {
       toOptionalNumber(runRaw.runScore) ??
       toOptionalNumber(runRaw.score) ??
       toOptionalNumber(runRaw.mythicRating),
-    startDate: toOptionalNumber(runRaw.startDate) ?? toOptionalNumber(runRaw.startedAt),
+    startDate:
+      toOptionalMythicPlusTimestamp(runRaw.startDate) ??
+      toOptionalMythicPlusTimestamp(runRaw.startedAt),
     completedAt:
-      toOptionalNumber(runRaw.completedAt) ??
-      toOptionalNumber(runRaw.completionDate) ??
-      toOptionalNumber(runRaw.completedDate) ??
-      toOptionalNumber(runRaw.endTime) ??
-      toOptionalNumber(runRaw.startDate),
+      toOptionalMythicPlusTimestamp(runRaw.completedAt) ??
+      toOptionalMythicPlusTimestamp(runRaw.completionDate) ??
+      toOptionalMythicPlusTimestamp(runRaw.completedDate) ??
+      toOptionalMythicPlusTimestamp(runRaw.endTime) ??
+      toOptionalMythicPlusTimestamp(runRaw.startDate),
     thisWeek: toOptionalBoolean(runRaw.thisWeek) ?? toOptionalBoolean(runRaw.isThisWeek),
   };
 
@@ -767,10 +794,16 @@ function sortByTimestampAsc(records: unknown[], field: string): unknown[] {
 function sortRunsDesc(records: unknown[]): unknown[] {
   return records.sort((a, b) => {
     const left = isRecord(a)
-      ? toOptionalNumber(a.completedAt) ?? toOptionalNumber(a.startDate) ?? toOptionalNumber(a.observedAt) ?? 0
+      ? toOptionalMythicPlusTimestamp(a.completedAt) ??
+        toOptionalMythicPlusTimestamp(a.startDate) ??
+        toOptionalNumber(a.observedAt) ??
+        0
       : 0;
     const right = isRecord(b)
-      ? toOptionalNumber(b.completedAt) ?? toOptionalNumber(b.startDate) ?? toOptionalNumber(b.observedAt) ?? 0
+      ? toOptionalMythicPlusTimestamp(b.completedAt) ??
+        toOptionalMythicPlusTimestamp(b.startDate) ??
+        toOptionalNumber(b.observedAt) ??
+        0
       : 0;
     return right - left;
   });

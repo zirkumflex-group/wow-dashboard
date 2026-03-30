@@ -388,10 +388,44 @@ local function GetFirstField(record, fieldNames)
     return nil
 end
 
+local function NormalizeMythicPlusDate(value)
+    if type(value) == "number" then
+        return value
+    end
+
+    if type(value) ~= "table" then
+        return nil
+    end
+
+    local year = tonumber(value.year)
+    local month = tonumber(value.month)
+    local day = tonumber(value.day)
+    if not year or not month or not day then
+        return nil
+    end
+
+    if year < 100 then
+        year = 2000 + year
+    end
+
+    local hour = tonumber(value.hour) or 0
+    local minute = tonumber(value.minute) or tonumber(value.min) or 0
+    local second = tonumber(value.second) or tonumber(value.sec) or 0
+
+    return time({
+        year = year,
+        month = month + 1,
+        day = day + 1,
+        hour = hour,
+        min = minute,
+        sec = second,
+    })
+end
+
 GetRunSortValue = function(run)
-    return tonumber(run.completedAt)
-        or tonumber(run.completionDate)
-        or tonumber(run.startDate)
+    return NormalizeMythicPlusDate(run.completedAt)
+        or NormalizeMythicPlusDate(run.completionDate)
+        or NormalizeMythicPlusDate(run.startDate)
         or tonumber(run.observedAt)
         or 0
 end
@@ -441,7 +475,7 @@ local function GetRunMapFingerprintToken(run)
 end
 
 local function GetRunIdentityTimestamp(run)
-    return tonumber(run.startDate) or tonumber(run.completedAt)
+    return NormalizeMythicPlusDate(run.startDate) or NormalizeMythicPlusDate(run.completedAt)
 end
 
 local function BuildLegacyRunFingerprint(run)
@@ -550,6 +584,11 @@ NormalizeStoredMythicPlusRun = function(run)
             "endTime",
         })
     end
+    run.completedAt = NormalizeMythicPlusDate(run.completedAt)
+        or NormalizeMythicPlusDate(run.completionDate)
+        or NormalizeMythicPlusDate(run.completedDate)
+        or NormalizeMythicPlusDate(run.endTime)
+    run.startDate = NormalizeMythicPlusDate(run.startDate) or NormalizeMythicPlusDate(run.startedAt)
 
     if run.mapChallengeModeID == nil then
         run.mapChallengeModeID = GetFirstField(run, { "challengeModeID", "mapID" })
@@ -626,12 +665,13 @@ local function NormalizeMythicPlusRun(rawRun, seasonID)
     end
 
     local mapChallengeModeID = GetFirstField(rawRun, { "mapChallengeModeID", "challengeModeID", "mapID" })
-    local completedAt = GetFirstField(rawRun, {
+    local completedAt = NormalizeMythicPlusDate(GetFirstField(rawRun, {
         "completedAt",
         "completionDate",
         "completedDate",
         "endTime",
-    })
+    }))
+    local startDate = NormalizeMythicPlusDate(GetFirstField(rawRun, { "startDate", "startedAt" }))
 
     local run = {
         observedAt          = time(),
@@ -644,7 +684,7 @@ local function NormalizeMythicPlusRun(rawRun, seasonID)
         completedInTime     = GetFirstField(rawRun, { "completedInTime", "intime", "onTime" }),
         durationMs          = durationMs,
         runScore            = GetFirstField(rawRun, { "runScore", "score", "mythicRating" }),
-        startDate           = GetFirstField(rawRun, { "startDate", "startedAt" }),
+        startDate           = startDate,
         completedAt         = completedAt,
         thisWeek            = GetFirstField(rawRun, { "thisWeek", "isThisWeek" }),
     }
