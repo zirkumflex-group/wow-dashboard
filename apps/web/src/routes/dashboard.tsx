@@ -9,8 +9,9 @@ import { Input } from "@wow-dashboard/ui/components/input";
 import { Skeleton } from "@wow-dashboard/ui/components/skeleton";
 import { Authenticated, AuthLoading, Unauthenticated, useMutation, useQuery } from "convex/react";
 import { HeartPulse, RefreshCw, Shield, Star, Swords } from "lucide-react";
+import { usePinnedCharacters } from "@/lib/pinned-characters";
 import type React from "react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const HIDE_BELOW_90_KEY = "wow_dashboard_hide_below_90";
 const MIN_ILVL_KEY = "wow_dashboard_min_ilvl";
@@ -89,34 +90,6 @@ function formatGold(value: number) {
   if (s > 0) parts.push(`${s}s`);
   if (c > 0 || parts.length === 0) parts.push(`${c}c`);
   return parts.join(" ");
-}
-
-const FAVORITES_KEY = "wow_dashboard_favorites";
-
-function useFavorites() {
-  const [favorites, setFavorites] = useState<Set<string>>(() => {
-    try {
-      const stored = localStorage.getItem(FAVORITES_KEY);
-      return stored ? new Set<string>(JSON.parse(stored) as string[]) : new Set();
-    } catch {
-      return new Set();
-    }
-  });
-
-  const toggle = useCallback((id: string) => {
-    setFavorites((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
-      localStorage.setItem(FAVORITES_KEY, JSON.stringify([...next]));
-      return next;
-    });
-  }, []);
-
-  return { favorites, toggle };
 }
 
 function useResyncCooldown() {
@@ -211,7 +184,8 @@ function CharacterCard({
             e.stopPropagation();
             onToggleFavorite(char._id);
           }}
-          aria-label={isFavorite ? "Remove from favorites" : "Add to favorites"}
+          aria-label={isFavorite ? "Remove from quick access" : "Pin to quick access"}
+          title={isFavorite ? "Remove from quick access" : "Pin to quick access"}
           className={`absolute right-3 top-3 z-10 rounded-full p-1 transition-colors hover:bg-white/10 ${
             isFavorite ? "text-yellow-400" : "text-muted-foreground hover:text-yellow-400"
           }`}
@@ -342,7 +316,10 @@ function Dashboard() {
   const resync = useMutation(api.characters.resyncCharacters);
   const [syncing, setSyncing] = useState(false);
   const { isCoolingDown, remaining, setCooldown, formatRemaining } = useResyncCooldown();
-  const { favorites, toggle: toggleFavorite } = useFavorites();
+  const {
+    pinnedCharacterIdSet: favorites,
+    togglePinnedCharacter: toggleFavorite,
+  } = usePinnedCharacters();
 
   const [hideBelow90, setHideBelow90] = useState<boolean>(() => {
     try {
