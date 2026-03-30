@@ -737,14 +737,12 @@ const ITEM_LEVEL_AUTO_SCALE: YScaleOptions = {
   padRatio: 0.18,
   stepFloor: 0.5,
 };
-const ITEM_LEVEL_WIDE_DOMAIN: [number, number] = [0, 300];
 const MPLUS_AUTO_SCALE: YScaleOptions = {
   minSpan: 150,
   minPadding: 40,
   padRatio: 0.16,
   stepFloor: 25,
 };
-const MPLUS_WIDE_DOMAIN: [number, number] = [0, 4500];
 const GOLD_SCALE: YScaleOptions = {
   minSpan: 20,
   minPadding: 2,
@@ -1027,10 +1025,8 @@ function RadarStrip({ snapshot }: { snapshot: Snapshot }) {
 
 function IlvlChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeFrame: TimeFrame }) {
   const [fullscreen, setFullscreen] = useState(false);
-  const [zoomed, setZoomed] = useState(true);
   const data = snapshots.map((s) => ({ date: s.takenAt, itemLevel: s.itemLevel }));
   const lines = [{ key: "itemLevel", color: C.blue }];
-  const yDomain = zoomed ? undefined : ITEM_LEVEL_WIDE_DOMAIN;
   return (
     <Card>
       <CardHeader className="pb-0">
@@ -1038,27 +1034,13 @@ function IlvlChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeFr
           <CardTitle className="text-sm font-medium flex items-center gap-1.5">
             <Sword size={14} className="text-muted-foreground" /> Item Level
           </CardTitle>
-          <div className="flex items-center gap-2">
-            <div className="flex items-center rounded-md border text-xs overflow-hidden">
-              <button
-                className={`px-2 py-0.5 transition-colors ${!zoomed ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
-                onClick={() => setZoomed(false)}
-              >0–300</button>
-              <button
-                className={`px-2 py-0.5 transition-colors ${zoomed ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
-                onClick={() => setZoomed(true)}
-              >200–300</button>
-            </div>
-            <FullscreenButton onClick={() => setFullscreen(true)} />
-          </div>
+          <FullscreenButton onClick={() => setFullscreen(true)} />
         </div>
       </CardHeader>
       <CardContent>
         <SnapshotLineChart
-          key={zoomed ? "zoomed" : "wide"}
           data={data} lines={lines} config={ilvlConfig}
           valueFormatter={(v) => v.toFixed(1)}
-          yDomainOverride={yDomain}
           yScaleOptions={ITEM_LEVEL_AUTO_SCALE}
           timeFrame={timeFrame}
         />
@@ -1066,12 +1048,10 @@ function IlvlChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeFr
       {fullscreen && (
         <FullscreenOverlay title="Item Level" onClose={() => setFullscreen(false)}>
           <SnapshotLineChart
-            key={zoomed ? "zoomed" : "wide"}
             data={data} lines={lines} config={ilvlConfig}
             valueFormatter={(v) => v.toFixed(1)}
             className="h-full"
             showLegend
-            yDomainOverride={yDomain}
             yScaleOptions={ITEM_LEVEL_AUTO_SCALE}
             timeFrame={timeFrame}
           />
@@ -1080,13 +1060,10 @@ function IlvlChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeFr
     </Card>
   );
 }
-
 function MplusChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeFrame: TimeFrame }) {
   const [fullscreen, setFullscreen] = useState(false);
-  const [zoomed, setZoomed] = useState(true);
   const data = snapshots.map((s) => ({ date: s.takenAt, mythicPlusScore: s.mythicPlusScore }));
   const lines = [{ key: "mythicPlusScore", color: C.red }];
-  const yDomain = zoomed ? undefined : MPLUS_WIDE_DOMAIN;
   return (
     <Card>
       <CardHeader className="pb-0">
@@ -1094,27 +1071,13 @@ function MplusChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeF
           <CardTitle className="text-sm font-medium flex items-center gap-1.5">
             <Flame size={14} className="text-muted-foreground" /> M+ Score
           </CardTitle>
-          <div className="flex items-center gap-2">
-            <div className="flex items-center rounded-md border text-xs overflow-hidden">
-              <button
-                className={`px-2 py-0.5 transition-colors ${!zoomed ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
-                onClick={() => setZoomed(false)}
-              >0–4500</button>
-              <button
-                className={`px-2 py-0.5 transition-colors ${zoomed ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
-                onClick={() => setZoomed(true)}
-              >2k–4.5k</button>
-            </div>
-            <FullscreenButton onClick={() => setFullscreen(true)} />
-          </div>
+          <FullscreenButton onClick={() => setFullscreen(true)} />
         </div>
       </CardHeader>
       <CardContent>
         <SnapshotLineChart
-          key={zoomed ? "zoomed" : "wide"}
           data={data} lines={lines} config={mplusConfig}
           valueFormatter={(v) => v.toLocaleString()}
-          yDomainOverride={yDomain}
           yScaleOptions={MPLUS_AUTO_SCALE}
           timeFrame={timeFrame}
         />
@@ -1122,12 +1085,10 @@ function MplusChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeF
       {fullscreen && (
         <FullscreenOverlay title="M+ Score" onClose={() => setFullscreen(false)}>
           <SnapshotLineChart
-            key={zoomed ? "zoomed" : "wide"}
             data={data} lines={lines} config={mplusConfig}
             valueFormatter={(v) => v.toLocaleString()}
             className="h-full"
             showLegend
-            yDomainOverride={yDomain}
             yScaleOptions={MPLUS_AUTO_SCALE}
             timeFrame={timeFrame}
           />
@@ -1136,7 +1097,6 @@ function MplusChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeF
     </Card>
   );
 }
-
 function GoldChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeFrame: TimeFrame }) {
   const [fullscreen, setFullscreen] = useState(false);
   const data = snapshots.map((s) => ({ date: s.takenAt, gold: s.gold }));
@@ -2080,3 +2040,4 @@ function SnapshotHistorySection({
     </Card>
   );
 }
+
