@@ -6,6 +6,7 @@ import { internalMutation, mutation, query } from "./_generated/server";
 import { authComponent } from "./auth";
 import {
   getMythicPlusRunDedupKey,
+  getMythicPlusRunUpgradeCount,
   getMythicPlusRunSortValue,
   shouldReplaceMythicPlusRun,
 } from "./mythicPlus";
@@ -35,6 +36,39 @@ function isCompletedRun(run: MythicPlusRunDoc): boolean {
 function isTimedRun(run: MythicPlusRunDoc): boolean {
   if (run.completedInTime !== undefined) return run.completedInTime;
   return run.completed === true;
+}
+
+function shouldReplaceBestTimedRun(
+  currentRun: MythicPlusRunDoc | null,
+  candidateRun: MythicPlusRunDoc,
+) {
+  if (!currentRun) return true;
+
+  const currentLevel = currentRun.level ?? -1;
+  const candidateLevel = candidateRun.level ?? -1;
+  if (candidateLevel !== currentLevel) {
+    return candidateLevel > currentLevel;
+  }
+
+  const currentUpgradeCount = getMythicPlusRunUpgradeCount(currentRun);
+  const candidateUpgradeCount = getMythicPlusRunUpgradeCount(candidateRun);
+  if (candidateUpgradeCount !== currentUpgradeCount) {
+    return candidateUpgradeCount > currentUpgradeCount;
+  }
+
+  const currentScore = currentRun.runScore ?? -1;
+  const candidateScore = candidateRun.runScore ?? -1;
+  if (candidateScore !== currentScore) {
+    return candidateScore > currentScore;
+  }
+
+  const currentDuration = currentRun.durationMs ?? Number.MAX_SAFE_INTEGER;
+  const candidateDuration = candidateRun.durationMs ?? Number.MAX_SAFE_INTEGER;
+  if (candidateDuration !== currentDuration) {
+    return candidateDuration < currentDuration;
+  }
+
+  return getRunTimestamp(candidateRun) > getRunTimestamp(currentRun);
 }
 
 function getSnapshotCompletenessScore(snapshot: SnapshotDoc) {
@@ -83,13 +117,13 @@ function buildMythicPlusBucketSummary(runs: MythicPlusRunDoc[]) {
   let timed12To13 = 0;
   let timed14Plus = 0;
   let bestLevel: number | null = null;
-  let bestTimedLevel: number | null = null;
   let bestScore: number | null = null;
   let totalLevel = 0;
   let levelCount = 0;
   let totalScore = 0;
   let scoreCount = 0;
   let lastRunAt: number | null = null;
+  let bestTimedRun: MythicPlusRunDoc | null = null;
 
   for (const run of runs) {
     const runAt = getRunTimestamp(run);
@@ -98,6 +132,9 @@ function buildMythicPlusBucketSummary(runs: MythicPlusRunDoc[]) {
     if (isCompletedRun(run)) completedRuns += 1;
     if (isTimedRun(run)) {
       timedRuns += 1;
+      if (shouldReplaceBestTimedRun(bestTimedRun, run)) {
+        bestTimedRun = run;
+      }
       const level = run.level ?? 0;
 
       if (level >= 14) {
@@ -115,9 +152,6 @@ function buildMythicPlusBucketSummary(runs: MythicPlusRunDoc[]) {
       bestLevel = bestLevel === null ? run.level : Math.max(bestLevel, run.level);
       totalLevel += run.level;
       levelCount += 1;
-      if (isTimedRun(run)) {
-        bestTimedLevel = bestTimedLevel === null ? run.level : Math.max(bestTimedLevel, run.level);
-      }
     }
 
     if (run.runScore !== undefined) {
@@ -136,7 +170,10 @@ function buildMythicPlusBucketSummary(runs: MythicPlusRunDoc[]) {
     timed12To13,
     timed14Plus,
     bestLevel,
-    bestTimedLevel,
+    bestTimedLevel: bestTimedRun?.level ?? null,
+    bestTimedUpgradeCount: bestTimedRun ? getMythicPlusRunUpgradeCount(bestTimedRun) : null,
+    bestTimedScore: bestTimedRun?.runScore ?? null,
+    bestTimedDurationMs: bestTimedRun?.durationMs ?? null,
     bestScore,
     averageLevel: levelCount > 0 ? totalLevel / levelCount : null,
     averageScore: scoreCount > 0 ? totalScore / scoreCount : null,
@@ -153,7 +190,11 @@ function buildDungeonSummaries(runs: MythicPlusRunDoc[]) {
       totalRuns: number;
       timedRuns: number;
       bestLevel: number | null;
+      bestTimedRun: MythicPlusRunDoc | null;
       bestTimedLevel: number | null;
+      bestTimedUpgradeCount: number | null;
+      bestTimedScore: number | null;
+      bestTimedDurationMs: number | null;
       bestScore: number | null;
       lastRunAt: number | null;
     }
@@ -167,19 +208,24 @@ function buildDungeonSummaries(runs: MythicPlusRunDoc[]) {
       totalRuns: 0,
       timedRuns: 0,
       bestLevel: null,
+      bestTimedRun: null,
       bestTimedLevel: null,
+      bestTimedUpgradeCount: null,
+      bestTimedScore: null,
+      bestTimedDurationMs: null,
       bestScore: null,
       lastRunAt: null,
     };
 
     current.totalRuns += 1;
-    if (isTimedRun(run)) current.timedRuns += 1;
+    if (isTimedRun(run)) {
+      current.timedRuns += 1;
+      if (shouldReplaceBestTimedRun(current.bestTimedRun, run)) {
+        current.bestTimedRun = run;
+      }
+    }
     if (run.level !== undefined) {
       current.bestLevel = current.bestLevel === null ? run.level : Math.max(current.bestLevel, run.level);
-      if (isTimedRun(run)) {
-        current.bestTimedLevel =
-          current.bestTimedLevel === null ? run.level : Math.max(current.bestTimedLevel, run.level);
-      }
     }
     if (run.runScore !== undefined) {
       current.bestScore =
@@ -191,10 +237,33 @@ function buildDungeonSummaries(runs: MythicPlusRunDoc[]) {
     byDungeon.set(key, current);
   }
 
-  return Array.from(byDungeon.values()).sort((a, b) => {
+  return Array.from(byDungeon.values()).map((dungeon) => ({
+    mapChallengeModeID: dungeon.mapChallengeModeID,
+    mapName: dungeon.mapName,
+    totalRuns: dungeon.totalRuns,
+    timedRuns: dungeon.timedRuns,
+    bestLevel: dungeon.bestLevel,
+    bestTimedLevel: dungeon.bestTimedRun?.level ?? null,
+    bestTimedUpgradeCount: dungeon.bestTimedRun
+      ? getMythicPlusRunUpgradeCount(dungeon.bestTimedRun)
+      : null,
+    bestTimedScore: dungeon.bestTimedRun?.runScore ?? null,
+    bestTimedDurationMs: dungeon.bestTimedRun?.durationMs ?? null,
+    bestScore: dungeon.bestScore,
+    lastRunAt: dungeon.lastRunAt,
+  })).sort((a, b) => {
     const timedA = a.bestTimedLevel ?? -1;
     const timedB = b.bestTimedLevel ?? -1;
     if (timedB !== timedA) return timedB - timedA;
+    const upgradesA = a.bestTimedUpgradeCount ?? 0;
+    const upgradesB = b.bestTimedUpgradeCount ?? 0;
+    if (upgradesB !== upgradesA) return upgradesB - upgradesA;
+    const timedScoreA = a.bestTimedScore ?? -1;
+    const timedScoreB = b.bestTimedScore ?? -1;
+    if (timedScoreB !== timedScoreA) return timedScoreB - timedScoreA;
+    const timedDurationA = a.bestTimedDurationMs ?? Number.MAX_SAFE_INTEGER;
+    const timedDurationB = b.bestTimedDurationMs ?? Number.MAX_SAFE_INTEGER;
+    if (timedDurationA !== timedDurationB) return timedDurationA - timedDurationB;
     const bestA = a.bestLevel ?? -1;
     const bestB = b.bestLevel ?? -1;
     if (bestB !== bestA) return bestB - bestA;

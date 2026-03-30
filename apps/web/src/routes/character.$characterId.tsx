@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { api } from "@wow-dashboard/backend/convex/_generated/api";
 import type { Id } from "@wow-dashboard/backend/convex/_generated/dataModel";
+import { getMythicPlusDungeonMeta, getRaiderIoScoreColor } from "../lib/mythic-plus-static";
 import { Badge } from "@wow-dashboard/ui/components/badge";
 import { Button } from "@wow-dashboard/ui/components/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@wow-dashboard/ui/components/card";
@@ -267,9 +268,19 @@ function formatKeyLevel(level?: number | null) {
   return `+${level}`;
 }
 
-function formatAverageValue(value?: number | null, digits = 1) {
-  if (value === undefined || value === null) return "—";
-  return value.toFixed(digits);
+function formatTimedKeyLevel(level?: number | null, upgradeCount?: number | null) {
+  if (level === undefined || level === null) return "â€”";
+  const normalizedUpgradeCount = Math.max(1, Math.min(3, upgradeCount ?? 1));
+  return `${"+".repeat(normalizedUpgradeCount)}${level}`;
+}
+
+function formatRunScore(value?: number | null) {
+  if (value === undefined || value === null) return "â€”";
+  const hasFraction = Math.abs(value % 1) > 0.001;
+  return value.toLocaleString(undefined, {
+    minimumFractionDigits: hasFraction ? 1 : 0,
+    maximumFractionDigits: 1,
+  });
 }
 
 function formatSeasonLabel(seasonID: number | null) {
@@ -317,11 +328,23 @@ function StatRow({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
-function StatGrid({ label, value }: { label: string; value: React.ReactNode }) {
+function StatGrid({
+  label,
+  value,
+  compact = false,
+}: {
+  label: string;
+  value: React.ReactNode;
+  compact?: boolean;
+}) {
   return (
-    <div className="bg-muted/30 rounded-md p-2 text-center">
-      <div className="text-muted-foreground text-xs">{label}</div>
-      <div className="font-semibold text-sm mt-0.5">{value}</div>
+    <div className={`rounded-md bg-muted/30 text-center ${compact ? "p-1.5" : "p-2"}`}>
+      <div className={compact ? "text-[11px] leading-tight text-muted-foreground" : "text-muted-foreground text-xs"}>
+        {label}
+      </div>
+      <div className={compact ? "mt-0.5 text-sm font-semibold leading-none" : "mt-0.5 text-sm font-semibold"}>
+        {value}
+      </div>
     </div>
   );
 }
@@ -357,6 +380,77 @@ function HeaderMetaTile({
       </div>
       <div className="mt-1 text-sm font-medium text-foreground">{value}</div>
     </div>
+  );
+}
+
+function MythicPlusKeyPill({
+  level,
+  upgradeCount,
+  compact = false,
+}: {
+  level?: number | null;
+  upgradeCount?: number | null;
+  compact?: boolean;
+}) {
+  if (level === undefined || level === null) {
+    return <span className="text-muted-foreground">â€”</span>;
+  }
+
+  const normalizedUpgradeCount = Math.max(1, Math.min(3, upgradeCount ?? 1));
+
+  return (
+    <span
+      className={`inline-flex items-center rounded-full border border-emerald-500/30 bg-emerald-500/10 font-semibold tabular-nums text-emerald-200 ${
+        compact ? "px-2 py-0.5 text-xs" : "px-2.5 py-1 text-sm"
+      }`}
+      title={normalizedUpgradeCount > 1 ? `Timed for +${normalizedUpgradeCount}` : "Timed"}
+    >
+      {formatTimedKeyLevel(level, normalizedUpgradeCount)}
+    </span>
+  );
+}
+
+function DungeonIcon({
+  mapChallengeModeID,
+  mapName,
+}: {
+  mapChallengeModeID?: number | null;
+  mapName?: string | null;
+}) {
+  const dungeonMeta = getMythicPlusDungeonMeta(mapChallengeModeID, mapName);
+  const fallbackLabel = dungeonMeta?.shortName ?? mapName?.slice(0, 2).toUpperCase() ?? "M+";
+
+  if (!dungeonMeta?.iconUrl) {
+    return (
+      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-border/60 bg-muted/30 text-[10px] font-semibold text-muted-foreground">
+        {fallbackLabel}
+      </span>
+    );
+  }
+
+  return (
+    <img
+      src={dungeonMeta.iconUrl}
+      alt=""
+      loading="lazy"
+      decoding="async"
+      referrerPolicy="no-referrer"
+      className="h-6 w-6 shrink-0 rounded-md border border-border/60 object-cover"
+    />
+  );
+}
+
+function RaiderIoScoreText({
+  score,
+  className,
+}: {
+  score?: number | null;
+  className?: string;
+}) {
+  return (
+    <span className={className} style={{ color: getRaiderIoScoreColor(score) }}>
+      {formatRunScore(score)}
+    </span>
   );
 }
 
@@ -420,7 +514,7 @@ function MythicPlusSection({ data }: { data: MythicPlusData | null | undefined }
   const recentRuns = runs.slice(0, 12);
 
   return (
-    <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
+    <div className="grid items-start gap-4 xl:grid-cols-[1.1fr_0.9fr]">
       <Card>
         <CardHeader className="border-b pb-3">
           <div className="flex items-center justify-between gap-3">
@@ -440,41 +534,90 @@ function MythicPlusSection({ data }: { data: MythicPlusData | null | undefined }
                 <Flame size={14} className="text-muted-foreground" />
                 <h3 className="text-sm font-semibold">Current Season</h3>
               </div>
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                <StatGrid label="Runs" value={currentSeason.totalRuns.toLocaleString()} />
-                <StatGrid label="Timed" value={currentSeason.timedRuns.toLocaleString()} />
-                <StatGrid label="Best Timed" value={formatKeyLevel(currentSeason.bestTimedLevel)} />
-                <StatGrid label="Current Score" value={formatAverageValue(summary.currentScore, 0)} />
-                <StatGrid label="5+ Timed" value={currentSeason.timed5To9.toLocaleString()} />
-                <StatGrid label="10+ Timed" value={currentSeason.timed10To11.toLocaleString()} />
-                <StatGrid label="12+ Timed" value={currentSeason.timed12To13.toLocaleString()} />
-                <StatGrid label="14+ Timed" value={currentSeason.timed14Plus.toLocaleString()} />
+              <div className="grid gap-1.5 sm:grid-cols-2 xl:grid-cols-4">
+                <StatGrid
+                  compact
+                  label="Current Score"
+                  value={<RaiderIoScoreText score={summary.currentScore} className="tabular-nums" />}
+                />
+                <StatGrid
+                  compact
+                  label="Best Timed"
+                  value={
+                    <MythicPlusKeyPill
+                      level={currentSeason.bestTimedLevel}
+                      upgradeCount={currentSeason.bestTimedUpgradeCount}
+                      compact
+                    />
+                  }
+                />
+                <StatGrid compact label="Timed Runs" value={currentSeason.timedRuns.toLocaleString()} />
+                <StatGrid compact label="Total Runs" value={currentSeason.totalRuns.toLocaleString()} />
+              </div>
+              <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+                <StatGrid compact label="5+ Timed" value={currentSeason.timed5To9.toLocaleString()} />
+                <StatGrid compact label="10+ Timed" value={currentSeason.timed10To11.toLocaleString()} />
+                <StatGrid compact label="12+ Timed" value={currentSeason.timed12To13.toLocaleString()} />
+                <StatGrid compact label="14+ Timed" value={currentSeason.timed14Plus.toLocaleString()} />
               </div>
             </div>
           )}
 
           {summary.currentSeasonDungeons.length > 0 && (
             <div className="space-y-3">
-              <div className="flex items-center gap-2">
-                <Sword size={14} className="text-muted-foreground" />
-                <h3 className="text-sm font-semibold">Dungeon Bests</h3>
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <Sword size={14} className="text-muted-foreground" />
+                  <h3 className="text-sm font-semibold">Dungeon Bests</h3>
+                </div>
+                {summary.currentScore !== null && (
+                  <div className="text-xs text-muted-foreground">
+                    Score{" "}
+                    <RaiderIoScoreText score={summary.currentScore} className="font-semibold tabular-nums" />
+                  </div>
+                )}
               </div>
               <div className="overflow-x-auto rounded-md border">
-                <table className="w-full min-w-[480px] text-sm">
+                <table className="w-full min-w-[560px] text-sm leading-tight">
                   <thead className="bg-muted/40 text-muted-foreground">
                     <tr>
                       <th className="px-3 py-2 text-left font-medium">Dungeon</th>
                       <th className="px-3 py-2 text-right font-medium">Timed</th>
-                      <th className="px-3 py-2 text-right font-medium">Best Timed</th>
+                      <th className="px-3 py-2 text-right font-medium">Level</th>
+                      <th className="px-3 py-2 text-right font-medium">Score</th>
+                      <th className="px-3 py-2 text-right font-medium">Time</th>
                     </tr>
                   </thead>
-                  <tbody>
+                  <tbody className="divide-y divide-border/70">
                     {summary.currentSeasonDungeons.map((dungeon) => (
-                      <tr key={`${dungeon.mapChallengeModeID ?? "map"}-${dungeon.mapName}`} className="border-t">
-                        <td className="px-3 py-2">{dungeon.mapName}</td>
-                        <td className="px-3 py-2 text-right tabular-nums">{dungeon.timedRuns}</td>
-                        <td className="px-3 py-2 text-right tabular-nums">
-                          {formatKeyLevel(dungeon.bestTimedLevel)}
+                      <tr
+                        key={`${dungeon.mapChallengeModeID ?? "map"}-${dungeon.mapName}`}
+                        className="bg-background/20 transition-colors hover:bg-muted/20"
+                      >
+                        <td className="px-3 py-2.5">
+                          <div className="flex items-center gap-2.5">
+                            <DungeonIcon
+                              mapChallengeModeID={dungeon.mapChallengeModeID}
+                              mapName={dungeon.mapName}
+                            />
+                            <div className="font-medium text-foreground">{dungeon.mapName}</div>
+                          </div>
+                        </td>
+                        <td className="px-3 py-2.5 text-right tabular-nums text-muted-foreground">
+                          {dungeon.timedRuns}
+                        </td>
+                        <td className="px-3 py-2.5 text-right">
+                          <MythicPlusKeyPill
+                            level={dungeon.bestTimedLevel}
+                            upgradeCount={dungeon.bestTimedUpgradeCount}
+                            compact
+                          />
+                        </td>
+                        <td className="px-3 py-2.5 text-right tabular-nums">
+                          <RaiderIoScoreText score={dungeon.bestTimedScore} className="tabular-nums" />
+                        </td>
+                        <td className="px-3 py-2.5 text-right tabular-nums">
+                          {formatRunDuration(dungeon.bestTimedDurationMs)}
                         </td>
                       </tr>
                     ))}
@@ -518,7 +661,7 @@ function MythicPlusSection({ data }: { data: MythicPlusData | null | undefined }
                       <MythicPlusResultBadge run={run} />
                     </td>
                     <td className="px-3 py-2 text-right tabular-nums">
-                      {formatAverageValue(run.runScore, 0)}
+                      {formatRunScore(run.runScore)}
                     </td>
                     <td className="px-3 py-2 text-right tabular-nums">
                       {formatRunDuration(run.durationMs)}
@@ -658,6 +801,9 @@ type MythicPlusBucketSummary = {
   timed14Plus: number;
   bestLevel: number | null;
   bestTimedLevel: number | null;
+  bestTimedUpgradeCount: number | null;
+  bestTimedScore: number | null;
+  bestTimedDurationMs: number | null;
   bestScore: number | null;
   averageLevel: number | null;
   averageScore: number | null;
@@ -671,6 +817,9 @@ type MythicPlusDungeonSummary = {
   timedRuns: number;
   bestLevel: number | null;
   bestTimedLevel: number | null;
+  bestTimedUpgradeCount: number | null;
+  bestTimedScore: number | null;
+  bestTimedDurationMs: number | null;
   bestScore: number | null;
   lastRunAt: number | null;
 };
@@ -2085,6 +2234,3 @@ function SnapshotHistorySection({
     </Card>
   );
 }
-
-
-

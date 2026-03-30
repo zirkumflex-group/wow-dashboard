@@ -15,6 +15,21 @@ type MythicPlusRunLike = {
   thisWeek?: boolean;
 };
 
+const MYTHIC_PLUS_TIMER_MS_BY_MAP_NAME = new Map<string, number>([
+  ["magisters' terrace", 34 * 60 * 1000],
+  ["maisara caverns", 33 * 60 * 1000],
+  ["nexus-point xenas", 30 * 60 * 1000],
+  ["windrunner spire", 33.5 * 60 * 1000],
+  ["algeth'ar academy", 29 * 60 * 1000],
+  ["pit of saron", 30 * 60 * 1000],
+  ["seat of the triumvirate", 34 * 60 * 1000],
+  ["skyreach", 28 * 60 * 1000],
+]);
+
+function normalizeMapName(mapName: string) {
+  return mapName.trim().toLowerCase();
+}
+
 function toFingerprintToken(value: boolean | number | string | null | undefined) {
   if (value === undefined || value === null) return "";
   if (typeof value === "boolean") return value ? "1" : "0";
@@ -41,6 +56,28 @@ function getRunIdentityTimestamp(run: MythicPlusRunLike) {
 
 export function getMythicPlusRunSortValue(run: MythicPlusRunLike) {
   return run.completedAt ?? run.startDate ?? run.observedAt ?? 0;
+}
+
+export function getMythicPlusRunTimerMs(run: Pick<MythicPlusRunLike, "mapName"> | string | null | undefined) {
+  const mapName = typeof run === "string" ? run : run?.mapName;
+  if (typeof mapName !== "string" || mapName.trim() === "") return null;
+  return MYTHIC_PLUS_TIMER_MS_BY_MAP_NAME.get(normalizeMapName(mapName)) ?? null;
+}
+
+export function getMythicPlusRunUpgradeCount(run: MythicPlusRunLike) {
+  const timerMs = getMythicPlusRunTimerMs(run);
+  if (timerMs !== null && run.durationMs !== undefined && run.durationMs > 0) {
+    if (run.durationMs <= timerMs * 0.6) return 3;
+    if (run.durationMs <= timerMs * 0.8) return 2;
+    if (run.durationMs <= timerMs) return 1;
+    return 0;
+  }
+
+  if (run.completedInTime !== undefined) {
+    return run.completedInTime ? 1 : 0;
+  }
+
+  return run.completed === true ? 1 : 0;
 }
 
 export function buildCanonicalMythicPlusRunFingerprint(run: MythicPlusRunLike) {
