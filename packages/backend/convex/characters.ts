@@ -34,9 +34,10 @@ function isTimedRun(run: MythicPlusRunDoc): boolean {
 function buildMythicPlusBucketSummary(runs: MythicPlusRunDoc[]) {
   let completedRuns = 0;
   let timedRuns = 0;
-  let timed2Plus = 0;
-  let timed5Plus = 0;
-  let timed10Plus = 0;
+  let timed5To9 = 0;
+  let timed10To11 = 0;
+  let timed12To13 = 0;
+  let timed14Plus = 0;
   let bestLevel: number | null = null;
   let bestTimedLevel: number | null = null;
   let bestScore: number | null = null;
@@ -53,9 +54,17 @@ function buildMythicPlusBucketSummary(runs: MythicPlusRunDoc[]) {
     if (isCompletedRun(run)) completedRuns += 1;
     if (isTimedRun(run)) {
       timedRuns += 1;
-      if ((run.level ?? 0) >= 2) timed2Plus += 1;
-      if ((run.level ?? 0) >= 5) timed5Plus += 1;
-      if ((run.level ?? 0) >= 10) timed10Plus += 1;
+      const level = run.level ?? 0;
+
+      if (level >= 14) {
+        timed14Plus += 1;
+      } else if (level >= 12) {
+        timed12To13 += 1;
+      } else if (level >= 10) {
+        timed10To11 += 1;
+      } else if (level >= 5) {
+        timed5To9 += 1;
+      }
     }
 
     if (run.level !== undefined) {
@@ -78,9 +87,10 @@ function buildMythicPlusBucketSummary(runs: MythicPlusRunDoc[]) {
     totalRuns: runs.length,
     completedRuns,
     timedRuns,
-    timed2Plus,
-    timed5Plus,
-    timed10Plus,
+    timed5To9,
+    timed10To11,
+    timed12To13,
+    timed14Plus,
     bestLevel,
     bestTimedLevel,
     bestScore,
@@ -148,7 +158,7 @@ function buildDungeonSummaries(runs: MythicPlusRunDoc[]) {
   });
 }
 
-function buildMythicPlusSummary(runs: MythicPlusRunDoc[]) {
+function buildMythicPlusSummary(runs: MythicPlusRunDoc[], currentScore: number | null) {
   let latestSeasonID: number | null = null;
   for (const run of runs) {
     if (run.seasonID === undefined) continue;
@@ -160,6 +170,7 @@ function buildMythicPlusSummary(runs: MythicPlusRunDoc[]) {
 
   return {
     latestSeasonID,
+    currentScore,
     overall: buildMythicPlusBucketSummary(runs),
     currentSeason:
       latestSeasonID === null ? null : buildMythicPlusBucketSummary(currentSeasonRuns),
@@ -291,11 +302,18 @@ export const getCharacterMythicPlus = query({
     const character = await ctx.db.get(characterId);
     if (!character) return null;
 
-    const runs = await ctx.db
-      .query("mythicPlusRuns")
-      .withIndex("by_character_and_observedAt", (q) => q.eq("characterId", characterId))
-      .order("desc")
-      .collect();
+    const [runs, latestSnapshot] = await Promise.all([
+      ctx.db
+        .query("mythicPlusRuns")
+        .withIndex("by_character_and_observedAt", (q) => q.eq("characterId", characterId))
+        .order("desc")
+        .collect(),
+      ctx.db
+        .query("snapshots")
+        .withIndex("by_character_and_time", (q) => q.eq("characterId", characterId))
+        .order("desc")
+        .first(),
+    ]);
 
     const sortedRuns = runs.slice().sort((a, b) => {
       const timeDiff = getRunTimestamp(b) - getRunTimestamp(a);
@@ -305,7 +323,7 @@ export const getCharacterMythicPlus = query({
 
     return {
       runs: sortedRuns,
-      summary: buildMythicPlusSummary(sortedRuns),
+      summary: buildMythicPlusSummary(sortedRuns, latestSnapshot?.mythicPlusScore ?? null),
     };
   },
 });

@@ -170,23 +170,58 @@ function formatDate(takenAtSeconds: number) {
   });
 }
 
-function formatDateShort(takenAtSeconds: number) {
-  return new Date(takenAtSeconds * 1000).toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-  });
+type ChartTooltipPayloadItem = {
+  payload?: {
+    date?: unknown;
+  };
+} | null | undefined;
+
+function normalizeTimestampSeconds(value: unknown): number | null {
+  if (value instanceof Date) {
+    const timestampMs = value.getTime();
+    return Number.isFinite(timestampMs) && timestampMs > 0 ? Math.floor(timestampMs / 1000) : null;
+  }
+
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || value <= 0) return null;
+    return value >= 1_000_000_000_000 ? Math.floor(value / 1000) : Math.floor(value);
+  }
+
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed === "") return null;
+    const numericValue = Number(trimmed);
+    return Number.isFinite(numericValue) ? normalizeTimestampSeconds(numericValue) : null;
+  }
+
+  return null;
 }
 
-function xAxisTickFormatter(ts: number, frame: TimeFrame): string {
-  const d = new Date(ts * 1000);
+function xAxisTickFormatter(ts: unknown, frame: TimeFrame): string {
+  const parsedTs = normalizeTimestampSeconds(ts);
+  if (parsedTs === null) return "—";
+
+  const d = new Date(parsedTs * 1000);
+  if (Number.isNaN(d.getTime())) return "—";
+
   if (frame === "7d") {
     return d.toLocaleDateString(undefined, { weekday: "short", day: "numeric" });
   }
-  return formatDateShort(ts);
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-function xTooltipLabelFormatter(ts: number, frame: TimeFrame): string {
-  const d = new Date(ts * 1000);
+function xTooltipLabelFormatter(
+  value: unknown,
+  frame: TimeFrame,
+  payload?: ReadonlyArray<ChartTooltipPayloadItem>,
+): string {
+  const parsedTs =
+    normalizeTimestampSeconds(value) ?? normalizeTimestampSeconds(payload?.[0]?.payload?.date);
+  if (parsedTs === null) return "Unknown date";
+
+  const d = new Date(parsedTs * 1000);
+  if (Number.isNaN(d.getTime())) return "Unknown date";
+
   if (frame === "7d") {
     return d.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" });
   }
@@ -352,12 +387,12 @@ function MythicPlusSection({ data }: { data: MythicPlusData | null | undefined }
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                 <StatGrid label="Runs" value={currentSeason.totalRuns.toLocaleString()} />
                 <StatGrid label="Timed" value={currentSeason.timedRuns.toLocaleString()} />
-                <StatGrid label="10+ Timed" value={currentSeason.timed10Plus.toLocaleString()} />
                 <StatGrid label="Best Timed" value={formatKeyLevel(currentSeason.bestTimedLevel)} />
-                <StatGrid label="5+ Timed" value={currentSeason.timed5Plus.toLocaleString()} />
-                <StatGrid label="2+ Timed" value={currentSeason.timed2Plus.toLocaleString()} />
-                <StatGrid label="Completed" value={currentSeason.completedRuns.toLocaleString()} />
-                <StatGrid label="Best Score" value={formatAverageValue(currentSeason.bestScore, 0)} />
+                <StatGrid label="Current Score" value={formatAverageValue(summary.currentScore, 0)} />
+                <StatGrid label="5+ Timed" value={currentSeason.timed5To9.toLocaleString()} />
+                <StatGrid label="10+ Timed" value={currentSeason.timed10To11.toLocaleString()} />
+                <StatGrid label="12+ Timed" value={currentSeason.timed12To13.toLocaleString()} />
+                <StatGrid label="14+ Timed" value={currentSeason.timed14Plus.toLocaleString()} />
               </div>
             </div>
           )}
@@ -557,9 +592,10 @@ type MythicPlusBucketSummary = {
   totalRuns: number;
   completedRuns: number;
   timedRuns: number;
-  timed2Plus: number;
-  timed5Plus: number;
-  timed10Plus: number;
+  timed5To9: number;
+  timed10To11: number;
+  timed12To13: number;
+  timed14Plus: number;
   bestLevel: number | null;
   bestTimedLevel: number | null;
   bestScore: number | null;
@@ -581,6 +617,7 @@ type MythicPlusDungeonSummary = {
 
 type MythicPlusSummary = {
   latestSeasonID: number | null;
+  currentScore: number | null;
   overall: MythicPlusBucketSummary;
   currentSeason: MythicPlusBucketSummary | null;
   currentSeasonDungeons: MythicPlusDungeonSummary[];
@@ -655,7 +692,6 @@ const currenciesConfig: ChartConfig = {
   championDawncrest:   { label: "Champion",   color: C.green },
   heroDawncrest:       { label: "Hero",       color: C.gold  },
   mythDawncrest:       { label: "Myth",       color: C.red   },
-  radiantSparkDust:    { label: "Spark Dust", color: C.pink  },
 };
 
 // ── Reusable line chart ───────────────────────────────────────────────────────
@@ -731,7 +767,13 @@ function SnapshotLineChart({
           cursor={false}
           content={
             <ChartTooltipContent
-              labelFormatter={(value) => xTooltipLabelFormatter(value as number, timeFrame ?? "all")}
+              labelFormatter={(value, payload) =>
+                xTooltipLabelFormatter(
+                  value,
+                  timeFrame ?? "all",
+                  payload as ReadonlyArray<ChartTooltipPayloadItem>,
+                )
+              }
               indicator="dot"
             />
           }
@@ -1040,7 +1082,6 @@ function CurrenciesChartCard({
     { key: "championDawncrest",   color: C.green },
     { key: "heroDawncrest",       color: C.gold  },
     { key: "mythDawncrest",       color: C.red   },
-    { key: "radiantSparkDust",    color: C.pink  },
   ];
   return (
     <Card className={className}>
@@ -1109,7 +1150,6 @@ function CurrentSnapshotCard({ snapshot }: { snapshot: Snapshot }) {
         <StatRow label="Champ. Crest" value={snapshot.currencies.championDawncrest.toLocaleString()}   />
         <StatRow label="Hero Crest"   value={snapshot.currencies.heroDawncrest.toLocaleString()}       />
         <StatRow label="Myth Crest"   value={snapshot.currencies.mythDawncrest.toLocaleString()}       />
-        <StatRow label="Spark Dust"   value={snapshot.currencies.radiantSparkDust.toLocaleString()}    />
       </CardContent>
     </Card>
   );
@@ -1268,7 +1308,6 @@ function FocusCurrentValue({ metric, snapshot }: { metric: FocusMetric; snapshot
             { l: "Myth",       v: snapshot.currencies.mythDawncrest        },
             { l: "Hero",       v: snapshot.currencies.heroDawncrest        },
             { l: "Champion",   v: snapshot.currencies.championDawncrest    },
-            { l: "Spark Dust", v: snapshot.currencies.radiantSparkDust     },
           ].map(({ l, v }) => (
             <span key={l}>
               <span className="text-muted-foreground">{l} </span>
@@ -1364,7 +1403,6 @@ function FocusChart({
           { key: "championDawncrest",   color: C.green },
           { key: "heroDawncrest",       color: C.gold  },
           { key: "mythDawncrest",       color: C.red   },
-          { key: "radiantSparkDust",    color: C.pink  },
         ]}
         config={currenciesConfig}
         className={h}
