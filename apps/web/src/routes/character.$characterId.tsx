@@ -326,6 +326,40 @@ function StatGrid({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
+function HeaderMetricTile({
+  label,
+  value,
+}: {
+  label: string;
+  value: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-lg border border-border/50 bg-muted/20 px-4 py-3">
+      <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground/80">
+        {label}
+      </div>
+      <div className="mt-1 text-lg font-semibold tabular-nums leading-none">{value}</div>
+    </div>
+  );
+}
+
+function HeaderMetaTile({
+  label,
+  value,
+}: {
+  label: string;
+  value: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-md border border-border/40 bg-background/40 px-3 py-2.5">
+      <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground/75">
+        {label}
+      </div>
+      <div className="mt-1 text-sm font-medium text-foreground">{value}</div>
+    </div>
+  );
+}
+
 function getPrimaryStat(snapshot: Snapshot) {
   const primaryStats = [
     { label: "Strength", value: snapshot.stats.strength },
@@ -1254,7 +1288,7 @@ function CurrentSnapshotCard({ snapshot }: { snapshot: Snapshot }) {
   return (
     <Card>
       <CardHeader className="border-b pb-3">
-        <CardTitle className="text-sm font-medium">Current Values</CardTitle>
+        <CardTitle className="text-sm font-medium">Currencies</CardTitle>
       </CardHeader>
       <CardContent className="pt-3 space-y-1.5">
         <StatRow label="Gold"     value={<GoldDisplay value={snapshot.gold} />}              />
@@ -1919,12 +1953,18 @@ function RouteComponent() {
     <div className="w-full px-4 py-6 sm:px-6 lg:px-8 space-y-4">
       {/* Character header */}
       <Card>
-        <CardHeader className="border-b pb-3">
-          <div className="flex items-baseline justify-between">
-            <CardTitle className={`text-2xl font-bold ${classColor(character.class)}`}>
-              {character.name}
-            </CardTitle>
-            <div className="flex items-center gap-2">
+        <CardHeader className="border-b pb-4">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div className="space-y-2">
+              <CardTitle className={`text-2xl font-bold ${classColor(character.class)}`}>
+                {character.name}
+              </CardTitle>
+              <p className="text-muted-foreground text-sm">
+                {character.race} {character.class} — {character.realm}-{character.region.toUpperCase()}
+              </p>
+              <CharacterLinks region={character.region} realm={character.realm} name={character.name} />
+            </div>
+            <div className="flex items-center gap-2 self-start lg:self-auto">
               <LayoutSwitcher value={layoutMode} onChange={handleLayoutChange} />
               <Badge
                 variant="outline"
@@ -1938,29 +1978,34 @@ function RouteComponent() {
               </Badge>
             </div>
           </div>
-          <p className="text-muted-foreground text-sm mt-1">
-            {character.race} {character.class} — {character.realm}-{character.region.toUpperCase()}
-          </p>
-          <CharacterLinks region={character.region} realm={character.realm} name={character.name} />
         </CardHeader>
 
         {latest && (
-          <CardContent className="pt-4">
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
-              <StatGrid label="Level"      value={latest.level}                                />
-              <StatGrid label="Item Level" value={latest.itemLevel.toFixed(1)}                 />
-              <StatGrid label="M+ Score"   value={latest.mythicPlusScore.toLocaleString()}     />
-              <StatGrid label="Gold"       value={<GoldDisplay value={latest.gold} />}         />
+          <CardContent className="space-y-4 pt-5">
+            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+              <HeaderMetricTile label="Level" value={latest.level} />
+              <HeaderMetricTile label="Item Level" value={latest.itemLevel.toFixed(1)} />
+              <HeaderMetricTile label="M+ Score" value={latest.mythicPlusScore.toLocaleString()} />
+              <HeaderMetricTile label="Gold" value={<GoldDisplay value={latest.gold} />} />
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-1">
-              <StatRow label="Spec"     value={`${latest.spec} (${latest.role})`}              />
-              <StatRow label="Playtime" value={formatPlaytime(latest.playtimeSeconds)}         />
-              <StatRow label="Snapshot" value={formatDate(latest.takenAt)}                    />
+            <div className="grid gap-3 border-t border-border/50 pt-4 sm:grid-cols-3">
+              <HeaderMetaTile
+                label="Spec"
+                value={
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span>{latest.spec}</span>
+                    <span className="rounded-full border border-border/50 bg-muted/20 px-2 py-0.5 text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+                      {ROLE_LABELS[latest.role] ?? latest.role}
+                    </span>
+                  </div>
+                }
+              />
+              <HeaderMetaTile label="Playtime" value={formatPlaytime(latest.playtimeSeconds)} />
+              <HeaderMetaTile label="Snapshot" value={formatDate(latest.takenAt)} />
             </div>
           </CardContent>
         )}
       </Card>
-
       {/* Role / Spec filter */}
       {snapshots.length > 0 && (
         <RoleSpecFilter
@@ -2040,4 +2085,6 @@ function SnapshotHistorySection({
     </Card>
   );
 }
+
+
 
