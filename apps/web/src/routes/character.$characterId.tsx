@@ -29,7 +29,7 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   CartesianGrid,
@@ -66,6 +66,8 @@ const CLASS_COLORS: Record<string, string> = {
 };
 
 const ROLE_LABELS: Record<string, string> = { tank: "Tank", healer: "Healer", dps: "DPS" };
+const INITIAL_RECENT_RUN_COUNT = 20;
+const RECENT_RUN_LOAD_INCREMENT = 20;
 
 // ── Time frame ───────────────────────────────────────────────────────────────
 
@@ -487,6 +489,35 @@ function MythicPlusResultBadge({ run }: { run: MythicPlusRun }) {
 }
 
 function MythicPlusSection({ data }: { data: MythicPlusData | null | undefined }) {
+  const [visibleRecentRunCount, setVisibleRecentRunCount] = useState(INITIAL_RECENT_RUN_COUNT);
+  const [summaryCardHeight, setSummaryCardHeight] = useState<number | null>(null);
+  const summaryCardRef = useRef<HTMLDivElement | null>(null);
+  const recentRunsResetKey = `${data?.runs.length ?? 0}:${data?.runs[0]?.fingerprint ?? ""}`;
+  const totalRunCount = data?.runs.length ?? 0;
+  const hasMoreRecentRuns = visibleRecentRunCount < totalRunCount;
+
+  useEffect(() => {
+    setVisibleRecentRunCount(INITIAL_RECENT_RUN_COUNT);
+  }, [recentRunsResetKey]);
+
+  useEffect(() => {
+    const summaryElement = summaryCardRef.current;
+    if (!summaryElement || typeof ResizeObserver === "undefined") return;
+
+    const updateHeight = () => {
+      setSummaryCardHeight(Math.ceil(summaryElement.getBoundingClientRect().height));
+    };
+
+    updateHeight();
+
+    const resizeObserver = new ResizeObserver(() => {
+      updateHeight();
+    });
+
+    resizeObserver.observe(summaryElement);
+    return () => resizeObserver.disconnect();
+  }, [recentRunsResetKey]);
+
   if (data === undefined) {
     return <div className="h-72 animate-pulse rounded-lg bg-muted" />;
   }
@@ -511,11 +542,19 @@ function MythicPlusSection({ data }: { data: MythicPlusData | null | undefined }
 
   const { summary, runs } = data;
   const currentSeason = summary.currentSeason;
-  const recentRuns = runs.slice(0, 12);
+  const visibleRecentRuns = runs.slice(0, visibleRecentRunCount);
+  const nextRecentRunCount = Math.min(RECENT_RUN_LOAD_INCREMENT, runs.length - visibleRecentRunCount);
+
+  function loadMoreRecentRuns() {
+    setVisibleRecentRunCount((currentValue) =>
+      Math.min(currentValue + RECENT_RUN_LOAD_INCREMENT, runs.length),
+    );
+  }
 
   return (
     <div className="grid items-start gap-4 xl:grid-cols-[1.1fr_0.9fr]">
-      <Card>
+      <div ref={summaryCardRef}>
+        <Card>
         <CardHeader className="border-b pb-3">
           <div className="flex items-center justify-between gap-3">
             <CardTitle className="flex items-center gap-2 text-lg">
@@ -627,17 +666,23 @@ function MythicPlusSection({ data }: { data: MythicPlusData | null | undefined }
             </div>
           )}
         </CardContent>
-      </Card>
+        </Card>
+      </div>
 
-      <Card>
+      <Card
+        className="flex flex-col"
+        style={summaryCardHeight === null ? undefined : { height: `${summaryCardHeight}px` }}
+      >
         <CardHeader className="border-b pb-3">
           <CardTitle className="flex items-center gap-2 text-lg">
             <Clock size={16} className="text-muted-foreground" />
             Recent Runs
           </CardTitle>
         </CardHeader>
-        <CardContent className="pt-4">
-          <div className="overflow-x-auto rounded-md border">
+        <CardContent className="flex min-h-0 flex-1 flex-col pt-4">
+          <div
+            className="dark-scrollbar min-h-0 flex-1 overflow-auto rounded-md border"
+          >
             <table className="w-full min-w-[560px] text-sm">
               <thead className="bg-muted/40 text-muted-foreground">
                 <tr>
@@ -650,7 +695,7 @@ function MythicPlusSection({ data }: { data: MythicPlusData | null | undefined }
                 </tr>
               </thead>
               <tbody>
-                {recentRuns.map((run) => (
+                {visibleRecentRuns.map((run) => (
                   <tr key={run.fingerprint} className="border-t">
                     <td className="px-3 py-2 text-muted-foreground">
                       {formatRunDate(run.completedAt ?? run.startDate ?? run.observedAt)}
@@ -668,6 +713,15 @@ function MythicPlusSection({ data }: { data: MythicPlusData | null | undefined }
                     </td>
                   </tr>
                 ))}
+                {hasMoreRecentRuns && (
+                  <tr className="border-t bg-muted/10">
+                    <td colSpan={6} className="px-3 py-3 text-center">
+                      <Button size="sm" variant="outline" onClick={loadMoreRecentRuns}>
+                        Load {nextRecentRunCount} More
+                      </Button>
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>

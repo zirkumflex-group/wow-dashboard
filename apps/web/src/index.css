@@ -1,1 +1,25 @@
 @import "@wow-dashboard/ui/globals.css";
+
+.dark-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklab, var(--border) 70%, transparent) color-mix(in oklab, var(--background) 85%, black 15%);
+}
+
+.dark-scrollbar::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.dark-scrollbar::-webkit-scrollbar-track {
+  background: color-mix(in oklab, var(--background) 85%, black 15%);
+}
+
+.dark-scrollbar::-webkit-scrollbar-thumb {
+  background: color-mix(in oklab, var(--border) 78%, var(--muted) 22%);
+  border: 2px solid color-mix(in oklab, var(--background) 85%, black 15%);
+  border-radius: 999px;
+}
+
+.dark-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklab, var(--foreground) 22%, var(--border) 78%);
+}
