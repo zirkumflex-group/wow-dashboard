@@ -2,16 +2,16 @@ import { ConvexQueryClient } from "@convex-dev/react-query";
 import { QueryClient } from "@tanstack/react-query";
 import { createRouter as createTanStackRouter } from "@tanstack/react-router";
 import { setupRouterSsrQueryIntegration } from "@tanstack/react-router-ssr-query";
-import { env } from "@wow-dashboard/env/web";
 
 import Loader from "./components/loader";
+import { getPublicRuntimeEnv } from "./lib/runtime-env";
 
 import "./index.css";
 import { routeTree } from "./routeTree.gen";
 
 
 export function getRouter() {
-  const convexUrl = env.VITE_CONVEX_URL;
+  const convexUrl = getPublicRuntimeEnv().VITE_CONVEX_URL;
   if (!convexUrl) {
     throw new Error("VITE_CONVEX_URL is not set");
   }

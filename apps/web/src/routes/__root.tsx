@@ -26,6 +26,7 @@ import { authClient } from "@/lib/auth-client";
 import { getToken } from "@/lib/auth-server";
 import { AppSidebar } from "@/components/app-sidebar";
 import { ThemeProvider, THEME_SCRIPT } from "@/components/theme-provider";
+import { getPublicRuntimeEnvScript } from "@/lib/runtime-env";
 
 import appCss from "../index.css?url";
 
@@ -86,6 +87,7 @@ function RootDocument() {
       <html lang="en">
         <head>
           <HeadContent />
+          <script dangerouslySetInnerHTML={{ __html: getPublicRuntimeEnvScript() }} />
           {/* Inline script runs before first paint to avoid theme flash */}
           <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
         </head>
