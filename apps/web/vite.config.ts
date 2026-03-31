@@ -17,20 +17,7 @@ export default defineConfig({
         compact: true,
       },
     }),
-    nitro({
-      routeRules: {
-        "/**": {
-          headers: {
-            "X-Frame-Options": "DENY",
-            "X-Content-Type-Options": "nosniff",
-            "Referrer-Policy": "strict-origin-when-cross-origin",
-            "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
-            "Strict-Transport-Security":
-              "max-age=31536000; includeSubDomains",
-          },
-        },
-      },
-    }),
+    nitro(),
   ],
   server: {
     port: 3001,
