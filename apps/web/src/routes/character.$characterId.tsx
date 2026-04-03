@@ -1964,92 +1964,6 @@ function TimelineLayout({ latest, chartSnapshots, timeFrame, setTimeFrame }: Lay
   );
 }
 
-// ── Role / Spec switcher ──────────────────────────────────────────────────────
-
-function RoleSpecFilter({
-  snapshots,
-  selectedRole,
-  selectedSpec,
-  onRoleChange,
-  onSpecChange,
-}: {
-  snapshots: Snapshot[];
-  selectedRole: string | null;
-  selectedSpec: string | null;
-  onRoleChange: (r: string | null) => void;
-  onSpecChange: (s: string | null) => void;
-}) {
-  const roleMap = new Map<string, Set<string>>();
-  for (const s of snapshots) {
-    if (!roleMap.has(s.role)) roleMap.set(s.role, new Set());
-    roleMap.get(s.role)!.add(s.spec);
-  }
-
-  const roles = [...roleMap.keys()];
-  const totalUniqueSpecs = roles.reduce((n, r) => n + (roleMap.get(r)?.size ?? 0), 0);
-  if (roles.length <= 1 && totalUniqueSpecs <= 1) return null;
-
-  const specsInContext: { spec: string; role: string }[] = selectedRole
-    ? [...(roleMap.get(selectedRole) ?? [])].map((spec) => ({ spec, role: selectedRole }))
-    : roles.flatMap((role) => [...(roleMap.get(role) ?? [])].map((spec) => ({ spec, role })));
-
-  const showSpecRow =
-    specsInContext.length > 1 || (selectedRole !== null && specsInContext.length === 1);
-
-  return (
-    <div className="space-y-2">
-      <div className="flex flex-wrap gap-1.5 items-center">
-        <span className="text-muted-foreground text-xs mr-1">Role</span>
-        <Button
-          size="sm"
-          variant={selectedRole === null ? "default" : "outline"}
-          onClick={() => { onRoleChange(null); onSpecChange(null); }}
-        >All</Button>
-        {roles.map((role) => (
-          <Button
-            key={role}
-            size="sm"
-            variant={selectedRole === role ? "default" : "outline"}
-            onClick={() => { onRoleChange(role); onSpecChange(null); }}
-          >
-            {ROLE_LABELS[role] ?? role}
-            {(roleMap.get(role)?.size ?? 0) > 1 && (
-              <span className="ml-1 opacity-60">×{roleMap.get(role)!.size}</span>
-            )}
-          </Button>
-        ))}
-      </div>
-
-      {showSpecRow && (
-        <div className="flex flex-wrap gap-1.5 items-center pl-1 border-l-2 border-border/30 ml-1">
-          <span className="text-muted-foreground text-xs mr-1">Spec</span>
-          {selectedRole && (
-            <Button size="sm" variant={selectedSpec === null ? "default" : "outline"} onClick={() => onSpecChange(null)}>
-              All
-            </Button>
-          )}
-          {specsInContext.map(({ spec, role }) => (
-            <Button
-              key={`${role}:${spec}`}
-              size="sm"
-              variant={selectedSpec === spec ? "default" : "outline"}
-              onClick={() => {
-                if (selectedRole === null) onRoleChange(role);
-                onSpecChange(spec);
-              }}
-            >
-              {spec}
-              {selectedRole === null && (
-                <span className="ml-1 opacity-50 font-normal">({ROLE_LABELS[role] ?? role})</span>
-              )}
-            </Button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ── Main component ────────────────────────────────────────────────────────────
 
 // ── External site links ───────────────────────────────────────────────────────
@@ -2117,8 +2031,6 @@ function RouteComponent() {
     characterId: characterId as Id<"characters">,
   });
 
-  const [selectedRole, setSelectedRole] = useState<string | null>(null);
-  const [selectedSpec, setSelectedSpec] = useState<string | null>(null);
   const [timeFrame, setTimeFrame] = useState<TimeFrame>("30d");
   const { pinnedCharacterIdSet, togglePinnedCharacter } = usePinnedCharacters();
   const [layoutMode, setLayoutMode] = useState<LayoutMode>(() => {
@@ -2154,20 +2066,14 @@ function RouteComponent() {
   const { character, snapshots } = data;
   const isPinnedToQuickAccess = pinnedCharacterIdSet.has(characterId);
 
-  const filtered = snapshots.filter((s) => {
-    if (selectedRole && s.role !== selectedRole) return false;
-    if (selectedSpec && s.spec !== selectedSpec) return false;
-    return true;
-  });
-
-  const latest = filtered[filtered.length - 1] ?? null;
-  const timeFrameFiltered = filterByTimeFrame(filtered, timeFrame);
+  const latest = snapshots[snapshots.length - 1] ?? null;
+  const timeFrameFiltered = filterByTimeFrame(snapshots, timeFrame);
   const chartSnapshots = groupSnapshotsAuto(timeFrameFiltered);
 
   const layoutProps: LayoutProps = {
     latest: latest!,
     chartSnapshots,
-    filteredSnapshots: filtered,
+    filteredSnapshots: snapshots,
     mythicPlus: mythicPlus as MythicPlusData | null | undefined,
     timeFrame,
     setTimeFrame,
@@ -2247,19 +2153,8 @@ function RouteComponent() {
           </CardContent>
         )}
       </Card>
-      {/* Role / Spec filter */}
-      {snapshots.length > 0 && (
-        <RoleSpecFilter
-          snapshots={snapshots}
-          selectedRole={selectedRole}
-          selectedSpec={selectedSpec}
-          onRoleChange={setSelectedRole}
-          onSpecChange={setSelectedSpec}
-        />
-      )}
-
       {/* Active layout */}
-      {latest && filtered.length > 0 && (
+      {latest && snapshots.length > 0 && (
         <>
           {layoutMode === "overview"  && <OverviewLayout  {...layoutProps} />}
           {layoutMode === "focus"     && <FocusLayout     {...layoutProps} />}
@@ -2270,7 +2165,7 @@ function RouteComponent() {
       {layoutMode !== "overview" && (
         <MythicPlusSection data={mythicPlus as MythicPlusData | null | undefined} />
       )}
-      <SnapshotHistorySection snapshots={filtered} layoutMode={layoutMode} />
+      <SnapshotHistorySection snapshots={snapshots} layoutMode={layoutMode} />
     </div>
   );
 }
