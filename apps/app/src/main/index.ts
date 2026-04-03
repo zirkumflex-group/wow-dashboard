@@ -475,6 +475,15 @@ function toOptionalString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
+function normalizeSnapshotSpec(value: unknown): string {
+  if (typeof value !== "string") {
+    return "Unknown";
+  }
+
+  const normalized = value.trim();
+  return normalized === "" ? "Unknown" : normalized;
+}
+
 function toOptionalMythicPlusTimestamp(value: unknown): number | undefined {
   if (typeof value === "number" && Number.isFinite(value)) {
     return value;
@@ -622,7 +631,7 @@ function extractCharacters(db: Record<string, unknown>): CharacterData[] {
       snapshots.push({
         takenAt: Number(snap.takenAt),
         level: Number(snap.level),
-        spec: String(snap.spec ?? "Unknown"),
+        spec: normalizeSnapshotSpec(snap.spec),
         role,
         itemLevel: Number(snap.itemLevel),
         gold: Number(snap.gold),

@@ -261,6 +261,15 @@ function formatDateTime(ms: number) {
   return new Date(ms).toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
+function hasUploadableSnapshotSpec(spec: string) {
+  const normalized = spec.trim();
+  return normalized !== "" && normalized !== "Unknown";
+}
+
+function isUploadableSnapshot(snapshot: SnapshotData, sinceTs: number) {
+  return snapshot.takenAt > sinceTs && hasUploadableSnapshotSpec(snapshot.spec);
+}
+
 function getPendingUploadCounts(
   chars: CharacterData[],
   sinceTs: number,
@@ -268,8 +277,7 @@ function getPendingUploadCounts(
 ): PendingUploadCounts {
   return chars.reduce(
     (totals, char) => ({
-      snapshots:
-        totals.snapshots + char.snapshots.filter((snapshot) => snapshot.takenAt > sinceTs).length,
+      snapshots: totals.snapshots + char.snapshots.filter((snapshot) => isUploadableSnapshot(snapshot, sinceTs)).length,
       mythicPlusRuns:
         totals.mythicPlusRuns +
         (includeAllMythicPlusRuns
@@ -606,7 +614,7 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
           const pendingChars = addonChars
             .map((c) => ({
               ...c,
-              snapshots: c.snapshots.filter((s) => s.takenAt > sinceTs && s.spec !== "Unknown"),
+              snapshots: c.snapshots.filter((snapshot) => isUploadableSnapshot(snapshot, sinceTs)),
               mythicPlusRuns: needsMythicPlusBackfill
                 ? c.mythicPlusRuns
                 : c.mythicPlusRuns.filter((run) => run.observedAt > sinceTs),

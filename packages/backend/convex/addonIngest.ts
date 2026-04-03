@@ -9,7 +9,7 @@ import {
 } from "./mythicPlus";
 import { rateLimiter } from "./rateLimiter";
 import { mythicPlusRunValidator } from "./schemas/mythicPlusRuns";
-import { specValidator } from "./schemas/snapshots";
+import { normalizeSnapshotSpec } from "./schemas/snapshots";
 import { internal } from "./_generated/api";
 
 const currenciesValidator = v.object({
@@ -38,7 +38,7 @@ const statsValidator = v.object({
 const snapshotValidator = v.object({
   takenAt: v.number(),
   level: v.number(),
-  spec: specValidator,
+  spec: v.string(),
   role: v.union(v.literal("tank"), v.literal("healer"), v.literal("dps")),
   itemLevel: v.number(),
   gold: v.number(),
@@ -217,6 +217,11 @@ export const ingestAddonData = mutation({
       }
 
       for (const snap of charData.snapshots) {
+        const normalizedSpec = normalizeSnapshotSpec(snap.spec);
+        if (!normalizedSpec) {
+          continue;
+        }
+
         // takenAt is in seconds (WoW addon format); Date.now() is in milliseconds.
         const takenAtMs = snap.takenAt * 1000;
         if (takenAtMs > now + MAX_FUTURE_MS) {
@@ -233,7 +238,7 @@ export const ingestAddonData = mutation({
         const nextSnapshot: SnapshotFields = {
           takenAt: snap.takenAt,
           level: snap.level,
-          spec: snap.spec,
+          spec: normalizedSpec as SnapshotFields["spec"],
           role: snap.role,
           itemLevel: snap.itemLevel,
           gold: snap.gold,

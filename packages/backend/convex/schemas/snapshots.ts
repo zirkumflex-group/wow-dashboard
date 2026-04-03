@@ -53,6 +53,54 @@ export const specValidator = v.union(
   v.literal("Fury"),
 );
 
+const validSnapshotSpecNames = new Set<string>([
+  "Blood",
+  "Frost",
+  "Unholy",
+  "Havoc",
+  "Vengeance",
+  "Devourer",
+  "Balance",
+  "Feral",
+  "Guardian",
+  "Restoration",
+  "Augmentation",
+  "Devastation",
+  "Preservation",
+  "Beast Mastery",
+  "Marksmanship",
+  "Survival",
+  "Arcane",
+  "Fire",
+  "Brewmaster",
+  "Mistweaver",
+  "Windwalker",
+  "Holy",
+  "Protection",
+  "Retribution",
+  "Discipline",
+  "Shadow",
+  "Assassination",
+  "Outlaw",
+  "Subtlety",
+  "Elemental",
+  "Enhancement",
+  "Affliction",
+  "Demonology",
+  "Destruction",
+  "Arms",
+  "Fury",
+]);
+
+export function normalizeSnapshotSpec(value: string): string | null {
+  const normalized = value.trim();
+  if (normalized === "" || normalized === "Unknown") {
+    return null;
+  }
+
+  return validSnapshotSpecNames.has(normalized) ? normalized : null;
+}
+
 export const snapshotsTable = defineTable({
   characterId: v.id("characters"),
   takenAt: v.number(),
