@@ -15,6 +15,7 @@ interface SnapshotData {
   itemLevel: number;
   gold: number;
   playtimeSeconds: number;
+  playtimeThisLevelSeconds?: number;
   mythicPlusScore: number;
   currencies: {
     adventurerDawncrest: number;

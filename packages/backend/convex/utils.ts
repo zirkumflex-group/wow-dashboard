@@ -109,6 +109,7 @@ export const seed = internalMutation({
         itemLevel: 610 + i * 2,
         gold: 50_000 + i * 1_200,
         playtimeSeconds: 3_600_000 + i * 7_200,
+        playtimeThisLevelSeconds: 18_000 + i * 300,
         mythicPlusScore: 2800 + i * 30,
         currencies: {
           adventurerDawncrest: 1500 - i * 20,
@@ -142,6 +143,7 @@ export const seed = internalMutation({
         itemLevel: 605 + i * 2,
         gold: 30_000 + i * 800,
         playtimeSeconds: 2_400_000 + i * 5_400,
+        playtimeThisLevelSeconds: 14_400 + i * 240,
         mythicPlusScore: 2600 + i * 25,
         currencies: {
           adventurerDawncrest: 1400 - i * 18,

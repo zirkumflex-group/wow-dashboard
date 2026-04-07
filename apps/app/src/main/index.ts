@@ -371,6 +371,7 @@ interface SnapshotData {
   itemLevel: number;
   gold: number;
   playtimeSeconds: number;
+  playtimeThisLevelSeconds?: number;
   mythicPlusScore: number;
   currencies: {
     adventurerDawncrest: number;
@@ -434,6 +435,7 @@ function getSnapshotCompletenessScore(snapshot: SnapshotData): number {
   let score = 0;
 
   if (snapshot.playtimeSeconds > 0) score += 1;
+  if (snapshot.playtimeThisLevelSeconds !== undefined) score += 1;
   if (snapshot.stats.speedPercent !== undefined) score += 2;
   if (snapshot.stats.leechPercent !== undefined) score += 2;
   if (snapshot.stats.avoidancePercent !== undefined) score += 2;
@@ -450,6 +452,8 @@ function mergeSnapshotData(current: SnapshotData, candidate: SnapshotData): Snap
   return {
     ...preferred,
     playtimeSeconds: preferred.playtimeSeconds > 0 ? preferred.playtimeSeconds : fallback.playtimeSeconds,
+    playtimeThisLevelSeconds:
+      preferred.playtimeThisLevelSeconds ?? fallback.playtimeThisLevelSeconds,
     stats: {
       ...preferred.stats,
       speedPercent: preferred.stats.speedPercent ?? fallback.stats.speedPercent,
@@ -636,6 +640,7 @@ function extractCharacters(db: Record<string, unknown>): CharacterData[] {
         itemLevel: Number(snap.itemLevel),
         gold: Number(snap.gold),
         playtimeSeconds: Number(snap.playtimeSeconds),
+        playtimeThisLevelSeconds: toOptionalNumber(snap.playtimeThisLevelSeconds),
         mythicPlusScore: Number(snap.mythicPlusScore),
         currencies: {
           adventurerDawncrest: Number(currencies.adventurerDawncrest ?? 0),

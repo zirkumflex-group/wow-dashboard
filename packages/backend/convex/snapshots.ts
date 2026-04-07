@@ -9,6 +9,7 @@ function snapshotKey(snap: {
   itemLevel: number;
   gold: number;
   playtimeSeconds: number;
+  playtimeThisLevelSeconds?: number;
   mythicPlusScore: number;
   currencies: {
     adventurerDawncrest: number;
@@ -40,6 +41,7 @@ function snapshotKey(snap: {
     itemLevel: snap.itemLevel,
     gold: snap.gold,
     playtimeSeconds: snap.playtimeSeconds,
+    playtimeThisLevelSeconds: snap.playtimeThisLevelSeconds,
     mythicPlusScore: snap.mythicPlusScore,
     currencies: snap.currencies,
     stats: snap.stats,

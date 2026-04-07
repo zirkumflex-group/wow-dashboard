@@ -199,6 +199,7 @@ end
 --       itemLevel         number
 --       gold              number  -- in gold (not copper)
 --       playtimeSeconds   number  -- total /played seconds
+--       playtimeThisLevelSeconds number  -- /played seconds on current level
 --       mythicPlusScore   number
 --       currencies        table
 --         adventurerDawncrest  number
@@ -881,6 +882,7 @@ local function BuildPendingSnapshot()
             itemLevel       = math.floor((equippedIlvl or 0) * 100 + 0.5) / 100,
             gold            = GetMoney() / 10000,
             playtimeSeconds = 0,
+            playtimeThisLevelSeconds = 0,
             mythicPlusScore = mplusScore,
             currencies      = currencies,
             stats           = stats,
@@ -916,11 +918,12 @@ local function RestoreTimePlayedMessages()
     suppressedTimePlayedFrames = nil
 end
 
-local function CommitSnapshot(totalSeconds)
+local function CommitSnapshot(totalSeconds, thisLevelSeconds)
     if not pendingSnapshot then return end
     local p         = pendingSnapshot
     pendingSnapshot = nil
     p.snap.playtimeSeconds = totalSeconds or 0
+    p.snap.playtimeThisLevelSeconds = thisLevelSeconds or 0
 
     local db = WowDashboardDB
     local entry = EnsureCharacterEntry(p.key, p.name, p.realm, p.charInfo)
@@ -1560,12 +1563,12 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         ScheduleMythicPlusHistorySync("challenge_mode_completed", 5)
 
     elseif event == "TIME_PLAYED_MSG" then
-        local totalSeconds = ...
+        local totalSeconds, thisLevelSeconds = ...
         if waitingForPlaytime then
             waitingForPlaytime = false
             RestoreTimePlayedMessages()
         end
-        CommitSnapshot(totalSeconds)
+        CommitSnapshot(totalSeconds, thisLevelSeconds)
         if queuedFreshSnapshot then
             queuedFreshSnapshot = false
             CollectSnapshot(true)

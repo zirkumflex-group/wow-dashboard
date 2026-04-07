@@ -43,6 +43,7 @@ const snapshotValidator = v.object({
   itemLevel: v.number(),
   gold: v.number(),
   playtimeSeconds: v.number(),
+  playtimeThisLevelSeconds: v.optional(v.number()),
   mythicPlusScore: v.number(),
   currencies: currenciesValidator,
   stats: statsValidator,
@@ -58,6 +59,7 @@ type SnapshotFields = Pick<
   | "itemLevel"
   | "gold"
   | "playtimeSeconds"
+  | "playtimeThisLevelSeconds"
   | "mythicPlusScore"
   | "currencies"
   | "stats"
@@ -72,6 +74,7 @@ function toSnapshotFields(snapshot: SnapshotFields): SnapshotFields {
     itemLevel: snapshot.itemLevel,
     gold: snapshot.gold,
     playtimeSeconds: snapshot.playtimeSeconds,
+    playtimeThisLevelSeconds: snapshot.playtimeThisLevelSeconds,
     mythicPlusScore: snapshot.mythicPlusScore,
     currencies: snapshot.currencies,
     stats: snapshot.stats,
@@ -83,6 +86,8 @@ function mergeSnapshotFields(existingSnapshot: SnapshotFields, incomingSnapshot:
     ...incomingSnapshot,
     playtimeSeconds:
       incomingSnapshot.playtimeSeconds > 0 ? incomingSnapshot.playtimeSeconds : existingSnapshot.playtimeSeconds,
+    playtimeThisLevelSeconds:
+      incomingSnapshot.playtimeThisLevelSeconds ?? existingSnapshot.playtimeThisLevelSeconds,
     stats: {
       ...incomingSnapshot.stats,
       speedPercent: incomingSnapshot.stats.speedPercent ?? existingSnapshot.stats.speedPercent,
@@ -243,6 +248,7 @@ export const ingestAddonData = mutation({
           itemLevel: snap.itemLevel,
           gold: snap.gold,
           playtimeSeconds: snap.playtimeSeconds,
+          playtimeThisLevelSeconds: snap.playtimeThisLevelSeconds,
           mythicPlusScore: snap.mythicPlusScore,
           currencies: snap.currencies,
           stats: snap.stats,

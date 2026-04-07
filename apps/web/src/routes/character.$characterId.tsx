@@ -3,6 +3,7 @@ import { api } from "@wow-dashboard/backend/convex/_generated/api";
 import type { Id } from "@wow-dashboard/backend/convex/_generated/dataModel";
 import { getMythicPlusDungeonMeta, getRaiderIoScoreColor } from "../lib/mythic-plus-static";
 import { usePinnedCharacters } from "../lib/pinned-characters";
+import { PlaytimeBreakdown } from "../components/playtime-breakdown";
 import { Badge } from "@wow-dashboard/ui/components/badge";
 import { Button } from "@wow-dashboard/ui/components/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@wow-dashboard/ui/components/card";
@@ -76,7 +77,7 @@ const RECENT_RUN_LOAD_INCREMENT = 20;
 type TimeFrame = "7d" | "30d" | "90d" | "all";
 
 const TIME_FRAME_OPTIONS: { value: TimeFrame; label: string }[] = [
-  { value: "7d",  label: "7D"  },
+  { value: "7d", label: "7D" },
   { value: "30d", label: "30D" },
   { value: "90d", label: "90D" },
   { value: "all", label: "All" },
@@ -130,9 +131,13 @@ function LayoutSwitcher({
   onChange: (m: LayoutMode) => void;
 }) {
   const opts = [
-    { mode: "overview" as const, Icon: LayoutGrid,  title: "Overview — radar sidebar + chart grid" },
-    { mode: "focus"    as const, Icon: Columns,     title: "Focus — single metric deep-dive"       },
-    { mode: "timeline" as const, Icon: LayoutList,  title: "Timeline — stacked charts + full history" },
+    { mode: "overview" as const, Icon: LayoutGrid, title: "Overview — radar sidebar + chart grid" },
+    { mode: "focus" as const, Icon: Columns, title: "Focus — single metric deep-dive" },
+    {
+      mode: "timeline" as const,
+      Icon: LayoutList,
+      title: "Timeline — stacked charts + full history",
+    },
   ] as const;
   return (
     <div className="flex items-center gap-0.5 rounded-md border p-0.5">
@@ -161,12 +166,6 @@ function classColor(cls: string) {
   return CLASS_COLORS[cls.toLowerCase()] ?? "text-foreground";
 }
 
-function formatPlaytime(seconds: number) {
-  const days = Math.floor(seconds / 86400);
-  const hours = Math.floor((seconds % 86400) / 3600);
-  return `${days}d ${hours}h`;
-}
-
 function formatDate(takenAtSeconds: number) {
   return new Date(takenAtSeconds * 1000).toLocaleDateString(undefined, {
     year: "numeric",
@@ -175,11 +174,14 @@ function formatDate(takenAtSeconds: number) {
   });
 }
 
-type ChartTooltipPayloadItem = {
-  payload?: {
-    date?: unknown;
-  };
-} | null | undefined;
+type ChartTooltipPayloadItem =
+  | {
+      payload?: {
+        date?: unknown;
+      };
+    }
+  | null
+  | undefined;
 
 function normalizeTimestampSeconds(value: unknown): number | null {
   if (value instanceof Date) {
@@ -309,7 +311,12 @@ function getRunLabel(run: MythicPlusRun) {
 }
 
 function isCompletedMythicPlusRun(run: MythicPlusRun) {
-  return run.completed === true || run.durationMs !== undefined || run.runScore !== undefined || run.completedAt !== undefined;
+  return (
+    run.completed === true ||
+    run.durationMs !== undefined ||
+    run.runScore !== undefined ||
+    run.completedAt !== undefined
+  );
 }
 
 function isTimedMythicPlusRun(run: MythicPlusRun) {
@@ -352,23 +359,27 @@ function StatGrid({
 }) {
   return (
     <div className={`rounded-md bg-muted/30 text-center ${compact ? "p-1.5" : "p-2"}`}>
-      <div className={compact ? "text-[11px] leading-tight text-muted-foreground" : "text-muted-foreground text-xs"}>
+      <div
+        className={
+          compact
+            ? "text-[11px] leading-tight text-muted-foreground"
+            : "text-muted-foreground text-xs"
+        }
+      >
         {label}
       </div>
-      <div className={compact ? "mt-0.5 text-sm font-semibold leading-none" : "mt-0.5 text-sm font-semibold"}>
+      <div
+        className={
+          compact ? "mt-0.5 text-sm font-semibold leading-none" : "mt-0.5 text-sm font-semibold"
+        }
+      >
         {value}
       </div>
     </div>
   );
 }
 
-function HeaderMetricTile({
-  label,
-  value,
-}: {
-  label: string;
-  value: React.ReactNode;
-}) {
+function HeaderMetricTile({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="rounded-lg border border-border/50 bg-muted/20 px-4 py-3">
       <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground/80">
@@ -379,19 +390,13 @@ function HeaderMetricTile({
   );
 }
 
-function HeaderMetaTile({
-  label,
-  value,
-}: {
-  label: string;
-  value: React.ReactNode;
-}) {
+function HeaderMetaTile({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="rounded-md border border-border/40 bg-background/40 px-3 py-2.5">
       <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground/75">
         {label}
       </div>
-      <div className="mt-1 text-sm font-medium text-foreground">{value}</div>
+      <div className="mt-1 min-w-0 text-sm font-medium text-foreground">{value}</div>
     </div>
   );
 }
@@ -453,13 +458,7 @@ function DungeonIcon({
   );
 }
 
-function RaiderIoScoreText({
-  score,
-  className,
-}: {
-  score?: number | null;
-  className?: string;
-}) {
+function RaiderIoScoreText({ score, className }: { score?: number | null; className?: string }) {
   return (
     <span className={className} style={{ color: getRaiderIoScoreColor(score) }}>
       {formatRunScore(score)}
@@ -491,7 +490,9 @@ function getTertiaryStats(snapshot: Snapshot) {
 
 function MythicPlusResultBadge({ run }: { run: MythicPlusRun }) {
   if (isTimedMythicPlusRun(run)) {
-    return <Badge className="bg-emerald-500/15 text-emerald-300 border-emerald-500/30">Timed</Badge>;
+    return (
+      <Badge className="bg-emerald-500/15 text-emerald-300 border-emerald-500/30">Timed</Badge>
+    );
   }
   if (isCompletedMythicPlusRun(run)) {
     return <Badge className="bg-amber-500/15 text-amber-300 border-amber-500/30">Completed</Badge>;
@@ -554,7 +555,10 @@ function MythicPlusSection({ data }: { data: MythicPlusData | null | undefined }
   const { summary, runs } = data;
   const currentSeason = summary.currentSeason;
   const visibleRecentRuns = runs.slice(0, visibleRecentRunCount);
-  const nextRecentRunCount = Math.min(RECENT_RUN_LOAD_INCREMENT, runs.length - visibleRecentRunCount);
+  const nextRecentRunCount = Math.min(
+    RECENT_RUN_LOAD_INCREMENT,
+    runs.length - visibleRecentRunCount,
+  );
 
   function loadMoreRecentRuns() {
     setVisibleRecentRunCount((currentValue) =>
@@ -566,117 +570,149 @@ function MythicPlusSection({ data }: { data: MythicPlusData | null | undefined }
     <div className="grid items-start gap-4 xl:grid-cols-[1.1fr_0.9fr]">
       <div ref={summaryCardRef}>
         <Card>
-        <CardHeader className="border-b pb-3">
-          <div className="flex items-center justify-between gap-3">
-            <CardTitle className="flex items-center gap-2 text-lg">
-              <History size={16} className="text-muted-foreground" />
-              Mythic+ Summary
-            </CardTitle>
-            {formatSeasonLabel(summary.latestSeasonID) && (
-              <Badge variant="outline">{formatSeasonLabel(summary.latestSeasonID)}</Badge>
-            )}
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-4 pt-4">
-          {currentSeason && (
-            <div className="space-y-3">
-              <div className="flex items-center gap-2">
-                <Flame size={14} className="text-muted-foreground" />
-                <h3 className="text-sm font-semibold">Current Season</h3>
-              </div>
-              <div className="grid gap-1.5 sm:grid-cols-2 xl:grid-cols-4">
-                <StatGrid
-                  compact
-                  label="Current Score"
-                  value={<RaiderIoScoreText score={summary.currentScore} className="tabular-nums" />}
-                />
-                <StatGrid
-                  compact
-                  label="Best Timed"
-                  value={
-                    <MythicPlusKeyPill
-                      level={currentSeason.bestTimedLevel}
-                      upgradeCount={currentSeason.bestTimedUpgradeCount}
-                      compact
-                    />
-                  }
-                />
-                <StatGrid compact label="Timed Runs" value={currentSeason.timedRuns.toLocaleString()} />
-                <StatGrid compact label="Total Runs" value={currentSeason.totalRuns.toLocaleString()} />
-              </div>
-              <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
-                <StatGrid compact label="2+ Timed" value={currentSeason.timed2To9.toLocaleString()} />
-                <StatGrid compact label="10+ Timed" value={currentSeason.timed10To11.toLocaleString()} />
-                <StatGrid compact label="12+ Timed" value={currentSeason.timed12To13.toLocaleString()} />
-                <StatGrid compact label="14+ Timed" value={currentSeason.timed14Plus.toLocaleString()} />
-              </div>
+          <CardHeader className="border-b pb-3">
+            <div className="flex items-center justify-between gap-3">
+              <CardTitle className="flex items-center gap-2 text-lg">
+                <History size={16} className="text-muted-foreground" />
+                Mythic+ Summary
+              </CardTitle>
+              {formatSeasonLabel(summary.latestSeasonID) && (
+                <Badge variant="outline">{formatSeasonLabel(summary.latestSeasonID)}</Badge>
+              )}
             </div>
-          )}
-
-          {summary.currentSeasonDungeons.length > 0 && (
-            <div className="space-y-3">
-              <div className="flex items-center justify-between gap-3">
+          </CardHeader>
+          <CardContent className="space-y-4 pt-4">
+            {currentSeason && (
+              <div className="space-y-3">
                 <div className="flex items-center gap-2">
-                  <Sword size={14} className="text-muted-foreground" />
-                  <h3 className="text-sm font-semibold">Dungeon Bests</h3>
+                  <Flame size={14} className="text-muted-foreground" />
+                  <h3 className="text-sm font-semibold">Current Season</h3>
                 </div>
-                {summary.currentScore !== null && (
-                  <div className="text-xs text-muted-foreground">
-                    Score{" "}
-                    <RaiderIoScoreText score={summary.currentScore} className="font-semibold tabular-nums" />
+                <div className="grid gap-1.5 sm:grid-cols-2 xl:grid-cols-4">
+                  <StatGrid
+                    compact
+                    label="Current Score"
+                    value={
+                      <RaiderIoScoreText score={summary.currentScore} className="tabular-nums" />
+                    }
+                  />
+                  <StatGrid
+                    compact
+                    label="Best Timed"
+                    value={
+                      <MythicPlusKeyPill
+                        level={currentSeason.bestTimedLevel}
+                        upgradeCount={currentSeason.bestTimedUpgradeCount}
+                        compact
+                      />
+                    }
+                  />
+                  <StatGrid
+                    compact
+                    label="Timed Runs"
+                    value={currentSeason.timedRuns.toLocaleString()}
+                  />
+                  <StatGrid
+                    compact
+                    label="Total Runs"
+                    value={currentSeason.totalRuns.toLocaleString()}
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+                  <StatGrid
+                    compact
+                    label="2+ Timed"
+                    value={currentSeason.timed2To9.toLocaleString()}
+                  />
+                  <StatGrid
+                    compact
+                    label="10+ Timed"
+                    value={currentSeason.timed10To11.toLocaleString()}
+                  />
+                  <StatGrid
+                    compact
+                    label="12+ Timed"
+                    value={currentSeason.timed12To13.toLocaleString()}
+                  />
+                  <StatGrid
+                    compact
+                    label="14+ Timed"
+                    value={currentSeason.timed14Plus.toLocaleString()}
+                  />
+                </div>
+              </div>
+            )}
+
+            {summary.currentSeasonDungeons.length > 0 && (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <Sword size={14} className="text-muted-foreground" />
+                    <h3 className="text-sm font-semibold">Dungeon Bests</h3>
                   </div>
-                )}
-              </div>
-              <div className="overflow-x-auto rounded-md border">
-                <table className="w-full min-w-[560px] text-sm leading-tight">
-                  <thead className="bg-muted/40 text-muted-foreground">
-                    <tr>
-                      <th className="px-3 py-2 text-left font-medium">Dungeon</th>
-                      <th className="px-3 py-2 text-right font-medium">Timed</th>
-                      <th className="px-3 py-2 text-right font-medium">Level</th>
-                      <th className="px-3 py-2 text-right font-medium">Score</th>
-                      <th className="px-3 py-2 text-right font-medium">Time</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-border/70">
-                    {summary.currentSeasonDungeons.map((dungeon) => (
-                      <tr
-                        key={`${dungeon.mapChallengeModeID ?? "map"}-${dungeon.mapName}`}
-                        className="bg-background/20 transition-colors hover:bg-muted/20"
-                      >
-                        <td className="px-3 py-2.5">
-                          <div className="flex items-center gap-2.5">
-                            <DungeonIcon
-                              mapChallengeModeID={dungeon.mapChallengeModeID}
-                              mapName={dungeon.mapName}
-                            />
-                            <div className="font-medium text-foreground">{dungeon.mapName}</div>
-                          </div>
-                        </td>
-                        <td className="px-3 py-2.5 text-right tabular-nums text-muted-foreground">
-                          {dungeon.timedRuns}
-                        </td>
-                        <td className="px-3 py-2.5 text-right">
-                          <MythicPlusKeyPill
-                            level={dungeon.bestTimedLevel}
-                            upgradeCount={dungeon.bestTimedUpgradeCount}
-                            compact
-                          />
-                        </td>
-                        <td className="px-3 py-2.5 text-right tabular-nums">
-                          <RaiderIoScoreText score={dungeon.bestTimedScore} className="tabular-nums" />
-                        </td>
-                        <td className="px-3 py-2.5 text-right tabular-nums">
-                          {formatRunDuration(dungeon.bestTimedDurationMs)}
-                        </td>
+                  {summary.currentScore !== null && (
+                    <div className="text-xs text-muted-foreground">
+                      Score{" "}
+                      <RaiderIoScoreText
+                        score={summary.currentScore}
+                        className="font-semibold tabular-nums"
+                      />
+                    </div>
+                  )}
+                </div>
+                <div className="overflow-x-auto rounded-md border">
+                  <table className="w-full min-w-[560px] text-sm leading-tight">
+                    <thead className="bg-muted/40 text-muted-foreground">
+                      <tr>
+                        <th className="px-3 py-2 text-left font-medium">Dungeon</th>
+                        <th className="px-3 py-2 text-right font-medium">Timed</th>
+                        <th className="px-3 py-2 text-right font-medium">Level</th>
+                        <th className="px-3 py-2 text-right font-medium">Score</th>
+                        <th className="px-3 py-2 text-right font-medium">Time</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody className="divide-y divide-border/70">
+                      {summary.currentSeasonDungeons.map((dungeon) => (
+                        <tr
+                          key={`${dungeon.mapChallengeModeID ?? "map"}-${dungeon.mapName}`}
+                          className="bg-background/20 transition-colors hover:bg-muted/20"
+                        >
+                          <td className="px-3 py-2.5">
+                            <div className="flex items-center gap-2.5">
+                              <DungeonIcon
+                                mapChallengeModeID={dungeon.mapChallengeModeID}
+                                mapName={dungeon.mapName}
+                              />
+                              <div className="font-medium text-foreground">{dungeon.mapName}</div>
+                            </div>
+                          </td>
+                          <td className="px-3 py-2.5 text-right tabular-nums text-muted-foreground">
+                            {dungeon.timedRuns}
+                          </td>
+                          <td className="px-3 py-2.5 text-right">
+                            <MythicPlusKeyPill
+                              level={dungeon.bestTimedLevel}
+                              upgradeCount={dungeon.bestTimedUpgradeCount}
+                              compact
+                            />
+                          </td>
+                          <td className="px-3 py-2.5 text-right tabular-nums">
+                            <RaiderIoScoreText
+                              score={dungeon.bestTimedScore}
+                              className="tabular-nums"
+                            />
+                          </td>
+                          <td className="px-3 py-2.5 text-right tabular-nums">
+                            {formatRunDuration(dungeon.bestTimedDurationMs)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
-            </div>
-          )}
-        </CardContent>
+            )}
+          </CardContent>
         </Card>
       </div>
 
@@ -691,9 +727,7 @@ function MythicPlusSection({ data }: { data: MythicPlusData | null | undefined }
           </CardTitle>
         </CardHeader>
         <CardContent className="flex min-h-0 flex-1 flex-col pt-4">
-          <div
-            className="dark-scrollbar min-h-0 flex-1 overflow-auto rounded-md border"
-          >
+          <div className="dark-scrollbar min-h-0 flex-1 overflow-auto rounded-md border">
             <table className="w-full min-w-[560px] text-sm">
               <thead className="bg-muted/40 text-muted-foreground">
                 <tr>
@@ -712,7 +746,9 @@ function MythicPlusSection({ data }: { data: MythicPlusData | null | undefined }
                       {formatRunDate(run.completedAt ?? run.startDate ?? run.observedAt)}
                     </td>
                     <td className="px-3 py-2">{getRunLabel(run)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{formatKeyLevel(run.level)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">
+                      {formatKeyLevel(run.level)}
+                    </td>
                     <td className="px-3 py-2">
                       <MythicPlusResultBadge run={run} />
                     </td>
@@ -761,7 +797,9 @@ function FullscreenOverlay({
   children: React.ReactNode;
 }) {
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
   }, [onClose]);
@@ -814,6 +852,7 @@ type Snapshot = {
   itemLevel: number;
   gold: number;
   playtimeSeconds: number;
+  playtimeThisLevelSeconds?: number;
   mythicPlusScore: number;
   currencies: {
     adventurerDawncrest: number;
@@ -948,32 +987,32 @@ function groupSnapshotsAuto(snapshots: Snapshot[]): Snapshot[] {
 // ── Chart palette ─────────────────────────────────────────────────────────────
 
 const C = {
-  blue:   "oklch(0.72 0.20 245)",
-  red:    "oklch(0.72 0.22 20)",
-  gold:   "oklch(0.84 0.18 80)",
+  blue: "oklch(0.72 0.20 245)",
+  red: "oklch(0.72 0.22 20)",
+  gold: "oklch(0.84 0.18 80)",
   purple: "oklch(0.73 0.20 295)",
-  teal:   "oklch(0.75 0.18 190)",
-  green:  "oklch(0.76 0.18 155)",
-  pink:   "oklch(0.75 0.18 330)",
+  teal: "oklch(0.75 0.18 190)",
+  green: "oklch(0.76 0.18 155)",
+  pink: "oklch(0.75 0.18 330)",
 } as const;
 
-const ilvlConfig: ChartConfig          = { itemLevel:           { label: "Item Level", color: C.blue   } };
-const mplusConfig: ChartConfig         = { mythicPlusScore:     { label: "M+ Score",   color: C.red    } };
-const goldConfig: ChartConfig          = { gold:                { label: "Gold",        color: C.gold   } };
-const playtimeConfig: ChartConfig      = { playtimeHours:       { label: "Playtime",   color: C.purple } };
-const radarConfig: ChartConfig         = { value:               { label: "Value",      color: C.blue   } };
+const ilvlConfig: ChartConfig = { itemLevel: { label: "Item Level", color: C.blue } };
+const mplusConfig: ChartConfig = { mythicPlusScore: { label: "M+ Score", color: C.red } };
+const goldConfig: ChartConfig = { gold: { label: "Gold", color: C.gold } };
+const playtimeConfig: ChartConfig = { playtimeHours: { label: "Playtime", color: C.purple } };
+const radarConfig: ChartConfig = { value: { label: "Value", color: C.blue } };
 const secondaryStatsConfig: ChartConfig = {
-  critPercent:        { label: "Crit",        color: C.red    },
-  hastePercent:       { label: "Haste",       color: C.green  },
-  masteryPercent:     { label: "Mastery",     color: C.blue   },
+  critPercent: { label: "Crit", color: C.red },
+  hastePercent: { label: "Haste", color: C.green },
+  masteryPercent: { label: "Mastery", color: C.blue },
   versatilityPercent: { label: "Versatility", color: C.purple },
 };
 const currenciesConfig: ChartConfig = {
-  adventurerDawncrest: { label: "Adventurer", color: C.blue  },
-  veteranDawncrest:    { label: "Veteran",    color: C.teal  },
-  championDawncrest:   { label: "Champion",   color: C.green },
-  heroDawncrest:       { label: "Hero",       color: C.gold  },
-  mythDawncrest:       { label: "Myth",       color: C.red   },
+  adventurerDawncrest: { label: "Adventurer", color: C.blue },
+  veteranDawncrest: { label: "Veteran", color: C.teal },
+  championDawncrest: { label: "Champion", color: C.green },
+  heroDawncrest: { label: "Hero", color: C.gold },
+  mythDawncrest: { label: "Myth", color: C.red },
 };
 
 // ── Reusable line chart ───────────────────────────────────────────────────────
@@ -1062,10 +1101,7 @@ function getAdaptiveYDomain(
   const padRatio = options.padRatio ?? (pointCount <= 3 ? 0.18 : 0.12);
   const minPadding = options.minPadding ?? Math.max(effectiveSpan * 0.08, 0.5);
   const padding = Math.max(effectiveSpan * padRatio, minPadding);
-  const step = getNiceStep(
-    (effectiveSpan + padding * 2) / (tickCount - 1),
-    options.stepFloor ?? 1,
-  );
+  const step = getNiceStep((effectiveSpan + padding * 2) / (tickCount - 1), options.stepFloor ?? 1);
 
   let domainMin = Math.floor((minValue - padding) / step) * step;
   let domainMax = Math.ceil((maxValue + padding) / step) * step;
@@ -1181,9 +1217,9 @@ function SnapshotLineChart({
 
 function RadarPanel({ snapshot }: { snapshot: Snapshot }) {
   const radarData = [
-    { stat: "Crit",        value: snapshot.stats.critPercent        },
-    { stat: "Haste",       value: snapshot.stats.hastePercent       },
-    { stat: "Mastery",     value: snapshot.stats.masteryPercent     },
+    { stat: "Crit", value: snapshot.stats.critPercent },
+    { stat: "Haste", value: snapshot.stats.hastePercent },
+    { stat: "Mastery", value: snapshot.stats.masteryPercent },
     { stat: "Versatility", value: snapshot.stats.versatilityPercent },
   ];
   const tertiaryStats = getTertiaryStats(snapshot);
@@ -1208,11 +1244,13 @@ function RadarPanel({ snapshot }: { snapshot: Snapshot }) {
       </ChartContainer>
       <div className="space-y-1.5 text-sm">
         <StatRow label="Stamina" value={snapshot.stats.stamina.toLocaleString()} />
-        {primaryStat && <StatRow label={primaryStat.label} value={primaryStat.value.toLocaleString()} />}
+        {primaryStat && (
+          <StatRow label={primaryStat.label} value={primaryStat.value.toLocaleString()} />
+        )}
         <div className="border-t border-border/50 my-1" />
-        <StatRow label="Crit"        value={`${snapshot.stats.critPercent.toFixed(2)}%`}        />
-        <StatRow label="Haste"       value={`${snapshot.stats.hastePercent.toFixed(2)}%`}       />
-        <StatRow label="Mastery"     value={`${snapshot.stats.masteryPercent.toFixed(2)}%`}     />
+        <StatRow label="Crit" value={`${snapshot.stats.critPercent.toFixed(2)}%`} />
+        <StatRow label="Haste" value={`${snapshot.stats.hastePercent.toFixed(2)}%`} />
+        <StatRow label="Mastery" value={`${snapshot.stats.masteryPercent.toFixed(2)}%`} />
         <StatRow label="Versatility" value={`${snapshot.stats.versatilityPercent.toFixed(2)}%`} />
         {tertiaryStats.length > 0 && <div className="border-t border-border/50 my-1" />}
         {tertiaryStats.map((stat) => (
@@ -1226,9 +1264,9 @@ function RadarPanel({ snapshot }: { snapshot: Snapshot }) {
 // Compact horizontal radar for Timeline layout
 function RadarStrip({ snapshot }: { snapshot: Snapshot }) {
   const radarData = [
-    { stat: "Crit",        value: snapshot.stats.critPercent        },
-    { stat: "Haste",       value: snapshot.stats.hastePercent       },
-    { stat: "Mastery",     value: snapshot.stats.masteryPercent     },
+    { stat: "Crit", value: snapshot.stats.critPercent },
+    { stat: "Haste", value: snapshot.stats.hastePercent },
+    { stat: "Mastery", value: snapshot.stats.masteryPercent },
     { stat: "Versatility", value: snapshot.stats.versatilityPercent },
   ];
   const tertiaryStats = getTertiaryStats(snapshot);
@@ -1256,17 +1294,26 @@ function RadarStrip({ snapshot }: { snapshot: Snapshot }) {
           </div>
           <div className="flex-1 space-y-2">
             <div className="grid grid-cols-2 gap-x-8 gap-y-1.5 text-sm">
-              <StatRow label="Crit"        value={`${snapshot.stats.critPercent.toFixed(2)}%`}        />
-              <StatRow label="Haste"       value={`${snapshot.stats.hastePercent.toFixed(2)}%`}       />
-              <StatRow label="Mastery"     value={`${snapshot.stats.masteryPercent.toFixed(2)}%`}     />
-              <StatRow label="Versatility" value={`${snapshot.stats.versatilityPercent.toFixed(2)}%`} />
-              <StatRow label="Stamina"     value={snapshot.stats.stamina.toLocaleString()}             />
-              {primaryStat && <StatRow label={primaryStat.label} value={primaryStat.value.toLocaleString()} />}
+              <StatRow label="Crit" value={`${snapshot.stats.critPercent.toFixed(2)}%`} />
+              <StatRow label="Haste" value={`${snapshot.stats.hastePercent.toFixed(2)}%`} />
+              <StatRow label="Mastery" value={`${snapshot.stats.masteryPercent.toFixed(2)}%`} />
+              <StatRow
+                label="Versatility"
+                value={`${snapshot.stats.versatilityPercent.toFixed(2)}%`}
+              />
+              <StatRow label="Stamina" value={snapshot.stats.stamina.toLocaleString()} />
+              {primaryStat && (
+                <StatRow label={primaryStat.label} value={primaryStat.value.toLocaleString()} />
+              )}
             </div>
             {tertiaryStats.length > 0 && (
               <div className="grid grid-cols-2 gap-x-8 gap-y-1.5 border-t border-border/50 pt-2 text-sm">
                 {tertiaryStats.map((stat) => (
-                  <StatRow key={stat.label} label={stat.label} value={`${stat.value.toFixed(2)}%`} />
+                  <StatRow
+                    key={stat.label}
+                    label={stat.label}
+                    value={`${stat.value.toFixed(2)}%`}
+                  />
                 ))}
               </div>
             )}
@@ -1295,7 +1342,9 @@ function IlvlChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeFr
       </CardHeader>
       <CardContent>
         <SnapshotLineChart
-          data={data} lines={lines} config={ilvlConfig}
+          data={data}
+          lines={lines}
+          config={ilvlConfig}
           valueFormatter={(v) => v.toFixed(1)}
           yScaleOptions={ITEM_LEVEL_AUTO_SCALE}
           timeFrame={timeFrame}
@@ -1304,7 +1353,9 @@ function IlvlChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeFr
       {fullscreen && (
         <FullscreenOverlay title="Item Level" onClose={() => setFullscreen(false)}>
           <SnapshotLineChart
-            data={data} lines={lines} config={ilvlConfig}
+            data={data}
+            lines={lines}
+            config={ilvlConfig}
             valueFormatter={(v) => v.toFixed(1)}
             className="h-full"
             showLegend
@@ -1332,7 +1383,9 @@ function MplusChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeF
       </CardHeader>
       <CardContent>
         <SnapshotLineChart
-          data={data} lines={lines} config={mplusConfig}
+          data={data}
+          lines={lines}
+          config={mplusConfig}
           valueFormatter={(v) => v.toLocaleString()}
           yScaleOptions={MPLUS_AUTO_SCALE}
           timeFrame={timeFrame}
@@ -1341,7 +1394,9 @@ function MplusChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeF
       {fullscreen && (
         <FullscreenOverlay title="M+ Score" onClose={() => setFullscreen(false)}>
           <SnapshotLineChart
-            data={data} lines={lines} config={mplusConfig}
+            data={data}
+            lines={lines}
+            config={mplusConfig}
             valueFormatter={(v) => v.toLocaleString()}
             className="h-full"
             showLegend
@@ -1369,7 +1424,9 @@ function GoldChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeFr
       </CardHeader>
       <CardContent>
         <SnapshotLineChart
-          data={data} lines={lines} config={goldConfig}
+          data={data}
+          lines={lines}
+          config={goldConfig}
           valueFormatter={(v) => `${goldUnits(v).toLocaleString()}g`}
           yScaleOptions={GOLD_SCALE}
           timeFrame={timeFrame}
@@ -1378,7 +1435,9 @@ function GoldChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeFr
       {fullscreen && (
         <FullscreenOverlay title="Gold" onClose={() => setFullscreen(false)}>
           <SnapshotLineChart
-            data={data} lines={lines} config={goldConfig}
+            data={data}
+            lines={lines}
+            config={goldConfig}
             valueFormatter={(v) => `${goldUnits(v).toLocaleString()}g`}
             className="h-full"
             showLegend
@@ -1404,15 +1463,15 @@ function SecondaryStatsChartCard({
 }) {
   const data = snapshots.map((s) => ({
     date: s.takenAt,
-    critPercent:        s.stats.critPercent,
-    hastePercent:       s.stats.hastePercent,
-    masteryPercent:     s.stats.masteryPercent,
+    critPercent: s.stats.critPercent,
+    hastePercent: s.stats.hastePercent,
+    masteryPercent: s.stats.masteryPercent,
     versatilityPercent: s.stats.versatilityPercent,
   }));
   const lines = [
-    { key: "critPercent",        color: C.red    },
-    { key: "hastePercent",       color: C.green  },
-    { key: "masteryPercent",     color: C.blue   },
+    { key: "critPercent", color: C.red },
+    { key: "hastePercent", color: C.green },
+    { key: "masteryPercent", color: C.blue },
     { key: "versatilityPercent", color: C.purple },
   ];
   return (
@@ -1424,7 +1483,9 @@ function SecondaryStatsChartCard({
       </CardHeader>
       <CardContent>
         <SnapshotLineChart
-          data={data} lines={lines} config={secondaryStatsConfig}
+          data={data}
+          lines={lines}
+          config={secondaryStatsConfig}
           valueFormatter={(v) => `${v.toFixed(1)}%`}
           showLegend
           yScaleOptions={SECONDARY_STATS_SCALE}
@@ -1446,11 +1507,11 @@ function CurrenciesChartCard({
 }) {
   const data = snapshots.map((s) => ({ date: s.takenAt, ...s.currencies }));
   const lines = [
-    { key: "adventurerDawncrest", color: C.blue  },
-    { key: "veteranDawncrest",    color: C.teal  },
-    { key: "championDawncrest",   color: C.green },
-    { key: "heroDawncrest",       color: C.gold  },
-    { key: "mythDawncrest",       color: C.red   },
+    { key: "adventurerDawncrest", color: C.blue },
+    { key: "veteranDawncrest", color: C.teal },
+    { key: "championDawncrest", color: C.green },
+    { key: "heroDawncrest", color: C.gold },
+    { key: "mythDawncrest", color: C.red },
   ];
   return (
     <Card className={className}>
@@ -1461,7 +1522,9 @@ function CurrenciesChartCard({
       </CardHeader>
       <CardContent>
         <SnapshotLineChart
-          data={data} lines={lines} config={currenciesConfig}
+          data={data}
+          lines={lines}
+          config={currenciesConfig}
           showLegend
           yScaleOptions={CURRENCIES_SCALE}
           timeFrame={timeFrame}
@@ -1494,7 +1557,9 @@ function PlaytimeChartCard({
       </CardHeader>
       <CardContent>
         <SnapshotLineChart
-          data={data} lines={lines} config={playtimeConfig}
+          data={data}
+          lines={lines}
+          config={playtimeConfig}
           valueFormatter={(v) => formatHours(v)}
           yScaleOptions={PLAYTIME_SCALE}
           timeFrame={timeFrame}
@@ -1513,14 +1578,30 @@ function CurrentSnapshotCard({ snapshot }: { snapshot: Snapshot }) {
         <CardTitle className="text-sm font-medium">Currencies</CardTitle>
       </CardHeader>
       <CardContent className="pt-3 space-y-1.5">
-        <StatRow label="Gold"     value={<GoldDisplay value={snapshot.gold} />}              />
-        <StatRow label="Playtime" value={formatPlaytime(snapshot.playtimeSeconds)}            />
+        <StatRow label="Gold" value={<GoldDisplay value={snapshot.gold} />} />
+        <StatRow
+          label="Playtime"
+          value={
+            <PlaytimeBreakdown
+              totalSeconds={snapshot.playtimeSeconds}
+              thisLevelSeconds={snapshot.playtimeThisLevelSeconds}
+              variant="compact"
+              align="end"
+            />
+          }
+        />
         <div className="border-t border-border/50 my-2" />
-        <StatRow label="Adv. Crest"   value={snapshot.currencies.adventurerDawncrest.toLocaleString()} />
-        <StatRow label="Vet. Crest"   value={snapshot.currencies.veteranDawncrest.toLocaleString()}    />
-        <StatRow label="Champ. Crest" value={snapshot.currencies.championDawncrest.toLocaleString()}   />
-        <StatRow label="Hero Crest"   value={snapshot.currencies.heroDawncrest.toLocaleString()}       />
-        <StatRow label="Myth Crest"   value={snapshot.currencies.mythDawncrest.toLocaleString()}       />
+        <StatRow
+          label="Adv. Crest"
+          value={snapshot.currencies.adventurerDawncrest.toLocaleString()}
+        />
+        <StatRow label="Vet. Crest" value={snapshot.currencies.veteranDawncrest.toLocaleString()} />
+        <StatRow
+          label="Champ. Crest"
+          value={snapshot.currencies.championDawncrest.toLocaleString()}
+        />
+        <StatRow label="Hero Crest" value={snapshot.currencies.heroDawncrest.toLocaleString()} />
+        <StatRow label="Myth Crest" value={snapshot.currencies.mythDawncrest.toLocaleString()} />
       </CardContent>
     </Card>
   );
@@ -1551,20 +1632,27 @@ function SnapshotHistoryTable({
             </tr>
           </thead>
           <tbody>
-            {[...snapshots].reverse().slice(0, visible).map((s, i) => (
-              <tr
-                key={i}
-                className="border-b border-border/30 last:border-0 hover:bg-muted/20 transition-colors"
-              >
-                <td className="py-2 pr-4 text-muted-foreground">{formatDate(s.takenAt)}</td>
-                <td className="py-2 px-2 text-right tabular-nums">{s.itemLevel.toFixed(1)}</td>
-                <td className="py-2 px-2 text-right tabular-nums">{s.mythicPlusScore.toLocaleString()}</td>
-                <td className="py-2 px-2 text-right"><GoldDisplay value={s.gold} /></td>
-                <td className="py-2 pl-2 text-muted-foreground">
-                  {s.spec} <span className="opacity-60">({s.role})</span>
-                </td>
-              </tr>
-            ))}
+            {[...snapshots]
+              .reverse()
+              .slice(0, visible)
+              .map((s, i) => (
+                <tr
+                  key={i}
+                  className="border-b border-border/30 last:border-0 hover:bg-muted/20 transition-colors"
+                >
+                  <td className="py-2 pr-4 text-muted-foreground">{formatDate(s.takenAt)}</td>
+                  <td className="py-2 px-2 text-right tabular-nums">{s.itemLevel.toFixed(1)}</td>
+                  <td className="py-2 px-2 text-right tabular-nums">
+                    {s.mythicPlusScore.toLocaleString()}
+                  </td>
+                  <td className="py-2 px-2 text-right">
+                    <GoldDisplay value={s.gold} />
+                  </td>
+                  <td className="py-2 pl-2 text-muted-foreground">
+                    {s.spec} <span className="opacity-60">({s.role})</span>
+                  </td>
+                </tr>
+              ))}
           </tbody>
         </table>
       </div>
@@ -1591,7 +1679,13 @@ function SnapshotHistoryTable({
 // Bottom: collapsible history
 // ════════════════════════════════════════════════════════════════════════════
 
-function OverviewLayout({ latest, chartSnapshots, mythicPlus, timeFrame, setTimeFrame }: LayoutProps) {
+function OverviewLayout({
+  latest,
+  chartSnapshots,
+  mythicPlus,
+  timeFrame,
+  setTimeFrame,
+}: LayoutProps) {
   return (
     <div className="space-y-4">
       <div className="grid gap-4 lg:grid-cols-[18rem_minmax(0,1fr)] items-start">
@@ -1620,9 +1714,9 @@ function OverviewLayout({ latest, chartSnapshots, mythicPlus, timeFrame, setTime
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <IlvlChartCard    snapshots={chartSnapshots} timeFrame={timeFrame} />
-            <MplusChartCard   snapshots={chartSnapshots} timeFrame={timeFrame} />
-            <GoldChartCard    snapshots={chartSnapshots} timeFrame={timeFrame} />
+            <IlvlChartCard snapshots={chartSnapshots} timeFrame={timeFrame} />
+            <MplusChartCard snapshots={chartSnapshots} timeFrame={timeFrame} />
+            <GoldChartCard snapshots={chartSnapshots} timeFrame={timeFrame} />
             <CurrenciesChartCard snapshots={chartSnapshots} timeFrame={timeFrame} />
           </div>
 
@@ -1642,29 +1736,39 @@ function OverviewLayout({ latest, chartSnapshots, mythicPlus, timeFrame, setTime
 type FocusMetric = "ilvl" | "mplus" | "gold" | "stats" | "currencies" | "playtime";
 
 const FOCUS_METRICS: { value: FocusMetric; label: string; Icon: React.ElementType }[] = [
-  { value: "ilvl",        label: "Item Level",  Icon: Sword  },
-  { value: "mplus",       label: "M+ Score",    Icon: Flame  },
-  { value: "gold",        label: "Gold",         Icon: Coins  },
-  { value: "stats",       label: "Stats",        Icon: Zap    },
-  { value: "currencies",  label: "Currencies",   Icon: Gem    },
-  { value: "playtime",    label: "Playtime",     Icon: Clock  },
+  { value: "ilvl", label: "Item Level", Icon: Sword },
+  { value: "mplus", label: "M+ Score", Icon: Flame },
+  { value: "gold", label: "Gold", Icon: Coins },
+  { value: "stats", label: "Stats", Icon: Zap },
+  { value: "currencies", label: "Currencies", Icon: Gem },
+  { value: "playtime", label: "Playtime", Icon: Clock },
 ];
 
 function FocusCurrentValue({ metric, snapshot }: { metric: FocusMetric; snapshot: Snapshot }) {
   switch (metric) {
     case "ilvl":
-      return <span className="text-4xl font-bold tabular-nums">{snapshot.itemLevel.toFixed(1)}</span>;
+      return (
+        <span className="text-4xl font-bold tabular-nums">{snapshot.itemLevel.toFixed(1)}</span>
+      );
     case "mplus":
-      return <span className="text-4xl font-bold tabular-nums">{snapshot.mythicPlusScore.toLocaleString()}</span>;
+      return (
+        <span className="text-4xl font-bold tabular-nums">
+          {snapshot.mythicPlusScore.toLocaleString()}
+        </span>
+      );
     case "gold":
-      return <span className="text-2xl font-bold"><GoldDisplay value={snapshot.gold} /></span>;
+      return (
+        <span className="text-2xl font-bold">
+          <GoldDisplay value={snapshot.gold} />
+        </span>
+      );
     case "stats":
       return (
         <div className="flex flex-wrap gap-4 text-sm">
           {[
-            { l: "Crit",        v: snapshot.stats.critPercent        },
-            { l: "Haste",       v: snapshot.stats.hastePercent       },
-            { l: "Mastery",     v: snapshot.stats.masteryPercent     },
+            { l: "Crit", v: snapshot.stats.critPercent },
+            { l: "Haste", v: snapshot.stats.hastePercent },
+            { l: "Mastery", v: snapshot.stats.masteryPercent },
             { l: "Versatility", v: snapshot.stats.versatilityPercent },
           ].map(({ l, v }) => (
             <span key={l}>
@@ -1678,9 +1782,9 @@ function FocusCurrentValue({ metric, snapshot }: { metric: FocusMetric; snapshot
       return (
         <div className="flex flex-wrap gap-4 text-sm">
           {[
-            { l: "Myth",       v: snapshot.currencies.mythDawncrest        },
-            { l: "Hero",       v: snapshot.currencies.heroDawncrest        },
-            { l: "Champion",   v: snapshot.currencies.championDawncrest    },
+            { l: "Myth", v: snapshot.currencies.mythDawncrest },
+            { l: "Hero", v: snapshot.currencies.heroDawncrest },
+            { l: "Champion", v: snapshot.currencies.championDawncrest },
           ].map(({ l, v }) => (
             <span key={l}>
               <span className="text-muted-foreground">{l} </span>
@@ -1690,7 +1794,13 @@ function FocusCurrentValue({ metric, snapshot }: { metric: FocusMetric; snapshot
         </div>
       );
     case "playtime":
-      return <span className="text-4xl font-bold">{formatPlaytime(snapshot.playtimeSeconds)}</span>;
+      return (
+        <PlaytimeBreakdown
+          totalSeconds={snapshot.playtimeSeconds}
+          thisLevelSeconds={snapshot.playtimeThisLevelSeconds}
+          variant="hero"
+        />
+      );
     default:
       return null;
   }
@@ -1750,15 +1860,15 @@ function FocusChart({
       <SnapshotLineChart
         data={snapshots.map((s) => ({
           date: s.takenAt,
-          critPercent:        s.stats.critPercent,
-          hastePercent:       s.stats.hastePercent,
-          masteryPercent:     s.stats.masteryPercent,
+          critPercent: s.stats.critPercent,
+          hastePercent: s.stats.hastePercent,
+          masteryPercent: s.stats.masteryPercent,
           versatilityPercent: s.stats.versatilityPercent,
         }))}
         lines={[
-          { key: "critPercent",        color: C.red    },
-          { key: "hastePercent",       color: C.green  },
-          { key: "masteryPercent",     color: C.blue   },
+          { key: "critPercent", color: C.red },
+          { key: "hastePercent", color: C.green },
+          { key: "masteryPercent", color: C.blue },
           { key: "versatilityPercent", color: C.purple },
         ]}
         config={secondaryStatsConfig}
@@ -1775,11 +1885,11 @@ function FocusChart({
       <SnapshotLineChart
         data={snapshots.map((s) => ({ date: s.takenAt, ...s.currencies }))}
         lines={[
-          { key: "adventurerDawncrest", color: C.blue  },
-          { key: "veteranDawncrest",    color: C.teal  },
-          { key: "championDawncrest",   color: C.green },
-          { key: "heroDawncrest",       color: C.gold  },
-          { key: "mythDawncrest",       color: C.red   },
+          { key: "adventurerDawncrest", color: C.blue },
+          { key: "veteranDawncrest", color: C.teal },
+          { key: "championDawncrest", color: C.green },
+          { key: "heroDawncrest", color: C.gold },
+          { key: "mythDawncrest", color: C.red },
         ]}
         config={currenciesConfig}
         className={h}
@@ -1792,7 +1902,10 @@ function FocusChart({
   if (metric === "playtime") {
     return (
       <SnapshotLineChart
-        data={snapshots.map((s) => ({ date: s.takenAt, playtimeHours: Math.round(s.playtimeSeconds / 3600) }))}
+        data={snapshots.map((s) => ({
+          date: s.takenAt,
+          playtimeHours: Math.round(s.playtimeSeconds / 3600),
+        }))}
         lines={[{ key: "playtimeHours", color: C.purple }]}
         config={playtimeConfig}
         valueFormatter={(v) => formatHours(v)}
@@ -1864,10 +1977,20 @@ function FocusLayout({ latest, chartSnapshots, timeFrame, setTimeFrame }: Layout
         <Card>
           <CardContent className="pt-4">
             <div className="grid grid-cols-2 gap-2">
-              <StatGrid label="Item Level" value={latest.itemLevel.toFixed(1)}                   />
-              <StatGrid label="M+ Score"   value={latest.mythicPlusScore.toLocaleString()}        />
-              <StatGrid label="Gold"       value={<GoldDisplay value={latest.gold} />}            />
-              <StatGrid label="Playtime"   value={formatPlaytime(latest.playtimeSeconds)}         />
+              <StatGrid label="Item Level" value={latest.itemLevel.toFixed(1)} />
+              <StatGrid label="M+ Score" value={latest.mythicPlusScore.toLocaleString()} />
+              <StatGrid label="Gold" value={<GoldDisplay value={latest.gold} />} />
+              <StatGrid
+                label="Playtime"
+                value={
+                  <PlaytimeBreakdown
+                    totalSeconds={latest.playtimeSeconds}
+                    thisLevelSeconds={latest.playtimeThisLevelSeconds}
+                    variant="compact"
+                    align="center"
+                  />
+                }
+              />
             </div>
           </CardContent>
         </Card>
@@ -1927,7 +2050,10 @@ function TimelineLayout({ latest, chartSnapshots, timeFrame, setTimeFrame }: Lay
         </CardHeader>
         <CardContent>
           <SnapshotLineChart
-            data={chartSnapshots.map((s) => ({ date: s.takenAt, mythicPlusScore: s.mythicPlusScore }))}
+            data={chartSnapshots.map((s) => ({
+              date: s.takenAt,
+              mythicPlusScore: s.mythicPlusScore,
+            }))}
             lines={[{ key: "mythicPlusScore", color: C.red }]}
             config={mplusConfig}
             valueFormatter={(v) => v.toLocaleString()}
@@ -1958,8 +2084,8 @@ function TimelineLayout({ latest, chartSnapshots, timeFrame, setTimeFrame }: Lay
       </Card>
 
       <SecondaryStatsChartCard snapshots={chartSnapshots} timeFrame={timeFrame} />
-      <CurrenciesChartCard     snapshots={chartSnapshots} timeFrame={timeFrame} />
-      <PlaytimeChartCard       snapshots={chartSnapshots} timeFrame={timeFrame} />
+      <CurrenciesChartCard snapshots={chartSnapshots} timeFrame={timeFrame} />
+      <PlaytimeChartCard snapshots={chartSnapshots} timeFrame={timeFrame} />
     </div>
   );
 }
@@ -1995,15 +2121,7 @@ const EXTERNAL_LINKS = [
   },
 ] as const;
 
-function CharacterLinks({
-  region,
-  realm,
-  name,
-}: {
-  region: string;
-  realm: string;
-  name: string;
-}) {
+function CharacterLinks({ region, realm, name }: { region: string; realm: string; name: string }) {
   return (
     <div className="flex items-center gap-3 mt-2 flex-wrap">
       {EXTERNAL_LINKS.map(({ label, color, url }) => (
@@ -2043,7 +2161,11 @@ function RouteComponent() {
 
   function handleLayoutChange(mode: LayoutMode) {
     setLayoutMode(mode);
-    try { localStorage.setItem("wow-char-layout", mode); } catch { /* ignore */ }
+    try {
+      localStorage.setItem("wow-char-layout", mode);
+    } catch {
+      /* ignore */
+    }
   }
 
   if (data === undefined) {
@@ -2090,9 +2212,14 @@ function RouteComponent() {
                 {character.name}
               </CardTitle>
               <p className="text-muted-foreground text-sm">
-                {character.race} {character.class} — {character.realm}-{character.region.toUpperCase()}
+                {character.race} {character.class} — {character.realm}-
+                {character.region.toUpperCase()}
               </p>
-              <CharacterLinks region={character.region} realm={character.realm} name={character.name} />
+              <CharacterLinks
+                region={character.region}
+                realm={character.realm}
+                name={character.name}
+              />
             </div>
             <div className="flex items-center gap-2 self-start lg:self-auto">
               <Button
@@ -2147,7 +2274,15 @@ function RouteComponent() {
                   </div>
                 }
               />
-              <HeaderMetaTile label="Playtime" value={formatPlaytime(latest.playtimeSeconds)} />
+              <HeaderMetaTile
+                label="Playtime"
+                value={
+                  <PlaytimeBreakdown
+                    totalSeconds={latest.playtimeSeconds}
+                    thisLevelSeconds={latest.playtimeThisLevelSeconds}
+                  />
+                }
+              />
               <HeaderMetaTile label="Snapshot" value={formatDate(latest.takenAt)} />
             </div>
           </CardContent>
@@ -2156,9 +2291,9 @@ function RouteComponent() {
       {/* Active layout */}
       {latest && snapshots.length > 0 && (
         <>
-          {layoutMode === "overview"  && <OverviewLayout  {...layoutProps} />}
-          {layoutMode === "focus"     && <FocusLayout     {...layoutProps} />}
-          {layoutMode === "timeline"  && <TimelineLayout  {...layoutProps} />}
+          {layoutMode === "overview" && <OverviewLayout {...layoutProps} />}
+          {layoutMode === "focus" && <FocusLayout {...layoutProps} />}
+          {layoutMode === "timeline" && <TimelineLayout {...layoutProps} />}
         </>
       )}
 

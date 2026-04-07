@@ -110,6 +110,7 @@ export const snapshotsTable = defineTable({
   itemLevel: v.number(),
   gold: v.number(),
   playtimeSeconds: v.number(),
+  playtimeThisLevelSeconds: v.optional(v.number()),
   mythicPlusScore: v.number(),
   currencies: v.object({
     adventurerDawncrest: v.number(),

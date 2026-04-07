@@ -11,6 +11,7 @@ import { Authenticated, AuthLoading, Unauthenticated, useMutation, useQuery } fr
 import { HeartPulse, RefreshCw, Shield, Star, Swords } from "lucide-react";
 import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { PlaytimeBreakdown } from "../components/playtime-breakdown";
 
 const HIDE_BELOW_90_KEY = "wow_dashboard_hide_below_90";
 const MIN_ILVL_KEY = "wow_dashboard_min_ilvl";
@@ -71,12 +72,6 @@ function classColor(cls: string) {
 
 function classBg(cls: string) {
   return CLASS_BG_COLORS[cls.toLowerCase()] ?? "bg-card border-border";
-}
-
-function formatPlaytime(seconds: number) {
-  const days = Math.floor(seconds / 86400);
-  const hours = Math.floor((seconds % 86400) / 3600);
-  return `${days}d ${hours}h`;
 }
 
 /** Parse gold stored as GGGGG.SSCC decimal (e.g. 366492.2707) */
@@ -168,6 +163,7 @@ type Character = {
     mythicPlusScore: number;
     gold: number;
     playtimeSeconds: number;
+    playtimeThisLevelSeconds?: number;
     takenAt: number;
   } | null;
 };
@@ -255,7 +251,16 @@ function CharacterCard({
                 <StatCell label="iLvl" value={snapshot.itemLevel.toFixed(1)} />
                 <StatCell label="M+ Score" value={snapshot.mythicPlusScore.toLocaleString()} />
                 <StatCell label="Gold" value={formatGold(snapshot.gold)} />
-                <StatCell label="Playtime" value={formatPlaytime(snapshot.playtimeSeconds)} />
+                <StatCell
+                  label="Playtime"
+                  value={
+                    <PlaytimeBreakdown
+                      totalSeconds={snapshot.playtimeSeconds}
+                      thisLevelSeconds={snapshot.playtimeThisLevelSeconds}
+                      variant="compact"
+                    />
+                  }
+                />
               </div>
               <p className="text-muted-foreground text-xs border-t border-border/50 pt-2">
                 Snapshot:{" "}
@@ -275,9 +280,9 @@ function CharacterCard({
   );
 }
 
-function StatCell({ label, value }: { label: string; value: string | number }) {
+function StatCell({ label, value }: { label: string; value: React.ReactNode }) {
   return (
-    <div className="flex flex-col">
+    <div className="flex min-w-0 flex-col">
       <span className="text-muted-foreground text-xs">{label}</span>
       <span className="font-medium text-sm leading-tight">{value}</span>
     </div>
