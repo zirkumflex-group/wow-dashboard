@@ -34,20 +34,25 @@ export function PlaytimeBreakdown({
     return (
       <span
         className={cn(
-          "inline-flex max-w-full flex-wrap items-center gap-1.5",
-          align === "center" && "justify-center",
-          align === "end" && "justify-end",
+          "inline-flex max-w-full flex-col gap-1",
+          align === "center" && "items-center text-center",
+          align === "end" && "items-end text-right",
+          align === "start" && "items-start text-left",
           className,
         )}
       >
         <span className="tabular-nums text-sm font-semibold leading-none text-foreground">
           {totalValue}
         </span>
-        <span className="inline-flex items-center gap-1 rounded-full border border-border/55 bg-muted/20 px-1.5 py-0.5">
-          <span className="text-[8px] uppercase tracking-[0.22em] text-muted-foreground/80">
-            Lvl
-          </span>
-          <span className="tabular-nums text-[10px] font-medium leading-none text-muted-foreground">
+        <span
+          className={cn(
+            "inline-flex items-center gap-1.5 text-[10px] leading-none text-muted-foreground/80",
+            align === "center" && "justify-center",
+            align === "end" && "justify-end",
+          )}
+        >
+          <span className="uppercase tracking-[0.18em]">This lvl</span>
+          <span className="tabular-nums font-medium text-muted-foreground">
             {levelValue}
           </span>
         </span>

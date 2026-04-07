@@ -3,7 +3,7 @@ import { api } from "@wow-dashboard/backend/convex/_generated/api";
 import type { Id } from "@wow-dashboard/backend/convex/_generated/dataModel";
 import { getMythicPlusDungeonMeta, getRaiderIoScoreColor } from "../lib/mythic-plus-static";
 import { usePinnedCharacters } from "../lib/pinned-characters";
-import { PlaytimeBreakdown } from "../components/playtime-breakdown";
+import { formatPlaytime, PlaytimeBreakdown } from "../components/playtime-breakdown";
 import { Badge } from "@wow-dashboard/ui/components/badge";
 import { Button } from "@wow-dashboard/ui/components/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@wow-dashboard/ui/components/card";
@@ -379,24 +379,30 @@ function StatGrid({
   );
 }
 
-function HeaderMetricTile({ label, value }: { label: string; value: React.ReactNode }) {
+function TopMetricCard({
+  label,
+  meta,
+  value,
+}: {
+  label: string;
+  meta?: string;
+  value: React.ReactNode;
+}) {
   return (
-    <div className="rounded-lg border border-border/50 bg-muted/20 px-4 py-3">
-      <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground/80">
-        {label}
+    <div className="rounded-md border border-border/60 bg-card px-4 py-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground/75">
+          {label}
+        </div>
+        {meta && (
+          <div className="text-[9px] uppercase tracking-[0.16em] text-muted-foreground/55">
+            {meta}
+          </div>
+        )}
       </div>
-      <div className="mt-1 text-lg font-semibold tabular-nums leading-none">{value}</div>
-    </div>
-  );
-}
-
-function HeaderMetaTile({ label, value }: { label: string; value: React.ReactNode }) {
-  return (
-    <div className="rounded-md border border-border/40 bg-background/40 px-3 py-2.5">
-      <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground/75">
-        {label}
+      <div className="mt-3 min-w-0 text-xl font-semibold leading-none text-foreground">
+        {value}
       </div>
-      <div className="mt-1 min-w-0 text-sm font-medium text-foreground">{value}</div>
     </div>
   );
 }
@@ -2204,24 +2210,51 @@ function RouteComponent() {
   return (
     <div className="w-full px-4 py-6 sm:px-6 lg:px-8 space-y-4">
       {/* Character header */}
-      <Card>
-        <CardHeader className="border-b pb-4">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-            <div className="space-y-2">
-              <CardTitle className={`text-2xl font-bold ${classColor(character.class)}`}>
+      <Card className="overflow-hidden border-border/60 bg-background">
+        <CardHeader className="border-b border-border/60 bg-background pb-4">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+            <div className="space-y-4">
+              {latest && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge
+                    variant="outline"
+                    className="border-border/60 bg-card uppercase tracking-[0.18em] text-muted-foreground"
+                  >
+                    {character.region.toUpperCase()}
+                  </Badge>
+                  <Badge
+                    variant="outline"
+                    className="border-border/60 bg-card uppercase tracking-[0.18em] text-muted-foreground"
+                  >
+                    {ROLE_LABELS[latest.role] ?? latest.role}
+                  </Badge>
+                </div>
+              )}
+              <CardTitle className={`text-3xl font-bold tracking-tight sm:text-4xl ${classColor(character.class)}`}>
                 {character.name}
               </CardTitle>
-              <p className="text-muted-foreground text-sm">
+              <p className="hidden">
                 {character.race} {character.class} — {character.realm}-
                 {character.region.toUpperCase()}
               </p>
-              <CharacterLinks
-                region={character.region}
-                realm={character.realm}
-                name={character.name}
-              />
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-sm text-muted-foreground">
+                <span>
+                  {character.race} {character.class}
+                </span>
+                <span className="h-1 w-1 rounded-full bg-border/80" />
+                <span>
+                  {character.realm}-{character.region.toUpperCase()}
+                </span>
+              </div>
+              <div className="max-w-3xl">
+                <CharacterLinks
+                  region={character.region}
+                  realm={character.realm}
+                  name={character.name}
+                />
+              </div>
             </div>
-            <div className="flex items-center gap-2 self-start lg:self-auto">
+            <div className="flex flex-wrap items-center gap-2 self-start xl:justify-end">
               <Button
                 type="button"
                 size="sm"
@@ -2230,7 +2263,7 @@ function RouteComponent() {
                 className={
                   isPinnedToQuickAccess
                     ? "border-yellow-400/40 bg-yellow-400/10 text-yellow-300 hover:bg-yellow-400/15 hover:text-yellow-200"
-                    : "border-border/60 text-muted-foreground hover:text-foreground"
+                    : "border-border/60 bg-card text-muted-foreground hover:text-foreground"
                 }
               >
                 <Star
@@ -2244,8 +2277,8 @@ function RouteComponent() {
                 variant="outline"
                 className={
                   character.faction === "alliance"
-                    ? "border-blue-500/40 text-blue-400 uppercase tracking-wider"
-                    : "border-red-500/40 text-red-400 uppercase tracking-wider"
+                    ? "border-blue-500/40 bg-blue-500/10 text-blue-400 uppercase tracking-wider"
+                    : "border-red-500/40 bg-red-500/10 text-red-400 uppercase tracking-wider"
                 }
               >
                 {character.faction}
@@ -2255,35 +2288,86 @@ function RouteComponent() {
         </CardHeader>
 
         {latest && (
-          <CardContent className="space-y-4 pt-5">
-            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-              <HeaderMetricTile label="Level" value={latest.level} />
-              <HeaderMetricTile label="Item Level" value={latest.itemLevel.toFixed(1)} />
-              <HeaderMetricTile label="M+ Score" value={latest.mythicPlusScore.toLocaleString()} />
-              <HeaderMetricTile label="Gold" value={<GoldDisplay value={latest.gold} />} />
-            </div>
-            <div className="grid gap-3 border-t border-border/50 pt-4 sm:grid-cols-3">
-              <HeaderMetaTile
-                label="Spec"
-                value={
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span>{latest.spec}</span>
-                    <span className="rounded-full border border-border/50 bg-muted/20 px-2 py-0.5 text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
-                      {ROLE_LABELS[latest.role] ?? latest.role}
-                    </span>
-                  </div>
-                }
+          <CardContent className="px-6 pb-5 pt-4">
+            <div className="grid gap-3 xl:grid-cols-5">
+              <TopMetricCard label="Level" meta="Current" value={latest.level} />
+              <TopMetricCard
+                label="Item level"
+                meta="Equipped"
+                value={<span className="tabular-nums">{latest.itemLevel.toFixed(1)}</span>}
               />
-              <HeaderMetaTile
+              <TopMetricCard
+                label="M+ score"
+                meta="Current"
+                value={<span className="tabular-nums">{latest.mythicPlusScore.toLocaleString()}</span>}
+              />
+              <TopMetricCard label="Gold" meta="On hand" value={<GoldDisplay value={latest.gold} />} />
+              <TopMetricCard
                 label="Playtime"
+                meta="Total / this lvl"
                 value={
-                  <PlaytimeBreakdown
-                    totalSeconds={latest.playtimeSeconds}
-                    thisLevelSeconds={latest.playtimeThisLevelSeconds}
-                  />
+                  <span className="tabular-nums text-[1.05rem] leading-none">
+                    {formatPlaytime(latest.playtimeSeconds)}
+                    <span className="px-2 text-muted-foreground/45">/</span>
+                    <span className="text-foreground/90">
+                      {latest.playtimeThisLevelSeconds === undefined
+                        ? "--"
+                        : formatPlaytime(latest.playtimeThisLevelSeconds)}
+                    </span>
+                  </span>
                 }
               />
-              <HeaderMetaTile label="Snapshot" value={formatDate(latest.takenAt)} />
+            </div>
+
+            <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+              <div className="rounded-md border border-border/60 bg-card px-4 py-3">
+                <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground/75">
+                  Spec
+                </div>
+                <div className="mt-3 space-y-2">
+                  <StatRow label="Spec" value={latest.spec} />
+                  <StatRow label="Role" value={ROLE_LABELS[latest.role] ?? latest.role} />
+                </div>
+              </div>
+              <div className="rounded-md border border-border/60 bg-card px-4 py-3">
+                <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground/75">
+                  Character
+                </div>
+                <div className="mt-3 space-y-2">
+                  <StatRow label="Race" value={character.race} />
+                  <StatRow label="Class" value={character.class} />
+                </div>
+              </div>
+              <div className="rounded-md border border-border/60 bg-card px-4 py-3">
+                <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground/75">
+                  Server
+                </div>
+                <div className="mt-3 space-y-2">
+                  <StatRow label="Server" value={character.realm} />
+                  <StatRow label="Region" value={character.region.toUpperCase()} />
+                </div>
+              </div>
+              <div className="rounded-md border border-border/60 bg-card px-4 py-3">
+                <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground/75">
+                  Snapshot
+                </div>
+                <div className="mt-3 space-y-2">
+                  <StatRow label="Captured" value={formatDate(latest.takenAt)} />
+                  <StatRow label="History" value={`${snapshots.length} entries`} />
+                </div>
+              </div>
+              <div className="rounded-md border border-border/60 bg-card px-4 py-3">
+                <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground/75">
+                  Status
+                </div>
+                <div className="mt-3 space-y-2">
+                  <StatRow
+                    label="Faction"
+                    value={character.faction === "alliance" ? "Alliance" : "Horde"}
+                  />
+                  <StatRow label="Pinned" value={isPinnedToQuickAccess ? "Yes" : "No"} />
+                </div>
+              </div>
             </div>
           </CardContent>
         )}
