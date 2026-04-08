@@ -478,8 +478,8 @@ function getRunPlayedAt(run: MythicPlusRun) {
   return run.completedAt ?? run.startDate ?? run.observedAt;
 }
 
-function formatRunMemberName(member: MythicPlusRunMember) {
-  if (!member.realm) {
+function formatRunMemberName(member: MythicPlusRunMember, characterRealm: string) {
+  if (!member.realm || member.realm.trim().toLowerCase() === characterRealm.trim().toLowerCase()) {
     return member.name;
   }
 
@@ -491,37 +491,11 @@ function formatRunMemberName(member: MythicPlusRunMember) {
   return `${member.name}-${member.realm}`;
 }
 
-function isCurrentCharacterMember(
-  member: MythicPlusRunMember,
-  characterName: string,
-  characterRealm: string,
-) {
-  const normalizedCharacterName = characterName.trim().toLowerCase();
-  const normalizedCharacterRealm = characterRealm.trim().toLowerCase();
-  const normalizedMemberName = member.name.trim().toLowerCase();
-  const normalizedMemberRealm = member.realm?.trim().toLowerCase();
-
-  if (normalizedMemberName === normalizedCharacterName) {
-    return normalizedMemberRealm === undefined || normalizedMemberRealm === normalizedCharacterRealm;
-  }
-
-  return normalizedMemberName === `${normalizedCharacterName}-${normalizedCharacterRealm}`;
-}
-
-function getDisplayedRunMembers(
-  members: MythicPlusRunMember[] | undefined,
-  characterName: string,
-  characterRealm: string,
-) {
+function getDisplayedRunMembers(members: MythicPlusRunMember[] | undefined) {
   if (!members || members.length === 0) {
     return [];
   }
-
-  const withoutCurrentCharacter = members.filter(
-    (member) => !isCurrentCharacterMember(member, characterName, characterRealm),
-  );
-
-  return withoutCurrentCharacter.length > 0 ? withoutCurrentCharacter : members;
+  return members.slice(0, 5);
 }
 
 function RecentRunPlayedAt({ run }: { run: MythicPlusRun }) {
@@ -536,43 +510,33 @@ function RecentRunPlayedAt({ run }: { run: MythicPlusRun }) {
 }
 
 function RecentRunKeyCell({ run }: { run: MythicPlusRun }) {
-  const upgradeCount = run.upgradeCount ?? 0;
-
   return (
     <div className="flex items-center justify-end gap-1.5">
       <span className="font-medium tabular-nums">{formatKeyLevel(run.level)}</span>
-      {upgradeCount > 0 && (
-        <span className="rounded border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-emerald-300">
-          +{upgradeCount}
-        </span>
-      )}
     </div>
   );
 }
 
 function RecentRunPartyMembers({
   run,
-  characterName,
   characterRealm,
 }: {
   run: MythicPlusRun;
-  characterName: string;
   characterRealm: string;
 }) {
-  const members = getDisplayedRunMembers(run.members, characterName, characterRealm);
+  const members = getDisplayedRunMembers(run.members);
   if (members.length === 0) {
     return null;
   }
 
   return (
-    <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 pl-8 text-xs text-muted-foreground">
-      <span className="uppercase tracking-[0.14em] text-muted-foreground/65">With</span>
-      {members.map((member) => (
-        <span
-          key={`${member.name}:${member.realm ?? ""}`}
-          className={`font-medium ${classColor(member.classTag ?? "")}`}
-        >
-          {formatRunMemberName(member)}
+    <div className="mt-0.5 min-w-0 text-[11px] leading-tight text-muted-foreground/80">
+      {members.map((member, index) => (
+        <span key={`${member.name}:${member.realm ?? ""}`}>
+          {index > 0 && <span className="px-1 text-muted-foreground/40">/</span>}
+          <span className={`font-medium ${classColor(member.classTag ?? "")}`}>
+            {formatRunMemberName(member, characterRealm)}
+          </span>
         </span>
       ))}
     </div>
@@ -641,8 +605,11 @@ function getTertiaryStats(snapshot: Snapshot) {
 
 function MythicPlusResultBadge({ run }: { run: MythicPlusRun }) {
   if (isTimedMythicPlusRun(run)) {
+    const upgradeCount = Math.max(1, Math.min(3, run.upgradeCount ?? 1));
     return (
-      <Badge className="bg-emerald-500/15 text-emerald-300 border-emerald-500/30">Timed</Badge>
+      <Badge className="bg-emerald-500/15 text-emerald-300 border-emerald-500/30">
+        {`Timed +${upgradeCount}`}
+      </Badge>
     );
   }
   if (isCompletedMythicPlusRun(run)) {
@@ -653,11 +620,9 @@ function MythicPlusResultBadge({ run }: { run: MythicPlusRun }) {
 
 function MythicPlusSection({
   data,
-  characterName,
   characterRealm,
 }: {
   data: MythicPlusData | null | undefined;
-  characterName: string;
   characterRealm: string;
 }) {
   const [visibleRecentRunCount, setVisibleRecentRunCount] = useState(INITIAL_RECENT_RUN_COUNT);
@@ -887,7 +852,7 @@ function MythicPlusSection({
         </CardHeader>
         <CardContent className="flex min-h-0 flex-1 flex-col pt-4">
           <div className="dark-scrollbar min-h-0 flex-1 overflow-auto rounded-md border">
-            <table className="w-full min-w-[680px] text-sm">
+            <table className="w-full min-w-[760px] text-sm">
               <thead className="bg-muted/40 text-muted-foreground">
                 <tr>
                   <th className="px-3 py-2 text-left font-medium">Played</th>
@@ -901,10 +866,10 @@ function MythicPlusSection({
               <tbody>
                 {visibleRecentRuns.map((run) => (
                   <tr key={run.fingerprint} className="border-t">
-                    <td className="px-3 py-2.5 text-muted-foreground align-top">
+                    <td className="px-3 py-2 text-muted-foreground align-top">
                       <RecentRunPlayedAt run={run} />
                     </td>
-                    <td className="px-3 py-2.5 align-top">
+                    <td className="px-3 py-2 align-top">
                       <div className="flex items-center gap-2.5">
                         <DungeonIcon
                           mapChallengeModeID={run.mapChallengeModeID}
@@ -914,17 +879,16 @@ function MythicPlusSection({
                       </div>
                       <RecentRunPartyMembers
                         run={run}
-                        characterName={characterName}
                         characterRealm={characterRealm}
                       />
                     </td>
-                    <td className="px-3 py-2.5 align-top text-right">
+                    <td className="px-3 py-2 align-top text-right">
                       <RecentRunKeyCell run={run} />
                     </td>
-                    <td className="px-3 py-2.5 align-top">
+                    <td className="px-3 py-2 align-top">
                       <MythicPlusResultBadge run={run} />
                     </td>
-                    <td className="px-3 py-2.5 align-top text-right">
+                    <td className="px-3 py-2 align-top text-right">
                       <div className="flex items-center justify-end gap-1.5 tabular-nums">
                         <span>{formatRunScore(run.runScore)}</span>
                         {formatRunScoreIncrease(run.scoreIncrease) && (
@@ -934,7 +898,7 @@ function MythicPlusSection({
                         )}
                       </div>
                     </td>
-                    <td className="px-3 py-2.5 align-top text-right tabular-nums">
+                    <td className="px-3 py-2 align-top text-right tabular-nums">
                       {formatRunDuration(run.durationMs)}
                     </td>
                   </tr>
@@ -1054,7 +1018,6 @@ type LayoutProps = {
   chartSnapshots: Snapshot[];
   filteredSnapshots: Snapshot[];
   mythicPlus?: MythicPlusData | null;
-  characterName: string;
   characterRealm: string;
   timeFrame: TimeFrame;
   setTimeFrame: (f: TimeFrame) => void;
@@ -1866,7 +1829,6 @@ function OverviewLayout({
   latest,
   chartSnapshots,
   mythicPlus,
-  characterName,
   characterRealm,
   timeFrame,
   setTimeFrame,
@@ -1907,7 +1869,6 @@ function OverviewLayout({
 
           <MythicPlusSection
             data={mythicPlus}
-            characterName={characterName}
             characterRealm={characterRealm}
           />
         </div>
@@ -2386,7 +2347,6 @@ function RouteComponent() {
     chartSnapshots,
     filteredSnapshots: snapshots,
     mythicPlus: mythicPlus as MythicPlusData | null | undefined,
-    characterName: character.name,
     characterRealm: character.realm,
     timeFrame,
     setTimeFrame,
@@ -2569,7 +2529,6 @@ function RouteComponent() {
       {layoutMode !== "overview" && (
         <MythicPlusSection
           data={mythicPlus as MythicPlusData | null | undefined}
-          characterName={character.name}
           characterRealm={character.realm}
         />
       )}
