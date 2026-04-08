@@ -1,7 +1,11 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { api } from "@wow-dashboard/backend/convex/_generated/api";
 import type { Id } from "@wow-dashboard/backend/convex/_generated/dataModel";
-import { getMythicPlusDungeonMeta, getRaiderIoScoreColor } from "../lib/mythic-plus-static";
+import {
+  getMythicPlusDungeonMeta,
+  getMythicPlusDungeonTimerMs,
+  getRaiderIoScoreColor,
+} from "../lib/mythic-plus-static";
 import { usePinnedCharacters } from "../lib/pinned-characters";
 import { formatPlaytime, PlaytimeBreakdown } from "../components/playtime-breakdown";
 import { Badge } from "@wow-dashboard/ui/components/badge";
@@ -297,6 +301,17 @@ function formatRunDuration(durationMs?: number | null) {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
+function formatRunTimeComparison(run: MythicPlusRun) {
+  const actualTime = formatRunDuration(run.durationMs);
+  const maxTime = formatRunDuration(getMythicPlusDungeonTimerMs(run.mapChallengeModeID, run.mapName));
+
+  if (maxTime === "â€”") {
+    return actualTime;
+  }
+
+  return `${actualTime} / ${maxTime}`;
 }
 
 function formatKeyLevel(level?: number | null) {
@@ -606,14 +621,10 @@ function getTertiaryStats(snapshot: Snapshot) {
 function MythicPlusResultBadge({ run }: { run: MythicPlusRun }) {
   if (isTimedMythicPlusRun(run)) {
     const upgradeCount = Math.max(1, Math.min(3, run.upgradeCount ?? 1));
-    return (
-      <Badge className="bg-emerald-500/15 text-emerald-300 border-emerald-500/30">
-        {`Timed +${upgradeCount}`}
-      </Badge>
-    );
+    return <Badge className="bg-emerald-500/15 text-emerald-300 border-emerald-500/30">{`+${upgradeCount}`}</Badge>;
   }
   if (isCompletedMythicPlusRun(run)) {
-    return <Badge className="bg-amber-500/15 text-amber-300 border-amber-500/30">Completed</Badge>;
+    return <Badge className="bg-amber-500/15 text-amber-300 border-amber-500/30">Deplete</Badge>;
   }
   return <Badge className="bg-rose-500/15 text-rose-300 border-rose-500/30">Failed</Badge>;
 }
@@ -899,7 +910,7 @@ function MythicPlusSection({
                       </div>
                     </td>
                     <td className="px-3 py-2 align-top text-right tabular-nums">
-                      {formatRunDuration(run.durationMs)}
+                      {formatRunTimeComparison(run)}
                     </td>
                   </tr>
                 ))}

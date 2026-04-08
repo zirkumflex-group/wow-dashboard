@@ -225,6 +225,45 @@ end
 --         speedPercent         number
 --         leechPercent         number
 --         avoidancePercent     number
+--   pendingMythicPlusMembers table -- keyed by "Name-Realm"
+--     capturedAt    number
+--     members       array
+--   activeMythicPlusMembers table -- keyed by "Name-Realm"
+--     startedAt     number
+--     updatedAt     number
+--     mapChallengeModeID number?
+--     level         number?
+--     members       array
+--     source        string?
+--   mythicPlusDebug table -- keyed by "Name-Realm"
+--     lastCompletionEventAt     number?
+--     lastCompletionEventGroupType string?
+--     lastCompletionEventGroupSize number?
+--     lastChallengeStartAt      number?
+--     lastChallengeStartMapID   number?
+--     lastActiveCacheAt         number?
+--     lastActiveCacheCount      number?
+--     lastActiveCacheSource     string?
+--     lastActiveCacheMapID      number?
+--     lastActiveCacheLevel      number?
+--     lastCaptureAt             number?
+--     lastCaptureSource         string?
+--     lastCaptureCount          number?
+--     lastCompletionApiName     string?
+--     lastCompletionApiMemberCount number?
+--     lastLiveRosterCount       number?
+--     lastPendingAt             number?
+--     lastPendingCount          number?
+--     lastPendingSource         string?
+--     lastAttachAt              number?
+--     lastAttachStatus          string?
+--     lastAttachDiffSeconds     number?
+--     lastAttachMapName         string?
+--     lastAttachLevel           number?
+--     lastSyncAt                number?
+--     lastSyncReason            string?
+--     lastSyncChanged           boolean?
+--     events                    array
 -- ============================================================
 
 local DB_VERSION            = 2
@@ -232,6 +271,11 @@ local SNAPSHOT_INTERVAL     = 15 * 60  -- seconds
 local DEFAULT_MINIMAP_POS   = 225
 local MINIMAP_BUTTON_RADIUS = 5
 local MPLUS_SYNC_INTERVAL   = 30       -- seconds
+local PENDING_RUN_MEMBER_RETENTION = 30 * 60
+local PENDING_RUN_MEMBER_MATCH_WINDOW = 5 * 60
+local PENDING_RUN_MEMBER_RETRY_DELAYS = { 5, 45, 120 }
+local ACTIVE_RUN_MEMBER_RETENTION = 4 * 60 * 60
+local MYTHIC_PLUS_DEBUG_EVENT_LIMIT = 30
 
 -- Midnight S1 currency IDs.
 local CURRENCY_IDS = {
@@ -292,6 +336,268 @@ local function GetCharacterIdentity()
         race    = raceFilename or "UNKNOWN",
         faction = factionGroup:lower(),
     }
+end
+
+local function EnsurePendingMythicPlusMemberStore()
+    if type(WowDashboardDB.pendingMythicPlusMembers) ~= "table" then
+        WowDashboardDB.pendingMythicPlusMembers = {}
+    end
+
+    return WowDashboardDB.pendingMythicPlusMembers
+end
+
+local function EnsureActiveMythicPlusMemberStore()
+    if type(WowDashboardDB.activeMythicPlusMembers) ~= "table" then
+        WowDashboardDB.activeMythicPlusMembers = {}
+    end
+
+    return WowDashboardDB.activeMythicPlusMembers
+end
+
+local function EnsureMythicPlusDebugStore()
+    if type(WowDashboardDB.mythicPlusDebug) ~= "table" then
+        WowDashboardDB.mythicPlusDebug = {}
+    end
+
+    return WowDashboardDB.mythicPlusDebug
+end
+
+local function GetMythicPlusDebugState(characterKey, create)
+    if type(characterKey) ~= "string" or characterKey == "" then
+        return nil
+    end
+
+    local store = EnsureMythicPlusDebugStore()
+    local state = store[characterKey]
+    if state == nil and create ~= false then
+        state = { events = {} }
+        store[characterKey] = state
+    end
+
+    if type(state) ~= "table" then
+        return nil
+    end
+    if type(state.events) ~= "table" then
+        state.events = {}
+    end
+
+    return state
+end
+
+local function UpdateMythicPlusDebugState(characterKey, updates)
+    local state = GetMythicPlusDebugState(characterKey)
+    if not state or type(updates) ~= "table" then
+        return state
+    end
+
+    for fieldName, value in pairs(updates) do
+        state[fieldName] = value
+    end
+
+    return state
+end
+
+local function ClearMythicPlusDebugFields(characterKey, fieldNames)
+    local state = GetMythicPlusDebugState(characterKey)
+    if not state or type(fieldNames) ~= "table" then
+        return state
+    end
+
+    for _, fieldName in ipairs(fieldNames) do
+        state[fieldName] = nil
+    end
+
+    return state
+end
+
+local function AppendMythicPlusDebugEvent(characterKey, kind, details)
+    local state = GetMythicPlusDebugState(characterKey)
+    if not state then
+        return nil
+    end
+
+    local event = {
+        at = time(),
+        kind = kind,
+    }
+    if type(details) == "table" then
+        for fieldName, value in pairs(details) do
+            event[fieldName] = value
+        end
+    end
+
+    local events = state.events
+    events[#events + 1] = event
+    while #events > MYTHIC_PLUS_DEBUG_EVENT_LIMIT do
+        table.remove(events, 1)
+    end
+
+    state.lastEvent = kind
+    state.lastEventAt = event.at
+    return event
+end
+
+local function BuildMythicPlusMemberSummary(members)
+    if type(members) ~= "table" or #members == 0 then
+        return nil
+    end
+
+    local names = {}
+    for index, member in ipairs(members) do
+        local label = member.name
+        if type(label) ~= "string" or label == "" then
+            label = "?"
+        end
+        if type(member.realm) == "string" and member.realm ~= "" then
+            label = label .. "-" .. member.realm
+        end
+        names[#names + 1] = label
+        if index >= 5 then
+            break
+        end
+    end
+
+    return table.concat(names, ", ")
+end
+
+local function FormatDebugTimestamp(timestamp)
+    if type(timestamp) ~= "number" then
+        return "n/a"
+    end
+
+    return date("%d.%m %H:%M:%S", timestamp)
+end
+
+local function FormatDebugValue(value)
+    if value == nil then
+        return "n/a"
+    end
+    if type(value) == "boolean" then
+        return value and "yes" or "no"
+    end
+
+    return tostring(value)
+end
+
+local GetPendingCompletedRunMembers
+
+local function PrintMythicPlusDebug()
+    local characterKey = GetCharKey()
+    local state = GetMythicPlusDebugState(characterKey, false)
+    local pending = GetPendingCompletedRunMembers(characterKey)
+    local active = EnsureActiveMythicPlusMemberStore()[characterKey]
+
+    if type(state) ~= "table" then
+        PrintAddonMessage("No Mythic+ debug data recorded yet.")
+        return
+    end
+
+    PrintAddonMessage("Mythic+ debug for " .. characterKey)
+    PrintAddonMessage("  Start: " .. FormatDebugTimestamp(state.lastChallengeStartAt)
+        .. "  map " .. FormatDebugValue(state.lastChallengeStartMapID))
+    PrintAddonMessage("  Completion event: " .. FormatDebugTimestamp(state.lastCompletionEventAt)
+        .. "  " .. FormatDebugValue(state.lastCompletionEventGroupType)
+        .. "  size " .. FormatDebugValue(state.lastCompletionEventGroupSize))
+    PrintAddonMessage("  Capture: " .. FormatDebugTimestamp(state.lastCaptureAt)
+        .. "  source " .. FormatDebugValue(state.lastCaptureSource)
+        .. "  count " .. FormatDebugValue(state.lastCaptureCount))
+    PrintAddonMessage("  Completion API: " .. FormatDebugValue(state.lastCompletionApiName)
+        .. "  members " .. FormatDebugValue(state.lastCompletionApiMemberCount)
+        .. "  live roster " .. FormatDebugValue(state.lastLiveRosterCount))
+    PrintAddonMessage("  Active cache: " .. FormatDebugValue(state.lastActiveCacheSource)
+        .. "  at " .. FormatDebugTimestamp(state.lastActiveCacheAt)
+        .. "  count " .. FormatDebugValue(state.lastActiveCacheCount)
+        .. "  map " .. FormatDebugValue(state.lastActiveCacheMapID)
+        .. "  +" .. FormatDebugValue(state.lastActiveCacheLevel)
+        .. "  active " .. FormatDebugValue(type(active) == "table"))
+    PrintAddonMessage("  Pending: " .. FormatDebugValue(state.lastPendingSource)
+        .. "  at " .. FormatDebugTimestamp(state.lastPendingAt)
+        .. "  count " .. FormatDebugValue(state.lastPendingCount)
+        .. "  active " .. FormatDebugValue(type(pending) == "table"))
+    PrintAddonMessage("  Attach: " .. FormatDebugValue(state.lastAttachStatus)
+        .. "  at " .. FormatDebugTimestamp(state.lastAttachAt)
+        .. "  diff " .. FormatDebugValue(state.lastAttachDiffSeconds)
+        .. "s  " .. FormatDebugValue(state.lastAttachMapName)
+        .. " +" .. FormatDebugValue(state.lastAttachLevel))
+    PrintAddonMessage("  Sync: " .. FormatDebugTimestamp(state.lastSyncAt)
+        .. "  reason " .. FormatDebugValue(state.lastSyncReason)
+        .. "  changed " .. FormatDebugValue(state.lastSyncChanged))
+
+    local events = state.events
+    if type(events) == "table" and #events > 0 then
+        local startIndex = math.max(1, #events - 4)
+        for index = startIndex, #events do
+            local event = events[index]
+            PrintAddonMessage("    "
+                .. FormatDebugTimestamp(event.at)
+                .. "  "
+                .. FormatDebugValue(event.kind)
+                .. "  "
+                .. FormatDebugValue(event.summary))
+        end
+    end
+end
+
+local function SetPendingCompletedRunMembers(characterKey, pending, options)
+    options = options or {}
+    if type(characterKey) ~= "string" or characterKey == "" then
+        return
+    end
+
+    pendingCompletedRunMembers = pending
+
+    local store = EnsurePendingMythicPlusMemberStore()
+    if type(pending) == "table" then
+        store[characterKey] = pending
+        local memberCount = type(pending.members) == "table" and #pending.members or 0
+        UpdateMythicPlusDebugState(characterKey, {
+            lastPendingAt = tonumber(pending.capturedAt) or time(),
+            lastPendingCount = memberCount,
+            lastPendingSource = options.reason or pending.source or "set",
+            lastPendingSummary = BuildMythicPlusMemberSummary(pending.members),
+        })
+        AppendMythicPlusDebugEvent(characterKey, "pending_members_set", {
+            summary = (options.reason or pending.source or "set") .. " (" .. tostring(memberCount) .. ")",
+            memberCount = memberCount,
+            source = options.reason or pending.source,
+            mapChallengeModeID = pending.mapChallengeModeID,
+            level = pending.level,
+        })
+    else
+        store[characterKey] = nil
+        ClearMythicPlusDebugFields(characterKey, {
+            "lastPendingAt",
+            "lastPendingSource",
+            "lastPendingSummary",
+        })
+        UpdateMythicPlusDebugState(characterKey, {
+            lastPendingCount = 0,
+        })
+        AppendMythicPlusDebugEvent(characterKey, "pending_members_cleared", {
+            summary = options.reason or "cleared",
+            reason = options.reason,
+        })
+    end
+end
+
+GetPendingCompletedRunMembers = function(characterKey)
+    if type(characterKey) ~= "string" or characterKey == "" then
+        return nil
+    end
+
+    if type(pendingCompletedRunMembers) == "table" and pendingCompletedRunMembers.characterKey == characterKey then
+        return pendingCompletedRunMembers
+    end
+
+    local store = EnsurePendingMythicPlusMemberStore()
+    local pending = store[characterKey]
+    if type(pending) == "table" then
+        pending.characterKey = characterKey
+        pendingCompletedRunMembers = pending
+        return pending
+    end
+
+    return nil
 end
 
 local GetRunSortValue
@@ -575,9 +881,10 @@ local function BuildMythicPlusMemberFromUnit(unit)
     return member
 end
 
-local function CaptureCompletedRunMembers()
+local function CaptureLiveGroupMembers()
     local members = {}
     local seenMembers = {}
+    local groupType = "solo"
 
     local function AddUnit(unit)
         local member = BuildMythicPlusMemberFromUnit(unit)
@@ -596,62 +903,402 @@ local function CaptureCompletedRunMembers()
 
     AddUnit("player")
     if IsInRaid() then
+        groupType = "raid"
         for index = 1, GetNumGroupMembers() do
             AddUnit("raid" .. index)
         end
     elseif IsInGroup() then
+        groupType = "party"
         for index = 1, GetNumSubgroupMembers() do
             AddUnit("party" .. index)
         end
     end
 
+    return members, {
+        groupType = groupType,
+        groupSize = #members,
+    }
+end
+
+local function GetCurrentActiveMythicPlusRunContext(options)
+    options = options or {}
+
+    local mapChallengeModeID = nil
+    if type(C_ChallengeMode) == "table" and type(C_ChallengeMode.GetActiveChallengeMapID) == "function" then
+        local ok, result = pcall(C_ChallengeMode.GetActiveChallengeMapID)
+        if ok then
+            mapChallengeModeID = tonumber(result)
+        end
+    end
+    if mapChallengeModeID == nil then
+        mapChallengeModeID = tonumber(options.mapChallengeModeID)
+    end
+    if mapChallengeModeID == nil or mapChallengeModeID <= 0 then
+        return nil
+    end
+
+    local level = nil
+    if type(C_ChallengeMode) == "table" and type(C_ChallengeMode.GetActiveKeystoneInfo) == "function" then
+        local ok, activeLevel = pcall(C_ChallengeMode.GetActiveKeystoneInfo)
+        if ok then
+            level = tonumber(activeLevel)
+        end
+    end
+    if level == nil then
+        level = tonumber(options.level)
+    end
+
+    return {
+        mapChallengeModeID = mapChallengeModeID,
+        level = level,
+    }
+end
+
+local function IsInsideMythicPlusDungeonInstance()
+    local _, _, difficultyID = GetInstanceInfo()
+    return difficultyID == 8 or difficultyID == 23
+end
+
+local function ClearActiveMythicPlusMemberCache(characterKey, reason)
+    if type(characterKey) ~= "string" or characterKey == "" then
+        return
+    end
+
+    EnsureActiveMythicPlusMemberStore()[characterKey] = nil
+    ClearMythicPlusDebugFields(characterKey, {
+        "lastActiveCacheAt",
+        "lastActiveCacheSource",
+        "lastActiveCacheMapID",
+        "lastActiveCacheLevel",
+    })
+    UpdateMythicPlusDebugState(characterKey, {
+        lastActiveCacheCount = 0,
+    })
+    AppendMythicPlusDebugEvent(characterKey, "active_cache_cleared", {
+        summary = reason or "cleared",
+        reason = reason,
+    })
+end
+
+local function GetActiveMythicPlusMemberCache(characterKey)
+    if type(characterKey) ~= "string" or characterKey == "" then
+        return nil
+    end
+
+    local active = EnsureActiveMythicPlusMemberStore()[characterKey]
+    if type(active) ~= "table" then
+        return nil
+    end
+
+    local updatedAt = tonumber(active.updatedAt) or tonumber(active.startedAt)
+    if updatedAt == nil or math.abs(time() - updatedAt) > ACTIVE_RUN_MEMBER_RETENTION then
+        ClearActiveMythicPlusMemberCache(characterKey, "active_cache_expired")
+        return nil
+    end
+
+    return active
+end
+
+local function RefreshActiveMythicPlusMemberCache(reason, options)
+    options = options or {}
+
+    local characterKey = GetCharKey()
+    local context = GetCurrentActiveMythicPlusRunContext(options)
+    if context == nil then
+        if options.clearWhenInactive ~= false then
+            ClearActiveMythicPlusMemberCache(characterKey, reason or "inactive")
+        end
+        return nil
+    end
+
+    local members = options.members
+    local liveInfo = options.liveInfo
+    if type(members) ~= "table" then
+        members, liveInfo = CaptureLiveGroupMembers()
+    end
+
+    local existing = GetActiveMythicPlusMemberCache(characterKey)
+    if type(members) ~= "table" or #members == 0 then
+        AppendMythicPlusDebugEvent(characterKey, "active_cache_refresh_empty", {
+            summary = tostring(reason or "refresh") .. " (0)",
+            reason = reason,
+        })
+        return existing
+    end
+
+    local storedMembers = members
+    local startedAt = time()
+    local liveCount = #members
+    if type(existing) == "table"
+        and tonumber(existing.mapChallengeModeID) == context.mapChallengeModeID
+        and (tonumber(existing.level) or -1) == (tonumber(context.level) or -1) then
+        startedAt = tonumber(existing.startedAt) or startedAt
+        if type(existing.members) == "table" and #existing.members > #storedMembers then
+            storedMembers = existing.members
+        end
+    end
+
+    local active = {
+        characterKey = characterKey,
+        startedAt = startedAt,
+        updatedAt = time(),
+        mapChallengeModeID = context.mapChallengeModeID,
+        level = context.level,
+        members = storedMembers,
+        source = reason or "refresh",
+    }
+    EnsureActiveMythicPlusMemberStore()[characterKey] = active
+
+    UpdateMythicPlusDebugState(characterKey, {
+        lastActiveCacheAt = active.updatedAt,
+        lastActiveCacheCount = #storedMembers,
+        lastActiveCacheSource = active.source,
+        lastActiveCacheMapID = active.mapChallengeModeID,
+        lastActiveCacheLevel = active.level,
+    })
+    AppendMythicPlusDebugEvent(characterKey, "active_cache_updated", {
+        summary = tostring(reason or "refresh")
+            .. " (live " .. tostring(liveCount)
+            .. ", stored " .. tostring(#storedMembers) .. ")",
+        reason = reason,
+        liveCount = liveCount,
+        storedCount = #storedMembers,
+        mapChallengeModeID = active.mapChallengeModeID,
+        level = active.level,
+        groupType = liveInfo and liveInfo.groupType or nil,
+    })
+
+    return active
+end
+
+local function ReconcileActiveMythicPlusMemberCache(reason)
+    if GetCurrentActiveMythicPlusRunContext() ~= nil then
+        return RefreshActiveMythicPlusMemberCache(reason, { clearWhenInactive = false })
+    end
+
+    local characterKey = GetCharKey()
+    local active = GetActiveMythicPlusMemberCache(characterKey)
+    if active ~= nil and IsInsideMythicPlusDungeonInstance() then
+        AppendMythicPlusDebugEvent(characterKey, "active_cache_waiting_for_context", {
+            summary = reason or "waiting_for_context",
+            reason = reason,
+            mapChallengeModeID = active.mapChallengeModeID,
+            level = active.level,
+        })
+        return active
+    end
+    if active ~= nil then
+        ClearActiveMythicPlusMemberCache(characterKey, reason or "inactive")
+    end
+    return nil
+end
+
+local function CaptureCompletionInfoMembers()
+    if type(C_ChallengeMode) ~= "table" then
+        return nil, { apiName = nil }
+    end
+
+    local apiName = nil
+    local apiFunc = nil
+    if type(C_ChallengeMode.GetChallengeCompletionInfo) == "function" then
+        apiName = "GetChallengeCompletionInfo"
+        apiFunc = C_ChallengeMode.GetChallengeCompletionInfo
+    elseif type(C_ChallengeMode.GetCompletionInfo) == "function" then
+        apiName = "GetCompletionInfo"
+        apiFunc = C_ChallengeMode.GetCompletionInfo
+    end
+
+    if type(apiFunc) ~= "function" then
+        return nil, { apiName = nil }
+    end
+
+    local ok,
+        mapChallengeModeID,
+        level,
+        runTimeMs,
+        onTime,
+        keystoneUpgradeLevels,
+        _practiceRun,
+        _oldOverallDungeonScore,
+        _newOverallDungeonScore,
+        _isMapRecord,
+        _isAffixRecord,
+        _primaryAffix,
+        _isEligibleForScore,
+        members = pcall(apiFunc)
+    if not ok then
+        return nil, { apiName = apiName, callFailed = true }
+    end
+
+    return NormalizeMythicPlusMembers(members), {
+        apiName = apiName,
+        mapChallengeModeID = tonumber(mapChallengeModeID),
+        level = tonumber(level),
+        durationMs = tonumber(runTimeMs),
+        completedInTime = onTime == true,
+        keystoneUpgradeLevels = tonumber(keystoneUpgradeLevels),
+        memberCount = type(members) == "table" and #members or 0,
+    }
+end
+
+local function CaptureCompletedRunMembers()
+    local characterKey = GetCharKey()
+    local completionMembers, completionInfo = CaptureCompletionInfoMembers()
+    local liveMembers, liveInfo = CaptureLiveGroupMembers()
+    local activeCache = GetActiveMythicPlusMemberCache(characterKey)
+
+    local members = completionMembers
+    local source = "completion_api"
+    if type(members) ~= "table" or #members == 0 then
+        if type(activeCache) == "table" and type(activeCache.members) == "table" and #activeCache.members > 0 then
+            members = activeCache.members
+            source = "in_key_roster_cache"
+        else
+            members = liveMembers
+            source = "live_roster"
+        end
+    end
+
+    UpdateMythicPlusDebugState(characterKey, {
+        lastCaptureAt = time(),
+        lastCaptureSource = source,
+        lastCaptureCount = type(members) == "table" and #members or 0,
+        lastCompletionApiName = completionInfo.apiName,
+        lastCompletionApiMemberCount = completionInfo.memberCount or 0,
+        lastLiveRosterCount = liveInfo.groupSize or 0,
+    })
+
+    if type(members) ~= "table" or #members == 0 then
+        AppendMythicPlusDebugEvent(characterKey, "members_capture_failed", {
+            summary = "api " .. tostring(completionInfo.memberCount or 0)
+                .. ", cache " .. tostring(type(activeCache) == "table" and type(activeCache.members) == "table" and #activeCache.members or 0)
+                .. ", live " .. tostring(liveInfo.groupSize or 0),
+            completionApiName = completionInfo.apiName,
+            completionApiMemberCount = completionInfo.memberCount or 0,
+            activeCacheCount = type(activeCache) == "table" and type(activeCache.members) == "table" and #activeCache.members or 0,
+            liveRosterCount = liveInfo.groupSize or 0,
+        })
+        return
+    end
+
+    AppendMythicPlusDebugEvent(characterKey, "members_captured", {
+        summary = source .. " (" .. tostring(#members) .. ")",
+        source = source,
+        memberCount = #members,
+        completionApiName = completionInfo.apiName,
+        completionApiMemberCount = completionInfo.memberCount or 0,
+        activeCacheCount = type(activeCache) == "table" and type(activeCache.members) == "table" and #activeCache.members or 0,
+        liveRosterCount = liveInfo.groupSize or 0,
+        mapChallengeModeID = completionInfo.mapChallengeModeID or (type(activeCache) == "table" and activeCache.mapChallengeModeID or nil),
+        level = completionInfo.level or (type(activeCache) == "table" and activeCache.level or nil),
+    })
+
     if #members == 0 then
         return
     end
 
-    pendingCompletedRunMembers = {
+    SetPendingCompletedRunMembers(characterKey, {
+        characterKey = characterKey,
         capturedAt = time(),
         members = members,
-    }
+        source = source,
+        mapChallengeModeID = completionInfo.mapChallengeModeID or (type(activeCache) == "table" and activeCache.mapChallengeModeID or nil),
+        level = completionInfo.level or (type(activeCache) == "table" and activeCache.level or nil),
+        durationMs = completionInfo.durationMs,
+        completedInTime = completionInfo.completedInTime,
+        keystoneUpgradeLevels = completionInfo.keystoneUpgradeLevels,
+    }, { reason = source })
+    ClearActiveMythicPlusMemberCache(characterKey, "completed_to_pending")
 end
 
-local function GetRunRecordedAt(run)
-    return NormalizeMythicPlusDate(run.completedAt)
-        or NormalizeMythicPlusDate(run.startDate)
-        or tonumber(run.observedAt)
-        or nil
+local function GetRunDurationMs(run)
+    local durationMs = tonumber(run.durationMs)
+    if durationMs ~= nil and durationMs > 0 then
+        return durationMs
+    end
+
+    local durationSeconds = GetFirstField(run, {
+        "durationSec",
+        "durationSeconds",
+        "time",
+        "runDuration",
+    })
+    if type(durationSeconds) == "number" and durationSeconds > 0 then
+        return math.floor(durationSeconds * 1000 + 0.5)
+    end
+
+    return nil
 end
 
-local function AttachPendingCompletedRunMembers(runs)
+local function GetRunCompletionEstimate(run)
+    local completedAt = NormalizeMythicPlusDate(run.completedAt)
+        or NormalizeMythicPlusDate(run.completionDate)
+        or NormalizeMythicPlusDate(run.completedDate)
+        or NormalizeMythicPlusDate(run.endTime)
+    if completedAt ~= nil then
+        return completedAt
+    end
+
+    local startDate = NormalizeMythicPlusDate(run.startDate) or NormalizeMythicPlusDate(run.startedAt)
+    local durationMs = GetRunDurationMs(run)
+    if startDate ~= nil and durationMs ~= nil then
+        return startDate + math.floor(durationMs / 1000 + 0.5)
+    end
+
+    return nil
+end
+
+local function AttachPendingCompletedRunMembers(runs, characterKey)
     if type(runs) ~= "table" then
         return
     end
 
-    local pending = pendingCompletedRunMembers
+    local pending = GetPendingCompletedRunMembers(characterKey)
     if type(pending) ~= "table" or type(pending.members) ~= "table" or #pending.members == 0 then
-        pendingCompletedRunMembers = nil
+        SetPendingCompletedRunMembers(characterKey, nil, { reason = "empty_pending_members" })
         return
     end
 
     local capturedAt = tonumber(pending.capturedAt)
     if capturedAt == nil then
-        pendingCompletedRunMembers = nil
+        SetPendingCompletedRunMembers(characterKey, nil, { reason = "missing_captured_at" })
         return
     end
 
-    if math.abs(time() - capturedAt) > 10 * 60 then
-        pendingCompletedRunMembers = nil
+    if math.abs(time() - capturedAt) > PENDING_RUN_MEMBER_RETENTION then
+        ClearMythicPlusDebugFields(characterKey, {
+            "lastAttachDiffSeconds",
+            "lastAttachMapName",
+            "lastAttachLevel",
+        })
+        UpdateMythicPlusDebugState(characterKey, {
+            lastAttachAt = time(),
+            lastAttachStatus = "expired",
+        })
+        SetPendingCompletedRunMembers(characterKey, nil, { reason = "pending_expired" })
         return
     end
 
     local bestIndex = nil
     local bestDiff = nil
+    local pendingMapChallengeModeID = tonumber(pending.mapChallengeModeID)
+    local pendingLevel = tonumber(pending.level)
+
+    AppendMythicPlusDebugEvent(characterKey, "attach_attempt", {
+        summary = "runs " .. tostring(#runs),
+        runCount = #runs,
+        pendingSource = pending.source,
+        pendingMapChallengeModeID = pendingMapChallengeModeID,
+        pendingLevel = pendingLevel,
+    })
 
     for index, run in ipairs(runs) do
-        local runAt = GetRunRecordedAt(run)
-        if runAt ~= nil and math.abs(runAt - capturedAt) <= 3 * 60 then
-            if type(run.members) ~= "table" or #run.members == 0 then
-                local diff = math.abs(runAt - capturedAt)
+        local runCompletedAt = GetRunCompletionEstimate(run)
+        if runCompletedAt ~= nil and math.abs(runCompletedAt - capturedAt) <= PENDING_RUN_MEMBER_MATCH_WINDOW then
+            local mapMatches = pendingMapChallengeModeID == nil or tonumber(run.mapChallengeModeID) == pendingMapChallengeModeID
+            local levelMatches = pendingLevel == nil or tonumber(run.level) == pendingLevel
+            if mapMatches and levelMatches and (type(run.members) ~= "table" or #run.members == 0) then
+                local diff = math.abs(runCompletedAt - capturedAt)
                 if bestDiff == nil or diff < bestDiff then
                     bestIndex = index
                     bestDiff = diff
@@ -662,7 +1309,37 @@ local function AttachPendingCompletedRunMembers(runs)
 
     if bestIndex ~= nil then
         runs[bestIndex].members = pending.members
-        pendingCompletedRunMembers = nil
+        UpdateMythicPlusDebugState(characterKey, {
+            lastAttachAt = time(),
+            lastAttachStatus = "attached",
+            lastAttachDiffSeconds = bestDiff,
+            lastAttachMapName = runs[bestIndex].mapName,
+            lastAttachLevel = runs[bestIndex].level,
+        })
+        AppendMythicPlusDebugEvent(characterKey, "attach_success", {
+            summary = tostring(runs[bestIndex].mapName or "?")
+                .. " +" .. tostring(runs[bestIndex].level or "?")
+                .. " (" .. tostring(bestDiff or "?") .. "s)",
+            diffSeconds = bestDiff,
+            mapName = runs[bestIndex].mapName,
+            level = runs[bestIndex].level,
+        })
+        SetPendingCompletedRunMembers(characterKey, nil, { reason = "attached_to_history" })
+    else
+        ClearMythicPlusDebugFields(characterKey, {
+            "lastAttachDiffSeconds",
+            "lastAttachMapName",
+            "lastAttachLevel",
+        })
+        UpdateMythicPlusDebugState(characterKey, {
+            lastAttachAt = time(),
+            lastAttachStatus = "no_match_yet",
+        })
+        AppendMythicPlusDebugEvent(characterKey, "attach_miss", {
+            summary = "waiting for history match",
+            pendingMapChallengeModeID = pendingMapChallengeModeID,
+            pendingLevel = pendingLevel,
+        })
     end
 end
 
@@ -1017,6 +1694,7 @@ end
 
 local function CollectMythicPlusHistory()
     local calls = {}
+    local characterKey = GetCharKey()
 
     local function AddCall(apiFunc, ...)
         local results = CallAddonApi(apiFunc, ...)
@@ -1048,7 +1726,12 @@ local function CollectMythicPlusHistory()
         end
     end
 
-    AttachPendingCompletedRunMembers(normalizedRuns)
+    AppendMythicPlusDebugEvent(characterKey, "history_collected", {
+        summary = tostring(#rawRuns) .. " raw / " .. tostring(#normalizedRuns) .. " normalized",
+        rawRunCount = #rawRuns,
+        normalizedRunCount = #normalizedRuns,
+    })
+    AttachPendingCompletedRunMembers(normalizedRuns, characterKey)
 
     return normalizedRuns
 end
@@ -1095,6 +1778,21 @@ local function SyncMythicPlusHistory(reason, options)
     end
 
     lastMPlusSyncAt = GetTime()
+    UpdateMythicPlusDebugState(key, {
+        lastSyncAt = time(),
+        lastSyncReason = reason,
+        lastSyncChanged = (added > 0 or updated or beforeCount ~= #entry.mythicPlusRuns),
+        lastSyncRunCount = #runs,
+    })
+    AppendMythicPlusDebugEvent(key, "sync_completed", {
+        summary = tostring(reason or "sync")
+            .. " (" .. tostring(added) .. " add, "
+            .. tostring(updated and 1 or 0) .. " update)",
+        reason = reason,
+        added = added,
+        updated = updated,
+        runCount = #runs,
+    })
 
     return added > 0 or updated or beforeCount ~= #entry.mythicPlusRuns
 end
@@ -1111,6 +1809,12 @@ local function ScheduleMythicPlusHistorySync(reason, delaySeconds, options)
     end
 
     pendingMPlusSync = true
+    AppendMythicPlusDebugEvent(GetCharKey(), "sync_scheduled", {
+        summary = tostring(reason or "sync") .. " in " .. tostring(delaySeconds) .. "s",
+        reason = reason,
+        delaySeconds = delaySeconds,
+        forced = options.force == true,
+    })
     C_Timer.After(delaySeconds, function()
         pendingMPlusSync = false
         SyncMythicPlusHistory(reason, options)
@@ -1771,7 +2475,7 @@ end
 SLASH_WOWDASHBOARD1 = "/wd"
 SLASH_WOWDASHBOARD2 = "/wowdashboard"
 local function PrintSlashHelp()
-    PrintAddonMessage("Commands: /wd, /wd help, /wd open")
+    PrintAddonMessage("Commands: /wd, /wd help, /wd open, /wd mplusdebug")
 end
 
 SlashCmdList["WOWDASHBOARD"] = function(msg)
@@ -1794,6 +2498,11 @@ SlashCmdList["WOWDASHBOARD"] = function(msg)
         return
     end
 
+    if command == "mplusdebug" then
+        PrintMythicPlusDebug()
+        return
+    end
+
     PrintSlashHelp()
 end
 
@@ -1801,7 +2510,10 @@ local eventFrame = CreateFrame("Frame")
 eventFrame:RegisterEvent("ADDON_LOADED")
 eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
 eventFrame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
+eventFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
+eventFrame:RegisterEvent("CHALLENGE_MODE_START")
 eventFrame:RegisterEvent("CHALLENGE_MODE_COMPLETED")
+eventFrame:RegisterEvent("CHALLENGE_MODE_RESET")
 eventFrame:RegisterEvent("TIME_PLAYED_MSG")
 eventFrame:SetScript("OnEvent", function(self, event, ...)
     if event == "ADDON_LOADED" and ... == addonName then
@@ -1818,6 +2530,12 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         end
         if not WowDashboardDB.version    then WowDashboardDB.version    = DB_VERSION end
         if not WowDashboardDB.characters then WowDashboardDB.characters = {} end
+        if type(WowDashboardDB.activeMythicPlusMembers) ~= "table" then
+            WowDashboardDB.activeMythicPlusMembers = {}
+        end
+        if type(WowDashboardDB.pendingMythicPlusMembers) ~= "table" then
+            WowDashboardDB.pendingMythicPlusMembers = {}
+        end
         if WowDashboardDB.panelOpen == nil then WowDashboardDB.panelOpen = false end
         EnsureMinimapSettings()
         if minimapToggle then
@@ -1827,6 +2545,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
 
     elseif event == "PLAYER_ENTERING_WORLD" then
         RefreshMinimapButton()
+        ReconcileActiveMythicPlusMemberCache("player_entering_world")
         if not initialized then
             initialized = true
             print("|cff00ccff[WoW Dashboard]|r Loaded — type |cffffffff/wowdashboard|r to open.")
@@ -1848,13 +2567,64 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         end
 
     elseif event == "ZONE_CHANGED_NEW_AREA" then
+        ReconcileActiveMythicPlusMemberCache("zone_changed_new_area")
         if GetTime() - lastSnapshotAt > 60 then
             C_Timer.After(2, CollectSnapshot)
         end
 
+    elseif event == "GROUP_ROSTER_UPDATE" then
+        if GetCurrentActiveMythicPlusRunContext() ~= nil then
+            RefreshActiveMythicPlusMemberCache("group_roster_update", {
+                clearWhenInactive = false,
+            })
+        end
+
+    elseif event == "CHALLENGE_MODE_START" then
+        local mapChallengeModeID = ...
+        local characterKey = GetCharKey()
+        local startMembers = CaptureLiveGroupMembers()
+        RefreshActiveMythicPlusMemberCache("challenge_mode_start", {
+            mapChallengeModeID = mapChallengeModeID,
+            clearWhenInactive = false,
+            members = startMembers,
+        })
+        UpdateMythicPlusDebugState(characterKey, {
+            lastChallengeStartAt = time(),
+            lastChallengeStartMapID = tonumber(mapChallengeModeID),
+        })
+        AppendMythicPlusDebugEvent(characterKey, "challenge_mode_start", {
+            summary = "map " .. tostring(mapChallengeModeID) .. " (" .. tostring(#startMembers) .. ")",
+            mapChallengeModeID = tonumber(mapChallengeModeID),
+            memberCount = #startMembers,
+        })
+
     elseif event == "CHALLENGE_MODE_COMPLETED" then
+        local characterKey = GetCharKey()
+        local completionMembers, completionLiveInfo = CaptureLiveGroupMembers()
+        RefreshActiveMythicPlusMemberCache("challenge_mode_completed", {
+            clearWhenInactive = false,
+            members = completionMembers,
+            liveInfo = completionLiveInfo,
+        })
+        UpdateMythicPlusDebugState(characterKey, {
+            lastCompletionEventAt = time(),
+            lastCompletionEventGroupType = completionLiveInfo.groupType,
+            lastCompletionEventGroupSize = completionLiveInfo.groupSize,
+        })
+        AppendMythicPlusDebugEvent(characterKey, "challenge_mode_completed", {
+            summary = tostring(completionLiveInfo.groupType or "group")
+                .. " (" .. tostring(completionLiveInfo.groupSize or 0) .. ")",
+            groupType = completionLiveInfo.groupType,
+            groupSize = completionLiveInfo.groupSize,
+            memberCount = #completionMembers,
+        })
         CaptureCompletedRunMembers()
-        ScheduleMythicPlusHistorySync("challenge_mode_completed", 5)
+        for _, retryDelay in ipairs(PENDING_RUN_MEMBER_RETRY_DELAYS) do
+            ScheduleMythicPlusHistorySync("challenge_mode_completed", retryDelay, { force = true })
+        end
+
+    elseif event == "CHALLENGE_MODE_RESET" then
+        ClearActiveMythicPlusMemberCache(GetCharKey(), "challenge_mode_reset")
 
     elseif event == "TIME_PLAYED_MSG" then
         local totalSeconds, thisLevelSeconds = ...
