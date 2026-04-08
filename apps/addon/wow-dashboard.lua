@@ -600,6 +600,7 @@ GetPendingCompletedRunMembers = function(characterKey)
     return nil
 end
 
+local NormalizeMythicPlusDate
 local GetRunSortValue
 local NormalizeStoredMythicPlusRun
 local ShouldReplaceStoredRun
@@ -1135,7 +1136,7 @@ local function CaptureCompletionInfoMembers()
         mapChallengeModeID = tonumber(mapChallengeModeID),
         level = tonumber(level),
         durationMs = tonumber(runTimeMs),
-        completedInTime = onTime == true,
+        completedInTime = NormalizeOptionalBoolean(onTime),
         keystoneUpgradeLevels = tonumber(keystoneUpgradeLevels),
         memberCount = type(members) == "table" and #members or 0,
     }
@@ -1230,6 +1231,34 @@ local function GetRunDurationMs(run)
     return nil
 end
 
+local function NormalizeOptionalBoolean(value)
+    if type(value) == "boolean" then
+        return value
+    end
+
+    if type(value) == "number" then
+        if value == 0 then
+            return false
+        end
+        if value == 1 then
+            return true
+        end
+        return nil
+    end
+
+    if type(value) == "string" then
+        local normalized = string.lower(strtrim(value))
+        if normalized == "true" or normalized == "yes" or normalized == "1" then
+            return true
+        end
+        if normalized == "false" or normalized == "no" or normalized == "0" then
+            return false
+        end
+    end
+
+    return nil
+end
+
 local function GetRunCompletionEstimate(run)
     local completedAt = NormalizeMythicPlusDate(run.completedAt)
         or NormalizeMythicPlusDate(run.completionDate)
@@ -1283,6 +1312,8 @@ local function AttachPendingCompletedRunMembers(runs, characterKey)
     local bestDiff = nil
     local pendingMapChallengeModeID = tonumber(pending.mapChallengeModeID)
     local pendingLevel = tonumber(pending.level)
+    local pendingCompletedInTime = type(pending.completedInTime) == "boolean" and pending.completedInTime or nil
+    local pendingDurationMs = tonumber(pending.durationMs)
 
     AppendMythicPlusDebugEvent(characterKey, "attach_attempt", {
         summary = "runs " .. tostring(#runs),
@@ -1290,6 +1321,8 @@ local function AttachPendingCompletedRunMembers(runs, characterKey)
         pendingSource = pending.source,
         pendingMapChallengeModeID = pendingMapChallengeModeID,
         pendingLevel = pendingLevel,
+        pendingCompletedInTime = pendingCompletedInTime,
+        pendingDurationMs = pendingDurationMs,
     })
 
     for index, run in ipairs(runs) do
@@ -1326,6 +1359,139 @@ local function AttachPendingCompletedRunMembers(runs, characterKey)
         })
         SetPendingCompletedRunMembers(characterKey, nil, { reason = "attached_to_history" })
     else
+        local fallbackCandidates = {}
+
+        for index, run in ipairs(runs) do
+            local mapMatches = pendingMapChallengeModeID == nil or tonumber(run.mapChallengeModeID) == pendingMapChallengeModeID
+            local levelMatches = pendingLevel == nil or tonumber(run.level) == pendingLevel
+            if mapMatches and levelMatches and (type(run.members) ~= "table" or #run.members == 0) then
+                local durationDiff = nil
+                local runDurationMs = GetRunDurationMs(run)
+                if pendingDurationMs ~= nil and runDurationMs ~= nil then
+                    durationDiff = math.abs(runDurationMs - pendingDurationMs)
+                end
+
+                local completionDiff = nil
+                local runCompletedAt = GetRunCompletionEstimate(run)
+                if runCompletedAt ~= nil then
+                    completionDiff = math.abs(runCompletedAt - capturedAt)
+                end
+
+                fallbackCandidates[#fallbackCandidates + 1] = {
+                    index = index,
+                    durationDiff = durationDiff,
+                    completionDiff = completionDiff,
+                    outcomeMatches =
+                        pendingCompletedInTime == nil
+                        or run.completedInTime == nil
+                        or run.completedInTime == pendingCompletedInTime,
+                    thisWeek = run.thisWeek == true,
+                    run = run,
+                }
+            end
+        end
+
+        if pendingDurationMs ~= nil then
+            local durationFiltered = {}
+            for _, candidate in ipairs(fallbackCandidates) do
+                if candidate.durationDiff == nil or candidate.durationDiff <= (2 * 60 * 1000) then
+                    durationFiltered[#durationFiltered + 1] = candidate
+                end
+            end
+            if #durationFiltered > 0 then
+                fallbackCandidates = durationFiltered
+            end
+        end
+
+        table.sort(fallbackCandidates, function(a, b)
+            local aCompletionDiff = a.completionDiff
+            local bCompletionDiff = b.completionDiff
+            if aCompletionDiff ~= nil and bCompletionDiff ~= nil and aCompletionDiff ~= bCompletionDiff then
+                return aCompletionDiff < bCompletionDiff
+            end
+            if aCompletionDiff ~= nil and bCompletionDiff == nil then
+                return true
+            end
+            if aCompletionDiff == nil and bCompletionDiff ~= nil then
+                return false
+            end
+
+            local aDurationDiff = a.durationDiff
+            local bDurationDiff = b.durationDiff
+            if aDurationDiff ~= nil and bDurationDiff ~= nil and aDurationDiff ~= bDurationDiff then
+                return aDurationDiff < bDurationDiff
+            end
+            if aDurationDiff ~= nil and bDurationDiff == nil then
+                return true
+            end
+            if aDurationDiff == nil and bDurationDiff ~= nil then
+                return false
+            end
+
+            if a.outcomeMatches ~= b.outcomeMatches then
+                return a.outcomeMatches == true
+            end
+            if a.thisWeek ~= b.thisWeek then
+                return a.thisWeek == true
+            end
+
+            return a.index < b.index
+        end)
+
+        local bestCandidate = fallbackCandidates[1]
+        local secondCandidate = fallbackCandidates[2]
+        local fallbackUnique = #fallbackCandidates == 1
+
+        if not fallbackUnique and bestCandidate ~= nil then
+            local bestCompletionDiff = bestCandidate.completionDiff
+            local secondCompletionDiff = secondCandidate and secondCandidate.completionDiff or nil
+            local bestDurationDiff = bestCandidate.durationDiff
+            local secondDurationDiff = secondCandidate and secondCandidate.durationDiff or nil
+
+            local uniqueByCompletion =
+                bestCompletionDiff ~= nil
+                and bestCompletionDiff <= (3 * 60 * 60)
+                and (secondCompletionDiff == nil or (secondCompletionDiff - bestCompletionDiff) > (15 * 60))
+            local uniqueByDuration =
+                bestDurationDiff ~= nil
+                and bestDurationDiff <= (2 * 60 * 1000)
+                and (secondDurationDiff == nil or (secondDurationDiff - bestDurationDiff) > (60 * 1000))
+            local uniqueByWeek =
+                bestCandidate.thisWeek == true
+                and (secondCandidate == nil or secondCandidate.thisWeek ~= true)
+
+            fallbackUnique = uniqueByCompletion or uniqueByDuration or uniqueByWeek
+        end
+
+        if fallbackUnique and bestCandidate ~= nil then
+            local candidate = bestCandidate
+            runs[candidate.index].members = pending.members
+            if candidate.durationDiff == nil then
+                ClearMythicPlusDebugFields(characterKey, {
+                    "lastAttachDiffSeconds",
+                })
+            end
+            UpdateMythicPlusDebugState(characterKey, {
+                lastAttachAt = time(),
+                lastAttachStatus = "attached_fallback",
+                lastAttachDiffSeconds = candidate.durationDiff and math.floor(candidate.durationDiff / 1000 + 0.5) or nil,
+                lastAttachMapName = runs[candidate.index].mapName,
+                lastAttachLevel = runs[candidate.index].level,
+            })
+            AppendMythicPlusDebugEvent(characterKey, "attach_success", {
+                summary = tostring(runs[candidate.index].mapName or "?")
+                    .. " +" .. tostring(runs[candidate.index].level or "?")
+                    .. " (fallback)",
+                mapName = runs[candidate.index].mapName,
+                level = runs[candidate.index].level,
+                durationDiffMs = candidate.durationDiff,
+                completionDiffSeconds = candidate.completionDiff,
+                method = "fallback_ranked_map_level",
+            })
+            SetPendingCompletedRunMembers(characterKey, nil, { reason = "attached_to_history_fallback" })
+            return
+        end
+
         ClearMythicPlusDebugFields(characterKey, {
             "lastAttachDiffSeconds",
             "lastAttachMapName",
@@ -1336,14 +1502,15 @@ local function AttachPendingCompletedRunMembers(runs, characterKey)
             lastAttachStatus = "no_match_yet",
         })
         AppendMythicPlusDebugEvent(characterKey, "attach_miss", {
-            summary = "waiting for history match",
+            summary = "waiting for history match (" .. tostring(#fallbackCandidates) .. " fallback)",
             pendingMapChallengeModeID = pendingMapChallengeModeID,
             pendingLevel = pendingLevel,
+            fallbackCandidateCount = #fallbackCandidates,
         })
     end
 end
 
-local function NormalizeMythicPlusDate(value)
+NormalizeMythicPlusDate = function(value)
     if type(value) == "number" then
         return value
     end

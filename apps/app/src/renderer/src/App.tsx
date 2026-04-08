@@ -277,6 +277,15 @@ function isUploadableSnapshot(snapshot: SnapshotData, sinceTs: number) {
   return snapshot.takenAt > sinceTs && hasUploadableSnapshotSpec(snapshot.spec);
 }
 
+const MYTHIC_PLUS_UPLOAD_LOOKBACK_SECONDS = 2 * 60 * 60;
+
+function isUploadableMythicPlusRun(run: MythicPlusRunData, sinceTs: number) {
+  const nowTs = Math.floor(Date.now() / 1000);
+  const effectiveSinceTs = Math.min(sinceTs, nowTs - MYTHIC_PLUS_UPLOAD_LOOKBACK_SECONDS);
+  const lastRelevantAt = run.observedAt ?? run.completedAt ?? run.startDate ?? 0;
+  return lastRelevantAt > effectiveSinceTs;
+}
+
 function getPendingUploadCounts(
   chars: CharacterData[],
   sinceTs: number,
@@ -289,7 +298,7 @@ function getPendingUploadCounts(
         totals.mythicPlusRuns +
         (includeAllMythicPlusRuns
           ? char.mythicPlusRuns.length
-          : char.mythicPlusRuns.filter((run) => run.observedAt > sinceTs).length),
+          : char.mythicPlusRuns.filter((run) => isUploadableMythicPlusRun(run, sinceTs)).length),
     }),
     { snapshots: 0, mythicPlusRuns: 0 },
   );
@@ -624,7 +633,7 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
               snapshots: c.snapshots.filter((snapshot) => isUploadableSnapshot(snapshot, sinceTs)),
               mythicPlusRuns: needsMythicPlusBackfill
                 ? c.mythicPlusRuns
-                : c.mythicPlusRuns.filter((run) => run.observedAt > sinceTs),
+                : c.mythicPlusRuns.filter((run) => isUploadableMythicPlusRun(run, sinceTs)),
             }))
             .filter((c) => c.snapshots.length > 0 || c.mythicPlusRuns.length > 0);
 
