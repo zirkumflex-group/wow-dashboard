@@ -307,6 +307,9 @@ function buildRecentRuns(runs: MythicPlusRunDoc[]) {
 
   for (let index = runs.length - 1; index >= 0; index -= 1) {
     const run = runs[index];
+    if (!run) {
+      continue;
+    }
 
     if (!isCompletedRun(run) || run.runScore === undefined) {
       continue;
@@ -330,6 +333,7 @@ function buildRecentRuns(runs: MythicPlusRunDoc[]) {
 
   return runs.map((run) => ({
     ...run,
+    upgradeCount: getMythicPlusRunUpgradeCount(run),
     scoreIncrease: scoreIncreaseByRunId.get(run._id) ?? null,
   }));
 }

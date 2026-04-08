@@ -68,9 +68,36 @@ const CLASS_COLORS: Record<string, string> = {
   evoker: "text-teal-400",
 };
 
+const CLASS_TAG_TO_COLOR_KEY: Record<string, string> = {
+  WARRIOR: "warrior",
+  PALADIN: "paladin",
+  HUNTER: "hunter",
+  ROGUE: "rogue",
+  PRIEST: "priest",
+  DEATHKNIGHT: "death knight",
+  SHAMAN: "shaman",
+  MAGE: "mage",
+  WARLOCK: "warlock",
+  MONK: "monk",
+  DRUID: "druid",
+  DEMONHUNTER: "demon hunter",
+  EVOKER: "evoker",
+};
+
 const ROLE_LABELS: Record<string, string> = { tank: "Tank", healer: "Healer", dps: "DPS" };
 const INITIAL_RECENT_RUN_COUNT = 20;
 const RECENT_RUN_LOAD_INCREMENT = 20;
+const RUN_TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
+  hour: "2-digit",
+  minute: "2-digit",
+});
+const RUN_FULL_DATE_TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
+  year: "numeric",
+  month: "short",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+});
 
 // ── Time frame ───────────────────────────────────────────────────────────────
 
@@ -163,7 +190,10 @@ function LayoutSwitcher({
 // ── Formatters ────────────────────────────────────────────────────────────────
 
 function classColor(cls: string) {
-  return CLASS_COLORS[cls.toLowerCase()] ?? "text-foreground";
+  const trimmed = cls.trim();
+  const normalizedToken = trimmed.toUpperCase().replace(/[\s_-]/g, "");
+  const colorKey = CLASS_TAG_TO_COLOR_KEY[normalizedToken] ?? trimmed.toLowerCase();
+  return CLASS_COLORS[colorKey] ?? "text-foreground";
 }
 
 function formatDate(takenAtSeconds: number) {
@@ -296,6 +326,16 @@ function formatRunScoreIncrease(value?: number | null) {
     minimumFractionDigits: hasFraction ? 1 : 0,
     maximumFractionDigits: 1,
   });
+}
+
+function formatRunTime(ts?: number | null) {
+  if (!ts) return "--";
+  return RUN_TIME_FORMATTER.format(new Date(ts * 1000));
+}
+
+function formatRunDateTime(ts?: number | null) {
+  if (!ts) return "--";
+  return RUN_FULL_DATE_TIME_FORMATTER.format(new Date(ts * 1000));
 }
 
 function formatSeasonLabel(seasonID: number | null) {
@@ -434,6 +474,111 @@ function MythicPlusKeyPill({
   );
 }
 
+function getRunPlayedAt(run: MythicPlusRun) {
+  return run.completedAt ?? run.startDate ?? run.observedAt;
+}
+
+function formatRunMemberName(member: MythicPlusRunMember) {
+  if (!member.realm) {
+    return member.name;
+  }
+
+  const normalizedSuffix = `-${member.realm}`.toLowerCase();
+  if (member.name.toLowerCase().endsWith(normalizedSuffix)) {
+    return member.name;
+  }
+
+  return `${member.name}-${member.realm}`;
+}
+
+function isCurrentCharacterMember(
+  member: MythicPlusRunMember,
+  characterName: string,
+  characterRealm: string,
+) {
+  const normalizedCharacterName = characterName.trim().toLowerCase();
+  const normalizedCharacterRealm = characterRealm.trim().toLowerCase();
+  const normalizedMemberName = member.name.trim().toLowerCase();
+  const normalizedMemberRealm = member.realm?.trim().toLowerCase();
+
+  if (normalizedMemberName === normalizedCharacterName) {
+    return normalizedMemberRealm === undefined || normalizedMemberRealm === normalizedCharacterRealm;
+  }
+
+  return normalizedMemberName === `${normalizedCharacterName}-${normalizedCharacterRealm}`;
+}
+
+function getDisplayedRunMembers(
+  members: MythicPlusRunMember[] | undefined,
+  characterName: string,
+  characterRealm: string,
+) {
+  if (!members || members.length === 0) {
+    return [];
+  }
+
+  const withoutCurrentCharacter = members.filter(
+    (member) => !isCurrentCharacterMember(member, characterName, characterRealm),
+  );
+
+  return withoutCurrentCharacter.length > 0 ? withoutCurrentCharacter : members;
+}
+
+function RecentRunPlayedAt({ run }: { run: MythicPlusRun }) {
+  const playedAt = getRunPlayedAt(run);
+
+  return (
+    <div className="space-y-0.5" title={formatRunDateTime(playedAt)}>
+      <div>{formatRunDate(playedAt)}</div>
+      <div className="text-xs text-muted-foreground/70">{formatRunTime(playedAt)}</div>
+    </div>
+  );
+}
+
+function RecentRunKeyCell({ run }: { run: MythicPlusRun }) {
+  const upgradeCount = run.upgradeCount ?? 0;
+
+  return (
+    <div className="flex items-center justify-end gap-1.5">
+      <span className="font-medium tabular-nums">{formatKeyLevel(run.level)}</span>
+      {upgradeCount > 0 && (
+        <span className="rounded border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-emerald-300">
+          +{upgradeCount}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function RecentRunPartyMembers({
+  run,
+  characterName,
+  characterRealm,
+}: {
+  run: MythicPlusRun;
+  characterName: string;
+  characterRealm: string;
+}) {
+  const members = getDisplayedRunMembers(run.members, characterName, characterRealm);
+  if (members.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 pl-8 text-xs text-muted-foreground">
+      <span className="uppercase tracking-[0.14em] text-muted-foreground/65">With</span>
+      {members.map((member) => (
+        <span
+          key={`${member.name}:${member.realm ?? ""}`}
+          className={`font-medium ${classColor(member.classTag ?? "")}`}
+        >
+          {formatRunMemberName(member)}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function DungeonIcon({
   mapChallengeModeID,
   mapName,
@@ -506,7 +651,15 @@ function MythicPlusResultBadge({ run }: { run: MythicPlusRun }) {
   return <Badge className="bg-rose-500/15 text-rose-300 border-rose-500/30">Failed</Badge>;
 }
 
-function MythicPlusSection({ data }: { data: MythicPlusData | null | undefined }) {
+function MythicPlusSection({
+  data,
+  characterName,
+  characterRealm,
+}: {
+  data: MythicPlusData | null | undefined;
+  characterName: string;
+  characterRealm: string;
+}) {
   const [visibleRecentRunCount, setVisibleRecentRunCount] = useState(INITIAL_RECENT_RUN_COUNT);
   const [summaryCardHeight, setSummaryCardHeight] = useState<number | null>(null);
   const summaryCardRef = useRef<HTMLDivElement | null>(null);
@@ -734,10 +887,10 @@ function MythicPlusSection({ data }: { data: MythicPlusData | null | undefined }
         </CardHeader>
         <CardContent className="flex min-h-0 flex-1 flex-col pt-4">
           <div className="dark-scrollbar min-h-0 flex-1 overflow-auto rounded-md border">
-            <table className="w-full min-w-[560px] text-sm">
+            <table className="w-full min-w-[680px] text-sm">
               <thead className="bg-muted/40 text-muted-foreground">
                 <tr>
-                  <th className="px-3 py-2 text-left font-medium">Date</th>
+                  <th className="px-3 py-2 text-left font-medium">Played</th>
                   <th className="px-3 py-2 text-left font-medium">Dungeon</th>
                   <th className="px-3 py-2 text-right font-medium">Key</th>
                   <th className="px-3 py-2 text-left font-medium">Result</th>
@@ -748,17 +901,30 @@ function MythicPlusSection({ data }: { data: MythicPlusData | null | undefined }
               <tbody>
                 {visibleRecentRuns.map((run) => (
                   <tr key={run.fingerprint} className="border-t">
-                    <td className="px-3 py-2 text-muted-foreground">
-                      {formatRunDate(run.completedAt ?? run.startDate ?? run.observedAt)}
+                    <td className="px-3 py-2.5 text-muted-foreground align-top">
+                      <RecentRunPlayedAt run={run} />
                     </td>
-                    <td className="px-3 py-2">{getRunLabel(run)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">
-                      {formatKeyLevel(run.level)}
+                    <td className="px-3 py-2.5 align-top">
+                      <div className="flex items-center gap-2.5">
+                        <DungeonIcon
+                          mapChallengeModeID={run.mapChallengeModeID}
+                          mapName={run.mapName}
+                        />
+                        <div className="font-medium text-foreground">{getRunLabel(run)}</div>
+                      </div>
+                      <RecentRunPartyMembers
+                        run={run}
+                        characterName={characterName}
+                        characterRealm={characterRealm}
+                      />
                     </td>
-                    <td className="px-3 py-2">
+                    <td className="px-3 py-2.5 align-top text-right">
+                      <RecentRunKeyCell run={run} />
+                    </td>
+                    <td className="px-3 py-2.5 align-top">
                       <MythicPlusResultBadge run={run} />
                     </td>
-                    <td className="px-3 py-2 text-right">
+                    <td className="px-3 py-2.5 align-top text-right">
                       <div className="flex items-center justify-end gap-1.5 tabular-nums">
                         <span>{formatRunScore(run.runScore)}</span>
                         {formatRunScoreIncrease(run.scoreIncrease) && (
@@ -768,7 +934,7 @@ function MythicPlusSection({ data }: { data: MythicPlusData | null | undefined }
                         )}
                       </div>
                     </td>
-                    <td className="px-3 py-2 text-right tabular-nums">
+                    <td className="px-3 py-2.5 align-top text-right tabular-nums">
                       {formatRunDuration(run.durationMs)}
                     </td>
                   </tr>
@@ -888,8 +1054,17 @@ type LayoutProps = {
   chartSnapshots: Snapshot[];
   filteredSnapshots: Snapshot[];
   mythicPlus?: MythicPlusData | null;
+  characterName: string;
+  characterRealm: string;
   timeFrame: TimeFrame;
   setTimeFrame: (f: TimeFrame) => void;
+};
+
+type MythicPlusRunMember = {
+  name: string;
+  realm?: string;
+  classTag?: string;
+  role?: "tank" | "healer" | "dps";
 };
 
 type MythicPlusRun = {
@@ -906,6 +1081,8 @@ type MythicPlusRun = {
   startDate?: number;
   completedAt?: number;
   thisWeek?: boolean;
+  members?: MythicPlusRunMember[];
+  upgradeCount?: number | null;
   scoreIncrease?: number | null;
 };
 
@@ -1689,6 +1866,8 @@ function OverviewLayout({
   latest,
   chartSnapshots,
   mythicPlus,
+  characterName,
+  characterRealm,
   timeFrame,
   setTimeFrame,
 }: LayoutProps) {
@@ -1726,7 +1905,11 @@ function OverviewLayout({
             <CurrenciesChartCard snapshots={chartSnapshots} timeFrame={timeFrame} />
           </div>
 
-          <MythicPlusSection data={mythicPlus} />
+          <MythicPlusSection
+            data={mythicPlus}
+            characterName={characterName}
+            characterRealm={characterRealm}
+          />
         </div>
       </div>
     </div>
@@ -2203,6 +2386,8 @@ function RouteComponent() {
     chartSnapshots,
     filteredSnapshots: snapshots,
     mythicPlus: mythicPlus as MythicPlusData | null | undefined,
+    characterName: character.name,
+    characterRealm: character.realm,
     timeFrame,
     setTimeFrame,
   };
@@ -2382,7 +2567,11 @@ function RouteComponent() {
       )}
 
       {layoutMode !== "overview" && (
-        <MythicPlusSection data={mythicPlus as MythicPlusData | null | undefined} />
+        <MythicPlusSection
+          data={mythicPlus as MythicPlusData | null | undefined}
+          characterName={character.name}
+          characterRealm={character.realm}
+        />
       )}
       <SnapshotHistorySection snapshots={snapshots} layoutMode={layoutMode} />
     </div>

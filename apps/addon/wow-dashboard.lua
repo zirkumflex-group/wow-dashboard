@@ -190,6 +190,11 @@ end
 --       startDate           number?
 --       completedAt         number?
 --       thisWeek            boolean?
+--       members            array?
+--         name             string
+--         realm            string?
+--         classTag         string?
+--         role             string?  -- "tank" | "healer" | "dps"
 --     mythicPlusRunKeys table -- keyed by fingerprint for dedupe
 --     snapshots    array
 --       takenAt           number  -- Unix timestamp
@@ -249,6 +254,7 @@ local suppressedTimePlayedFrames = nil
 local initialized          = false  -- true after first PLAYER_ENTERING_WORLD
 local pendingMPlusSync     = false
 local lastMPlusSyncAt      = 0
+local pendingCompletedRunMembers = nil
 
 -- UI widgets — assigned after frames are built; used by the ticker
 local timerLabel = nil
@@ -387,6 +393,277 @@ local function GetFirstField(record, fieldNames)
     end
 
     return nil
+end
+
+local function NormalizePartyRole(value)
+    if type(value) ~= "string" then
+        return nil
+    end
+
+    local normalized = string.upper(strtrim(value))
+    if normalized == "TANK" then
+        return "tank"
+    end
+    if normalized == "HEALER" then
+        return "healer"
+    end
+    if normalized == "DAMAGER" or normalized == "DAMAGE" or normalized == "DPS" then
+        return "dps"
+    end
+
+    return nil
+end
+
+local function NormalizeClassTag(value, classID)
+    if type(value) == "string" then
+        local normalized = strtrim(value)
+        if normalized ~= "" then
+            return string.upper(string.gsub(normalized, "[%s%-_]", ""))
+        end
+    end
+
+    if type(classID) == "number" and type(GetClassInfo) == "function" then
+        local ok, _, classTag = pcall(GetClassInfo, classID)
+        if ok and type(classTag) == "string" and classTag ~= "" then
+            return classTag
+        end
+    end
+
+    if type(classID) == "number"
+        and type(C_CreatureInfo) == "table"
+        and type(C_CreatureInfo.GetClassInfo) == "function" then
+        local ok, classInfo = pcall(C_CreatureInfo.GetClassInfo, classID)
+        if ok and type(classInfo) == "table" then
+            local classTag = classInfo.classFile or classInfo.classTag
+            if type(classTag) == "string" and classTag ~= "" then
+                return string.upper(classTag)
+            end
+        end
+    end
+
+    return nil
+end
+
+local function NormalizeMemberIdentity(name, realm)
+    if type(name) ~= "string" then
+        return nil, nil
+    end
+
+    local normalizedName = strtrim(name)
+    if normalizedName == "" then
+        return nil, nil
+    end
+
+    local normalizedRealm = type(realm) == "string" and strtrim(realm) or nil
+    if normalizedRealm == "" then
+        normalizedRealm = nil
+    end
+
+    if normalizedRealm == nil then
+        local splitName, splitRealm = string.match(normalizedName, "^([^%-]+)%-(.+)$")
+        if splitName and splitRealm then
+            normalizedName = splitName
+            normalizedRealm = splitRealm
+        end
+    end
+
+    return normalizedName, normalizedRealm
+end
+
+local function NormalizeMythicPlusMember(member)
+    if type(member) ~= "table" then
+        return nil
+    end
+
+    local name, realm = NormalizeMemberIdentity(
+        GetFirstField(member, { "name", "playerName", "fullName", "unitName" }),
+        GetFirstField(member, { "realm", "realmName", "server", "realmSlug" })
+    )
+    if name == nil then
+        return nil
+    end
+
+    local role = NormalizePartyRole(GetFirstField(member, { "role", "assignedRole", "combatRole" }))
+    if role == nil then
+        local specID = tonumber(GetFirstField(member, { "specID", "specId", "specializationID" }))
+        if specID and type(GetSpecializationRoleByID) == "function" then
+            local ok, specRole = pcall(GetSpecializationRoleByID, specID)
+            if ok then
+                role = NormalizePartyRole(specRole)
+            end
+        end
+    end
+
+    local classTag = NormalizeClassTag(
+        GetFirstField(member, { "classTag", "classFile", "classFilename", "class", "englishClass" }),
+        tonumber(GetFirstField(member, { "classID", "classId" }))
+    )
+
+    local normalized = { name = name }
+    if realm ~= nil then
+        normalized.realm = realm
+    end
+    if classTag ~= nil then
+        normalized.classTag = classTag
+    end
+    if role ~= nil then
+        normalized.role = role
+    end
+
+    return normalized
+end
+
+local function NormalizeMythicPlusMembers(members)
+    if type(members) ~= "table" then
+        return nil
+    end
+
+    local normalizedMembers = {}
+    local seenMembers = {}
+
+    for _, member in ipairs(members) do
+        local normalized = NormalizeMythicPlusMember(member)
+        if normalized then
+            local memberKey = string.lower(normalized.name .. "|" .. (normalized.realm or ""))
+            if not seenMembers[memberKey] then
+                seenMembers[memberKey] = true
+                normalizedMembers[#normalizedMembers + 1] = normalized
+            end
+        end
+    end
+
+    if #normalizedMembers == 0 then
+        return nil
+    end
+
+    return normalizedMembers
+end
+
+local function BuildMythicPlusMemberFromUnit(unit)
+    if type(unit) ~= "string" or not UnitExists(unit) or not UnitIsPlayer(unit) then
+        return nil
+    end
+
+    local name, realm = NormalizeMemberIdentity(UnitFullName(unit))
+    if name == nil then
+        return nil
+    end
+
+    local _, classTag = UnitClass(unit)
+    classTag = NormalizeClassTag(classTag)
+
+    local role = NormalizePartyRole(UnitGroupRolesAssigned(unit))
+    if role == nil and unit == "player" then
+        local specIndex = GetSpecialization()
+        if specIndex and specIndex > 0 then
+            local _, _, _, _, specRole = GetSpecializationInfo(specIndex)
+            role = NormalizePartyRole(specRole)
+        end
+    end
+
+    local member = { name = name }
+    if realm ~= nil then
+        member.realm = realm
+    end
+    if classTag ~= nil then
+        member.classTag = classTag
+    end
+    if role ~= nil then
+        member.role = role
+    end
+
+    return member
+end
+
+local function CaptureCompletedRunMembers()
+    local members = {}
+    local seenMembers = {}
+
+    local function AddUnit(unit)
+        local member = BuildMythicPlusMemberFromUnit(unit)
+        if not member then
+            return
+        end
+
+        local memberKey = string.lower(member.name .. "|" .. (member.realm or ""))
+        if seenMembers[memberKey] then
+            return
+        end
+
+        seenMembers[memberKey] = true
+        members[#members + 1] = member
+    end
+
+    AddUnit("player")
+    if IsInRaid() then
+        for index = 1, GetNumGroupMembers() do
+            AddUnit("raid" .. index)
+        end
+    elseif IsInGroup() then
+        for index = 1, GetNumSubgroupMembers() do
+            AddUnit("party" .. index)
+        end
+    end
+
+    if #members == 0 then
+        return
+    end
+
+    pendingCompletedRunMembers = {
+        capturedAt = time(),
+        members = members,
+    }
+end
+
+local function GetRunRecordedAt(run)
+    return NormalizeMythicPlusDate(run.completedAt)
+        or NormalizeMythicPlusDate(run.startDate)
+        or tonumber(run.observedAt)
+        or nil
+end
+
+local function AttachPendingCompletedRunMembers(runs)
+    if type(runs) ~= "table" then
+        return
+    end
+
+    local pending = pendingCompletedRunMembers
+    if type(pending) ~= "table" or type(pending.members) ~= "table" or #pending.members == 0 then
+        pendingCompletedRunMembers = nil
+        return
+    end
+
+    local capturedAt = tonumber(pending.capturedAt)
+    if capturedAt == nil then
+        pendingCompletedRunMembers = nil
+        return
+    end
+
+    if math.abs(time() - capturedAt) > 10 * 60 then
+        pendingCompletedRunMembers = nil
+        return
+    end
+
+    local bestIndex = nil
+    local bestDiff = nil
+
+    for index, run in ipairs(runs) do
+        local runAt = GetRunRecordedAt(run)
+        if runAt ~= nil and math.abs(runAt - capturedAt) <= 3 * 60 then
+            if type(run.members) ~= "table" or #run.members == 0 then
+                local diff = math.abs(runAt - capturedAt)
+                if bestDiff == nil or diff < bestDiff then
+                    bestIndex = index
+                    bestDiff = diff
+                end
+            end
+        end
+    end
+
+    if bestIndex ~= nil then
+        runs[bestIndex].members = pending.members
+        pendingCompletedRunMembers = nil
+    end
 end
 
 local function NormalizeMythicPlusDate(value)
@@ -537,6 +814,7 @@ local function GetRunCompletenessScore(run)
     if run.completedInTime ~= nil then score = score + 2 end
     if run.completed ~= nil then score = score + 1 end
     if run.thisWeek ~= nil then score = score + 1 end
+    if type(run.members) == "table" and #run.members > 0 then score = score + 3 end
 
     return score
 end
@@ -564,6 +842,12 @@ end
 NormalizeStoredMythicPlusRun = function(run)
     if type(run) ~= "table" then
         return nil
+    end
+
+    local legacyRaw = type(run.raw) == "table" and run.raw or nil
+    local rawMembers = GetFirstField(run, { "members", "partyMembers", "groupMembers", "roster" })
+    if rawMembers == nil and legacyRaw ~= nil then
+        rawMembers = GetFirstField(legacyRaw, { "members", "partyMembers", "groupMembers", "roster" })
     end
 
     if run.durationMs == nil then
@@ -623,7 +907,7 @@ NormalizeStoredMythicPlusRun = function(run)
     end
 
     run.source = nil
-    run.members = nil
+    run.members = NormalizeMythicPlusMembers(rawMembers)
     run.raw = nil
     run.fingerprint = BuildRunFingerprint(run)
     return run
@@ -673,6 +957,12 @@ local function NormalizeMythicPlusRun(rawRun, seasonID)
         "endTime",
     }))
     local startDate = NormalizeMythicPlusDate(GetFirstField(rawRun, { "startDate", "startedAt" }))
+    local members = NormalizeMythicPlusMembers(GetFirstField(rawRun, {
+        "members",
+        "partyMembers",
+        "groupMembers",
+        "roster",
+    }))
 
     local run = {
         observedAt          = time(),
@@ -688,6 +978,7 @@ local function NormalizeMythicPlusRun(rawRun, seasonID)
         startDate           = startDate,
         completedAt         = completedAt,
         thisWeek            = GetFirstField(rawRun, { "thisWeek", "isThisWeek" }),
+        members             = members,
     }
 
     if run.completedInTime == nil and type(run.completed) == "boolean" then
@@ -756,6 +1047,8 @@ local function CollectMythicPlusHistory()
             normalizedRuns[#normalizedRuns + 1] = normalized
         end
     end
+
+    AttachPendingCompletedRunMembers(normalizedRuns)
 
     return normalizedRuns
 end
@@ -1560,6 +1853,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         end
 
     elseif event == "CHALLENGE_MODE_COMPLETED" then
+        CaptureCompletedRunMembers()
         ScheduleMythicPlusHistorySync("challenge_mode_completed", 5)
 
     elseif event == "TIME_PLAYED_MSG" then

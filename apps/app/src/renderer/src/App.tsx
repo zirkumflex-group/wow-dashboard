@@ -54,6 +54,12 @@ interface MythicPlusRunData {
   startDate?: number;
   completedAt?: number;
   thisWeek?: boolean;
+  members?: {
+    name: string;
+    realm?: string;
+    classTag?: string;
+    role?: "tank" | "healer" | "dps";
+  }[];
 }
 
 interface CharacterData {

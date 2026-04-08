@@ -13,6 +13,12 @@ type MythicPlusRunLike = {
   startDate?: number;
   completedAt?: number;
   thisWeek?: boolean;
+  members?: {
+    name: string;
+    realm?: string;
+    classTag?: string;
+    role?: "tank" | "healer" | "dps";
+  }[];
 };
 
 const MYTHIC_PLUS_TIMER_MS_BY_MAP_NAME = new Map<string, number>([
@@ -124,6 +130,7 @@ export function getMythicPlusRunCompletenessScore(run: MythicPlusRunLike) {
   if (run.completedInTime !== undefined) score += 2;
   if (run.completed !== undefined) score += 1;
   if (run.thisWeek !== undefined) score += 1;
+  if ((run.members?.length ?? 0) > 0) score += 3;
 
   return score;
 }

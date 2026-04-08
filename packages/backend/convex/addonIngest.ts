@@ -64,6 +64,8 @@ type SnapshotFields = Pick<
   | "currencies"
   | "stats"
 >;
+type MythicPlusRunDoc = Doc<"mythicPlusRuns">;
+type MythicPlusRunMembers = MythicPlusRunDoc["members"];
 
 function toSnapshotFields(snapshot: SnapshotFields): SnapshotFields {
   return {
@@ -99,6 +101,29 @@ function mergeSnapshotFields(existingSnapshot: SnapshotFields, incomingSnapshot:
 
 function snapshotFieldsEqual(a: SnapshotFields, b: SnapshotFields) {
   return JSON.stringify(toSnapshotFields(a)) === JSON.stringify(toSnapshotFields(b));
+}
+
+function shouldReplaceRunMembers(
+  currentMembers: MythicPlusRunMembers | undefined,
+  candidateMembers: MythicPlusRunMembers | undefined,
+) {
+  if (!candidateMembers || candidateMembers.length === 0) {
+    return false;
+  }
+  if (!currentMembers || currentMembers.length === 0) {
+    return true;
+  }
+  if (candidateMembers.length > currentMembers.length) {
+    return true;
+  }
+
+  const knownMembers = new Set(
+    currentMembers.map((member) => `${member.name.toLowerCase()}|${member.realm?.toLowerCase() ?? ""}`),
+  );
+
+  return candidateMembers.some(
+    (member) => !knownMembers.has(`${member.name.toLowerCase()}|${member.realm?.toLowerCase() ?? ""}`),
+  );
 }
 
 const characterValidator = v.object({
@@ -335,6 +360,7 @@ export const ingestAddonData = mutation({
             startDate: run.startDate,
             completedAt: run.completedAt,
             thisWeek: run.thisWeek,
+            members: run.members,
           });
           newMythicPlusRuns++;
         } else {
@@ -351,6 +377,7 @@ export const ingestAddonData = mutation({
             startDate?: number;
             completedAt?: number;
             thisWeek?: boolean;
+            members?: MythicPlusRunMembers;
           } = {};
 
           if (existingRun.fingerprint !== nextFingerprint) patch.fingerprint = nextFingerprint;
@@ -379,6 +406,9 @@ export const ingestAddonData = mutation({
             patch.completedAt = run.completedAt;
           }
           if (existingRun.thisWeek === undefined && run.thisWeek !== undefined) patch.thisWeek = run.thisWeek;
+          if (shouldReplaceRunMembers(existingRun.members, run.members)) {
+            patch.members = run.members;
+          }
 
           if (Object.keys(patch).length > 0) {
             await ctx.db.patch(existingRun._id, patch);
