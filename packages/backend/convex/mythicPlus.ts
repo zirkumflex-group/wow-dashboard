@@ -198,6 +198,15 @@ export function getMythicPlusRunUpgradeCount(run: MythicPlusRunLike): number | n
   return null;
 }
 
+export function getMythicPlusRunTimedState(run: MythicPlusRunLike): boolean | null {
+  const upgradeCount = getMythicPlusRunUpgradeCount(run);
+  if (upgradeCount === null) {
+    return null;
+  }
+
+  return upgradeCount > 0;
+}
+
 export function buildCanonicalMythicPlusRunFingerprint(run: MythicPlusRunLike) {
   const mapToken = getRunMapFingerprintToken(run);
   const identityTimestamp = getRunIdentityTimestamp(run);

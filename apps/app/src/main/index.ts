@@ -12,14 +12,12 @@ import {
   nativeImage,
 } from "electron";
 import { autoUpdater } from "electron-updater";
-import { execFile } from "node:child_process";
 import * as fs from "fs";
 import * as path from "path";
 import { join, resolve, sep } from "path";
 import * as crypto from "crypto";
 import * as os from "os";
 import * as unzipper from "unzipper";
-import { promisify } from "node:util";
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -36,9 +34,6 @@ let cachedElectronToken: string | null = null;
 let storedSessionToken: string | null = null;
 let pendingLoginResolve: ((token: string) => void) | null = null;
 let pendingLoginReject: ((err: Error) => void) | null = null;
-let ignoreAddonWatchEventsUntil = 0;
-
-const execFileAsync = promisify(execFile);
 
 // ─── Token persistence via OS keychain (safeStorage) ──────────────────────────
 
@@ -438,22 +433,6 @@ interface AddonFileStats {
   totalMythicPlusRuns: number;
 }
 
-interface CompactAddonResult {
-  status: "completed" | "blocked";
-  wowProcesses: string[];
-  filesProcessed: number;
-  filesChanged: number;
-  backupsWritten: number;
-  bytesBefore: number;
-  bytesAfter: number;
-  snapshotsBefore: number;
-  snapshotsAfter: number;
-  mythicPlusRunsBefore: number;
-  mythicPlusRunsAfter: number;
-  rawRunsTrimmed: number;
-  membersTrimmed: number;
-}
-
 function getSnapshotCompletenessScore(snapshot: SnapshotData): number {
   let score = 0;
 
@@ -700,6 +679,44 @@ function mergeMythicPlusRunMembers(
   return mergedMembers.length > 0 ? mergedMembers : undefined;
 }
 
+function getMythicPlusRunMemberCompletenessScore(
+  members: MythicPlusRunMemberData[] | undefined,
+): number {
+  if (!members || members.length === 0) {
+    return 0;
+  }
+
+  let score = 0;
+  for (const member of members) {
+    if (member.name) score += 1;
+    if (member.realm) score += 1;
+    if (member.classTag) score += 2;
+    if (member.role) score += 2;
+  }
+
+  return score;
+}
+
+function getImprovedMythicPlusRunMembers(
+  currentMembers: MythicPlusRunMemberData[] | undefined,
+  candidateMembers: MythicPlusRunMemberData[] | undefined,
+) {
+  const mergedMembers = mergeMythicPlusRunMembers(currentMembers, candidateMembers);
+  if (!mergedMembers || mergedMembers.length === 0) {
+    return undefined;
+  }
+
+  const currentCount = currentMembers?.length ?? 0;
+  if (mergedMembers.length > currentCount) {
+    return mergedMembers;
+  }
+
+  return getMythicPlusRunMemberCompletenessScore(mergedMembers) >
+    getMythicPlusRunMemberCompletenessScore(currentMembers)
+    ? mergedMembers
+    : undefined;
+}
+
 function normalizeSnapshotSpec(value: unknown): string {
   if (typeof value !== "string") {
     return "Unknown";
@@ -741,6 +758,53 @@ function toFingerprintToken(value: unknown): string {
   return String(value);
 }
 
+function getRunMapFingerprintToken(run: Partial<MythicPlusRunData>): string {
+  if (run.mapChallengeModeID !== undefined) {
+    return toFingerprintToken(run.mapChallengeModeID);
+  }
+
+  if (typeof run.mapName === "string") {
+    const normalizedName = run.mapName.trim().toLowerCase();
+    if (normalizedName !== "") return normalizedName;
+  }
+
+  return "";
+}
+
+function getRunIdentityTimestamp(run: Partial<MythicPlusRunData>): number | null {
+  return run.startDate ?? run.completedAt ?? null;
+}
+
+function buildCanonicalMythicPlusRunFingerprint(run: Partial<MythicPlusRunData>): string | undefined {
+  const mapToken = getRunMapFingerprintToken(run);
+  const identityTimestamp = getRunIdentityTimestamp(run);
+
+  if (mapToken === "" || run.level === undefined) {
+    return undefined;
+  }
+
+  if (identityTimestamp !== null) {
+    return [
+      toFingerprintToken(run.seasonID),
+      mapToken,
+      toFingerprintToken(run.level),
+      toFingerprintToken(identityTimestamp),
+    ].join("|");
+  }
+
+  if (run.durationMs !== undefined || run.runScore !== undefined) {
+    return [
+      toFingerprintToken(run.seasonID),
+      mapToken,
+      toFingerprintToken(run.level),
+      toFingerprintToken(run.durationMs),
+      toFingerprintToken(run.runScore),
+    ].join("|");
+  }
+
+  return undefined;
+}
+
 function buildRunFingerprint(run: Partial<MythicPlusRunData>): string {
   return [
     toFingerprintToken(run.seasonID),
@@ -753,6 +817,17 @@ function buildRunFingerprint(run: Partial<MythicPlusRunData>): string {
     toFingerprintToken(run.completedAt),
     toFingerprintToken(run.startDate),
   ].join("|");
+}
+
+function getMythicPlusRunDedupKey(run: Partial<MythicPlusRunData>): string {
+  return buildCanonicalMythicPlusRunFingerprint(run) ?? run.fingerprint ?? buildRunFingerprint(run);
+}
+
+function getMythicPlusRunCompletionEstimate(run: Partial<MythicPlusRunData>): number | undefined {
+  return run.completedAt ??
+    (run.startDate !== undefined && run.durationMs !== undefined
+      ? run.startDate + Math.floor(run.durationMs / 1000 + 0.5)
+      : undefined);
 }
 
 function getMythicPlusRunSortValue(run: Partial<MythicPlusRunData>): number {
@@ -822,7 +897,7 @@ function mergeMythicPlusRunData(
         ? preferredObservedAt
         : fallbackObservedAt;
 
-  return {
+  const mergedRun: MythicPlusRunData = {
     fingerprint: preferredRun.fingerprint || fallbackRun.fingerprint,
     observedAt: mergedObservedAt,
     seasonID: preferredRun.seasonID ?? fallbackRun.seasonID,
@@ -838,6 +913,9 @@ function mergeMythicPlusRunData(
     thisWeek: preferredRun.thisWeek ?? fallbackRun.thisWeek,
     members: mergeMythicPlusRunMembers(currentRun.members, candidateRun.members),
   };
+
+  mergedRun.fingerprint = getMythicPlusRunDedupKey(mergedRun);
+  return mergedRun;
 }
 
 function normalizeStoredMythicPlusRun(runRaw: LuaTable): MythicPlusRunData {
@@ -921,7 +999,10 @@ function normalizeStoredMythicPlusRun(runRaw: LuaTable): MythicPlusRunData {
     run.completed = true;
   }
 
-  run.fingerprint = toOptionalString(runRaw.fingerprint) ?? buildRunFingerprint(run);
+  run.fingerprint =
+    buildCanonicalMythicPlusRunFingerprint(run) ??
+    toOptionalString(runRaw.fingerprint) ??
+    buildRunFingerprint(run);
   return run;
 }
 
@@ -939,37 +1020,184 @@ function reconcilePendingMembers(
   const pendingMap = toOptionalNumber(pending.mapChallengeModeID);
   const pendingLevel = toOptionalNumber(pending.level);
   const pendingDurationMs = toOptionalNumber(pending.durationMs);
+  const pendingCompletedInTime = toOptionalBoolean(pending.completedInTime);
+  const pendingLatestRunFingerprint = toOptionalString(pending.latestKnownRunFingerprint);
+  const pendingLatestRunSortValue = toOptionalNumber(pending.latestKnownRunSortValue);
 
-  // Find the best matching run by completion time proximity
   let bestIdx = -1;
   let bestDiff = Infinity;
+  let bestMembers: MythicPlusRunMemberData[] | undefined;
   const MATCH_WINDOW = 5 * 60; // 5 minutes
 
   for (let i = 0; i < runs.length; i++) {
     const run = runs[i]!;
-    if (run.members && run.members.length > 0) continue; // already has members
-    if (pendingMap !== undefined && run.mapChallengeModeID !== pendingMap) continue;
-    if (pendingLevel !== undefined && run.level !== pendingLevel) continue;
-    if (pendingDurationMs !== undefined && run.durationMs !== undefined) {
-      if (Math.abs(run.durationMs - pendingDurationMs) > 2 * 60 * 1000) continue;
+    if (pendingMap !== undefined && run.mapChallengeModeID !== pendingMap) {
+      continue;
+    }
+    if (pendingLevel !== undefined && run.level !== pendingLevel) {
+      continue;
     }
 
-    const runCompletedAt = run.completedAt ?? (run.startDate && run.durationMs
-      ? run.startDate + Math.floor(run.durationMs / 1000 + 0.5)
-      : undefined);
+    const improvedMembers = getImprovedMythicPlusRunMembers(run.members, pendingMembers);
+    if (!improvedMembers) {
+      continue;
+    }
+
+    const runCompletedAt = getMythicPlusRunCompletionEstimate(run);
     if (runCompletedAt !== undefined) {
       const diff = Math.abs(runCompletedAt - capturedAt);
       if (diff <= MATCH_WINDOW && diff < bestDiff) {
         bestIdx = i;
         bestDiff = diff;
+        bestMembers = improvedMembers;
       }
     }
   }
 
   if (bestIdx >= 0) {
-    runs[bestIdx]!.members = pendingMembers;
+    runs[bestIdx]!.members = bestMembers;
     return true;
   }
+
+  const fallbackCandidates: Array<{
+    index: number;
+    durationDiff: number | undefined;
+    completionDiff: number | undefined;
+    outcomeMatches: boolean;
+    mergedMembers: MythicPlusRunMemberData[];
+    thisWeek: boolean;
+  }> = [];
+
+  for (let i = 0; i < runs.length; i++) {
+    const run = runs[i]!;
+    if (pendingMap !== undefined && run.mapChallengeModeID !== pendingMap) {
+      continue;
+    }
+    if (pendingLevel !== undefined && run.level !== pendingLevel) {
+      continue;
+    }
+
+    const improvedMembers = getImprovedMythicPlusRunMembers(run.members, pendingMembers);
+    if (!improvedMembers) {
+      continue;
+    }
+
+    let isAfterCapture = true;
+    if (pendingLatestRunSortValue !== undefined || pendingLatestRunFingerprint) {
+      isAfterCapture = false;
+      const runSortValue = getMythicPlusRunSortValue(run);
+      if (pendingLatestRunSortValue !== undefined && runSortValue > pendingLatestRunSortValue) {
+        isAfterCapture = true;
+      } else if (
+        pendingLatestRunSortValue === undefined &&
+        pendingLatestRunFingerprint &&
+        run.fingerprint !== pendingLatestRunFingerprint
+      ) {
+        isAfterCapture = true;
+      }
+    }
+
+    if (!isAfterCapture) {
+      continue;
+    }
+
+    const durationDiff =
+      pendingDurationMs !== undefined && run.durationMs !== undefined
+        ? Math.abs(run.durationMs - pendingDurationMs)
+        : undefined;
+    const runCompletedAt = getMythicPlusRunCompletionEstimate(run);
+    const completionDiff =
+      runCompletedAt !== undefined ? Math.abs(runCompletedAt - capturedAt) : undefined;
+
+    fallbackCandidates.push({
+      index: i,
+      durationDiff,
+      completionDiff,
+      outcomeMatches:
+        pendingCompletedInTime === undefined ||
+        run.completedInTime === undefined ||
+        run.completedInTime === pendingCompletedInTime,
+      mergedMembers: improvedMembers,
+      thisWeek: run.thisWeek === true,
+    });
+  }
+
+  const filteredFallbackCandidates =
+    pendingDurationMs === undefined
+      ? fallbackCandidates
+      : fallbackCandidates.filter(
+          (candidate) =>
+            candidate.durationDiff === undefined || candidate.durationDiff <= 2 * 60 * 1000,
+        );
+  const rankedFallbackCandidates =
+    filteredFallbackCandidates.length > 0 ? filteredFallbackCandidates : fallbackCandidates;
+
+  rankedFallbackCandidates.sort((left, right) => {
+    if (
+      left.completionDiff !== undefined &&
+      right.completionDiff !== undefined &&
+      left.completionDiff !== right.completionDiff
+    ) {
+      return left.completionDiff - right.completionDiff;
+    }
+    if (left.completionDiff !== undefined && right.completionDiff === undefined) {
+      return -1;
+    }
+    if (left.completionDiff === undefined && right.completionDiff !== undefined) {
+      return 1;
+    }
+
+    if (
+      left.durationDiff !== undefined &&
+      right.durationDiff !== undefined &&
+      left.durationDiff !== right.durationDiff
+    ) {
+      return left.durationDiff - right.durationDiff;
+    }
+    if (left.durationDiff !== undefined && right.durationDiff === undefined) {
+      return -1;
+    }
+    if (left.durationDiff === undefined && right.durationDiff !== undefined) {
+      return 1;
+    }
+
+    if (left.outcomeMatches !== right.outcomeMatches) {
+      return left.outcomeMatches ? -1 : 1;
+    }
+    if (left.thisWeek !== right.thisWeek) {
+      return left.thisWeek ? -1 : 1;
+    }
+
+    return left.index - right.index;
+  });
+
+  const bestCandidate = rankedFallbackCandidates[0];
+  const secondCandidate = rankedFallbackCandidates[1];
+  let fallbackUnique = rankedFallbackCandidates.length === 1;
+
+  if (!fallbackUnique && bestCandidate) {
+    const uniqueByCompletion =
+      bestCandidate.completionDiff !== undefined &&
+      bestCandidate.completionDiff <= 3 * 60 * 60 &&
+      (secondCandidate?.completionDiff === undefined ||
+        secondCandidate.completionDiff - bestCandidate.completionDiff > 15 * 60);
+    const uniqueByDuration =
+      bestCandidate.durationDiff !== undefined &&
+      bestCandidate.durationDiff <= 2 * 60 * 1000 &&
+      (secondCandidate?.durationDiff === undefined ||
+        secondCandidate.durationDiff - bestCandidate.durationDiff > 60 * 1000);
+    const uniqueByWeek =
+      bestCandidate.thisWeek &&
+      (secondCandidate === undefined || secondCandidate.thisWeek !== true);
+
+    fallbackUnique = uniqueByCompletion || uniqueByDuration || uniqueByWeek;
+  }
+
+  if (fallbackUnique && bestCandidate) {
+    runs[bestCandidate.index]!.members = bestCandidate.mergedMembers;
+    return true;
+  }
+
   return false;
 }
 
@@ -1034,9 +1262,10 @@ function extractCharacters(db: Record<string, unknown>): CharacterData[] {
     for (const runRaw of (char.mythicPlusRuns as unknown[]) ?? []) {
       if (!isRecord(runRaw)) continue;
       const run = normalizeStoredMythicPlusRun(runRaw);
-      if (!run.fingerprint) continue;
-      const currentRun = mythicPlusRunsByFingerprint.get(run.fingerprint);
-      mythicPlusRunsByFingerprint.set(run.fingerprint, mergeMythicPlusRunData(currentRun, run));
+      const dedupKey = getMythicPlusRunDedupKey(run);
+      if (!dedupKey) continue;
+      const currentRun = mythicPlusRunsByFingerprint.get(dedupKey);
+      mythicPlusRunsByFingerprint.set(dedupKey, mergeMythicPlusRunData(currentRun, run));
     }
     const mythicPlusRuns = Array.from(mythicPlusRunsByFingerprint.values());
     mythicPlusRuns.sort(
@@ -1134,13 +1363,14 @@ async function findAndParseAddonData(
         }
 
         const existingRunsByFingerprint = new Map(
-          existing.mythicPlusRuns.map((run) => [run.fingerprint, run] as const),
+          existing.mythicPlusRuns.map((run) => [getMythicPlusRunDedupKey(run), run] as const),
         );
         for (const run of char.mythicPlusRuns) {
-          const currentRun = existingRunsByFingerprint.get(run.fingerprint);
+          const dedupKey = getMythicPlusRunDedupKey(run);
+          const currentRun = existingRunsByFingerprint.get(dedupKey);
           if (!currentRun) {
             existing.mythicPlusRuns.push(run);
-            existingRunsByFingerprint.set(run.fingerprint, run);
+            existingRunsByFingerprint.set(dedupKey, run);
             continue;
           }
 
@@ -1164,478 +1394,6 @@ async function findAndParseAddonData(
       : null;
 
   return { characters, accountsFound, fileStats };
-}
-
-const SYNC_BUFFER_SECONDS = 60;
-const SNAPSHOT_FULL_RETENTION_DAYS = 7;
-
-function getDayBucket(timestampSeconds: number): string {
-  return new Date(timestampSeconds * 1000).toISOString().slice(0, 10);
-}
-
-function sortByTimestampAsc(records: unknown[], field: string): unknown[] {
-  return records.sort((a, b) => {
-    const left = isRecord(a) ? toOptionalNumber(a[field]) ?? 0 : 0;
-    const right = isRecord(b) ? toOptionalNumber(b[field]) ?? 0 : 0;
-    return left - right;
-  });
-}
-
-function sortRunsDesc(records: unknown[]): unknown[] {
-  return records.sort((a, b) => {
-    const left = isRecord(a)
-      ? toOptionalMythicPlusTimestamp(a.completedAt) ??
-        toOptionalMythicPlusTimestamp(a.startDate) ??
-        toOptionalNumber(a.observedAt) ??
-        0
-      : 0;
-    const right = isRecord(b)
-      ? toOptionalMythicPlusTimestamp(b.completedAt) ??
-        toOptionalMythicPlusTimestamp(b.startDate) ??
-        toOptionalNumber(b.observedAt) ??
-        0
-      : 0;
-    return right - left;
-  });
-}
-
-function compactSnapshotsInPlace(
-  entry: LuaTable,
-  lastSyncedAt: number,
-  nowSeconds: number,
-): { before: number; after: number; changed: boolean } {
-  const hadSnapshotsArray = Array.isArray(entry.snapshots);
-  const snapshots = hadSnapshotsArray ? (entry.snapshots as unknown[]).slice() : [];
-  if (!hadSnapshotsArray) {
-    entry.snapshots = snapshots;
-  }
-
-  const before = snapshots.length;
-  if (before === 0 || lastSyncedAt <= 0) {
-    return { before, after: before, changed: !hadSnapshotsArray };
-  }
-
-  const uploadedCutoff = Math.max(0, lastSyncedAt - SYNC_BUFFER_SECONDS);
-  const keepFullSince = nowSeconds - SNAPSHOT_FULL_RETENTION_DAYS * 86_400;
-  const keep = snapshots.filter((snapshot) => {
-    if (!isRecord(snapshot)) return true;
-    const takenAt = toOptionalNumber(snapshot.takenAt);
-    return takenAt === undefined || takenAt > uploadedCutoff || takenAt >= keepFullSince;
-  });
-
-  const buckets = new Map<string, { takenAt: number; snapshot: unknown }>();
-  for (const snapshot of snapshots) {
-    if (!isRecord(snapshot)) continue;
-    const takenAt = toOptionalNumber(snapshot.takenAt);
-    if (takenAt === undefined || takenAt > uploadedCutoff || takenAt >= keepFullSince) {
-      continue;
-    }
-
-    const bucketKey = getDayBucket(takenAt);
-    const existing = buckets.get(bucketKey);
-    if (!existing || takenAt > existing.takenAt) {
-      buckets.set(bucketKey, { takenAt, snapshot });
-    }
-  }
-
-  for (const { snapshot } of buckets.values()) {
-    keep.push(snapshot);
-  }
-
-  entry.snapshots = sortByTimestampAsc(keep, "takenAt");
-  return {
-    before,
-    after: Array.isArray(entry.snapshots) ? entry.snapshots.length : before,
-    changed: !hadSnapshotsArray || keep.length !== before,
-  };
-}
-
-function compactMythicPlusDebugInPlace(entry: LuaTable): boolean {
-  if (!("mythicPlusDebug" in entry)) return false;
-  delete entry.mythicPlusDebug;
-  return true;
-}
-
-function compactMythicPlusRunsInPlace(
-  entry: LuaTable,
-  _lastSyncedAt: number,
-  _nowSeconds: number,
-): {
-  before: number;
-  after: number;
-  changed: boolean;
-  rawRunsTrimmed: number;
-  membersTrimmed: number;
-} {
-  const hadRunsArray = Array.isArray(entry.mythicPlusRuns);
-  const runs = hadRunsArray ? (entry.mythicPlusRuns as unknown[]).slice() : [];
-  if (!hadRunsArray) {
-    entry.mythicPlusRuns = runs;
-  }
-
-  const before = runs.length;
-  let changed = !hadRunsArray;
-  let rawRunsTrimmed = 0;
-  let membersTrimmed = 0;
-
-  const dedupedRuns: unknown[] = [];
-  const dedupeKeys: Record<string, boolean> = {};
-  const dedupedIndexByFingerprint: Record<string, number> = {};
-
-  for (const runValue of runs) {
-    if (!isRecord(runValue)) {
-      changed = true;
-      continue;
-    }
-
-    const normalized = normalizeStoredMythicPlusRun(runValue);
-
-    if (runValue.fingerprint !== normalized.fingerprint) {
-      runValue.fingerprint = normalized.fingerprint;
-      changed = true;
-    }
-    if (normalized.observedAt > 0 && runValue.observedAt !== normalized.observedAt) {
-      runValue.observedAt = normalized.observedAt;
-      changed = true;
-    }
-    if (normalized.seasonID !== undefined && runValue.seasonID !== normalized.seasonID) {
-      runValue.seasonID = normalized.seasonID;
-      changed = true;
-    }
-    if (
-      normalized.mapChallengeModeID !== undefined &&
-      runValue.mapChallengeModeID !== normalized.mapChallengeModeID
-    ) {
-      runValue.mapChallengeModeID = normalized.mapChallengeModeID;
-      changed = true;
-    }
-    if (normalized.mapName && runValue.mapName !== normalized.mapName) {
-      runValue.mapName = normalized.mapName;
-      changed = true;
-    }
-    if (normalized.level !== undefined && runValue.level !== normalized.level) {
-      runValue.level = normalized.level;
-      changed = true;
-    }
-    if (normalized.durationMs !== undefined && runValue.durationMs !== normalized.durationMs) {
-      runValue.durationMs = normalized.durationMs;
-      changed = true;
-    }
-    if (normalized.runScore !== undefined && runValue.runScore !== normalized.runScore) {
-      runValue.runScore = normalized.runScore;
-      changed = true;
-    }
-    if (normalized.completedAt !== undefined && runValue.completedAt !== normalized.completedAt) {
-      runValue.completedAt = normalized.completedAt;
-      changed = true;
-    }
-    if (normalized.startDate !== undefined && runValue.startDate !== normalized.startDate) {
-      runValue.startDate = normalized.startDate;
-      changed = true;
-    }
-    if (JSON.stringify(runValue.members) !== JSON.stringify(normalized.members)) {
-      if (normalized.members === undefined) {
-        if ("members" in runValue) {
-          delete runValue.members;
-          changed = true;
-        }
-      } else {
-        runValue.members = normalized.members;
-        changed = true;
-      }
-    }
-    if (normalized.completed !== undefined && runValue.completed !== normalized.completed) {
-      runValue.completed = normalized.completed;
-      changed = true;
-    }
-    if (
-      normalized.completedInTime !== undefined &&
-      runValue.completedInTime !== normalized.completedInTime
-    ) {
-      runValue.completedInTime = normalized.completedInTime;
-      changed = true;
-    }
-
-    if (!runValue.fingerprint) {
-      changed = true;
-      continue;
-    }
-
-    const fpKey = String(runValue.fingerprint);
-    if (dedupeKeys[fpKey]) {
-      // Merge into the existing deduplicated run instead of dropping
-      const existingIdx = dedupedIndexByFingerprint[fpKey];
-      if (existingIdx !== undefined) {
-        const existingRun = dedupedRuns[existingIdx] as Record<string, unknown>;
-        const existingNormalized = normalizeStoredMythicPlusRun(existingRun);
-        const merged = mergeMythicPlusRunData(existingNormalized, normalized);
-        Object.assign(existingRun, merged);
-      }
-      changed = true;
-      continue;
-    }
-    dedupeKeys[fpKey] = true;
-    dedupedIndexByFingerprint[fpKey] = dedupedRuns.length;
-
-    if ("source" in runValue) {
-      delete runValue.source;
-      changed = true;
-    }
-    if ("raw" in runValue) {
-      delete runValue.raw;
-      rawRunsTrimmed++;
-      changed = true;
-    }
-
-    dedupedRuns.push(runValue);
-  }
-
-  entry.mythicPlusRuns = sortRunsDesc(dedupedRuns);
-  entry.mythicPlusRunKeys = dedupeKeys;
-
-  if (compactMythicPlusDebugInPlace(entry)) {
-    changed = true;
-  }
-
-  return {
-    before,
-    after: Array.isArray(entry.mythicPlusRuns) ? entry.mythicPlusRuns.length : before,
-    changed: changed || before !== dedupedRuns.length,
-    rawRunsTrimmed,
-    membersTrimmed,
-  };
-}
-
-function compactAddonDb(
-  db: LuaTable,
-  lastSyncedAt: number,
-  nowSeconds: number,
-): Omit<
-  CompactAddonResult,
-  | "status"
-  | "wowProcesses"
-  | "filesProcessed"
-  | "filesChanged"
-  | "backupsWritten"
-  | "bytesBefore"
-  | "bytesAfter"
-> & { changed: boolean } {
-  const characters = isRecord(db.characters) ? db.characters : {};
-  if (!isRecord(db.characters)) {
-    db.characters = characters;
-  }
-
-  let snapshotsBefore = 0;
-  let snapshotsAfter = 0;
-  let mythicPlusRunsBefore = 0;
-  let mythicPlusRunsAfter = 0;
-  let rawRunsTrimmed = 0;
-  let membersTrimmed = 0;
-  let changed = false;
-
-  for (const value of Object.values(characters)) {
-    if (!isRecord(value)) continue;
-
-    const snapshotStats = compactSnapshotsInPlace(value, lastSyncedAt, nowSeconds);
-    const mythicPlusStats = compactMythicPlusRunsInPlace(value, lastSyncedAt, nowSeconds);
-
-    snapshotsBefore += snapshotStats.before;
-    snapshotsAfter += snapshotStats.after;
-    mythicPlusRunsBefore += mythicPlusStats.before;
-    mythicPlusRunsAfter += mythicPlusStats.after;
-    rawRunsTrimmed += mythicPlusStats.rawRunsTrimmed;
-    membersTrimmed += mythicPlusStats.membersTrimmed;
-    changed = changed || snapshotStats.changed || mythicPlusStats.changed;
-  }
-
-  return {
-    changed,
-    snapshotsBefore,
-    snapshotsAfter,
-    mythicPlusRunsBefore,
-    mythicPlusRunsAfter,
-    rawRunsTrimmed,
-    membersTrimmed,
-  };
-}
-
-function serializeLuaValue(value: unknown, indent = 0): string {
-  const spacing = "  ".repeat(indent);
-  const innerSpacing = "  ".repeat(indent + 1);
-
-  if (value === null || value === undefined) return "nil";
-  if (typeof value === "number") return Number.isFinite(value) ? String(value) : "0";
-  if (typeof value === "boolean") return value ? "true" : "false";
-  if (typeof value === "string") return JSON.stringify(value);
-
-  if (Array.isArray(value)) {
-    if (value.length === 0) return "{}";
-    return `{\n${value
-      .map((entry) => `${innerSpacing}${serializeLuaValue(entry, indent + 1)}`)
-      .join(",\n")}\n${spacing}}`;
-  }
-
-  if (isRecord(value)) {
-    const entries = Object.entries(value)
-      .filter(([, entryValue]) => entryValue !== undefined)
-      .sort(([left], [right]) => left.localeCompare(right));
-    if (entries.length === 0) return "{}";
-
-    return `{\n${entries
-      .map(
-        ([key, entryValue]) =>
-          `${innerSpacing}[${JSON.stringify(key)}] = ${serializeLuaValue(entryValue, indent + 1)}`,
-      )
-      .join(",\n")}\n${spacing}}`;
-  }
-
-  return "nil";
-}
-
-function serializeAddonDb(db: LuaTable): string {
-  return `WowDashboardDB = ${serializeLuaValue(db)}\n`;
-}
-
-async function findAddonDataFiles(retailPath: string): Promise<string[]> {
-  const wtfAccountPath = join(retailPath, "WTF", "Account");
-  let accounts: string[];
-  try {
-    accounts = await fs.promises.readdir(wtfAccountPath);
-  } catch {
-    return [];
-  }
-
-  const files: string[] = [];
-  for (const account of accounts) {
-    const luaPath = join(wtfAccountPath, account, "SavedVariables", "wow-dashboard.lua");
-    try {
-      await fs.promises.access(luaPath, fs.constants.F_OK);
-      files.push(luaPath);
-    } catch {
-      // ignore missing files
-    }
-  }
-
-  return files;
-}
-
-async function parseAddonDbFile(luaPath: string): Promise<{ content: string; db: LuaTable | null }> {
-  const content = await fs.promises.readFile(luaPath, "utf-8");
-  let db: LuaTable | null = null;
-  try {
-    db = new LuaParser(content).parseFile();
-  } catch (error) {
-    console.error(`[wow-dashboard] Lua parse error for ${luaPath}:`, error);
-  }
-  return { content, db };
-}
-
-async function listRunningProcesses(): Promise<string[]> {
-  try {
-    if (process.platform === "win32") {
-      const { stdout } = await execFileAsync("tasklist", ["/fo", "csv", "/nh"]);
-      return stdout
-        .split(/\r?\n/)
-        .map((line) => {
-          const match = line.match(/^"([^"]+)"/);
-          return match?.[1] ?? "";
-        })
-        .filter(Boolean);
-    }
-
-    const { stdout } = await execFileAsync("ps", ["-A", "-o", "comm="]);
-    return stdout
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
-function getWowProcesses(processNames: string[]): string[] {
-  const wowProcessPattern =
-    /^(wow(?:classic(?:era)?|b|t|ptr)?(?:-64)?\.exe|world of warcraft.*)$/i;
-  return processNames.filter((processName) => wowProcessPattern.test(processName));
-}
-
-async function compactAddonData(
-  retailPath: string,
-  lastSyncedAt: number,
-  forceIfRunning: boolean,
-): Promise<CompactAddonResult> {
-  const wowProcesses = getWowProcesses(await listRunningProcesses());
-  if (wowProcesses.length > 0 && !forceIfRunning) {
-    return {
-      status: "blocked",
-      wowProcesses,
-      filesProcessed: 0,
-      filesChanged: 0,
-      backupsWritten: 0,
-      bytesBefore: 0,
-      bytesAfter: 0,
-      snapshotsBefore: 0,
-      snapshotsAfter: 0,
-      mythicPlusRunsBefore: 0,
-      mythicPlusRunsAfter: 0,
-      rawRunsTrimmed: 0,
-      membersTrimmed: 0,
-    };
-  }
-
-  const files = await findAddonDataFiles(retailPath);
-  const result: CompactAddonResult = {
-    status: "completed",
-    wowProcesses,
-    filesProcessed: files.length,
-    filesChanged: 0,
-    backupsWritten: 0,
-    bytesBefore: 0,
-    bytesAfter: 0,
-    snapshotsBefore: 0,
-    snapshotsAfter: 0,
-    mythicPlusRunsBefore: 0,
-    mythicPlusRunsAfter: 0,
-    rawRunsTrimmed: 0,
-    membersTrimmed: 0,
-  };
-
-  if (files.length === 0) return result;
-
-  const nowSeconds = Math.floor(Date.now() / 1000);
-  ignoreAddonWatchEventsUntil = Date.now() + 10_000;
-
-  for (const luaPath of files) {
-    const { content, db } = await parseAddonDbFile(luaPath);
-    if (!db) continue;
-
-    const beforeBytes = Buffer.byteLength(content, "utf-8");
-    const compacted = compactAddonDb(db, lastSyncedAt, nowSeconds);
-
-    result.bytesBefore += beforeBytes;
-    result.snapshotsBefore += compacted.snapshotsBefore;
-    result.snapshotsAfter += compacted.snapshotsAfter;
-    result.mythicPlusRunsBefore += compacted.mythicPlusRunsBefore;
-    result.mythicPlusRunsAfter += compacted.mythicPlusRunsAfter;
-    result.rawRunsTrimmed += compacted.rawRunsTrimmed;
-    result.membersTrimmed += compacted.membersTrimmed;
-
-    if (!compacted.changed) {
-      result.bytesAfter += beforeBytes;
-      continue;
-    }
-
-    const serialized = serializeAddonDb(db);
-    const backupPath = `${luaPath}.bak`;
-    await fs.promises.copyFile(luaPath, backupPath);
-    result.backupsWritten += 1;
-    await fs.promises.writeFile(luaPath, serialized, "utf-8");
-
-    result.filesChanged += 1;
-    result.bytesAfter += Buffer.byteLength(serialized, "utf-8");
-  }
-
-  return result;
 }
 
 // ─── Window ───────────────────────────────────────────────────────────────────
@@ -1849,17 +1607,6 @@ ipcMain.handle("wow:readAddonData", async () => {
   return findAndParseAddonData(retailPath);
 });
 
-ipcMain.handle("wow:compactAddonData", async (_, forceIfRunning = false) => {
-  const settings = await getSettings();
-  const retailPath = settings.retailPath as string | undefined;
-  if (!retailPath) {
-    throw new Error("WoW retail path is not configured");
-  }
-
-  const lastSyncedAt = (settings.lastSyncedAt as number) ?? 0;
-  return compactAddonData(retailPath, lastSyncedAt, forceIfRunning);
-});
-
 function stopAddonWatcher() {
   if (addonWatchDebounce) {
     clearTimeout(addonWatchDebounce);
@@ -1880,7 +1627,6 @@ ipcMain.handle("wow:watchAddonFile", async () => {
   try {
     addonWatcher = fs.watch(watchPath, { recursive: true }, (_event, filename) => {
       if (!filename?.endsWith("wow-dashboard.lua")) return;
-      if (Date.now() < ignoreAddonWatchEventsUntil) return;
       if (addonWatchDebounce) clearTimeout(addonWatchDebounce);
       addonWatchDebounce = setTimeout(() => {
         mainWindow?.webContents.send("wow:addonFileChanged");

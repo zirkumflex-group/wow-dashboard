@@ -12,8 +12,6 @@ contextBridge.exposeInMainWorld("electron", {
     getRetailPath: () => ipcRenderer.invoke("wow:getRetailPath"),
     selectRetailFolder: () => ipcRenderer.invoke("wow:selectRetailFolder"),
     readAddonData: () => ipcRenderer.invoke("wow:readAddonData"),
-    compactAddonData: (forceIfRunning = false) =>
-      ipcRenderer.invoke("wow:compactAddonData", forceIfRunning),
     checkAddonInstalled: () => ipcRenderer.invoke("wow:checkAddonInstalled"),
     getInstalledAddonVersion: () =>
       ipcRenderer.invoke("wow:getInstalledAddonVersion") as Promise<string | null>,

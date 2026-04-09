@@ -342,10 +342,15 @@ function isCompletedMythicPlusRun(run: MythicPlusRun) {
   );
 }
 
-function isTimedMythicPlusRun(run: MythicPlusRun) {
-  if (run.completedInTime !== undefined) return run.completedInTime;
-  // Unknown timing — do not infer timed from completed.
-  return false;
+function getMythicPlusRunTimedState(run: MythicPlusRun): boolean | null {
+  if (run.upgradeCount !== undefined && run.upgradeCount !== null) {
+    return run.upgradeCount > 0;
+  }
+  if (run.completedInTime !== undefined) {
+    return run.completedInTime;
+  }
+
+  return null;
 }
 
 // ── Shared display components ─────────────────────────────────────────────────
@@ -801,7 +806,9 @@ function getTertiaryStats(snapshot: Snapshot) {
 }
 
 function MythicPlusResultBadge({ run }: { run: MythicPlusRun }) {
-  if (isTimedMythicPlusRun(run)) {
+  const timedState = getMythicPlusRunTimedState(run);
+
+  if (timedState === true) {
     const upgradeCount = Math.max(1, Math.min(3, run.upgradeCount ?? 1));
     return (
       <Badge className="rounded-md border-emerald-400/40 bg-emerald-500/18 px-1.5 py-0.5 text-[11px] font-semibold tracking-[0.08em] text-emerald-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
@@ -809,10 +816,17 @@ function MythicPlusResultBadge({ run }: { run: MythicPlusRun }) {
       </Badge>
     );
   }
-  if (isCompletedMythicPlusRun(run)) {
+  if (timedState === false) {
     return (
       <Badge className="rounded-md border-amber-400/35 bg-amber-500/16 px-1.5 py-0.5 text-[11px] font-semibold tracking-[0.08em] text-amber-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
         Deplete
+      </Badge>
+    );
+  }
+  if (isCompletedMythicPlusRun(run)) {
+    return (
+      <Badge className="rounded-md border-slate-400/35 bg-slate-500/12 px-1.5 py-0.5 text-[11px] font-semibold tracking-[0.08em] text-slate-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+        Completed
       </Badge>
     );
   }

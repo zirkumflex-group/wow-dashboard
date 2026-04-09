@@ -6,6 +6,7 @@ import { internalMutation, mutation, query } from "./_generated/server";
 import { authComponent } from "./auth";
 import {
   getMythicPlusRunDedupKey,
+  getMythicPlusRunTimedState,
   getMythicPlusRunUpgradeCount,
   getMythicPlusRunSortValue,
   shouldReplaceMythicPlusRun,
@@ -43,9 +44,7 @@ function isCompletedRun(run: MythicPlusRunDoc): boolean {
 }
 
 function isTimedRun(run: MythicPlusRunDoc): boolean | null {
-  if (run.completedInTime !== undefined) return run.completedInTime;
-  // If timing is truly unknown, return null instead of assuming timed.
-  return null;
+  return getMythicPlusRunTimedState(run);
 }
 
 function shouldReplaceBestTimedRun(

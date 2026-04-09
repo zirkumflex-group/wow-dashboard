@@ -68,6 +68,47 @@ type SnapshotFields = Pick<
 type MythicPlusRunDoc = Doc<"mythicPlusRuns">;
 type MythicPlusRunMembers = MythicPlusRunDoc["members"];
 
+function setPreferredRunLookup(
+  map: Map<string, MythicPlusRunDoc>,
+  key: string | undefined | null,
+  run: MythicPlusRunDoc,
+) {
+  if (!key) {
+    return;
+  }
+
+  const current = map.get(key);
+  if (shouldReplaceMythicPlusRun(current, run)) {
+    map.set(key, run);
+  }
+}
+
+function registerRunLookups(
+  lookups: {
+    byDedupKey: Map<string, MythicPlusRunDoc>;
+    byFingerprint: Map<string, MythicPlusRunDoc>;
+  },
+  run: MythicPlusRunDoc,
+  aliases: Array<string | undefined | null> = [],
+) {
+  const canonicalFingerprint = buildCanonicalMythicPlusRunFingerprint(run);
+  setPreferredRunLookup(lookups.byDedupKey, canonicalFingerprint ?? run.fingerprint, run);
+
+  const fingerprintAliases = new Set<string>();
+  if (run.fingerprint) {
+    fingerprintAliases.add(run.fingerprint);
+  }
+  for (const alias of aliases) {
+    if (alias) {
+      fingerprintAliases.add(alias);
+    }
+  }
+
+  for (const fingerprint of fingerprintAliases) {
+    setPreferredRunLookup(lookups.byFingerprint, fingerprint, run);
+  }
+}
+
 function toSnapshotFields(snapshot: SnapshotFields): SnapshotFields {
   return {
     takenAt: snapshot.takenAt,
@@ -259,6 +300,19 @@ export const ingestAddonData = mutation({
         }
       }
 
+      const existingCharacterRuns = await ctx.db
+        .query("mythicPlusRuns")
+        .withIndex("by_character", (q) => q.eq("characterId", characterId))
+        .collect();
+
+      const existingRunLookups = {
+        byDedupKey: new Map<string, MythicPlusRunDoc>(),
+        byFingerprint: new Map<string, MythicPlusRunDoc>(),
+      };
+      for (const existingRun of existingCharacterRuns) {
+        registerRunLookups(existingRunLookups, existingRun);
+      }
+
       // Dedup incoming runs by canonical or legacy fingerprint
       const incomingRunsByDedupKey = new Map<string, NonNullable<typeof charData.mythicPlusRuns>[number]>();
       for (const run of charData.mythicPlusRuns ?? []) {
@@ -270,34 +324,16 @@ export const ingestAddonData = mutation({
         }
       }
 
-      // Per-run indexed lookups instead of collecting all character runs
       for (const run of incomingRunsByDedupKey.values()) {
         const canonicalFingerprint = buildCanonicalMythicPlusRunFingerprint(run);
         const nextFingerprint = canonicalFingerprint ?? run.fingerprint;
-
-        // Look up by canonical fingerprint first, then fall back to legacy
-        let existingRun = await ctx.db
-          .query("mythicPlusRuns")
-          .withIndex("by_character_and_fingerprint", (q) =>
-            q.eq("characterId", characterId).eq("fingerprint", nextFingerprint),
-          )
-          .first();
-
-        if (
-          !existingRun &&
-          canonicalFingerprint &&
-          canonicalFingerprint !== run.fingerprint
-        ) {
-          existingRun = await ctx.db
-            .query("mythicPlusRuns")
-            .withIndex("by_character_and_fingerprint", (q) =>
-              q.eq("characterId", characterId).eq("fingerprint", run.fingerprint),
-            )
-            .first();
+        let existingRun = existingRunLookups.byDedupKey.get(nextFingerprint);
+        if (!existingRun && run.fingerprint) {
+          existingRun = existingRunLookups.byFingerprint.get(run.fingerprint);
         }
 
         if (!existingRun) {
-          await ctx.db.insert("mythicPlusRuns", {
+          const insertedId = await ctx.db.insert("mythicPlusRuns", {
             characterId,
             fingerprint: nextFingerprint,
             observedAt: run.observedAt,
@@ -314,6 +350,29 @@ export const ingestAddonData = mutation({
             thisWeek: run.thisWeek,
             members: run.members,
           });
+          registerRunLookups(
+            existingRunLookups,
+            {
+              _id: insertedId,
+              _creationTime: now,
+              characterId,
+              fingerprint: nextFingerprint,
+              observedAt: run.observedAt,
+              seasonID: run.seasonID,
+              mapChallengeModeID: run.mapChallengeModeID,
+              mapName: run.mapName,
+              level: run.level,
+              completed: run.completed,
+              completedInTime: run.completedInTime,
+              durationMs: run.durationMs,
+              runScore: run.runScore,
+              startDate: run.startDate,
+              completedAt: run.completedAt,
+              thisWeek: run.thisWeek,
+              members: run.members,
+            },
+            [run.fingerprint, nextFingerprint],
+          );
           newMythicPlusRuns++;
         } else {
           const patch: {
@@ -365,6 +424,17 @@ export const ingestAddonData = mutation({
 
           if (Object.keys(patch).length > 0) {
             await ctx.db.patch(existingRun._id, patch);
+            registerRunLookups(
+              existingRunLookups,
+              { ...existingRun, ...patch },
+              [existingRun.fingerprint, run.fingerprint, nextFingerprint],
+            );
+          } else {
+            registerRunLookups(existingRunLookups, existingRun, [
+              existingRun.fingerprint,
+              run.fingerprint,
+              nextFingerprint,
+            ]);
           }
         }
       }

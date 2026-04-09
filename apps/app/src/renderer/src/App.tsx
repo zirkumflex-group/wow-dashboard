@@ -81,22 +81,6 @@ interface AddonFileStats {
   totalMythicPlusRuns: number;
 }
 
-interface CompactAddonResult {
-  status: "completed" | "blocked";
-  wowProcesses: string[];
-  filesProcessed: number;
-  filesChanged: number;
-  backupsWritten: number;
-  bytesBefore: number;
-  bytesAfter: number;
-  snapshotsBefore: number;
-  snapshotsAfter: number;
-  mythicPlusRunsBefore: number;
-  mythicPlusRunsAfter: number;
-  rawRunsTrimmed: number;
-  membersTrimmed: number;
-}
-
 interface PendingUploadCounts {
   snapshots: number;
   mythicPlusRuns: number;
@@ -123,7 +107,6 @@ declare global {
           accountsFound: string[];
           fileStats: AddonFileStats | null;
         } | null>;
-        compactAddonData: (forceIfRunning?: boolean) => Promise<CompactAddonResult>;
         checkAddonInstalled: () => Promise<boolean>;
         getInstalledAddonVersion: () => Promise<string | null>;
         installAddon: (downloadUrl: string, checksumUrl: string | null) => Promise<void>;
@@ -411,9 +394,6 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
   } | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadWarn, setUploadWarn] = useState<string | null>(null);
-  const [compacting, setCompacting] = useState(false);
-  const [compactionResult, setCompactionResult] = useState<CompactAddonResult | null>(null);
-  const [compactionError, setCompactionError] = useState<string | null>(null);
 
   const syncingRef = useRef(false);
   const lastSyncedAtRef = useRef(0);
@@ -554,39 +534,8 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
       setUploadError(null);
       setUploadWarn(null);
       setPendingUploadCounts(null);
-      setCompactionResult(null);
-      setCompactionError(null);
       const installed = await window.electron.wow.checkAddonInstalled();
       setAddonInstalled(installed);
-    }
-  }
-
-  async function handleCompactAddon(forceIfRunning = false) {
-    if (!retailPath) return;
-
-    setCompacting(true);
-    setCompactionError(null);
-    setCompactionResult(null);
-
-    try {
-      const result = await window.electron.wow.compactAddonData(forceIfRunning);
-      if (result.status === "blocked" && !forceIfRunning) {
-        setCompacting(false);
-        const confirmed = window.confirm(
-          `World of Warcraft appears to be running (${result.wowProcesses.join(", ")}).\n\nCompacting while the game is open is not recommended because the client can overwrite the file. Continue anyway?`,
-        );
-        if (confirmed) {
-          await handleCompactAddon(true);
-        }
-        return;
-      }
-
-      setCompactionResult(result);
-      await refreshAddonFileState();
-    } catch (e) {
-      setCompactionError(e instanceof Error ? e.message : "Compaction failed");
-    } finally {
-      setCompacting(false);
     }
   }
 
@@ -828,22 +777,13 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
                 </span>
               )}
             </div>
-            <div className="flex items-center gap-3">
-              <button
-                onClick={() => handleCompactAddon()}
-                disabled={compacting || syncing || !retailPath}
-                className="rounded bg-gray-700 px-3 py-1.5 text-sm font-medium hover:bg-gray-600 disabled:opacity-50"
-              >
-                {compacting ? "Compacting..." : "Compact File"}
-              </button>
-              <button
-                onClick={() => doUpload()}
-                disabled={syncing || compacting}
-                className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
-              >
-                {syncing ? "Syncing..." : "Sync Now"}
-              </button>
-            </div>
+            <button
+              onClick={() => doUpload()}
+              disabled={syncing}
+              className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+            >
+              {syncing ? "Syncing..." : "Sync Now"}
+            </button>
           </div>
           <p className="text-xs text-gray-500">
             Manual sync uploads addon snapshots and Mythic+ runs, then refreshes Battle.net character data.
@@ -889,22 +829,6 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
               {pendingUploadCounts.mythicPlusRuns} M+ run
               {pendingUploadCounts.mythicPlusRuns !== 1 ? "s" : ""} pending upload
             </p>
-          )}
-
-          {compactionError && (
-            <div className="rounded border border-red-700 bg-red-950 px-3 py-2 text-sm text-red-400">
-              {compactionError}
-            </div>
-          )}
-
-          {compactionResult?.status === "completed" && (
-            <div className="rounded border border-gray-800 bg-gray-900 px-3 py-2 text-xs text-gray-400">
-              Compaction: {compactionResult.filesChanged}/{compactionResult.filesProcessed} file
-              {compactionResult.filesProcessed !== 1 ? "s" : ""} rewritten, {formatBytes(compactionResult.bytesBefore)} to{" "}
-              {formatBytes(compactionResult.bytesAfter)}, snapshots {compactionResult.snapshotsBefore.toLocaleString()} to{" "}
-              {compactionResult.snapshotsAfter.toLocaleString()}, M+ runs {compactionResult.mythicPlusRunsBefore.toLocaleString()} to{" "}
-              {compactionResult.mythicPlusRunsAfter.toLocaleString()}.
-            </div>
           )}
 
           {/* Addon file metadata */}
