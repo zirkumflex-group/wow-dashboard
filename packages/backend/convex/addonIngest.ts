@@ -1,7 +1,7 @@
 import { v } from "convex/values";
 import type { Doc } from "./_generated/dataModel";
 
-import { mutation } from "./_generated/server";
+import { mutation, query } from "./_generated/server";
 import { authComponent } from "./auth";
 import {
   buildCanonicalMythicPlusRunFingerprint,
@@ -129,6 +129,18 @@ const characterValidator = v.object({
   mythicPlusRuns: v.optional(v.array(mythicPlusRunValidator)),
 });
 
+export const getMythicPlusBackfillStatus = query({
+  args: {},
+  handler: async () => {
+    // Compatibility shim for released Electron clients that still query this endpoint.
+    // Historical Mythic+ backfill is no longer used, so keep the shape but avoid the
+    // expensive character/run scan that was causing client-visible server errors.
+    return {
+      needsBackfill: false,
+      missingMapNameRuns: 0,
+    };
+  },
+});
 export const ingestAddonData = mutation({
   args: { characters: v.array(characterValidator) },
   handler: async (ctx, { characters }) => {
