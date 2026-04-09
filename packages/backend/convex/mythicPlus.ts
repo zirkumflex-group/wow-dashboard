@@ -73,8 +73,53 @@ export function getMythicPlusRunSortValue(run: MythicPlusRunLike) {
   return run.completedAt ?? run.startDate ?? run.observedAt ?? 0;
 }
 
-function getMythicPlusRunMemberKey(member: MythicPlusRunMemberLike) {
-  return `${member.name.toLowerCase()}|${member.realm?.toLowerCase() ?? ""}`;
+function getNormalizedMemberName(member: MythicPlusRunMemberLike) {
+  return member.name.trim().toLowerCase();
+}
+
+function getNormalizedMemberRealm(member: MythicPlusRunMemberLike) {
+  return member.realm?.trim().toLowerCase() ?? "";
+}
+
+function findMergeableRunMemberIndex(
+  members: MythicPlusRunMemberLike[],
+  candidateMember: MythicPlusRunMemberLike,
+) {
+  const candidateName = getNormalizedMemberName(candidateMember);
+  const candidateRealm = getNormalizedMemberRealm(candidateMember);
+  let exactIndex: number | undefined;
+  let unresolvedIndex: number | undefined;
+  let unresolvedCount = 0;
+  let sameNameIndex: number | undefined;
+  let sameNameCount = 0;
+
+  for (let index = 0; index < members.length; index += 1) {
+    const currentMember = members[index]!;
+    if (getNormalizedMemberName(currentMember) !== candidateName) {
+      continue;
+    }
+
+    sameNameCount += 1;
+    sameNameIndex ??= index;
+    const currentRealm = getNormalizedMemberRealm(currentMember);
+    if (currentRealm === candidateRealm) {
+      exactIndex = index;
+      break;
+    }
+    if (currentRealm === "") {
+      unresolvedIndex = index;
+      unresolvedCount += 1;
+    }
+  }
+
+  if (exactIndex !== undefined) {
+    return exactIndex;
+  }
+  if (candidateRealm === "") {
+    return sameNameCount === 1 ? unresolvedIndex ?? sameNameIndex : undefined;
+  }
+
+  return unresolvedCount === 1 ? unresolvedIndex : undefined;
 }
 
 function mergeMythicPlusRunMember(
@@ -97,20 +142,21 @@ export function mergeMythicPlusRunMembers(
     return undefined;
   }
 
-  const mergedMembers = new Map<string, MythicPlusRunMemberLike>();
-  const orderedKeys: string[] = [];
+  const mergedMembers: MythicPlusRunMemberLike[] = [];
 
   for (const members of [candidateMembers, currentMembers]) {
     for (const member of members ?? []) {
-      const key = getMythicPlusRunMemberKey(member);
-      if (!mergedMembers.has(key)) {
-        orderedKeys.push(key);
+      const mergedIndex = findMergeableRunMemberIndex(mergedMembers, member);
+      if (mergedIndex === undefined) {
+        mergedMembers.push(member);
+        continue;
       }
-      mergedMembers.set(key, mergeMythicPlusRunMember(mergedMembers.get(key), member));
+
+      mergedMembers[mergedIndex] = mergeMythicPlusRunMember(mergedMembers[mergedIndex], member);
     }
   }
 
-  return orderedKeys.map((key) => mergedMembers.get(key)!);
+  return mergedMembers.length > 0 ? mergedMembers : undefined;
 }
 
 export function getMythicPlusRunTimerMs(

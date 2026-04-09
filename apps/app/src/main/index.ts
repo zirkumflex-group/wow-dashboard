@@ -614,6 +614,92 @@ function normalizeMythicPlusRunMembers(value: unknown): MythicPlusRunMemberData[
   return members.length > 0 ? members : undefined;
 }
 
+function getNormalizedRunMemberName(member: MythicPlusRunMemberData) {
+  return member.name.trim().toLowerCase();
+}
+
+function getNormalizedRunMemberRealm(member: MythicPlusRunMemberData) {
+  return member.realm?.trim().toLowerCase() ?? "";
+}
+
+function findMergeableRunMemberIndex(
+  members: MythicPlusRunMemberData[],
+  candidateMember: MythicPlusRunMemberData,
+) {
+  const candidateName = getNormalizedRunMemberName(candidateMember);
+  const candidateRealm = getNormalizedRunMemberRealm(candidateMember);
+  let exactIndex: number | undefined;
+  let unresolvedIndex: number | undefined;
+  let unresolvedCount = 0;
+  let sameNameIndex: number | undefined;
+  let sameNameCount = 0;
+
+  for (let index = 0; index < members.length; index += 1) {
+    const currentMember = members[index]!;
+    if (getNormalizedRunMemberName(currentMember) !== candidateName) {
+      continue;
+    }
+
+    sameNameCount += 1;
+    sameNameIndex ??= index;
+    const currentRealm = getNormalizedRunMemberRealm(currentMember);
+    if (currentRealm === candidateRealm) {
+      exactIndex = index;
+      break;
+    }
+    if (currentRealm === "") {
+      unresolvedIndex = index;
+      unresolvedCount += 1;
+    }
+  }
+
+  if (exactIndex !== undefined) {
+    return exactIndex;
+  }
+  if (candidateRealm === "") {
+    return sameNameCount === 1 ? unresolvedIndex ?? sameNameIndex : undefined;
+  }
+
+  return unresolvedCount === 1 ? unresolvedIndex : undefined;
+}
+
+function mergeMythicPlusRunMember(
+  currentMember: MythicPlusRunMemberData | undefined,
+  candidateMember: MythicPlusRunMemberData,
+): MythicPlusRunMemberData {
+  return {
+    name: candidateMember.name,
+    realm: candidateMember.realm ?? currentMember?.realm,
+    classTag: candidateMember.classTag ?? currentMember?.classTag,
+    role: candidateMember.role ?? currentMember?.role,
+  };
+}
+
+function mergeMythicPlusRunMembers(
+  currentMembers: MythicPlusRunMemberData[] | undefined,
+  candidateMembers: MythicPlusRunMemberData[] | undefined,
+) {
+  if ((!currentMembers || currentMembers.length === 0) && (!candidateMembers || candidateMembers.length === 0)) {
+    return undefined;
+  }
+
+  const mergedMembers: MythicPlusRunMemberData[] = [];
+
+  for (const members of [candidateMembers, currentMembers]) {
+    for (const member of members ?? []) {
+      const mergedIndex = findMergeableRunMemberIndex(mergedMembers, member);
+      if (mergedIndex === undefined) {
+        mergedMembers.push(member);
+        continue;
+      }
+
+      mergedMembers[mergedIndex] = mergeMythicPlusRunMember(mergedMembers[mergedIndex], member);
+    }
+  }
+
+  return mergedMembers.length > 0 ? mergedMembers : undefined;
+}
+
 function normalizeSnapshotSpec(value: unknown): string {
   if (typeof value !== "string") {
     return "Unknown";
@@ -713,6 +799,36 @@ function shouldReplaceMythicPlusRun(
   }
 
   return (candidateRun.observedAt ?? 0) > (currentRun.observedAt ?? 0);
+}
+
+function mergeMythicPlusRunData(
+  currentRun: MythicPlusRunData | undefined,
+  candidateRun: MythicPlusRunData,
+): MythicPlusRunData {
+  if (!currentRun) {
+    return candidateRun;
+  }
+
+  const candidatePreferred = shouldReplaceMythicPlusRun(currentRun, candidateRun);
+  const preferredRun = candidatePreferred ? candidateRun : currentRun;
+  const fallbackRun = candidatePreferred ? currentRun : candidateRun;
+
+  return {
+    fingerprint: preferredRun.fingerprint || fallbackRun.fingerprint,
+    observedAt: Math.max(preferredRun.observedAt ?? 0, fallbackRun.observedAt ?? 0),
+    seasonID: preferredRun.seasonID ?? fallbackRun.seasonID,
+    mapChallengeModeID: preferredRun.mapChallengeModeID ?? fallbackRun.mapChallengeModeID,
+    mapName: preferredRun.mapName ?? fallbackRun.mapName,
+    level: preferredRun.level ?? fallbackRun.level,
+    completed: preferredRun.completed ?? fallbackRun.completed,
+    completedInTime: preferredRun.completedInTime ?? fallbackRun.completedInTime,
+    durationMs: preferredRun.durationMs ?? fallbackRun.durationMs,
+    runScore: preferredRun.runScore ?? fallbackRun.runScore,
+    startDate: preferredRun.startDate ?? fallbackRun.startDate,
+    completedAt: preferredRun.completedAt ?? fallbackRun.completedAt,
+    thisWeek: preferredRun.thisWeek ?? fallbackRun.thisWeek,
+    members: mergeMythicPlusRunMembers(currentRun.members, candidateRun.members),
+  };
 }
 
 function normalizeStoredMythicPlusRun(runRaw: LuaTable): MythicPlusRunData {
@@ -865,9 +981,7 @@ function extractCharacters(db: Record<string, unknown>): CharacterData[] {
       const run = normalizeStoredMythicPlusRun(runRaw);
       if (!run.fingerprint) continue;
       const currentRun = mythicPlusRunsByFingerprint.get(run.fingerprint);
-      if (shouldReplaceMythicPlusRun(currentRun, run)) {
-        mythicPlusRunsByFingerprint.set(run.fingerprint, run);
-      }
+      mythicPlusRunsByFingerprint.set(run.fingerprint, mergeMythicPlusRunData(currentRun, run));
     }
     const mythicPlusRuns = Array.from(mythicPlusRunsByFingerprint.values());
     mythicPlusRuns.sort(
@@ -969,9 +1083,7 @@ async function findAndParseAddonData(
             continue;
           }
 
-          if (shouldReplaceMythicPlusRun(currentRun, run)) {
-            Object.assign(currentRun, run);
-          }
+          Object.assign(currentRun, mergeMythicPlusRunData(currentRun, run));
         }
         existing.mythicPlusRuns.sort(
           (a, b) =>

@@ -649,9 +649,7 @@ local function EnsureCharacterEntry(key, name, realm, charInfo)
         local normalized = NormalizeStoredMythicPlusRun(run)
         if normalized and normalized.fingerprint then
             local current = normalizedRunsByFingerprint[normalized.fingerprint]
-            if ShouldReplaceStoredRun(current, normalized) then
-                normalizedRunsByFingerprint[normalized.fingerprint] = normalized
-            end
+            normalizedRunsByFingerprint[normalized.fingerprint] = MergeStoredMythicPlusRun(current, normalized)
         end
     end
     local normalizedKeys = {}
@@ -855,6 +853,67 @@ local function GetMythicPlusMemberKey(member)
     return string.lower(member.name .. "|" .. (member.realm or ""))
 end
 
+local function GetNormalizedMythicPlusMemberName(member)
+    if type(member) ~= "table" or type(member.name) ~= "string" then
+        return ""
+    end
+
+    return string.lower(strtrim(member.name))
+end
+
+local function GetNormalizedMythicPlusMemberRealm(member)
+    if type(member) ~= "table" or type(member.realm) ~= "string" then
+        return ""
+    end
+
+    return string.lower(strtrim(member.realm))
+end
+
+local function FindMergeableMythicPlusMemberIndex(members, candidateMember)
+    local candidateName = GetNormalizedMythicPlusMemberName(candidateMember)
+    local candidateRealm = GetNormalizedMythicPlusMemberRealm(candidateMember)
+    local exactIndex = nil
+    local unresolvedIndex = nil
+    local unresolvedCount = 0
+    local sameNameIndex = nil
+    local sameNameCount = 0
+
+    for index, currentMember in ipairs(members) do
+        if GetNormalizedMythicPlusMemberName(currentMember) == candidateName then
+            sameNameCount = sameNameCount + 1
+            if sameNameIndex == nil then
+                sameNameIndex = index
+            end
+
+            local currentRealm = GetNormalizedMythicPlusMemberRealm(currentMember)
+            if currentRealm == candidateRealm then
+                exactIndex = index
+                break
+            end
+            if currentRealm == "" then
+                unresolvedIndex = index
+                unresolvedCount = unresolvedCount + 1
+            end
+        end
+    end
+
+    if exactIndex ~= nil then
+        return exactIndex
+    end
+    if candidateRealm == "" then
+        if sameNameCount == 1 then
+            return unresolvedIndex or sameNameIndex
+        end
+        return nil
+    end
+
+    if unresolvedCount == 1 then
+        return unresolvedIndex
+    end
+
+    return nil
+end
+
 local function MergeMythicPlusMember(currentMember, candidateMember)
     if type(candidateMember) ~= "table" then
         return currentMember
@@ -886,44 +945,27 @@ local function MergeMythicPlusMember(currentMember, candidateMember)
 end
 
 local function MergeMythicPlusMemberLists(...)
-    local mergedByKey = {}
-    local keyByName = {}
-    local orderedKeys = {}
+    local mergedMembers = {}
 
     for sourceIndex = 1, select("#", ...) do
         local members = select(sourceIndex, ...)
         if type(members) == "table" then
             for _, member in ipairs(members) do
                 local normalized = NormalizeMythicPlusMember(member)
-                local memberKey = normalized and GetMythicPlusMemberKey(normalized) or nil
-                if memberKey ~= nil then
-                    local memberNameKey = string.lower(normalized.name)
-                    local existingKey = keyByName[memberNameKey]
-                    if existingKey ~= nil then
-                        local existingMember = mergedByKey[existingKey]
-                        local existingRealm = type(existingMember) == "table" and existingMember.realm or nil
-                        local normalizedRealm = normalized.realm
-                        if existingRealm == nil or normalizedRealm == nil or existingRealm == normalizedRealm then
-                            memberKey = existingKey
-                        end
+                if normalized ~= nil then
+                    local mergedIndex = FindMergeableMythicPlusMemberIndex(mergedMembers, normalized)
+                    if mergedIndex == nil then
+                        mergedMembers[#mergedMembers + 1] = normalized
+                    else
+                        mergedMembers[mergedIndex] = MergeMythicPlusMember(mergedMembers[mergedIndex], normalized)
                     end
-                    if mergedByKey[memberKey] == nil then
-                        orderedKeys[#orderedKeys + 1] = memberKey
-                    end
-                    mergedByKey[memberKey] = MergeMythicPlusMember(mergedByKey[memberKey], normalized)
-                    keyByName[memberNameKey] = memberKey
                 end
             end
         end
     end
 
-    if #orderedKeys == 0 then
+    if #mergedMembers == 0 then
         return nil
-    end
-
-    local mergedMembers = {}
-    for _, memberKey in ipairs(orderedKeys) do
-        mergedMembers[#mergedMembers + 1] = mergedByKey[memberKey]
     end
 
     return mergedMembers
@@ -1857,6 +1899,54 @@ local function GetRunCompletenessScore(run)
     return score
 end
 
+local function PickDefinedValue(preferredValue, fallbackValue)
+    if preferredValue ~= nil then
+        return preferredValue
+    end
+
+    return fallbackValue
+end
+
+local function MergeStoredMythicPlusRun(currentRun, candidateRun)
+    if type(currentRun) ~= "table" then
+        return candidateRun
+    end
+    if type(candidateRun) ~= "table" then
+        return currentRun
+    end
+
+    local candidatePreferred = ShouldReplaceStoredRun(currentRun, candidateRun)
+    local preferredRun = candidatePreferred and candidateRun or currentRun
+    local fallbackRun = candidatePreferred and currentRun or candidateRun
+    local mergedMembers = MergeMythicPlusMemberLists(currentRun.members, candidateRun.members)
+    local mergedObservedAt = math.max(
+        tonumber(preferredRun.observedAt) or 0,
+        tonumber(fallbackRun.observedAt) or 0
+    )
+
+    local mergedRun = {
+        fingerprint = PickDefinedValue(preferredRun.fingerprint, fallbackRun.fingerprint),
+        observedAt = mergedObservedAt > 0 and mergedObservedAt or PickDefinedValue(preferredRun.observedAt, fallbackRun.observedAt),
+        seasonID = PickDefinedValue(preferredRun.seasonID, fallbackRun.seasonID),
+        mapChallengeModeID = PickDefinedValue(preferredRun.mapChallengeModeID, fallbackRun.mapChallengeModeID),
+        mapName = PickDefinedValue(preferredRun.mapName, fallbackRun.mapName),
+        level = PickDefinedValue(preferredRun.level, fallbackRun.level),
+        completed = PickDefinedValue(preferredRun.completed, fallbackRun.completed),
+        completedInTime = PickDefinedValue(preferredRun.completedInTime, fallbackRun.completedInTime),
+        durationMs = PickDefinedValue(preferredRun.durationMs, fallbackRun.durationMs),
+        runScore = PickDefinedValue(preferredRun.runScore, fallbackRun.runScore),
+        startDate = PickDefinedValue(preferredRun.startDate, fallbackRun.startDate),
+        completedAt = PickDefinedValue(preferredRun.completedAt, fallbackRun.completedAt),
+        thisWeek = PickDefinedValue(preferredRun.thisWeek, fallbackRun.thisWeek),
+    }
+
+    if mergedMembers ~= nil then
+        mergedRun.members = mergedMembers
+    end
+
+    return mergedRun
+end
+
 ShouldReplaceStoredRun = function(currentRun, candidateRun)
     if not currentRun then
         return true
@@ -2125,8 +2215,8 @@ local function SyncMythicPlusHistory(reason, options)
                 entry.mythicPlusRuns[#entry.mythicPlusRuns + 1] = run
                 runIndicesByFingerprint[run.fingerprint] = #entry.mythicPlusRuns
                 added = added + 1
-            elseif ShouldReplaceStoredRun(entry.mythicPlusRuns[existingIndex], run) then
-                entry.mythicPlusRuns[existingIndex] = run
+            else
+                entry.mythicPlusRuns[existingIndex] = MergeStoredMythicPlusRun(entry.mythicPlusRuns[existingIndex], run)
                 updated = true
             end
         end

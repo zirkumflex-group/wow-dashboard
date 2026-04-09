@@ -466,38 +466,7 @@ function formatRunMemberName(member: MythicPlusRunMember, characterRealm: string
     return member.name;
   }
 
-  const normalizedSuffix = `-${member.realm}`.toLowerCase();
-  if (member.name.toLowerCase().endsWith(normalizedSuffix)) {
-    return member.name;
-  }
-
   return `${member.name}-${member.realm}`;
-}
-
-function getRunMemberCompletenessScore(member: MythicPlusRunMember) {
-  let score = 0;
-  if (member.name.trim() !== "") score += 1;
-  if (member.realm?.trim()) score += 2;
-  if (member.classTag?.trim()) score += 2;
-  if (member.role?.trim()) score += 2;
-  return score;
-}
-
-function mergeDisplayedRunMember(
-  current: MythicPlusRunMember,
-  candidate: MythicPlusRunMember,
-): MythicPlusRunMember {
-  const currentScore = getRunMemberCompletenessScore(current);
-  const candidateScore = getRunMemberCompletenessScore(candidate);
-  const preferred = candidateScore >= currentScore ? candidate : current;
-  const fallback = preferred === candidate ? current : candidate;
-
-  return {
-    name: preferred.name || fallback.name,
-    realm: preferred.realm || fallback.realm,
-    classTag: preferred.classTag || fallback.classTag,
-    role: preferred.role || fallback.role,
-  };
 }
 
 function getRunMemberRoleSortOrder(member: MythicPlusRunMember) {
@@ -513,9 +482,8 @@ function getDisplayedRunMembers(members: MythicPlusRunMember[] | undefined) {
     return [];
   }
 
-  const dedupedMembers: MythicPlusRunMember[] = [];
-  const exactMemberIndexByKey = new Map<string, number>();
-  const memberIndexesByName = new Map<string, number[]>();
+  const displayedMembers: MythicPlusRunMember[] = [];
+  const seenMembers = new Set<string>();
 
   for (const member of members) {
     const normalizedName = member.name.trim();
@@ -523,46 +491,21 @@ function getDisplayedRunMembers(members: MythicPlusRunMember[] | undefined) {
       continue;
     }
 
-    const normalizedRealm = member.realm?.trim() || "";
-    const exactKey = `${normalizedName.toLowerCase()}|${normalizedRealm.toLowerCase()}`;
-    const nameKey = normalizedName.toLowerCase();
-
-    const exactIndex = exactMemberIndexByKey.get(exactKey);
-    if (exactIndex !== undefined) {
-      dedupedMembers[exactIndex] = mergeDisplayedRunMember(dedupedMembers[exactIndex]!, member);
+    const normalizedRealm = member.realm?.trim();
+    const memberKey = `${normalizedName.toLowerCase()}|${normalizedRealm?.toLowerCase() ?? ""}`;
+    if (seenMembers.has(memberKey)) {
       continue;
     }
 
-    const sameNameIndexes = memberIndexesByName.get(nameKey) ?? [];
-    const mergeTargetIndex = sameNameIndexes.find((index) => {
-      const existing = dedupedMembers[index];
-      if (!existing) return false;
-      const existingRealm = existing.realm?.trim() || "";
-      return (
-        (existingRealm === "" && normalizedRealm !== "") ||
-        (existingRealm !== "" && normalizedRealm === "")
-      );
+    seenMembers.add(memberKey);
+    displayedMembers.push({
+      ...member,
+      name: normalizedName,
+      realm: normalizedRealm || undefined,
     });
-
-    if (mergeTargetIndex !== undefined) {
-      const existingMember = dedupedMembers[mergeTargetIndex]!;
-      const previousExactKey = `${existingMember.name.trim().toLowerCase()}|${(existingMember.realm?.trim() || "").toLowerCase()}`;
-      const mergedMember = mergeDisplayedRunMember(existingMember, member);
-      dedupedMembers[mergeTargetIndex] = mergedMember;
-
-      const mergedExactKey = `${mergedMember.name.trim().toLowerCase()}|${(mergedMember.realm?.trim() || "").toLowerCase()}`;
-      exactMemberIndexByKey.delete(previousExactKey);
-      exactMemberIndexByKey.set(mergedExactKey, mergeTargetIndex);
-      continue;
-    }
-
-    const nextIndex = dedupedMembers.length;
-    dedupedMembers.push(member);
-    exactMemberIndexByKey.set(exactKey, nextIndex);
-    memberIndexesByName.set(nameKey, [...sameNameIndexes, nextIndex]);
   }
 
-  return dedupedMembers
+  return displayedMembers
     .map((member, index) => ({
       member,
       index,
@@ -594,7 +537,7 @@ function buildMemberRaiderIoUrl(
 ): string {
   const realm = member.realm?.trim() || characterRealm.trim();
   const region = characterRegion.toLowerCase();
-  return `https://raider.io/characters/${region}/${realm}/${member.name}`;
+  return `https://raider.io/characters/${region}/${encodeURIComponent(realm)}/${encodeURIComponent(member.name)}`;
 }
 
 function readHiddenPlayers(): Set<string> {
