@@ -541,6 +541,7 @@ function getDisplayedRunMembers(members: MythicPlusRunMember[] | undefined) {
 // ── Hidden-player helpers ────────────────────────────────────────────────────
 
 const HIDDEN_PLAYERS_KEY = "wow-hidden-run-players";
+const HIDE_ALL_PLAYER_NAMES_KEY = "wow-hide-all-run-player-names";
 
 function getMemberKey(member: MythicPlusRunMember, characterRealm: string): string {
   const realm = member.realm?.trim() || characterRealm.trim();
@@ -575,8 +576,29 @@ function writeHiddenPlayers(keys: Set<string>) {
   }
 }
 
+function readHideAllPlayerNames(): boolean {
+  try {
+    return localStorage.getItem(HIDE_ALL_PLAYER_NAMES_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeHideAllPlayerNames(enabled: boolean) {
+  try {
+    if (enabled) {
+      localStorage.setItem(HIDE_ALL_PLAYER_NAMES_KEY, "1");
+      return;
+    }
+    localStorage.removeItem(HIDE_ALL_PLAYER_NAMES_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
 function useHiddenPlayers() {
   const [hidden, setHidden] = useState<Set<string>>(() => readHiddenPlayers());
+  const [hideAllNames, setHideAllNames] = useState<boolean>(() => readHideAllPlayerNames());
 
   const hide = useCallback((key: string) => {
     setHidden((prev) => {
@@ -601,7 +623,15 @@ function useHiddenPlayers() {
     writeHiddenPlayers(new Set());
   }, []);
 
-  return { hidden, hide, unhide, unhideAll };
+  const toggleHideAllNames = useCallback(() => {
+    setHideAllNames((prev) => {
+      const next = !prev;
+      writeHideAllPlayerNames(next);
+      return next;
+    });
+  }, []);
+
+  return { hidden, hide, unhide, unhideAll, hideAllNames, toggleHideAllNames };
 }
 
 function RecentRunPlayedAt({ run }: { run: MythicPlusRun }) {
@@ -628,16 +658,19 @@ function RecentRunPartyMembers({
   characterRealm,
   characterRegion,
   hiddenKeys,
+  hideAllNames,
   onHide,
 }: {
   run: MythicPlusRun;
   characterRealm: string;
   characterRegion: string;
   hiddenKeys: Set<string>;
+  hideAllNames: boolean;
   onHide: (key: string) => void;
 }) {
   const allMembers = getDisplayedRunMembers(run.members);
   if (allMembers.length === 0) return null;
+  if (hideAllNames) return null;
 
   return (
     <div className="mt-1 flex min-w-0 flex-nowrap items-center gap-x-0.5 overflow-visible whitespace-nowrap text-[11px] leading-tight">
@@ -694,61 +727,105 @@ function RecentRunPartyMembers({
 
 function HiddenPlayersControl({
   hiddenKeys,
+  hideAllNames,
+  onToggleHideAllNames,
   onUnhide,
   onUnhideAll,
 }: {
   hiddenKeys: Set<string>;
+  hideAllNames: boolean;
+  onToggleHideAllNames: () => void;
   onUnhide: (key: string) => void;
   onUnhideAll: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const keys = [...hiddenKeys];
-  if (keys.length === 0) return null;
+  const keys = [...hiddenKeys].sort((a, b) => a.localeCompare(b));
+  const isActive = hideAllNames || keys.length > 0;
 
   return (
     <div className="relative">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-1.5 rounded-md border border-border/60 bg-muted/30 px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+        className={`flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] transition-colors ${
+          isActive
+            ? "border-border/70 bg-muted/45 text-foreground hover:bg-muted/60"
+            : "border-border/60 bg-muted/30 text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+        }`}
       >
-        <EyeOff size={11} />
-        {keys.length} hidden
+        {hideAllNames ? <EyeOff size={11} /> : <Eye size={11} />}
+        Names
+        {hideAllNames ? (
+          <span className="rounded bg-foreground/8 px-1 py-0.5 text-[10px] uppercase tracking-wider text-foreground/80">
+            Off
+          </span>
+        ) : keys.length > 0 ? (
+          <span className="rounded bg-foreground/8 px-1 py-0.5 text-[10px] uppercase tracking-wider text-foreground/80">
+            {keys.length} hidden
+          </span>
+        ) : null}
       </button>
       {open && (
-        <div className="absolute right-0 top-full z-20 mt-1 min-w-[180px] rounded-md border border-border/60 bg-card p-2 shadow-lg">
-          <div className="mb-1.5 flex items-center justify-between">
-            <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-              Hidden players
+        <div className="absolute right-0 top-full z-20 mt-1 min-w-[220px] rounded-md border border-border/60 bg-card p-2 shadow-lg">
+          <button
+            type="button"
+            onClick={onToggleHideAllNames}
+            className="flex w-full items-center justify-between gap-3 rounded-md border border-border/60 bg-muted/20 px-2 py-2 text-left text-xs transition-colors hover:bg-muted/35"
+          >
+            <span className="flex items-center gap-2 text-foreground/90">
+              {hideAllNames ? <Eye size={12} /> : <EyeOff size={12} />}
+              Hide all names
             </span>
-            <button
-              type="button"
-              onClick={() => { onUnhideAll(); setOpen(false); }}
-              className="text-[10px] text-muted-foreground hover:text-foreground transition-colors"
-            >
-              Show all
-            </button>
-          </div>
-          <div className="space-y-0.5">
-            {keys.map((key) => {
-              const [name] = key.split("|");
-              return (
-                <div
-                  key={key}
-                  className="flex items-center justify-between gap-2 rounded px-1.5 py-1 text-xs hover:bg-muted/30"
+            <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+              {hideAllNames ? "On" : "Off"}
+            </span>
+          </button>
+
+          <div className="mt-2 border-t border-border/50 pt-2">
+            <div className="mb-1.5 flex items-center justify-between">
+              <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                Hidden players
+              </span>
+              {keys.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onUnhideAll();
+                    setOpen(false);
+                  }}
+                  className="text-[10px] text-muted-foreground transition-colors hover:text-foreground"
                 >
-                  <span className="truncate text-foreground/80">{name}</span>
-                  <button
-                    type="button"
-                    onClick={() => onUnhide(key)}
-                    className="shrink-0 rounded p-0.5 text-muted-foreground/50 transition-colors hover:text-foreground"
-                    title="Show player"
-                  >
-                    <Eye size={12} />
-                  </button>
-                </div>
-              );
-            })}
+                  Show all
+                </button>
+              )}
+            </div>
+            {keys.length === 0 ? (
+              <div className="rounded px-1.5 py-1 text-xs text-muted-foreground">
+                No individually hidden players.
+              </div>
+            ) : (
+              <div className="space-y-0.5">
+                {keys.map((key) => {
+                  const [name] = key.split("|");
+                  return (
+                    <div
+                      key={key}
+                      className="flex items-center justify-between gap-2 rounded px-1.5 py-1 text-xs hover:bg-muted/30"
+                    >
+                      <span className="truncate text-foreground/80">{name}</span>
+                      <button
+                        type="button"
+                        onClick={() => onUnhide(key)}
+                        className="shrink-0 rounded p-0.5 text-muted-foreground/50 transition-colors hover:text-foreground"
+                        title="Show player"
+                      >
+                        <Eye size={12} />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -858,7 +935,14 @@ function MythicPlusSection({
   characterRegion: string;
 }) {
   const [visibleRecentRunCount, setVisibleRecentRunCount] = useState(INITIAL_RECENT_RUN_COUNT);
-  const { hidden: hiddenPlayerKeys, hide: hidePlayer, unhide: unhidePlayer, unhideAll: unhideAllPlayers } = useHiddenPlayers();
+  const {
+    hidden: hiddenPlayerKeys,
+    hide: hidePlayer,
+    unhide: unhidePlayer,
+    unhideAll: unhideAllPlayers,
+    hideAllNames,
+    toggleHideAllNames,
+  } = useHiddenPlayers();
   const [summaryCardHeight, setSummaryCardHeight] = useState<number | null>(null);
   const summaryCardRef = useRef<HTMLDivElement | null>(null);
   const recentRunsResetKey = `${data?.runs.length ?? 0}:${data?.runs[0]?.fingerprint ?? ""}`;
@@ -1083,13 +1167,13 @@ function MythicPlusSection({
               <Clock size={16} className="text-muted-foreground" />
               Recent Runs
             </CardTitle>
-            {hiddenPlayerKeys.size > 0 && (
-              <HiddenPlayersControl
-                hiddenKeys={hiddenPlayerKeys}
-                onUnhide={unhidePlayer}
-                onUnhideAll={unhideAllPlayers}
-              />
-            )}
+            <HiddenPlayersControl
+              hiddenKeys={hiddenPlayerKeys}
+              hideAllNames={hideAllNames}
+              onToggleHideAllNames={toggleHideAllNames}
+              onUnhide={unhidePlayer}
+              onUnhideAll={unhideAllPlayers}
+            />
           </div>
         </CardHeader>
         <CardContent className="flex min-h-0 flex-1 flex-col pt-4">
@@ -1124,6 +1208,7 @@ function MythicPlusSection({
                         characterRealm={characterRealm}
                         characterRegion={characterRegion}
                         hiddenKeys={hiddenPlayerKeys}
+                        hideAllNames={hideAllNames}
                         onHide={hidePlayer}
                       />
                     </td>
