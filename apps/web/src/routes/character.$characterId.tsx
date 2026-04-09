@@ -1091,7 +1091,7 @@ function MythicPlusSection({
                   <th className="px-3 py-2 text-right font-medium">Key</th>
                   <th className="px-3 py-2 text-left font-medium">Result</th>
                   <th className="px-3 py-2 text-right font-medium">Score</th>
-                  <th className="px-3 py-2 text-right font-medium">Time</th>
+                  <th className="w-[7rem] whitespace-nowrap px-3 py-2 text-right font-medium">Time</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/50">
@@ -1132,7 +1132,7 @@ function MythicPlusSection({
                         )}
                       </div>
                     </td>
-                    <td className="px-3 py-2.5 align-top text-right tabular-nums text-muted-foreground">
+                    <td className="w-[7rem] whitespace-nowrap px-3 py-2.5 align-top text-right tabular-nums text-muted-foreground">
                       {formatRunTimeComparison(run)}
                     </td>
                   </tr>
