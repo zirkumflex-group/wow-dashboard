@@ -19,7 +19,7 @@ const CURRENT_SEASON_DUNGEONS: MythicPlusDungeonMeta[] = [
     name: "Algeth'ar Academy",
     shortName: "AA",
     iconUrl: "https://cdn.raiderio.net/images/wow/icons/large/achievement_dungeon_dragonacademy.jpg",
-    timerMs: 29 * 60 * 1000,
+    timerMs: 30 * 60 * 1000,
   },
   {
     mapChallengeModeID: 558,

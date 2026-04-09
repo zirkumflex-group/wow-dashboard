@@ -601,6 +601,7 @@ GetPendingCompletedRunMembers = function(characterKey)
 end
 
 local NormalizeMythicPlusDate
+local NormalizeOptionalBoolean
 local GetRunSortValue
 local NormalizeStoredMythicPlusRun
 local ShouldReplaceStoredRun
@@ -1234,6 +1235,45 @@ local function CaptureCompletionInfoMembers()
         return nil, { apiName = apiName, callFailed = true }
     end
 
+    if type(mapChallengeModeID) == "table" and level == nil and runTimeMs == nil then
+        local info = mapChallengeModeID
+        local infoMembers = GetFirstField(info, {
+            "members",
+            "partyMembers",
+            "groupMembers",
+            "roster",
+        })
+
+        return NormalizeMythicPlusMembers(infoMembers), {
+            apiName = apiName,
+            mapChallengeModeID = tonumber(GetFirstField(info, {
+                "mapChallengeModeID",
+                "challengeModeID",
+                "mapID",
+            })),
+            level = tonumber(GetFirstField(info, {
+                "level",
+                "keystoneLevel",
+            })),
+            durationMs = tonumber(GetFirstField(info, {
+                "time",
+                "runTimeMs",
+                "runTime",
+                "durationMs",
+            })),
+            completedInTime = NormalizeOptionalBoolean(GetFirstField(info, {
+                "onTime",
+                "completedInTime",
+                "intime",
+            })),
+            keystoneUpgradeLevels = tonumber(GetFirstField(info, {
+                "keystoneUpgradeLevels",
+                "upgradeLevels",
+            })),
+            memberCount = type(infoMembers) == "table" and #infoMembers or 0,
+        }
+    end
+
     return NormalizeMythicPlusMembers(members), {
         apiName = apiName,
         mapChallengeModeID = tonumber(mapChallengeModeID),
@@ -1337,7 +1377,7 @@ local function GetRunDurationMs(run)
     return nil
 end
 
-local function NormalizeOptionalBoolean(value)
+NormalizeOptionalBoolean = function(value)
     if type(value) == "boolean" then
         return value
     end

@@ -24,7 +24,7 @@ type MythicPlusRunLike = {
 type MythicPlusRunMemberLike = NonNullable<MythicPlusRunLike["members"]>[number];
 
 const MYTHIC_PLUS_DUNGEONS = [
-  { mapChallengeModeID: 402, name: "Algeth'ar Academy", timerMs: 29 * 60 * 1000 },
+  { mapChallengeModeID: 402, name: "Algeth'ar Academy", timerMs: 30 * 60 * 1000 },
   { mapChallengeModeID: 558, name: "Magisters' Terrace", timerMs: 34 * 60 * 1000 },
   { mapChallengeModeID: 560, name: "Maisara Caverns", timerMs: 33 * 60 * 1000 },
   { mapChallengeModeID: 559, name: "Nexus-Point Xenas", timerMs: 30 * 60 * 1000 },
