@@ -21,20 +21,29 @@ type MythicPlusRunLike = {
   }[];
 };
 
-const MYTHIC_PLUS_TIMER_MS_BY_MAP_NAME = new Map<string, number>([
-  ["magisters' terrace", 34 * 60 * 1000],
-  ["maisara caverns", 33 * 60 * 1000],
-  ["nexus-point xenas", 30 * 60 * 1000],
-  ["windrunner spire", 33.5 * 60 * 1000],
-  ["algeth'ar academy", 29 * 60 * 1000],
-  ["pit of saron", 30 * 60 * 1000],
-  ["seat of the triumvirate", 34 * 60 * 1000],
-  ["skyreach", 28 * 60 * 1000],
-]);
+type MythicPlusRunMemberLike = NonNullable<MythicPlusRunLike["members"]>[number];
+
+const MYTHIC_PLUS_DUNGEONS = [
+  { mapChallengeModeID: 402, name: "Algeth'ar Academy", timerMs: 29 * 60 * 1000 },
+  { mapChallengeModeID: 558, name: "Magisters' Terrace", timerMs: 34 * 60 * 1000 },
+  { mapChallengeModeID: 560, name: "Maisara Caverns", timerMs: 33 * 60 * 1000 },
+  { mapChallengeModeID: 559, name: "Nexus-Point Xenas", timerMs: 30 * 60 * 1000 },
+  { mapChallengeModeID: 556, name: "Pit of Saron", timerMs: 30 * 60 * 1000 },
+  { mapChallengeModeID: 239, name: "Seat of the Triumvirate", timerMs: 34 * 60 * 1000 },
+  { mapChallengeModeID: 161, name: "Skyreach", timerMs: 28 * 60 * 1000 },
+  { mapChallengeModeID: 557, name: "Windrunner Spire", timerMs: 33.5 * 60 * 1000 },
+] as const;
 
 function normalizeMapName(mapName: string) {
   return mapName.trim().toLowerCase();
 }
+
+const MYTHIC_PLUS_TIMER_MS_BY_MAP_ID = new Map<number, number>(
+  MYTHIC_PLUS_DUNGEONS.map((dungeon) => [dungeon.mapChallengeModeID, dungeon.timerMs] as const),
+);
+const MYTHIC_PLUS_TIMER_MS_BY_MAP_NAME = new Map<string, number>(
+  MYTHIC_PLUS_DUNGEONS.map((dungeon) => [normalizeMapName(dungeon.name), dungeon.timerMs] as const),
+);
 
 function toFingerprintToken(value: boolean | number | string | null | undefined) {
   if (value === undefined || value === null) return "";
@@ -64,8 +73,64 @@ export function getMythicPlusRunSortValue(run: MythicPlusRunLike) {
   return run.completedAt ?? run.startDate ?? run.observedAt ?? 0;
 }
 
-export function getMythicPlusRunTimerMs(run: Pick<MythicPlusRunLike, "mapName"> | string | null | undefined) {
-  const mapName = typeof run === "string" ? run : run?.mapName;
+function getMythicPlusRunMemberKey(member: MythicPlusRunMemberLike) {
+  return `${member.name.toLowerCase()}|${member.realm?.toLowerCase() ?? ""}`;
+}
+
+function mergeMythicPlusRunMember(
+  currentMember: MythicPlusRunMemberLike | undefined,
+  candidateMember: MythicPlusRunMemberLike,
+): MythicPlusRunMemberLike {
+  return {
+    name: candidateMember.name,
+    realm: candidateMember.realm ?? currentMember?.realm,
+    classTag: candidateMember.classTag ?? currentMember?.classTag,
+    role: candidateMember.role ?? currentMember?.role,
+  };
+}
+
+export function mergeMythicPlusRunMembers(
+  currentMembers: MythicPlusRunLike["members"] | undefined,
+  candidateMembers: MythicPlusRunLike["members"] | undefined,
+) {
+  if ((!currentMembers || currentMembers.length === 0) && (!candidateMembers || candidateMembers.length === 0)) {
+    return undefined;
+  }
+
+  const mergedMembers = new Map<string, MythicPlusRunMemberLike>();
+  const orderedKeys: string[] = [];
+
+  for (const members of [candidateMembers, currentMembers]) {
+    for (const member of members ?? []) {
+      const key = getMythicPlusRunMemberKey(member);
+      if (!mergedMembers.has(key)) {
+        orderedKeys.push(key);
+      }
+      mergedMembers.set(key, mergeMythicPlusRunMember(mergedMembers.get(key), member));
+    }
+  }
+
+  return orderedKeys.map((key) => mergedMembers.get(key)!);
+}
+
+export function getMythicPlusRunTimerMs(
+  run:
+    | Pick<MythicPlusRunLike, "mapChallengeModeID" | "mapName">
+    | string
+    | null
+    | undefined,
+) {
+  if (typeof run === "string") {
+    return run.trim() === "" ? null : MYTHIC_PLUS_TIMER_MS_BY_MAP_NAME.get(normalizeMapName(run)) ?? null;
+  }
+
+  const mapChallengeModeID = run?.mapChallengeModeID;
+  if (mapChallengeModeID !== undefined) {
+    const timerByMapId = MYTHIC_PLUS_TIMER_MS_BY_MAP_ID.get(mapChallengeModeID);
+    if (timerByMapId !== undefined) return timerByMapId;
+  }
+
+  const mapName = run?.mapName;
   if (typeof mapName !== "string" || mapName.trim() === "") return null;
   return MYTHIC_PLUS_TIMER_MS_BY_MAP_NAME.get(normalizeMapName(mapName)) ?? null;
 }

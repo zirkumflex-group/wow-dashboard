@@ -846,6 +846,111 @@ local function NormalizeMythicPlusMembers(members)
     return normalizedMembers
 end
 
+local function GetMythicPlusMemberKey(member)
+    if type(member) ~= "table" or type(member.name) ~= "string" or member.name == "" then
+        return nil
+    end
+
+    return string.lower(member.name .. "|" .. (member.realm or ""))
+end
+
+local function MergeMythicPlusMember(currentMember, candidateMember)
+    if type(candidateMember) ~= "table" then
+        return currentMember
+    end
+    if type(currentMember) ~= "table" then
+        return candidateMember
+    end
+
+    local merged = {
+        name = candidateMember.name or currentMember.name,
+    }
+    if type(candidateMember.realm) == "string" and candidateMember.realm ~= "" then
+        merged.realm = candidateMember.realm
+    elseif type(currentMember.realm) == "string" and currentMember.realm ~= "" then
+        merged.realm = currentMember.realm
+    end
+    if type(candidateMember.classTag) == "string" and candidateMember.classTag ~= "" then
+        merged.classTag = candidateMember.classTag
+    elseif type(currentMember.classTag) == "string" and currentMember.classTag ~= "" then
+        merged.classTag = currentMember.classTag
+    end
+    if type(candidateMember.role) == "string" and candidateMember.role ~= "" then
+        merged.role = candidateMember.role
+    elseif type(currentMember.role) == "string" and currentMember.role ~= "" then
+        merged.role = currentMember.role
+    end
+
+    return merged
+end
+
+local function MergeMythicPlusMemberLists(...)
+    local mergedByKey = {}
+    local orderedKeys = {}
+
+    for sourceIndex = 1, select("#", ...) do
+        local members = select(sourceIndex, ...)
+        if type(members) == "table" then
+            for _, member in ipairs(members) do
+                local normalized = NormalizeMythicPlusMember(member)
+                local memberKey = normalized and GetMythicPlusMemberKey(normalized) or nil
+                if memberKey ~= nil then
+                    if mergedByKey[memberKey] == nil then
+                        orderedKeys[#orderedKeys + 1] = memberKey
+                    end
+                    mergedByKey[memberKey] = MergeMythicPlusMember(mergedByKey[memberKey], normalized)
+                end
+            end
+        end
+    end
+
+    if #orderedKeys == 0 then
+        return nil
+    end
+
+    local mergedMembers = {}
+    for _, memberKey in ipairs(orderedKeys) do
+        mergedMembers[#mergedMembers + 1] = mergedByKey[memberKey]
+    end
+
+    return mergedMembers
+end
+
+local function GetMythicPlusMemberListCompletenessScore(members)
+    if type(members) ~= "table" then
+        return 0
+    end
+
+    local score = 0
+    for _, member in ipairs(members) do
+        if type(member) == "table" then
+            if type(member.name) == "string" and member.name ~= "" then score = score + 1 end
+            if type(member.realm) == "string" and member.realm ~= "" then score = score + 1 end
+            if type(member.classTag) == "string" and member.classTag ~= "" then score = score + 2 end
+            if type(member.role) == "string" and member.role ~= "" then score = score + 2 end
+        end
+    end
+
+    return score
+end
+
+local function GetImprovedMythicPlusMembers(currentMembers, candidateMembers)
+    local mergedMembers = MergeMythicPlusMemberLists(candidateMembers, currentMembers)
+    if type(mergedMembers) ~= "table" or #mergedMembers == 0 then
+        return nil
+    end
+
+    local currentCount = type(currentMembers) == "table" and #currentMembers or 0
+    if #mergedMembers > currentCount then
+        return mergedMembers
+    end
+
+    return GetMythicPlusMemberListCompletenessScore(mergedMembers)
+        > GetMythicPlusMemberListCompletenessScore(currentMembers)
+        and mergedMembers
+        or nil
+end
+
 local function BuildMythicPlusMemberFromUnit(unit)
     if type(unit) ~= "string" or not UnitExists(unit) or not UnitIsPlayer(unit) then
         return nil
@@ -1034,9 +1139,7 @@ local function RefreshActiveMythicPlusMemberCache(reason, options)
         and tonumber(existing.mapChallengeModeID) == context.mapChallengeModeID
         and (tonumber(existing.level) or -1) == (tonumber(context.level) or -1) then
         startedAt = tonumber(existing.startedAt) or startedAt
-        if type(existing.members) == "table" and #existing.members > #storedMembers then
-            storedMembers = existing.members
-        end
+        storedMembers = MergeMythicPlusMemberLists(members, existing.members) or storedMembers
     end
 
     local active = {
@@ -1147,18 +1250,21 @@ local function CaptureCompletedRunMembers()
     local completionMembers, completionInfo = CaptureCompletionInfoMembers()
     local liveMembers, liveInfo = CaptureLiveGroupMembers()
     local activeCache = GetActiveMythicPlusMemberCache(characterKey)
+    local cachedMembers = type(activeCache) == "table" and activeCache.members or nil
+    local sourceParts = {}
 
-    local members = completionMembers
-    local source = "completion_api"
-    if type(members) ~= "table" or #members == 0 then
-        if type(activeCache) == "table" and type(activeCache.members) == "table" and #activeCache.members > 0 then
-            members = activeCache.members
-            source = "in_key_roster_cache"
-        else
-            members = liveMembers
-            source = "live_roster"
-        end
+    if type(completionMembers) == "table" and #completionMembers > 0 then
+        sourceParts[#sourceParts + 1] = "completion_api"
     end
+    if type(cachedMembers) == "table" and #cachedMembers > 0 then
+        sourceParts[#sourceParts + 1] = "in_key_roster_cache"
+    end
+    if type(liveMembers) == "table" and #liveMembers > 0 then
+        sourceParts[#sourceParts + 1] = "live_roster"
+    end
+
+    local members = MergeMythicPlusMemberLists(completionMembers, cachedMembers, liveMembers)
+    local source = #sourceParts > 0 and table.concat(sourceParts, "+") or "unavailable"
 
     UpdateMythicPlusDebugState(characterKey, {
         lastCaptureAt = time(),
@@ -1310,6 +1416,7 @@ local function AttachPendingCompletedRunMembers(runs, characterKey)
 
     local bestIndex = nil
     local bestDiff = nil
+    local bestMembers = nil
     local pendingMapChallengeModeID = tonumber(pending.mapChallengeModeID)
     local pendingLevel = tonumber(pending.level)
     local pendingCompletedInTime = type(pending.completedInTime) == "boolean" and pending.completedInTime or nil
@@ -1330,18 +1437,20 @@ local function AttachPendingCompletedRunMembers(runs, characterKey)
         if runCompletedAt ~= nil and math.abs(runCompletedAt - capturedAt) <= PENDING_RUN_MEMBER_MATCH_WINDOW then
             local mapMatches = pendingMapChallengeModeID == nil or tonumber(run.mapChallengeModeID) == pendingMapChallengeModeID
             local levelMatches = pendingLevel == nil or tonumber(run.level) == pendingLevel
-            if mapMatches and levelMatches and (type(run.members) ~= "table" or #run.members == 0) then
+            local improvedMembers = GetImprovedMythicPlusMembers(run.members, pending.members)
+            if mapMatches and levelMatches and improvedMembers ~= nil then
                 local diff = math.abs(runCompletedAt - capturedAt)
                 if bestDiff == nil or diff < bestDiff then
                     bestIndex = index
                     bestDiff = diff
+                    bestMembers = improvedMembers
                 end
             end
         end
     end
 
     if bestIndex ~= nil then
-        runs[bestIndex].members = pending.members
+        runs[bestIndex].members = bestMembers
         UpdateMythicPlusDebugState(characterKey, {
             lastAttachAt = time(),
             lastAttachStatus = "attached",
@@ -1364,7 +1473,8 @@ local function AttachPendingCompletedRunMembers(runs, characterKey)
         for index, run in ipairs(runs) do
             local mapMatches = pendingMapChallengeModeID == nil or tonumber(run.mapChallengeModeID) == pendingMapChallengeModeID
             local levelMatches = pendingLevel == nil or tonumber(run.level) == pendingLevel
-            if mapMatches and levelMatches and (type(run.members) ~= "table" or #run.members == 0) then
+            local improvedMembers = GetImprovedMythicPlusMembers(run.members, pending.members)
+            if mapMatches and levelMatches and improvedMembers ~= nil then
                 local durationDiff = nil
                 local runDurationMs = GetRunDurationMs(run)
                 if pendingDurationMs ~= nil and runDurationMs ~= nil then
@@ -1385,6 +1495,7 @@ local function AttachPendingCompletedRunMembers(runs, characterKey)
                         pendingCompletedInTime == nil
                         or run.completedInTime == nil
                         or run.completedInTime == pendingCompletedInTime,
+                    mergedMembers = improvedMembers,
                     thisWeek = run.thisWeek == true,
                     run = run,
                 }
@@ -1465,7 +1576,7 @@ local function AttachPendingCompletedRunMembers(runs, characterKey)
 
         if fallbackUnique and bestCandidate ~= nil then
             local candidate = bestCandidate
-            runs[candidate.index].members = pending.members
+            runs[candidate.index].members = candidate.mergedMembers
             if candidate.durationDiff == nil then
                 ClearMythicPlusDebugFields(characterKey, {
                     "lastAttachDiffSeconds",

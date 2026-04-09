@@ -5,6 +5,7 @@ import { mutation, query } from "./_generated/server";
 import { authComponent } from "./auth";
 import {
   buildCanonicalMythicPlusRunFingerprint,
+  mergeMythicPlusRunMembers,
   shouldReplaceMythicPlusRun,
 } from "./mythicPlus";
 import { rateLimiter } from "./rateLimiter";
@@ -103,27 +104,18 @@ function snapshotFieldsEqual(a: SnapshotFields, b: SnapshotFields) {
   return JSON.stringify(toSnapshotFields(a)) === JSON.stringify(toSnapshotFields(b));
 }
 
-function shouldReplaceRunMembers(
+function getMergedRunMembers(
   currentMembers: MythicPlusRunMembers | undefined,
   candidateMembers: MythicPlusRunMembers | undefined,
 ) {
-  if (!candidateMembers || candidateMembers.length === 0) {
-    return false;
-  }
-  if (!currentMembers || currentMembers.length === 0) {
-    return true;
-  }
-  if (candidateMembers.length > currentMembers.length) {
-    return true;
+  const mergedMembers = mergeMythicPlusRunMembers(currentMembers, candidateMembers);
+  if (!mergedMembers) {
+    return undefined;
   }
 
-  const knownMembers = new Set(
-    currentMembers.map((member) => `${member.name.toLowerCase()}|${member.realm?.toLowerCase() ?? ""}`),
-  );
-
-  return candidateMembers.some(
-    (member) => !knownMembers.has(`${member.name.toLowerCase()}|${member.realm?.toLowerCase() ?? ""}`),
-  );
+  return JSON.stringify(currentMembers ?? []) === JSON.stringify(mergedMembers)
+    ? undefined
+    : mergedMembers;
 }
 
 const characterValidator = v.object({
@@ -406,8 +398,9 @@ export const ingestAddonData = mutation({
             patch.completedAt = run.completedAt;
           }
           if (existingRun.thisWeek === undefined && run.thisWeek !== undefined) patch.thisWeek = run.thisWeek;
-          if (shouldReplaceRunMembers(existingRun.members, run.members)) {
-            patch.members = run.members;
+          const mergedMembers = getMergedRunMembers(existingRun.members, run.members);
+          if (mergedMembers !== undefined) {
+            patch.members = mergedMembers;
           }
 
           if (Object.keys(patch).length > 0) {
