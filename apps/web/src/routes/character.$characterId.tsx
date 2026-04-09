@@ -344,7 +344,8 @@ function isCompletedMythicPlusRun(run: MythicPlusRun) {
 
 function isTimedMythicPlusRun(run: MythicPlusRun) {
   if (run.completedInTime !== undefined) return run.completedInTime;
-  return run.completed === true;
+  // Unknown timing — do not infer timed from completed.
+  return false;
 }
 
 // ── Shared display components ─────────────────────────────────────────────────

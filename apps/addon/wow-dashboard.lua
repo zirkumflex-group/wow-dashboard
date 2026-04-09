@@ -276,6 +276,9 @@ local PENDING_RUN_MEMBER_MATCH_WINDOW = 5 * 60
 local PENDING_RUN_MEMBER_RETRY_DELAYS = { 5, 45, 120 }
 local ACTIVE_RUN_MEMBER_RETENTION = 4 * 60 * 60
 local MYTHIC_PLUS_DEBUG_EVENT_LIMIT = 30
+local PLAYTIME_TIMEOUT = 30             -- seconds before we give up waiting for TIME_PLAYED_MSG
+local MAX_SNAPSHOTS_PER_CHARACTER = 500
+local MAX_LOG_ENTRIES = 200
 
 -- Midnight S1 currency IDs.
 local CURRENCY_IDS = {
@@ -643,6 +646,19 @@ local function EnsureCharacterEntry(key, name, realm, charInfo)
     end
     entry.mythicPlusDebug = nil
 
+    -- Trim legacy oversized snapshot lists down to the cap (keeps newest)
+    if #entry.snapshots > MAX_SNAPSHOTS_PER_CHARACTER then
+        local trimmed = {}
+        for i = #entry.snapshots - MAX_SNAPSHOTS_PER_CHARACTER + 1, #entry.snapshots do
+            trimmed[#trimmed + 1] = entry.snapshots[i]
+        end
+        entry.snapshots = trimmed
+    end
+
+    return entry
+end
+
+local function NormalizeAndDeduplicateRuns(entry)
     local normalizedRuns = {}
     local normalizedRunsByFingerprint = {}
     for _, run in ipairs(entry.mythicPlusRuns) do
@@ -662,8 +678,6 @@ local function EnsureCharacterEntry(key, name, realm, charInfo)
     end)
     entry.mythicPlusRuns = normalizedRuns
     entry.mythicPlusRunKeys = normalizedKeys
-
-    return entry
 end
 
 local function IsSequentialArray(value)
@@ -1343,6 +1357,7 @@ local function CaptureCompletedRunMembers()
     local characterKey = GetCharKey()
     local key, name, realm, charInfo = GetCharacterIdentity()
     local entry = EnsureCharacterEntry(key, name, realm, charInfo)
+    NormalizeAndDeduplicateRuns(entry)
     local latestStoredRun = type(entry.mythicPlusRuns) == "table" and entry.mythicPlusRuns[1] or nil
     local completionMembers, completionInfo = CaptureCompletionInfoMembers()
     local liveMembers, liveInfo = CaptureLiveGroupMembers()
@@ -1582,7 +1597,7 @@ local function AttachPendingCompletedRunMembers(runs, characterKey)
             if mapMatches and levelMatches and improvedMembers ~= nil then
                 local runSortValue = GetRunSortValue(run)
                 local isAfterCapture = true
-                if pendingLatestRunFingerprint ~= nil or pendingLatestRunSortValue ~= nil or pendingHistoryRunCount ~= nil then
+                if pendingLatestRunSortValue ~= nil or pendingLatestRunFingerprint ~= nil then
                     isAfterCapture = false
                     if pendingLatestRunSortValue ~= nil and runSortValue > pendingLatestRunSortValue then
                         isAfterCapture = true
@@ -1592,8 +1607,6 @@ local function AttachPendingCompletedRunMembers(runs, characterKey)
                         and type(run.fingerprint) == "string"
                         and run.fingerprint ~= pendingLatestRunFingerprint
                     then
-                        isAfterCapture = true
-                    elseif pendingHistoryRunCount ~= nil and #runs > pendingHistoryRunCount then
                         isAfterCapture = true
                     end
                 end
@@ -1919,10 +1932,16 @@ local function MergeStoredMythicPlusRun(currentRun, candidateRun)
     local preferredRun = candidatePreferred and candidateRun or currentRun
     local fallbackRun = candidatePreferred and currentRun or candidateRun
     local mergedMembers = MergeMythicPlusMemberLists(currentRun.members, candidateRun.members)
-    local mergedObservedAt = math.max(
-        tonumber(preferredRun.observedAt) or 0,
-        tonumber(fallbackRun.observedAt) or 0
-    )
+    local preferredObservedAt = tonumber(preferredRun.observedAt) or 0
+    local fallbackObservedAt = tonumber(fallbackRun.observedAt) or 0
+    local mergedObservedAt
+    if preferredObservedAt > 0 and fallbackObservedAt > 0 then
+        mergedObservedAt = math.min(preferredObservedAt, fallbackObservedAt)
+    elseif preferredObservedAt > 0 then
+        mergedObservedAt = preferredObservedAt
+    else
+        mergedObservedAt = fallbackObservedAt
+    end
 
     local mergedRun = {
         fingerprint = PickDefinedValue(preferredRun.fingerprint, fallbackRun.fingerprint),
@@ -2027,9 +2046,6 @@ NormalizeStoredMythicPlusRun = function(run)
         run.runScore = GetFirstField(run, { "score", "mythicRating" })
     end
 
-    if run.completedInTime == nil and type(run.completed) == "boolean" then
-        run.completedInTime = run.completed
-    end
     if run.completed ~= true and (run.durationMs ~= nil or run.runScore ~= nil or run.completedAt ~= nil) then
         run.completed = true
     end
@@ -2093,7 +2109,7 @@ local function NormalizeMythicPlusRun(rawRun, seasonID)
     }))
 
     local run = {
-        observedAt          = time(),
+        observedAt          = nil,
         seasonID            = seasonID,
         mapChallengeModeID  = mapChallengeModeID,
         mapName             = GetFirstField(rawRun, { "mapName", "name", "zoneName", "shortName" })
@@ -2109,9 +2125,6 @@ local function NormalizeMythicPlusRun(rawRun, seasonID)
         members             = members,
     }
 
-    if run.completedInTime == nil and type(run.completed) == "boolean" then
-        run.completedInTime = run.completed
-    end
     if run.completed ~= true and (run.durationMs ~= nil or run.runScore ~= nil or run.completedAt ~= nil) then
         run.completed = true
     end
@@ -2195,6 +2208,7 @@ local function SyncMythicPlusHistory(reason, options)
 
     local key, name, realm, charInfo = GetCharacterIdentity()
     local entry = EnsureCharacterEntry(key, name, realm, charInfo)
+    NormalizeAndDeduplicateRuns(entry)
     local beforeCount = #entry.mythicPlusRuns
     local runs = CollectMythicPlusHistory()
     local added = 0
@@ -2211,13 +2225,32 @@ local function SyncMythicPlusHistory(reason, options)
         if run.fingerprint then
             local existingIndex = runIndicesByFingerprint[run.fingerprint]
             if existingIndex == nil then
+                -- First time seeing this run — stamp observedAt now
+                if run.observedAt == nil or run.observedAt == 0 then
+                    run.observedAt = time()
+                end
                 entry.mythicPlusRunKeys[run.fingerprint] = true
                 entry.mythicPlusRuns[#entry.mythicPlusRuns + 1] = run
                 runIndicesByFingerprint[run.fingerprint] = #entry.mythicPlusRuns
                 added = added + 1
             else
-                entry.mythicPlusRuns[existingIndex] = MergeStoredMythicPlusRun(entry.mythicPlusRuns[existingIndex], run)
-                updated = true
+                local existing = entry.mythicPlusRuns[existingIndex]
+                local merged = MergeStoredMythicPlusRun(existing, run)
+                -- Only count as updated if meaningful fields changed (not just observedAt)
+                if existing.members ~= merged.members
+                    or existing.completed ~= merged.completed
+                    or existing.completedInTime ~= merged.completedInTime
+                    or existing.durationMs ~= merged.durationMs
+                    or existing.runScore ~= merged.runScore
+                    or existing.mapName ~= merged.mapName
+                    or existing.level ~= merged.level
+                    or existing.startDate ~= merged.startDate
+                    or existing.completedAt ~= merged.completedAt
+                    or existing.seasonID ~= merged.seasonID
+                    or existing.thisWeek ~= merged.thisWeek then
+                    entry.mythicPlusRuns[existingIndex] = merged
+                    updated = true
+                end
             end
         end
     end
@@ -2268,6 +2301,14 @@ local function ScheduleMythicPlusHistorySync(reason, delaySeconds, options)
     })
     C_Timer.After(delaySeconds, function()
         pendingMPlusSync = false
+        -- Skip forced retry if pending members were already consumed
+        if options.force and reason == "challenge_mode_completed" then
+            local characterKey = GetCharKey()
+            local pending = GetPendingCompletedRunMembers(characterKey)
+            if pending == nil then
+                return
+            end
+        end
         SyncMythicPlusHistory(reason, options)
     end)
 end
@@ -2377,6 +2418,12 @@ local function CommitSnapshot(totalSeconds, thisLevelSeconds)
     local entry = EnsureCharacterEntry(p.key, p.name, p.realm, p.charInfo)
 
     table.insert(entry.snapshots, p.snap)
+
+    -- Bound snapshot retention per character
+    while #entry.snapshots > MAX_SNAPSHOTS_PER_CHARACTER do
+        table.remove(entry.snapshots, 1)
+    end
+
     lastSnapshotAt = GetTime()
     if RefreshLog then
         RefreshLog()
@@ -2403,6 +2450,15 @@ local function CollectSnapshot(forceFresh)
     SuppressTimePlayedMessages()
     waitingForPlaytime = true
     RequestTimePlayed()
+
+    -- Failsafe: if TIME_PLAYED_MSG never arrives, unblock after timeout
+    C_Timer.After(PLAYTIME_TIMEOUT, function()
+        if waitingForPlaytime then
+            waitingForPlaytime = false
+            RestoreTimePlayedMessages()
+            pendingSnapshot = nil
+        end
+    end)
     return true
 end
 
@@ -2867,7 +2923,7 @@ RefreshLog = function()
     end
     table.sort(all, function(a, b) return a.snap.takenAt > b.snap.takenAt end)
 
-    local n = #all
+    local n = math.min(#all, MAX_LOG_ENTRIES)
 
     -- Hide rows no longer needed
     for i = n + 1, rowCount do

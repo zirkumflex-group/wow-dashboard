@@ -813,9 +813,18 @@ function mergeMythicPlusRunData(
   const preferredRun = candidatePreferred ? candidateRun : currentRun;
   const fallbackRun = candidatePreferred ? currentRun : candidateRun;
 
+  const preferredObservedAt = preferredRun.observedAt ?? 0;
+  const fallbackObservedAt = fallbackRun.observedAt ?? 0;
+  const mergedObservedAt =
+    preferredObservedAt > 0 && fallbackObservedAt > 0
+      ? Math.min(preferredObservedAt, fallbackObservedAt)
+      : preferredObservedAt > 0
+        ? preferredObservedAt
+        : fallbackObservedAt;
+
   return {
     fingerprint: preferredRun.fingerprint || fallbackRun.fingerprint,
-    observedAt: Math.max(preferredRun.observedAt ?? 0, fallbackRun.observedAt ?? 0),
+    observedAt: mergedObservedAt,
     seasonID: preferredRun.seasonID ?? fallbackRun.seasonID,
     mapChallengeModeID: preferredRun.mapChallengeModeID ?? fallbackRun.mapChallengeModeID,
     mapName: preferredRun.mapName ?? fallbackRun.mapName,
@@ -905,9 +914,6 @@ function normalizeStoredMythicPlusRun(runRaw: LuaTable): MythicPlusRunData {
         : undefined),
   };
 
-  if (run.completedInTime === undefined && typeof run.completed === "boolean") {
-    run.completedInTime = run.completed;
-  }
   if (
     run.completed !== true &&
     (run.durationMs !== undefined || run.runScore !== undefined || run.completedAt !== undefined)
@@ -919,12 +925,61 @@ function normalizeStoredMythicPlusRun(runRaw: LuaTable): MythicPlusRunData {
   return run;
 }
 
+function reconcilePendingMembers(
+  runs: MythicPlusRunData[],
+  pending: Record<string, unknown>,
+): boolean {
+  const capturedAt = toOptionalNumber(pending.capturedAt);
+  if (capturedAt === undefined) return false;
+  const pendingMembersRaw = pending.members;
+  if (!Array.isArray(pendingMembersRaw) || pendingMembersRaw.length === 0) return false;
+  const pendingMembers = normalizeMythicPlusRunMembers(pendingMembersRaw);
+  if (!pendingMembers || pendingMembers.length === 0) return false;
+
+  const pendingMap = toOptionalNumber(pending.mapChallengeModeID);
+  const pendingLevel = toOptionalNumber(pending.level);
+  const pendingDurationMs = toOptionalNumber(pending.durationMs);
+
+  // Find the best matching run by completion time proximity
+  let bestIdx = -1;
+  let bestDiff = Infinity;
+  const MATCH_WINDOW = 5 * 60; // 5 minutes
+
+  for (let i = 0; i < runs.length; i++) {
+    const run = runs[i]!;
+    if (run.members && run.members.length > 0) continue; // already has members
+    if (pendingMap !== undefined && run.mapChallengeModeID !== pendingMap) continue;
+    if (pendingLevel !== undefined && run.level !== pendingLevel) continue;
+    if (pendingDurationMs !== undefined && run.durationMs !== undefined) {
+      if (Math.abs(run.durationMs - pendingDurationMs) > 2 * 60 * 1000) continue;
+    }
+
+    const runCompletedAt = run.completedAt ?? (run.startDate && run.durationMs
+      ? run.startDate + Math.floor(run.durationMs / 1000 + 0.5)
+      : undefined);
+    if (runCompletedAt !== undefined) {
+      const diff = Math.abs(runCompletedAt - capturedAt);
+      if (diff <= MATCH_WINDOW && diff < bestDiff) {
+        bestIdx = i;
+        bestDiff = diff;
+      }
+    }
+  }
+
+  if (bestIdx >= 0) {
+    runs[bestIdx]!.members = pendingMembers;
+    return true;
+  }
+  return false;
+}
+
 function extractCharacters(db: Record<string, unknown>): CharacterData[] {
   const characters = (db.characters ?? {}) as Record<string, unknown>;
+  const pendingMembersStore = isRecord(db.pendingMythicPlusMembers) ? db.pendingMythicPlusMembers : {};
   const result: CharacterData[] = [];
   const validRegions: Region[] = ["us", "eu", "kr", "tw"];
 
-  for (const charRaw of Object.values(characters)) {
+  for (const [charKey, charRaw] of Object.entries(characters)) {
     const char = charRaw as Record<string, unknown>;
     const region = String(char.region ?? "us") as Region;
     if (!validRegions.includes(region)) continue;
@@ -987,6 +1042,12 @@ function extractCharacters(db: Record<string, unknown>): CharacterData[] {
     mythicPlusRuns.sort(
       (a, b) => (b.completedAt ?? b.startDate ?? b.observedAt ?? 0) - (a.completedAt ?? a.startDate ?? a.observedAt ?? 0),
     );
+
+    // Reconcile pending members from durable SavedVariables store
+    const pendingPayload = pendingMembersStore[charKey];
+    if (isRecord(pendingPayload)) {
+      reconcilePendingMembers(mythicPlusRuns, pendingPayload);
+    }
 
     result.push({
       name: String(char.name),
@@ -1219,6 +1280,7 @@ function compactMythicPlusRunsInPlace(
 
   const dedupedRuns: unknown[] = [];
   const dedupeKeys: Record<string, boolean> = {};
+  const dedupedIndexByFingerprint: Record<string, number> = {};
 
   for (const runValue of runs) {
     if (!isRecord(runValue)) {
@@ -1294,11 +1356,26 @@ function compactMythicPlusRunsInPlace(
       changed = true;
     }
 
-    if (!runValue.fingerprint || dedupeKeys[String(runValue.fingerprint)]) {
+    if (!runValue.fingerprint) {
       changed = true;
       continue;
     }
-    dedupeKeys[String(runValue.fingerprint)] = true;
+
+    const fpKey = String(runValue.fingerprint);
+    if (dedupeKeys[fpKey]) {
+      // Merge into the existing deduplicated run instead of dropping
+      const existingIdx = dedupedIndexByFingerprint[fpKey];
+      if (existingIdx !== undefined) {
+        const existingRun = dedupedRuns[existingIdx] as Record<string, unknown>;
+        const existingNormalized = normalizeStoredMythicPlusRun(existingRun);
+        const merged = mergeMythicPlusRunData(existingNormalized, normalized);
+        Object.assign(existingRun, merged);
+      }
+      changed = true;
+      continue;
+    }
+    dedupeKeys[fpKey] = true;
+    dedupedIndexByFingerprint[fpKey] = dedupedRuns.length;
 
     if ("source" in runValue) {
       delete runValue.source;

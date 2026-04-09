@@ -42,9 +42,10 @@ function isCompletedRun(run: MythicPlusRunDoc): boolean {
   return run.completed === true || hasRecordedCompletionEvidence(run);
 }
 
-function isTimedRun(run: MythicPlusRunDoc): boolean {
+function isTimedRun(run: MythicPlusRunDoc): boolean | null {
   if (run.completedInTime !== undefined) return run.completedInTime;
-  return run.completed === true;
+  // If timing is truly unknown, return null instead of assuming timed.
+  return null;
 }
 
 function shouldReplaceBestTimedRun(
@@ -59,8 +60,8 @@ function shouldReplaceBestTimedRun(
     return candidateLevel > currentLevel;
   }
 
-  const currentUpgradeCount = getMythicPlusRunUpgradeCount(currentRun);
-  const candidateUpgradeCount = getMythicPlusRunUpgradeCount(candidateRun);
+  const currentUpgradeCount = getMythicPlusRunUpgradeCount(currentRun) ?? -1;
+  const candidateUpgradeCount = getMythicPlusRunUpgradeCount(candidateRun) ?? -1;
   if (candidateUpgradeCount !== currentUpgradeCount) {
     return candidateUpgradeCount > currentUpgradeCount;
   }
@@ -485,7 +486,7 @@ export const getCharacterMythicPlus = query({
         .query("mythicPlusRuns")
         .withIndex("by_character_and_observedAt", (q) => q.eq("characterId", characterId))
         .order("desc")
-        .collect(),
+        .take(300),
       ctx.db
         .query("snapshots")
         .withIndex("by_character_and_time", (q) => q.eq("characterId", characterId))

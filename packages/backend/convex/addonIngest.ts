@@ -259,31 +259,7 @@ export const ingestAddonData = mutation({
         }
       }
 
-      const existingCharacterRuns = await ctx.db
-        .query("mythicPlusRuns")
-        .withIndex("by_character", (q) => q.eq("characterId", characterId))
-        .collect();
-
-      const existingRunsByCanonical = new Map<string, (typeof existingCharacterRuns)[number]>();
-      const existingRunsByLegacyFingerprint = new Map<string, (typeof existingCharacterRuns)[number]>();
-
-      for (const existingRun of existingCharacterRuns) {
-        if (existingRun.fingerprint) {
-          const currentLegacy = existingRunsByLegacyFingerprint.get(existingRun.fingerprint);
-          if (shouldReplaceMythicPlusRun(currentLegacy, existingRun)) {
-            existingRunsByLegacyFingerprint.set(existingRun.fingerprint, existingRun);
-          }
-        }
-
-        const canonicalFingerprint = buildCanonicalMythicPlusRunFingerprint(existingRun);
-        if (canonicalFingerprint) {
-          const currentCanonical = existingRunsByCanonical.get(canonicalFingerprint);
-          if (shouldReplaceMythicPlusRun(currentCanonical, existingRun)) {
-            existingRunsByCanonical.set(canonicalFingerprint, existingRun);
-          }
-        }
-      }
-
+      // Dedup incoming runs by canonical or legacy fingerprint
       const incomingRunsByDedupKey = new Map<string, NonNullable<typeof charData.mythicPlusRuns>[number]>();
       for (const run of charData.mythicPlusRuns ?? []) {
         const canonicalFingerprint = buildCanonicalMythicPlusRunFingerprint(run);
@@ -294,12 +270,31 @@ export const ingestAddonData = mutation({
         }
       }
 
+      // Per-run indexed lookups instead of collecting all character runs
       for (const run of incomingRunsByDedupKey.values()) {
         const canonicalFingerprint = buildCanonicalMythicPlusRunFingerprint(run);
         const nextFingerprint = canonicalFingerprint ?? run.fingerprint;
-        const existingRun =
-          (canonicalFingerprint ? existingRunsByCanonical.get(canonicalFingerprint) : undefined) ??
-          existingRunsByLegacyFingerprint.get(run.fingerprint);
+
+        // Look up by canonical fingerprint first, then fall back to legacy
+        let existingRun = await ctx.db
+          .query("mythicPlusRuns")
+          .withIndex("by_character_and_fingerprint", (q) =>
+            q.eq("characterId", characterId).eq("fingerprint", nextFingerprint),
+          )
+          .first();
+
+        if (
+          !existingRun &&
+          canonicalFingerprint &&
+          canonicalFingerprint !== run.fingerprint
+        ) {
+          existingRun = await ctx.db
+            .query("mythicPlusRuns")
+            .withIndex("by_character_and_fingerprint", (q) =>
+              q.eq("characterId", characterId).eq("fingerprint", run.fingerprint),
+            )
+            .first();
+        }
 
         if (!existingRun) {
           await ctx.db.insert("mythicPlusRuns", {
@@ -370,15 +365,6 @@ export const ingestAddonData = mutation({
 
           if (Object.keys(patch).length > 0) {
             await ctx.db.patch(existingRun._id, patch);
-          }
-
-          const mergedRun = { ...existingRun, ...patch };
-          existingRunsByLegacyFingerprint.set(mergedRun.fingerprint, mergedRun);
-          if (canonicalFingerprint) {
-            const currentCanonical = existingRunsByCanonical.get(canonicalFingerprint);
-            if (shouldReplaceMythicPlusRun(currentCanonical, mergedRun)) {
-              existingRunsByCanonical.set(canonicalFingerprint, mergedRun);
-            }
           }
         }
       }
