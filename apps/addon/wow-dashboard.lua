@@ -887,6 +887,7 @@ end
 
 local function MergeMythicPlusMemberLists(...)
     local mergedByKey = {}
+    local keyByName = {}
     local orderedKeys = {}
 
     for sourceIndex = 1, select("#", ...) do
@@ -896,10 +897,21 @@ local function MergeMythicPlusMemberLists(...)
                 local normalized = NormalizeMythicPlusMember(member)
                 local memberKey = normalized and GetMythicPlusMemberKey(normalized) or nil
                 if memberKey ~= nil then
+                    local memberNameKey = string.lower(normalized.name)
+                    local existingKey = keyByName[memberNameKey]
+                    if existingKey ~= nil then
+                        local existingMember = mergedByKey[existingKey]
+                        local existingRealm = type(existingMember) == "table" and existingMember.realm or nil
+                        local normalizedRealm = normalized.realm
+                        if existingRealm == nil or normalizedRealm == nil or existingRealm == normalizedRealm then
+                            memberKey = existingKey
+                        end
+                    end
                     if mergedByKey[memberKey] == nil then
                         orderedKeys[#orderedKeys + 1] = memberKey
                     end
                     mergedByKey[memberKey] = MergeMythicPlusMember(mergedByKey[memberKey], normalized)
+                    keyByName[memberNameKey] = memberKey
                 end
             end
         end
@@ -1287,6 +1299,9 @@ end
 
 local function CaptureCompletedRunMembers()
     local characterKey = GetCharKey()
+    local key, name, realm, charInfo = GetCharacterIdentity()
+    local entry = EnsureCharacterEntry(key, name, realm, charInfo)
+    local latestStoredRun = type(entry.mythicPlusRuns) == "table" and entry.mythicPlusRuns[1] or nil
     local completionMembers, completionInfo = CaptureCompletionInfoMembers()
     local liveMembers, liveInfo = CaptureLiveGroupMembers()
     local activeCache = GetActiveMythicPlusMemberCache(characterKey)
@@ -1354,6 +1369,9 @@ local function CaptureCompletedRunMembers()
         durationMs = completionInfo.durationMs,
         completedInTime = completionInfo.completedInTime,
         keystoneUpgradeLevels = completionInfo.keystoneUpgradeLevels,
+        historyRunCount = type(entry.mythicPlusRuns) == "table" and #entry.mythicPlusRuns or 0,
+        latestKnownRunFingerprint = type(latestStoredRun) == "table" and latestStoredRun.fingerprint or nil,
+        latestKnownRunSortValue = type(latestStoredRun) == "table" and GetRunSortValue(latestStoredRun) or nil,
     }, { reason = source })
     ClearActiveMythicPlusMemberCache(characterKey, "completed_to_pending")
 end
@@ -1461,6 +1479,10 @@ local function AttachPendingCompletedRunMembers(runs, characterKey)
     local pendingLevel = tonumber(pending.level)
     local pendingCompletedInTime = type(pending.completedInTime) == "boolean" and pending.completedInTime or nil
     local pendingDurationMs = tonumber(pending.durationMs)
+    local pendingHistoryRunCount = tonumber(pending.historyRunCount)
+    local pendingLatestRunFingerprint =
+        type(pending.latestKnownRunFingerprint) == "string" and pending.latestKnownRunFingerprint or nil
+    local pendingLatestRunSortValue = tonumber(pending.latestKnownRunSortValue)
 
     AppendMythicPlusDebugEvent(characterKey, "attach_attempt", {
         summary = "runs " .. tostring(#runs),
@@ -1470,6 +1492,7 @@ local function AttachPendingCompletedRunMembers(runs, characterKey)
         pendingLevel = pendingLevel,
         pendingCompletedInTime = pendingCompletedInTime,
         pendingDurationMs = pendingDurationMs,
+        pendingHistoryRunCount = pendingHistoryRunCount,
     })
 
     for index, run in ipairs(runs) do
@@ -1515,30 +1538,50 @@ local function AttachPendingCompletedRunMembers(runs, characterKey)
             local levelMatches = pendingLevel == nil or tonumber(run.level) == pendingLevel
             local improvedMembers = GetImprovedMythicPlusMembers(run.members, pending.members)
             if mapMatches and levelMatches and improvedMembers ~= nil then
-                local durationDiff = nil
-                local runDurationMs = GetRunDurationMs(run)
-                if pendingDurationMs ~= nil and runDurationMs ~= nil then
-                    durationDiff = math.abs(runDurationMs - pendingDurationMs)
+                local runSortValue = GetRunSortValue(run)
+                local isAfterCapture = true
+                if pendingLatestRunFingerprint ~= nil or pendingLatestRunSortValue ~= nil or pendingHistoryRunCount ~= nil then
+                    isAfterCapture = false
+                    if pendingLatestRunSortValue ~= nil and runSortValue > pendingLatestRunSortValue then
+                        isAfterCapture = true
+                    elseif
+                        pendingLatestRunSortValue == nil
+                        and pendingLatestRunFingerprint ~= nil
+                        and type(run.fingerprint) == "string"
+                        and run.fingerprint ~= pendingLatestRunFingerprint
+                    then
+                        isAfterCapture = true
+                    elseif pendingHistoryRunCount ~= nil and #runs > pendingHistoryRunCount then
+                        isAfterCapture = true
+                    end
                 end
 
-                local completionDiff = nil
-                local runCompletedAt = GetRunCompletionEstimate(run)
-                if runCompletedAt ~= nil then
-                    completionDiff = math.abs(runCompletedAt - capturedAt)
-                end
+                if isAfterCapture then
+                    local durationDiff = nil
+                    local runDurationMs = GetRunDurationMs(run)
+                    if pendingDurationMs ~= nil and runDurationMs ~= nil then
+                        durationDiff = math.abs(runDurationMs - pendingDurationMs)
+                    end
 
-                fallbackCandidates[#fallbackCandidates + 1] = {
-                    index = index,
-                    durationDiff = durationDiff,
-                    completionDiff = completionDiff,
-                    outcomeMatches =
-                        pendingCompletedInTime == nil
-                        or run.completedInTime == nil
-                        or run.completedInTime == pendingCompletedInTime,
-                    mergedMembers = improvedMembers,
-                    thisWeek = run.thisWeek == true,
-                    run = run,
-                }
+                    local completionDiff = nil
+                    local runCompletedAt = GetRunCompletionEstimate(run)
+                    if runCompletedAt ~= nil then
+                        completionDiff = math.abs(runCompletedAt - capturedAt)
+                    end
+
+                    fallbackCandidates[#fallbackCandidates + 1] = {
+                        index = index,
+                        durationDiff = durationDiff,
+                        completionDiff = completionDiff,
+                        outcomeMatches =
+                            pendingCompletedInTime == nil
+                            or run.completedInTime == nil
+                            or run.completedInTime == pendingCompletedInTime,
+                        mergedMembers = improvedMembers,
+                        thisWeek = run.thisWeek == true,
+                        run = run,
+                    }
+                end
             end
         end
 

@@ -621,12 +621,24 @@ function getTertiaryStats(snapshot: Snapshot) {
 function MythicPlusResultBadge({ run }: { run: MythicPlusRun }) {
   if (isTimedMythicPlusRun(run)) {
     const upgradeCount = Math.max(1, Math.min(3, run.upgradeCount ?? 1));
-    return <Badge className="bg-emerald-500/15 text-emerald-300 border-emerald-500/30">{`+${upgradeCount}`}</Badge>;
+    return (
+      <Badge className="rounded-md border-emerald-400/40 bg-emerald-500/18 px-1.5 py-0.5 text-[11px] font-semibold tracking-[0.08em] text-emerald-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+        {`+${upgradeCount}`}
+      </Badge>
+    );
   }
   if (isCompletedMythicPlusRun(run)) {
-    return <Badge className="bg-amber-500/15 text-amber-300 border-amber-500/30">Deplete</Badge>;
+    return (
+      <Badge className="rounded-md border-amber-400/35 bg-amber-500/16 px-1.5 py-0.5 text-[11px] font-semibold tracking-[0.08em] text-amber-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+        Deplete
+      </Badge>
+    );
   }
-  return <Badge className="bg-rose-500/15 text-rose-300 border-rose-500/30">Failed</Badge>;
+  return (
+    <Badge className="rounded-md border-rose-400/35 bg-rose-500/16 px-1.5 py-0.5 text-[11px] font-semibold tracking-[0.08em] text-rose-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+      Failed
+    </Badge>
+  );
 }
 
 function MythicPlusSection({
