@@ -474,11 +474,108 @@ function formatRunMemberName(member: MythicPlusRunMember, characterRealm: string
   return `${member.name}-${member.realm}`;
 }
 
+function getRunMemberCompletenessScore(member: MythicPlusRunMember) {
+  let score = 0;
+  if (member.name.trim() !== "") score += 1;
+  if (member.realm?.trim()) score += 2;
+  if (member.classTag?.trim()) score += 2;
+  if (member.role?.trim()) score += 2;
+  return score;
+}
+
+function mergeDisplayedRunMember(
+  current: MythicPlusRunMember,
+  candidate: MythicPlusRunMember,
+): MythicPlusRunMember {
+  const currentScore = getRunMemberCompletenessScore(current);
+  const candidateScore = getRunMemberCompletenessScore(candidate);
+  const preferred = candidateScore >= currentScore ? candidate : current;
+  const fallback = preferred === candidate ? current : candidate;
+
+  return {
+    name: preferred.name || fallback.name,
+    realm: preferred.realm || fallback.realm,
+    classTag: preferred.classTag || fallback.classTag,
+    role: preferred.role || fallback.role,
+  };
+}
+
+function getRunMemberRoleSortOrder(member: MythicPlusRunMember) {
+  const normalizedRole = member.role?.trim().toLowerCase();
+  if (normalizedRole === "tank") return 0;
+  if (normalizedRole === "dps") return 1;
+  if (normalizedRole === "healer") return 2;
+  return 3;
+}
+
 function getDisplayedRunMembers(members: MythicPlusRunMember[] | undefined) {
   if (!members || members.length === 0) {
     return [];
   }
-  return members.slice(0, 5);
+
+  const dedupedMembers: MythicPlusRunMember[] = [];
+  const exactMemberIndexByKey = new Map<string, number>();
+  const memberIndexesByName = new Map<string, number[]>();
+
+  for (const member of members) {
+    const normalizedName = member.name.trim();
+    if (normalizedName === "") {
+      continue;
+    }
+
+    const normalizedRealm = member.realm?.trim() || "";
+    const exactKey = `${normalizedName.toLowerCase()}|${normalizedRealm.toLowerCase()}`;
+    const nameKey = normalizedName.toLowerCase();
+
+    const exactIndex = exactMemberIndexByKey.get(exactKey);
+    if (exactIndex !== undefined) {
+      dedupedMembers[exactIndex] = mergeDisplayedRunMember(dedupedMembers[exactIndex]!, member);
+      continue;
+    }
+
+    const sameNameIndexes = memberIndexesByName.get(nameKey) ?? [];
+    const mergeTargetIndex = sameNameIndexes.find((index) => {
+      const existing = dedupedMembers[index];
+      if (!existing) return false;
+      const existingRealm = existing.realm?.trim() || "";
+      return (
+        (existingRealm === "" && normalizedRealm !== "") ||
+        (existingRealm !== "" && normalizedRealm === "")
+      );
+    });
+
+    if (mergeTargetIndex !== undefined) {
+      const existingMember = dedupedMembers[mergeTargetIndex]!;
+      const previousExactKey = `${existingMember.name.trim().toLowerCase()}|${(existingMember.realm?.trim() || "").toLowerCase()}`;
+      const mergedMember = mergeDisplayedRunMember(existingMember, member);
+      dedupedMembers[mergeTargetIndex] = mergedMember;
+
+      const mergedExactKey = `${mergedMember.name.trim().toLowerCase()}|${(mergedMember.realm?.trim() || "").toLowerCase()}`;
+      exactMemberIndexByKey.delete(previousExactKey);
+      exactMemberIndexByKey.set(mergedExactKey, mergeTargetIndex);
+      continue;
+    }
+
+    const nextIndex = dedupedMembers.length;
+    dedupedMembers.push(member);
+    exactMemberIndexByKey.set(exactKey, nextIndex);
+    memberIndexesByName.set(nameKey, [...sameNameIndexes, nextIndex]);
+  }
+
+  return dedupedMembers
+    .map((member, index) => ({
+      member,
+      index,
+      roleSortOrder: getRunMemberRoleSortOrder(member),
+    }))
+    .sort((a, b) => {
+      if (a.roleSortOrder !== b.roleSortOrder) {
+        return a.roleSortOrder - b.roleSortOrder;
+      }
+      return a.index - b.index;
+    })
+    .slice(0, 5)
+    .map(({ member }) => member);
 }
 
 // ── Hidden-player helpers ────────────────────────────────────────────────────
