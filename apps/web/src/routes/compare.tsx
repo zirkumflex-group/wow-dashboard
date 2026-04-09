@@ -15,6 +15,7 @@ import { useQuery } from "convex/react";
 import { Scale } from "lucide-react";
 import { useState } from "react";
 import { Area, AreaChart, CartesianGrid, XAxis, YAxis } from "recharts";
+import { getClassTextColor } from "../lib/class-colors";
 
 export const Route = createFileRoute("/compare")({
   beforeLoad: ({ context }) => {
@@ -25,22 +26,6 @@ export const Route = createFileRoute("/compare")({
 
 // ---- Constants ----
 
-const CLASS_COLORS: Record<string, string> = {
-  warrior: "text-amber-500",
-  paladin: "text-pink-400",
-  hunter: "text-green-500",
-  rogue: "text-yellow-400",
-  priest: "text-gray-100",
-  "death knight": "text-red-500",
-  shaman: "text-blue-400",
-  mage: "text-cyan-400",
-  warlock: "text-purple-400",
-  monk: "text-emerald-400",
-  druid: "text-orange-400",
-  "demon hunter": "text-violet-500",
-  evoker: "text-teal-400",
-};
-
 const CHART_COLORS = [
   "var(--chart-1)",
   "var(--chart-2)",
@@ -50,7 +35,7 @@ const CHART_COLORS = [
 ];
 
 function classColor(cls: string) {
-  return CLASS_COLORS[cls.toLowerCase()] ?? "text-foreground";
+  return getClassTextColor(cls);
 }
 
 // ---- Stat options ----

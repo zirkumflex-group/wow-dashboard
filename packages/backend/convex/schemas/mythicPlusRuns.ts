@@ -1,6 +1,15 @@
 import { defineTable } from "convex/server";
 import { v } from "convex/values";
 
+const mythicPlusRunMemberFields = {
+  name: v.string(),
+  realm: v.optional(v.string()),
+  classTag: v.optional(v.string()),
+  role: v.optional(v.union(v.literal("tank"), v.literal("healer"), v.literal("dps"))),
+} as const;
+
+export const mythicPlusRunMemberValidator = v.object(mythicPlusRunMemberFields);
+
 const mythicPlusRunFields = {
   fingerprint: v.string(),
   observedAt: v.number(),
@@ -15,6 +24,7 @@ const mythicPlusRunFields = {
   startDate: v.optional(v.number()),
   completedAt: v.optional(v.number()),
   thisWeek: v.optional(v.boolean()),
+  members: v.optional(v.array(mythicPlusRunMemberValidator)),
 } as const;
 
 export const mythicPlusRunValidator = v.object(mythicPlusRunFields);

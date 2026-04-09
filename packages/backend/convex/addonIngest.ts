@@ -1,10 +1,11 @@
 import { v } from "convex/values";
 import type { Doc } from "./_generated/dataModel";
 
-import { mutation, query } from "./_generated/server";
+import { mutation } from "./_generated/server";
 import { authComponent } from "./auth";
 import {
   buildCanonicalMythicPlusRunFingerprint,
+  mergeMythicPlusRunMembers,
   shouldReplaceMythicPlusRun,
 } from "./mythicPlus";
 import { rateLimiter } from "./rateLimiter";
@@ -64,6 +65,8 @@ type SnapshotFields = Pick<
   | "currencies"
   | "stats"
 >;
+type MythicPlusRunDoc = Doc<"mythicPlusRuns">;
+type MythicPlusRunMembers = MythicPlusRunDoc["members"];
 
 function toSnapshotFields(snapshot: SnapshotFields): SnapshotFields {
   return {
@@ -101,6 +104,20 @@ function snapshotFieldsEqual(a: SnapshotFields, b: SnapshotFields) {
   return JSON.stringify(toSnapshotFields(a)) === JSON.stringify(toSnapshotFields(b));
 }
 
+function getMergedRunMembers(
+  currentMembers: MythicPlusRunMembers | undefined,
+  candidateMembers: MythicPlusRunMembers | undefined,
+) {
+  const mergedMembers = mergeMythicPlusRunMembers(currentMembers, candidateMembers);
+  if (!mergedMembers) {
+    return undefined;
+  }
+
+  return JSON.stringify(currentMembers ?? []) === JSON.stringify(mergedMembers)
+    ? undefined
+    : mergedMembers;
+}
+
 const characterValidator = v.object({
   name: v.string(),
   realm: v.string(),
@@ -110,53 +127,6 @@ const characterValidator = v.object({
   faction: v.union(v.literal("alliance"), v.literal("horde")),
   snapshots: v.array(snapshotValidator),
   mythicPlusRuns: v.optional(v.array(mythicPlusRunValidator)),
-});
-
-export const getMythicPlusBackfillStatus = query({
-  args: {},
-  handler: async (ctx) => {
-    const authUser = await authComponent.safeGetAuthUser(ctx);
-    if (!authUser) {
-      return { needsBackfill: false, missingMapNameRuns: 0 };
-    }
-
-    const player = await ctx.db
-      .query("players")
-      .withIndex("by_user", (q) => q.eq("userId", authUser._id as string))
-      .first();
-
-    if (!player) {
-      return { needsBackfill: false, missingMapNameRuns: 0 };
-    }
-
-    const characters = await ctx.db
-      .query("characters")
-      .withIndex("by_player", (q) => q.eq("playerId", player._id))
-      .collect();
-
-    const runsByCharacter = await Promise.all(
-      characters.map((character) =>
-        ctx.db
-          .query("mythicPlusRuns")
-          .withIndex("by_character", (q) => q.eq("characterId", character._id))
-          .collect(),
-      ),
-    );
-
-    let missingMapNameRuns = 0;
-    for (const runs of runsByCharacter) {
-      for (const run of runs) {
-        if (!run.mapName || run.mapName.trim() === "") {
-          missingMapNameRuns += 1;
-        }
-      }
-    }
-
-    return {
-      needsBackfill: missingMapNameRuns > 0,
-      missingMapNameRuns,
-    };
-  },
 });
 
 export const ingestAddonData = mutation({
@@ -335,6 +305,7 @@ export const ingestAddonData = mutation({
             startDate: run.startDate,
             completedAt: run.completedAt,
             thisWeek: run.thisWeek,
+            members: run.members,
           });
           newMythicPlusRuns++;
         } else {
@@ -351,6 +322,7 @@ export const ingestAddonData = mutation({
             startDate?: number;
             completedAt?: number;
             thisWeek?: boolean;
+            members?: MythicPlusRunMembers;
           } = {};
 
           if (existingRun.fingerprint !== nextFingerprint) patch.fingerprint = nextFingerprint;
@@ -379,6 +351,10 @@ export const ingestAddonData = mutation({
             patch.completedAt = run.completedAt;
           }
           if (existingRun.thisWeek === undefined && run.thisWeek !== undefined) patch.thisWeek = run.thisWeek;
+          const mergedMembers = getMergedRunMembers(existingRun.members, run.members);
+          if (mergedMembers !== undefined) {
+            patch.members = mergedMembers;
+          }
 
           if (Object.keys(patch).length > 0) {
             await ctx.db.patch(existingRun._id, patch);

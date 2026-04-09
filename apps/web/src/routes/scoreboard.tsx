@@ -17,6 +17,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@wow-dashboard/ui/comp
 import { useQuery } from "convex/react";
 import { ArrowDown, ArrowUp, ArrowUpDown, Trophy, Users } from "lucide-react";
 import { useState } from "react";
+import { getClassTextColor } from "../lib/class-colors";
 
 const HIDE_BELOW_90_KEY = "wow_dashboard_hide_below_90";
 const MIN_ILVL_KEY = "wow_dashboard_min_ilvl";
@@ -46,24 +47,8 @@ export const Route = createFileRoute("/scoreboard")({
   component: RouteComponent,
 });
 
-const CLASS_COLORS: Record<string, string> = {
-  warrior: "text-amber-500",
-  paladin: "text-pink-400",
-  hunter: "text-green-500",
-  rogue: "text-yellow-400",
-  priest: "text-gray-100",
-  "death knight": "text-red-500",
-  shaman: "text-blue-400",
-  mage: "text-cyan-400",
-  warlock: "text-purple-400",
-  monk: "text-emerald-400",
-  druid: "text-orange-400",
-  "demon hunter": "text-violet-500",
-  evoker: "text-teal-400",
-};
-
 function classColor(cls: string) {
-  return CLASS_COLORS[cls.toLowerCase()] ?? "text-foreground";
+  return getClassTextColor(cls);
 }
 
 const MEDAL: Record<number, string> = { 0: "🥇", 1: "🥈", 2: "🥉" };

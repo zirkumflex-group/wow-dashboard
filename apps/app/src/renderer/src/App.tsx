@@ -54,6 +54,12 @@ interface MythicPlusRunData {
   startDate?: number;
   completedAt?: number;
   thisWeek?: boolean;
+  members?: {
+    name: string;
+    realm?: string;
+    classTag?: string;
+    role?: "tank" | "healer" | "dps";
+  }[];
 }
 
 interface CharacterData {
@@ -94,11 +100,6 @@ interface CompactAddonResult {
 interface PendingUploadCounts {
   snapshots: number;
   mythicPlusRuns: number;
-}
-
-interface MythicPlusBackfillStatus {
-  needsBackfill: boolean;
-  missingMapNameRuns: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -271,19 +272,25 @@ function isUploadableSnapshot(snapshot: SnapshotData, sinceTs: number) {
   return snapshot.takenAt > sinceTs && hasUploadableSnapshotSpec(snapshot.spec);
 }
 
+const MYTHIC_PLUS_UPLOAD_LOOKBACK_SECONDS = 2 * 60 * 60;
+
+function isUploadableMythicPlusRun(run: MythicPlusRunData, sinceTs: number) {
+  const nowTs = Math.floor(Date.now() / 1000);
+  const effectiveSinceTs = Math.min(sinceTs, nowTs - MYTHIC_PLUS_UPLOAD_LOOKBACK_SECONDS);
+  const lastRelevantAt = run.observedAt ?? run.completedAt ?? run.startDate ?? 0;
+  return lastRelevantAt > effectiveSinceTs;
+}
+
 function getPendingUploadCounts(
   chars: CharacterData[],
   sinceTs: number,
-  includeAllMythicPlusRuns = false,
 ): PendingUploadCounts {
   return chars.reduce(
     (totals, char) => ({
       snapshots: totals.snapshots + char.snapshots.filter((snapshot) => isUploadableSnapshot(snapshot, sinceTs)).length,
       mythicPlusRuns:
         totals.mythicPlusRuns +
-        (includeAllMythicPlusRuns
-          ? char.mythicPlusRuns.length
-          : char.mythicPlusRuns.filter((run) => run.observedAt > sinceTs).length),
+        char.mythicPlusRuns.filter((run) => isUploadableMythicPlusRun(run, sinceTs)).length,
     }),
     { snapshots: 0, mythicPlusRuns: 0 },
   );
@@ -372,11 +379,6 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
   const uploadAddon = useMutation(api.addonIngest.ingestAddonData);
   const resync = useMutation(api.characters.resyncCharacters);
   const characters = useQuery(api.characters.getMyCharactersWithSnapshot);
-  // The checked-in Convex API typings lag the local module exports, so this
-  // query reference is cast until codegen is cleaned up separately.
-  const mythicPlusBackfillStatus = useQuery(
-    (api as any).addonIngest.getMythicPlusBackfillStatus,
-  ) as MythicPlusBackfillStatus | undefined;
 
   const [syncing, setSyncing] = useState(false);
   const [timeLeft, setTimeLeft] = useState(15 * 60);
@@ -418,8 +420,6 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
   // Always points to the latest doUpload closure so stale-closure effects stay current.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const doUploadRef = useRef<() => Promise<void>>(null as any);
-  const needsMythicPlusBackfill = mythicPlusBackfillStatus?.needsBackfill === true;
-
   const refreshAddonFileState = useCallback(async () => {
     if (!retailPath) {
       setPendingUploadCounts(null);
@@ -437,13 +437,13 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
 
       const { characters: chars, fileStats } = addonData;
       const sinceTs = lastSyncedAtRef.current - 60;
-      setPendingUploadCounts(getPendingUploadCounts(chars, sinceTs, needsMythicPlusBackfill));
+      setPendingUploadCounts(getPendingUploadCounts(chars, sinceTs));
       setAddonFileStats(fileStats);
     } catch {
       setPendingUploadCounts({ snapshots: 0, mythicPlusRuns: 0 });
       setAddonFileStats(null);
     }
-  }, [needsMythicPlusBackfill, retailPath]);
+  }, [retailPath]);
 
   // Load persisted settings on mount
   useEffect(() => {
@@ -616,15 +616,11 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
             .map((c) => ({
               ...c,
               snapshots: c.snapshots.filter((snapshot) => isUploadableSnapshot(snapshot, sinceTs)),
-              mythicPlusRuns: needsMythicPlusBackfill
-                ? c.mythicPlusRuns
-                : c.mythicPlusRuns.filter((run) => run.observedAt > sinceTs),
+              mythicPlusRuns: c.mythicPlusRuns.filter((run) => isUploadableMythicPlusRun(run, sinceTs)),
             }))
             .filter((c) => c.snapshots.length > 0 || c.mythicPlusRuns.length > 0);
 
-          setPendingUploadCounts(
-            getPendingUploadCounts(addonChars, sinceTs, needsMythicPlusBackfill),
-          );
+          setPendingUploadCounts(getPendingUploadCounts(addonChars, sinceTs));
 
           if (pendingChars.length > 0) {
             const result = await uploadAddon({
