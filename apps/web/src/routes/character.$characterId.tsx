@@ -73,6 +73,12 @@ const RUN_FULL_DATE_TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
   hour: "2-digit",
   minute: "2-digit",
 });
+const CARD_DATE_TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
+  month: "short",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+});
 
 // ── Time frame ───────────────────────────────────────────────────────────────
 
@@ -319,6 +325,11 @@ function formatRunTime(ts?: number | null) {
 function formatRunDateTime(ts?: number | null) {
   if (!ts) return "--";
   return RUN_FULL_DATE_TIME_FORMATTER.format(new Date(ts * 1000));
+}
+
+function formatCardDateTime(ts?: number | null) {
+  if (!ts) return "--";
+  return CARD_DATE_TIME_FORMATTER.format(new Date(ts * 1000));
 }
 
 function formatSeasonLabel(seasonID: number | null) {
@@ -2574,16 +2585,19 @@ function RouteComponent() {
 
   const { character, snapshots } = data;
   const isPinnedToQuickAccess = pinnedCharacterIdSet.has(characterId);
+  const mythicPlusData = mythicPlus as MythicPlusData | null | undefined;
 
   const latest = snapshots[snapshots.length - 1] ?? null;
+  const firstSnapshot = snapshots[0] ?? null;
   const timeFrameFiltered = filterByTimeFrame(snapshots, timeFrame);
   const chartSnapshots = groupSnapshotsAuto(timeFrameFiltered);
+  const lastMythicPlusRunAt = mythicPlusData?.summary.overall.lastRunAt ?? null;
 
   const layoutProps: LayoutProps = {
     latest: latest!,
     chartSnapshots,
     filteredSnapshots: snapshots,
-    mythicPlus: mythicPlus as MythicPlusData | null | undefined,
+    mythicPlus: mythicPlusData,
     characterRealm: character.realm,
     characterRegion: character.region,
     timeFrame,
@@ -2732,23 +2746,29 @@ function RouteComponent() {
               </div>
               <div className="rounded-md border border-border/60 bg-card px-4 py-3">
                 <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground/75">
-                  Snapshot
+                  Tracking
                 </div>
                 <div className="mt-3 space-y-2">
-                  <StatRow label="Captured" value={formatDate(latest.takenAt)} />
-                  <StatRow label="History" value={`${snapshots.length} entries`} />
+                  <StatRow label="Since" value={formatDate(firstSnapshot?.takenAt ?? latest.takenAt)} />
+                  <StatRow label="Snapshots" value={snapshots.length.toLocaleString()} />
                 </div>
               </div>
               <div className="rounded-md border border-border/60 bg-card px-4 py-3">
                 <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground/75">
-                  Status
+                  Activity
                 </div>
                 <div className="mt-3 space-y-2">
+                  <StatRow label="Last Snapshot" value={formatCardDateTime(latest.takenAt)} />
                   <StatRow
-                    label="Faction"
-                    value={character.faction === "alliance" ? "Alliance" : "Horde"}
+                    label="Last M+ Run"
+                    value={
+                      mythicPlusData === undefined
+                        ? "Loading..."
+                        : lastMythicPlusRunAt
+                          ? formatCardDateTime(lastMythicPlusRunAt)
+                          : "No runs"
+                    }
                   />
-                  <StatRow label="Pinned" value={isPinnedToQuickAccess ? "Yes" : "No"} />
                 </div>
               </div>
             </div>
