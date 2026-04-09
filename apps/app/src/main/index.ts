@@ -12,6 +12,8 @@ import {
   nativeImage,
 } from "electron";
 import { autoUpdater } from "electron-updater";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import * as fs from "fs";
 import * as path from "path";
 import { join, resolve, sep } from "path";
@@ -34,6 +36,7 @@ let cachedElectronToken: string | null = null;
 let storedSessionToken: string | null = null;
 let pendingLoginResolve: ((token: string) => void) | null = null;
 let pendingLoginReject: ((err: Error) => void) | null = null;
+const execFileAsync = promisify(execFile);
 
 // ─── Token persistence via OS keychain (safeStorage) ──────────────────────────
 
@@ -1597,6 +1600,9 @@ ipcMain.handle("wow:selectRetailFolder", async () => {
   const settings = await getSettings();
   settings.retailPath = folder;
   await saveSettings(settings);
+  void stageLatestAddonUpdate().catch((error) => {
+    console.warn("[wow-dashboard] Failed to stage addon update after folder selection:", error);
+  });
   return folder;
 });
 
@@ -1642,6 +1648,56 @@ ipcMain.handle("wow:unwatchAddonFile", () => {
 });
 
 // Addon installation
+const GITHUB_REPO = "zirkumflex-group/wow-dashboard";
+
+interface AddonReleaseInfo {
+  url: string;
+  checksumUrl: string | null;
+  version: string;
+}
+
+interface StagedAddonUpdate {
+  version: string;
+  checksumUrl: string | null;
+  downloadedAt: number;
+}
+
+function getAddonPath(retailPath: string): string {
+  return join(retailPath, "Interface", "AddOns", "wow-dashboard");
+}
+
+function getAddonTocPath(retailPath: string): string {
+  return join(getAddonPath(retailPath), "wow-dashboard.toc");
+}
+
+function getAddonUpdateStageDir(): string {
+  return join(app.getPath("userData"), "addon-update");
+}
+
+function getStagedAddonZipPath(): string {
+  return join(getAddonUpdateStageDir(), "wow-dashboard.zip");
+}
+
+function getStagedAddonChecksumPath(): string {
+  return join(getAddonUpdateStageDir(), "wow-dashboard.zip.sha256");
+}
+
+function getStagedAddonMetaPath(): string {
+  return join(getAddonUpdateStageDir(), "staged.json");
+}
+
+function isOutdatedVersion(installed: string, latest: string): boolean {
+  const a = installed.split(".").map(Number);
+  const b = latest.split(".").map(Number);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const ai = a[i] ?? 0;
+    const bi = b[i] ?? 0;
+    if (ai < bi) return true;
+    if (ai > bi) return false;
+  }
+  return false;
+}
+
 function downloadFile(url: string, destPath: string): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const request = net.request({ url, useSessionCookies: false });
@@ -1688,32 +1744,24 @@ async function extractZip(zipPath: string, destDir: string): Promise<void> {
   }
 }
 
-ipcMain.handle("wow:checkAddonInstalled", async () => {
-  const settings = await getSettings();
-  const retailPath = settings.retailPath as string | undefined;
-  if (!retailPath) return false;
-  const addonPath = join(retailPath, "Interface", "AddOns", "wow-dashboard");
+async function isAddonInstalledForRetailPath(retailPath: string): Promise<boolean> {
   try {
-    await fs.promises.access(addonPath, fs.constants.F_OK);
+    await fs.promises.access(getAddonPath(retailPath), fs.constants.F_OK);
     return true;
   } catch {
     return false;
   }
-});
+}
 
-ipcMain.handle("wow:getInstalledAddonVersion", async () => {
-  const settings = await getSettings();
-  const retailPath = settings.retailPath as string | undefined;
-  if (!retailPath) return null;
-  const tocPath = join(retailPath, "Interface", "AddOns", "wow-dashboard", "wow-dashboard.toc");
+async function getInstalledAddonVersionForRetailPath(retailPath: string): Promise<string | null> {
   try {
-    const content = await fs.promises.readFile(tocPath, "utf-8");
+    const content = await fs.promises.readFile(getAddonTocPath(retailPath), "utf-8");
     const match = content.match(/^##\s*Version:\s*(.+)$/m);
     return match?.[1]?.trim() ?? null;
   } catch {
     return null;
   }
-});
+}
 
 function validateGitHubUrl(url: string): void {
   let parsedUrl: URL;
@@ -1740,45 +1788,61 @@ async function computeFileSha256(filePath: string): Promise<string> {
   });
 }
 
-ipcMain.handle("wow:installAddon", async (_, downloadUrl: string, checksumUrl: string) => {
-  // Validate both URLs come from GitHub only.
+async function verifyAddonPackage(zipPath: string, checksumPath: string | null): Promise<void> {
+  if (!checksumPath) return;
+  const checksumContent = await fs.promises.readFile(checksumPath, "utf-8");
+  const expectedHash = checksumContent.trim().split(/\s+/)[0];
+  const actualHash = await computeFileSha256(zipPath);
+  if (actualHash !== expectedHash) {
+    throw new Error(
+      `Checksum mismatch - addon package may be corrupted or tampered with.\nExpected: ${expectedHash}\nGot: ${actualHash}`,
+    );
+  }
+}
+
+async function downloadAddonPackage(
+  downloadUrl: string,
+  checksumUrl: string | null,
+  zipPath: string,
+  checksumPath: string | null,
+): Promise<void> {
   validateGitHubUrl(downloadUrl);
   if (checksumUrl) validateGitHubUrl(checksumUrl);
 
-  const settings = await getSettings();
-  const retailPath = settings.retailPath as string | undefined;
-  if (!retailPath) throw new Error("WoW retail path is not configured");
+  await fs.promises.mkdir(path.dirname(zipPath), { recursive: true });
+  await downloadFile(downloadUrl, zipPath);
 
-  const tmpDir = os.tmpdir();
-  const zipPath = join(tmpDir, "wow-dashboard-addon.zip");
-  const checksumPath = join(tmpDir, "wow-dashboard-addon.zip.sha256");
-  const extractDir = join(tmpDir, "wow-dashboard-addon-extract");
+  if (!checksumUrl) {
+    if (checksumPath) {
+      await fs.promises.rm(checksumPath, { force: true }).catch(() => {});
+    }
+    return;
+  }
+
+  if (!checksumPath) {
+    throw new Error("Checksum URL provided without a checksum destination");
+  }
+
+  await downloadFile(checksumUrl, checksumPath);
+  await verifyAddonPackage(zipPath, checksumPath);
+}
+
+async function installAddonFromPackage(
+  retailPath: string,
+  zipPath: string,
+  checksumPath: string | null,
+): Promise<void> {
+  await verifyAddonPackage(zipPath, checksumPath);
+
+  const extractDir = await fs.promises.mkdtemp(join(os.tmpdir(), "wow-dashboard-addon-extract-"));
   const addonsDir = join(retailPath, "Interface", "AddOns");
   const addonDest = join(addonsDir, "wow-dashboard");
 
   try {
-    await downloadFile(downloadUrl, zipPath);
-
-    // Verify SHA256 checksum if a checksum URL was provided.
-    if (checksumUrl) {
-      await downloadFile(checksumUrl, checksumPath);
-      const checksumContent = await fs.promises.readFile(checksumPath, "utf-8");
-      const expectedHash = checksumContent.trim().split(/\s+/)[0];
-      const actualHash = await computeFileSha256(zipPath);
-      if (actualHash !== expectedHash) {
-        throw new Error(
-          `Checksum mismatch — addon package may be corrupted or tampered with.\nExpected: ${expectedHash}\nGot: ${actualHash}`,
-        );
-      }
-    }
-
-    await fs.promises.rm(extractDir, { recursive: true, force: true });
-    await fs.promises.mkdir(extractDir, { recursive: true });
-
     await extractZip(zipPath, extractDir);
 
     const entries = await fs.promises.readdir(extractDir, { withFileTypes: true });
-    const dirs = entries.filter((e) => e.isDirectory());
+    const dirs = entries.filter((entry) => entry.isDirectory());
     const addonSrc =
       dirs.length === 1
         ? (() => {
@@ -1796,15 +1860,11 @@ ipcMain.handle("wow:installAddon", async (_, downloadUrl: string, checksumUrl: s
     await fs.promises.rm(addonDest, { recursive: true, force: true });
     await fs.promises.cp(addonSrc, addonDest, { recursive: true });
   } finally {
-    await fs.promises.rm(zipPath, { force: true }).catch(() => {});
-    await fs.promises.rm(checksumPath, { force: true }).catch(() => {});
     await fs.promises.rm(extractDir, { recursive: true, force: true }).catch(() => {});
   }
-});
+}
 
-const GITHUB_REPO = "zirkumflex-group/wow-dashboard";
-
-ipcMain.handle("wow:getLatestAddonRelease", async () => {
+async function fetchLatestAddonRelease(): Promise<AddonReleaseInfo> {
   const res = await net.fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases`, {
     headers: { Accept: "application/vnd.github+json" },
   });
@@ -1813,19 +1873,206 @@ ipcMain.handle("wow:getLatestAddonRelease", async () => {
   const releases = (await res.json()) as any[];
   const addonRelease = releases.find(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (r: any) => r.tag_name.startsWith("addon-v") && !r.draft && !r.prerelease,
+    (release: any) => release.tag_name.startsWith("addon-v") && !release.draft && !release.prerelease,
   );
   if (!addonRelease) throw new Error("No addon release found on GitHub");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const asset = addonRelease.assets.find((a: any) => a.name === "wow-dashboard.zip");
+  const asset = addonRelease.assets.find((asset: any) => asset.name === "wow-dashboard.zip");
   if (!asset) throw new Error("No wow-dashboard.zip asset found in latest addon release");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const checksumAsset = addonRelease.assets.find((a: any) => a.name === "wow-dashboard.zip.sha256");
+  const checksumAsset = addonRelease.assets.find((asset: any) => asset.name === "wow-dashboard.zip.sha256");
   return {
     url: asset.browser_download_url as string,
     checksumUrl: checksumAsset ? (checksumAsset.browser_download_url as string) : null,
     version: (addonRelease.tag_name as string).replace("addon-v", ""),
   };
+}
+
+async function readStagedAddonUpdate(): Promise<StagedAddonUpdate | null> {
+  try {
+    const raw = await fs.promises.readFile(getStagedAddonMetaPath(), "utf-8");
+    const parsed = JSON.parse(raw) as Partial<StagedAddonUpdate>;
+    if (typeof parsed.version !== "string") return null;
+    return {
+      version: parsed.version,
+      checksumUrl: typeof parsed.checksumUrl === "string" ? parsed.checksumUrl : null,
+      downloadedAt: typeof parsed.downloadedAt === "number" ? parsed.downloadedAt : 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function writeStagedAddonUpdate(update: StagedAddonUpdate): Promise<void> {
+  await fs.promises.mkdir(getAddonUpdateStageDir(), { recursive: true });
+  await fs.promises.writeFile(getStagedAddonMetaPath(), JSON.stringify(update, null, 2), "utf-8");
+}
+
+async function clearStagedAddonUpdate(): Promise<void> {
+  await fs.promises.rm(getAddonUpdateStageDir(), { recursive: true, force: true }).catch(() => {});
+}
+
+async function stagedAddonPayloadExists(checksumUrl: string | null): Promise<boolean> {
+  try {
+    await fs.promises.access(getStagedAddonZipPath(), fs.constants.F_OK);
+    if (checksumUrl) {
+      await fs.promises.access(getStagedAddonChecksumPath(), fs.constants.F_OK);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function isWowRunning(): Promise<boolean> {
+  if (process.platform !== "win32") return false;
+  try {
+    const { stdout } = await execFileAsync(
+      "tasklist",
+      ["/FI", "IMAGENAME eq Wow.exe", "/FO", "CSV", "/NH"],
+      { windowsHide: true },
+    );
+    return stdout.toLowerCase().includes('"wow.exe"');
+  } catch {
+    return false;
+  }
+}
+
+async function downloadAndInstallAddonRelease(
+  release: AddonReleaseInfo,
+  retailPath: string,
+): Promise<void> {
+  const downloadDir = await fs.promises.mkdtemp(join(os.tmpdir(), "wow-dashboard-addon-download-"));
+  const zipPath = join(downloadDir, "wow-dashboard.zip");
+  const checksumPath = release.checksumUrl ? join(downloadDir, "wow-dashboard.zip.sha256") : null;
+  try {
+    await downloadAddonPackage(release.url, release.checksumUrl, zipPath, checksumPath);
+    await installAddonFromPackage(retailPath, zipPath, checksumPath);
+  } finally {
+    await fs.promises.rm(downloadDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function stageLatestAddonUpdate(): Promise<void> {
+  const settings = await getSettings();
+  const retailPath = settings.retailPath as string | undefined;
+  if (!retailPath) return;
+
+  const installedVersion = await getInstalledAddonVersionForRetailPath(retailPath);
+  if (!installedVersion) return;
+
+  const latestRelease = await fetchLatestAddonRelease();
+  if (!isOutdatedVersion(installedVersion, latestRelease.version)) {
+    const staged = await readStagedAddonUpdate();
+    if (staged && !isOutdatedVersion(installedVersion, staged.version)) {
+      await clearStagedAddonUpdate();
+    }
+    return;
+  }
+
+  const staged = await readStagedAddonUpdate();
+  if (
+    staged &&
+    staged.version === latestRelease.version &&
+    staged.checksumUrl === latestRelease.checksumUrl &&
+    (await stagedAddonPayloadExists(staged.checksumUrl))
+  ) {
+    return;
+  }
+
+  const checksumPath = latestRelease.checksumUrl ? getStagedAddonChecksumPath() : null;
+  await downloadAddonPackage(
+    latestRelease.url,
+    latestRelease.checksumUrl,
+    getStagedAddonZipPath(),
+    checksumPath,
+  );
+  await writeStagedAddonUpdate({
+    version: latestRelease.version,
+    checksumUrl: latestRelease.checksumUrl,
+    downloadedAt: Date.now(),
+  });
+  mainWindow?.webContents.send("wow:addonUpdateStaged", latestRelease.version);
+}
+
+async function applyStagedAddonUpdateOnLaunch(): Promise<void> {
+  const staged = await readStagedAddonUpdate();
+  if (!staged) return;
+
+  const settings = await getSettings();
+  const retailPath = settings.retailPath as string | undefined;
+  if (!retailPath) return;
+
+  const installedVersion = await getInstalledAddonVersionForRetailPath(retailPath);
+  if (!installedVersion) {
+    await clearStagedAddonUpdate();
+    return;
+  }
+
+  if (!isOutdatedVersion(installedVersion, staged.version)) {
+    await clearStagedAddonUpdate();
+    return;
+  }
+
+  if (!(await stagedAddonPayloadExists(staged.checksumUrl))) {
+    await clearStagedAddonUpdate();
+    return;
+  }
+
+  if (await isWowRunning()) {
+    return;
+  }
+
+  try {
+    await installAddonFromPackage(
+      retailPath,
+      getStagedAddonZipPath(),
+      staged.checksumUrl ? getStagedAddonChecksumPath() : null,
+    );
+    await clearStagedAddonUpdate();
+  } catch (error) {
+    console.warn("[wow-dashboard] Failed to apply staged addon update:", error);
+    if (error instanceof Error && error.message.includes("Checksum mismatch")) {
+      await clearStagedAddonUpdate();
+    }
+  }
+}
+
+ipcMain.handle("wow:checkAddonInstalled", async () => {
+  const settings = await getSettings();
+  const retailPath = settings.retailPath as string | undefined;
+  if (!retailPath) return false;
+  return isAddonInstalledForRetailPath(retailPath);
+});
+
+ipcMain.handle("wow:getInstalledAddonVersion", async () => {
+  const settings = await getSettings();
+  const retailPath = settings.retailPath as string | undefined;
+  if (!retailPath) return null;
+  return getInstalledAddonVersionForRetailPath(retailPath);
+});
+
+ipcMain.handle("wow:installAddon", async (_, downloadUrl: string, checksumUrl: string | null) => {
+  const settings = await getSettings();
+  const retailPath = settings.retailPath as string | undefined;
+  if (!retailPath) throw new Error("WoW retail path is not configured");
+
+  await downloadAndInstallAddonRelease({ url: downloadUrl, checksumUrl, version: "" }, retailPath);
+  await clearStagedAddonUpdate();
+});
+
+ipcMain.handle("wow:getLatestAddonRelease", () => fetchLatestAddonRelease());
+
+ipcMain.handle("wow:getAddonUpdateStatus", async () => {
+  const staged = await readStagedAddonUpdate();
+  if (!staged) {
+    return { stagedVersion: null as string | null };
+  }
+  if (!(await stagedAddonPayloadExists(staged.checksumUrl))) {
+    await clearStagedAddonUpdate();
+    return { stagedVersion: null as string | null };
+  }
+  return { stagedVersion: staged.version };
 });
 
 // Shell
@@ -1842,7 +2089,7 @@ ipcMain.handle("app:openExternal", (_, url: string) => {
 });
 ipcMain.handle("app:getVersion", () => app.getVersion());
 
-// Trigger a silent install and relaunch — used by the "Restart Now" button in the renderer.
+// Trigger a silent install and relaunch immediately if the user explicitly asks for it.
 ipcMain.handle("app:installUpdate", () => {
   autoUpdater.quitAndInstall(true, true);
 });
@@ -1944,17 +2191,31 @@ app.whenReady().then(async () => {
     }
   }
 
+  await applyStagedAddonUpdateOnLaunch().catch((error) => {
+    console.warn("[wow-dashboard] Failed to apply staged addon update on launch:", error);
+  });
+
   createWindow();
   void createTray().catch((error) => {
     console.warn("[wow-dashboard] Failed to create tray:", error);
   });
 
+  const ADDON_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+  void stageLatestAddonUpdate().catch((error) => {
+    console.warn("[wow-dashboard] Failed to stage addon update:", error);
+  });
+  setInterval(() => {
+    void stageLatestAddonUpdate().catch((error) => {
+      console.warn("[wow-dashboard] Failed to stage addon update:", error);
+    });
+  }, ADDON_UPDATE_CHECK_INTERVAL_MS);
+
   // Check for app updates (only in packaged builds).
-  // Updates download in the background and install silently on next quit (autoInstallOnAppQuit
-  // is true by default in electron-updater). The renderer shows a banner so the user can also
-  // trigger an immediate restart via app:installUpdate.
+  // Updates download in the background and install automatically on the next real app quit.
   if (app.isPackaged) {
     const CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+    autoUpdater.autoDownload = true;
+    autoUpdater.autoInstallOnAppQuit = true;
     autoUpdater.checkForUpdates().catch(() => {});
     setInterval(() => autoUpdater.checkForUpdates().catch(() => {}), CHECK_INTERVAL_MS);
     autoUpdater.on("update-available", (info) => {
@@ -1962,7 +2223,6 @@ app.whenReady().then(async () => {
     });
     autoUpdater.on("update-downloaded", (info) => {
       mainWindow?.webContents.send("app:updateDownloaded", info.version);
-      // No blocking dialog — the renderer banner handles user interaction.
     });
     autoUpdater.on("update-not-available", () => {
       mainWindow?.webContents.send("app:updateNotAvailable");
