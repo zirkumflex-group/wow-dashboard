@@ -12,8 +12,6 @@ contextBridge.exposeInMainWorld("electron", {
     getRetailPath: () => ipcRenderer.invoke("wow:getRetailPath"),
     selectRetailFolder: () => ipcRenderer.invoke("wow:selectRetailFolder"),
     readAddonData: () => ipcRenderer.invoke("wow:readAddonData"),
-    compactAddonData: (forceIfRunning = false) =>
-      ipcRenderer.invoke("wow:compactAddonData", forceIfRunning),
     checkAddonInstalled: () => ipcRenderer.invoke("wow:checkAddonInstalled"),
     getInstalledAddonVersion: () =>
       ipcRenderer.invoke("wow:getInstalledAddonVersion") as Promise<string | null>,
@@ -21,10 +19,15 @@ contextBridge.exposeInMainWorld("electron", {
       ipcRenderer.invoke("wow:installAddon", downloadUrl, checksumUrl),
     getLatestAddonRelease: () =>
       ipcRenderer.invoke("wow:getLatestAddonRelease") as Promise<{ url: string; checksumUrl: string | null; version: string }>,
+    getAddonUpdateStatus: () =>
+      ipcRenderer.invoke("wow:getAddonUpdateStatus") as Promise<{ stagedVersion: string | null }>,
     watchAddonFile: () => ipcRenderer.invoke("wow:watchAddonFile"),
     unwatchAddonFile: () => ipcRenderer.invoke("wow:unwatchAddonFile"),
     onAddonFileChanged: (cb: () => void) => {
       ipcRenderer.on("wow:addonFileChanged", () => cb());
+    },
+    onAddonUpdateStaged: (cb: (version: string) => void) => {
+      ipcRenderer.on("wow:addonUpdateStaged", (_, version: string) => cb(version));
     },
   },
   settings: {

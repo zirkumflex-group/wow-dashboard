@@ -181,7 +181,7 @@ export function getMythicPlusRunTimerMs(
   return MYTHIC_PLUS_TIMER_MS_BY_MAP_NAME.get(normalizeMapName(mapName)) ?? null;
 }
 
-export function getMythicPlusRunUpgradeCount(run: MythicPlusRunLike) {
+export function getMythicPlusRunUpgradeCount(run: MythicPlusRunLike): number | null {
   const timerMs = getMythicPlusRunTimerMs(run);
   if (timerMs !== null && run.durationMs !== undefined && run.durationMs > 0) {
     if (run.durationMs <= timerMs * 0.6) return 3;
@@ -194,7 +194,17 @@ export function getMythicPlusRunUpgradeCount(run: MythicPlusRunLike) {
     return run.completedInTime ? 1 : 0;
   }
 
-  return run.completed === true ? 1 : 0;
+  // Unknown timing — return null instead of assuming timed/depleted.
+  return null;
+}
+
+export function getMythicPlusRunTimedState(run: MythicPlusRunLike): boolean | null {
+  const upgradeCount = getMythicPlusRunUpgradeCount(run);
+  if (upgradeCount === null) {
+    return null;
+  }
+
+  return upgradeCount > 0;
 }
 
 export function buildCanonicalMythicPlusRunFingerprint(run: MythicPlusRunLike) {

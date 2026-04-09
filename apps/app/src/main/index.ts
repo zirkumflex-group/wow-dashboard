@@ -13,13 +13,13 @@ import {
 } from "electron";
 import { autoUpdater } from "electron-updater";
 import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import * as fs from "fs";
 import * as path from "path";
 import { join, resolve, sep } from "path";
 import * as crypto from "crypto";
 import * as os from "os";
 import * as unzipper from "unzipper";
-import { promisify } from "node:util";
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -36,8 +36,6 @@ let cachedElectronToken: string | null = null;
 let storedSessionToken: string | null = null;
 let pendingLoginResolve: ((token: string) => void) | null = null;
 let pendingLoginReject: ((err: Error) => void) | null = null;
-let ignoreAddonWatchEventsUntil = 0;
-
 const execFileAsync = promisify(execFile);
 
 // ─── Token persistence via OS keychain (safeStorage) ──────────────────────────
@@ -438,22 +436,6 @@ interface AddonFileStats {
   totalMythicPlusRuns: number;
 }
 
-interface CompactAddonResult {
-  status: "completed" | "blocked";
-  wowProcesses: string[];
-  filesProcessed: number;
-  filesChanged: number;
-  backupsWritten: number;
-  bytesBefore: number;
-  bytesAfter: number;
-  snapshotsBefore: number;
-  snapshotsAfter: number;
-  mythicPlusRunsBefore: number;
-  mythicPlusRunsAfter: number;
-  rawRunsTrimmed: number;
-  membersTrimmed: number;
-}
-
 function getSnapshotCompletenessScore(snapshot: SnapshotData): number {
   let score = 0;
 
@@ -700,6 +682,44 @@ function mergeMythicPlusRunMembers(
   return mergedMembers.length > 0 ? mergedMembers : undefined;
 }
 
+function getMythicPlusRunMemberCompletenessScore(
+  members: MythicPlusRunMemberData[] | undefined,
+): number {
+  if (!members || members.length === 0) {
+    return 0;
+  }
+
+  let score = 0;
+  for (const member of members) {
+    if (member.name) score += 1;
+    if (member.realm) score += 1;
+    if (member.classTag) score += 2;
+    if (member.role) score += 2;
+  }
+
+  return score;
+}
+
+function getImprovedMythicPlusRunMembers(
+  currentMembers: MythicPlusRunMemberData[] | undefined,
+  candidateMembers: MythicPlusRunMemberData[] | undefined,
+) {
+  const mergedMembers = mergeMythicPlusRunMembers(currentMembers, candidateMembers);
+  if (!mergedMembers || mergedMembers.length === 0) {
+    return undefined;
+  }
+
+  const currentCount = currentMembers?.length ?? 0;
+  if (mergedMembers.length > currentCount) {
+    return mergedMembers;
+  }
+
+  return getMythicPlusRunMemberCompletenessScore(mergedMembers) >
+    getMythicPlusRunMemberCompletenessScore(currentMembers)
+    ? mergedMembers
+    : undefined;
+}
+
 function normalizeSnapshotSpec(value: unknown): string {
   if (typeof value !== "string") {
     return "Unknown";
@@ -741,6 +761,53 @@ function toFingerprintToken(value: unknown): string {
   return String(value);
 }
 
+function getRunMapFingerprintToken(run: Partial<MythicPlusRunData>): string {
+  if (run.mapChallengeModeID !== undefined) {
+    return toFingerprintToken(run.mapChallengeModeID);
+  }
+
+  if (typeof run.mapName === "string") {
+    const normalizedName = run.mapName.trim().toLowerCase();
+    if (normalizedName !== "") return normalizedName;
+  }
+
+  return "";
+}
+
+function getRunIdentityTimestamp(run: Partial<MythicPlusRunData>): number | null {
+  return run.startDate ?? run.completedAt ?? null;
+}
+
+function buildCanonicalMythicPlusRunFingerprint(run: Partial<MythicPlusRunData>): string | undefined {
+  const mapToken = getRunMapFingerprintToken(run);
+  const identityTimestamp = getRunIdentityTimestamp(run);
+
+  if (mapToken === "" || run.level === undefined) {
+    return undefined;
+  }
+
+  if (identityTimestamp !== null) {
+    return [
+      toFingerprintToken(run.seasonID),
+      mapToken,
+      toFingerprintToken(run.level),
+      toFingerprintToken(identityTimestamp),
+    ].join("|");
+  }
+
+  if (run.durationMs !== undefined || run.runScore !== undefined) {
+    return [
+      toFingerprintToken(run.seasonID),
+      mapToken,
+      toFingerprintToken(run.level),
+      toFingerprintToken(run.durationMs),
+      toFingerprintToken(run.runScore),
+    ].join("|");
+  }
+
+  return undefined;
+}
+
 function buildRunFingerprint(run: Partial<MythicPlusRunData>): string {
   return [
     toFingerprintToken(run.seasonID),
@@ -753,6 +820,17 @@ function buildRunFingerprint(run: Partial<MythicPlusRunData>): string {
     toFingerprintToken(run.completedAt),
     toFingerprintToken(run.startDate),
   ].join("|");
+}
+
+function getMythicPlusRunDedupKey(run: Partial<MythicPlusRunData>): string {
+  return buildCanonicalMythicPlusRunFingerprint(run) ?? run.fingerprint ?? buildRunFingerprint(run);
+}
+
+function getMythicPlusRunCompletionEstimate(run: Partial<MythicPlusRunData>): number | undefined {
+  return run.completedAt ??
+    (run.startDate !== undefined && run.durationMs !== undefined
+      ? run.startDate + Math.floor(run.durationMs / 1000 + 0.5)
+      : undefined);
 }
 
 function getMythicPlusRunSortValue(run: Partial<MythicPlusRunData>): number {
@@ -813,9 +891,18 @@ function mergeMythicPlusRunData(
   const preferredRun = candidatePreferred ? candidateRun : currentRun;
   const fallbackRun = candidatePreferred ? currentRun : candidateRun;
 
-  return {
+  const preferredObservedAt = preferredRun.observedAt ?? 0;
+  const fallbackObservedAt = fallbackRun.observedAt ?? 0;
+  const mergedObservedAt =
+    preferredObservedAt > 0 && fallbackObservedAt > 0
+      ? Math.min(preferredObservedAt, fallbackObservedAt)
+      : preferredObservedAt > 0
+        ? preferredObservedAt
+        : fallbackObservedAt;
+
+  const mergedRun: MythicPlusRunData = {
     fingerprint: preferredRun.fingerprint || fallbackRun.fingerprint,
-    observedAt: Math.max(preferredRun.observedAt ?? 0, fallbackRun.observedAt ?? 0),
+    observedAt: mergedObservedAt,
     seasonID: preferredRun.seasonID ?? fallbackRun.seasonID,
     mapChallengeModeID: preferredRun.mapChallengeModeID ?? fallbackRun.mapChallengeModeID,
     mapName: preferredRun.mapName ?? fallbackRun.mapName,
@@ -829,6 +916,9 @@ function mergeMythicPlusRunData(
     thisWeek: preferredRun.thisWeek ?? fallbackRun.thisWeek,
     members: mergeMythicPlusRunMembers(currentRun.members, candidateRun.members),
   };
+
+  mergedRun.fingerprint = getMythicPlusRunDedupKey(mergedRun);
+  return mergedRun;
 }
 
 function normalizeStoredMythicPlusRun(runRaw: LuaTable): MythicPlusRunData {
@@ -905,9 +995,6 @@ function normalizeStoredMythicPlusRun(runRaw: LuaTable): MythicPlusRunData {
         : undefined),
   };
 
-  if (run.completedInTime === undefined && typeof run.completed === "boolean") {
-    run.completedInTime = run.completed;
-  }
   if (
     run.completed !== true &&
     (run.durationMs !== undefined || run.runScore !== undefined || run.completedAt !== undefined)
@@ -915,16 +1002,215 @@ function normalizeStoredMythicPlusRun(runRaw: LuaTable): MythicPlusRunData {
     run.completed = true;
   }
 
-  run.fingerprint = toOptionalString(runRaw.fingerprint) ?? buildRunFingerprint(run);
+  run.fingerprint =
+    buildCanonicalMythicPlusRunFingerprint(run) ??
+    toOptionalString(runRaw.fingerprint) ??
+    buildRunFingerprint(run);
   return run;
+}
+
+function reconcilePendingMembers(
+  runs: MythicPlusRunData[],
+  pending: Record<string, unknown>,
+): boolean {
+  const capturedAt = toOptionalNumber(pending.capturedAt);
+  if (capturedAt === undefined) return false;
+  const pendingMembersRaw = pending.members;
+  if (!Array.isArray(pendingMembersRaw) || pendingMembersRaw.length === 0) return false;
+  const pendingMembers = normalizeMythicPlusRunMembers(pendingMembersRaw);
+  if (!pendingMembers || pendingMembers.length === 0) return false;
+
+  const pendingMap = toOptionalNumber(pending.mapChallengeModeID);
+  const pendingLevel = toOptionalNumber(pending.level);
+  const pendingDurationMs = toOptionalNumber(pending.durationMs);
+  const pendingCompletedInTime = toOptionalBoolean(pending.completedInTime);
+  const pendingLatestRunFingerprint = toOptionalString(pending.latestKnownRunFingerprint);
+  const pendingLatestRunSortValue = toOptionalNumber(pending.latestKnownRunSortValue);
+
+  let bestIdx = -1;
+  let bestDiff = Infinity;
+  let bestMembers: MythicPlusRunMemberData[] | undefined;
+  const MATCH_WINDOW = 5 * 60; // 5 minutes
+
+  for (let i = 0; i < runs.length; i++) {
+    const run = runs[i]!;
+    if (pendingMap !== undefined && run.mapChallengeModeID !== pendingMap) {
+      continue;
+    }
+    if (pendingLevel !== undefined && run.level !== pendingLevel) {
+      continue;
+    }
+
+    const improvedMembers = getImprovedMythicPlusRunMembers(run.members, pendingMembers);
+    if (!improvedMembers) {
+      continue;
+    }
+
+    const runCompletedAt = getMythicPlusRunCompletionEstimate(run);
+    if (runCompletedAt !== undefined) {
+      const diff = Math.abs(runCompletedAt - capturedAt);
+      if (diff <= MATCH_WINDOW && diff < bestDiff) {
+        bestIdx = i;
+        bestDiff = diff;
+        bestMembers = improvedMembers;
+      }
+    }
+  }
+
+  if (bestIdx >= 0) {
+    runs[bestIdx]!.members = bestMembers;
+    return true;
+  }
+
+  const fallbackCandidates: Array<{
+    index: number;
+    durationDiff: number | undefined;
+    completionDiff: number | undefined;
+    outcomeMatches: boolean;
+    mergedMembers: MythicPlusRunMemberData[];
+    thisWeek: boolean;
+  }> = [];
+
+  for (let i = 0; i < runs.length; i++) {
+    const run = runs[i]!;
+    if (pendingMap !== undefined && run.mapChallengeModeID !== pendingMap) {
+      continue;
+    }
+    if (pendingLevel !== undefined && run.level !== pendingLevel) {
+      continue;
+    }
+
+    const improvedMembers = getImprovedMythicPlusRunMembers(run.members, pendingMembers);
+    if (!improvedMembers) {
+      continue;
+    }
+
+    let isAfterCapture = true;
+    if (pendingLatestRunSortValue !== undefined || pendingLatestRunFingerprint) {
+      isAfterCapture = false;
+      const runSortValue = getMythicPlusRunSortValue(run);
+      if (pendingLatestRunSortValue !== undefined && runSortValue > pendingLatestRunSortValue) {
+        isAfterCapture = true;
+      } else if (
+        pendingLatestRunSortValue === undefined &&
+        pendingLatestRunFingerprint &&
+        run.fingerprint !== pendingLatestRunFingerprint
+      ) {
+        isAfterCapture = true;
+      }
+    }
+
+    if (!isAfterCapture) {
+      continue;
+    }
+
+    const durationDiff =
+      pendingDurationMs !== undefined && run.durationMs !== undefined
+        ? Math.abs(run.durationMs - pendingDurationMs)
+        : undefined;
+    const runCompletedAt = getMythicPlusRunCompletionEstimate(run);
+    const completionDiff =
+      runCompletedAt !== undefined ? Math.abs(runCompletedAt - capturedAt) : undefined;
+
+    fallbackCandidates.push({
+      index: i,
+      durationDiff,
+      completionDiff,
+      outcomeMatches:
+        pendingCompletedInTime === undefined ||
+        run.completedInTime === undefined ||
+        run.completedInTime === pendingCompletedInTime,
+      mergedMembers: improvedMembers,
+      thisWeek: run.thisWeek === true,
+    });
+  }
+
+  const filteredFallbackCandidates =
+    pendingDurationMs === undefined
+      ? fallbackCandidates
+      : fallbackCandidates.filter(
+          (candidate) =>
+            candidate.durationDiff === undefined || candidate.durationDiff <= 2 * 60 * 1000,
+        );
+  const rankedFallbackCandidates =
+    filteredFallbackCandidates.length > 0 ? filteredFallbackCandidates : fallbackCandidates;
+
+  rankedFallbackCandidates.sort((left, right) => {
+    if (
+      left.completionDiff !== undefined &&
+      right.completionDiff !== undefined &&
+      left.completionDiff !== right.completionDiff
+    ) {
+      return left.completionDiff - right.completionDiff;
+    }
+    if (left.completionDiff !== undefined && right.completionDiff === undefined) {
+      return -1;
+    }
+    if (left.completionDiff === undefined && right.completionDiff !== undefined) {
+      return 1;
+    }
+
+    if (
+      left.durationDiff !== undefined &&
+      right.durationDiff !== undefined &&
+      left.durationDiff !== right.durationDiff
+    ) {
+      return left.durationDiff - right.durationDiff;
+    }
+    if (left.durationDiff !== undefined && right.durationDiff === undefined) {
+      return -1;
+    }
+    if (left.durationDiff === undefined && right.durationDiff !== undefined) {
+      return 1;
+    }
+
+    if (left.outcomeMatches !== right.outcomeMatches) {
+      return left.outcomeMatches ? -1 : 1;
+    }
+    if (left.thisWeek !== right.thisWeek) {
+      return left.thisWeek ? -1 : 1;
+    }
+
+    return left.index - right.index;
+  });
+
+  const bestCandidate = rankedFallbackCandidates[0];
+  const secondCandidate = rankedFallbackCandidates[1];
+  let fallbackUnique = rankedFallbackCandidates.length === 1;
+
+  if (!fallbackUnique && bestCandidate) {
+    const uniqueByCompletion =
+      bestCandidate.completionDiff !== undefined &&
+      bestCandidate.completionDiff <= 3 * 60 * 60 &&
+      (secondCandidate?.completionDiff === undefined ||
+        secondCandidate.completionDiff - bestCandidate.completionDiff > 15 * 60);
+    const uniqueByDuration =
+      bestCandidate.durationDiff !== undefined &&
+      bestCandidate.durationDiff <= 2 * 60 * 1000 &&
+      (secondCandidate?.durationDiff === undefined ||
+        secondCandidate.durationDiff - bestCandidate.durationDiff > 60 * 1000);
+    const uniqueByWeek =
+      bestCandidate.thisWeek &&
+      (secondCandidate === undefined || secondCandidate.thisWeek !== true);
+
+    fallbackUnique = uniqueByCompletion || uniqueByDuration || uniqueByWeek;
+  }
+
+  if (fallbackUnique && bestCandidate) {
+    runs[bestCandidate.index]!.members = bestCandidate.mergedMembers;
+    return true;
+  }
+
+  return false;
 }
 
 function extractCharacters(db: Record<string, unknown>): CharacterData[] {
   const characters = (db.characters ?? {}) as Record<string, unknown>;
+  const pendingMembersStore = isRecord(db.pendingMythicPlusMembers) ? db.pendingMythicPlusMembers : {};
   const result: CharacterData[] = [];
   const validRegions: Region[] = ["us", "eu", "kr", "tw"];
 
-  for (const charRaw of Object.values(characters)) {
+  for (const [charKey, charRaw] of Object.entries(characters)) {
     const char = charRaw as Record<string, unknown>;
     const region = String(char.region ?? "us") as Region;
     if (!validRegions.includes(region)) continue;
@@ -979,14 +1265,21 @@ function extractCharacters(db: Record<string, unknown>): CharacterData[] {
     for (const runRaw of (char.mythicPlusRuns as unknown[]) ?? []) {
       if (!isRecord(runRaw)) continue;
       const run = normalizeStoredMythicPlusRun(runRaw);
-      if (!run.fingerprint) continue;
-      const currentRun = mythicPlusRunsByFingerprint.get(run.fingerprint);
-      mythicPlusRunsByFingerprint.set(run.fingerprint, mergeMythicPlusRunData(currentRun, run));
+      const dedupKey = getMythicPlusRunDedupKey(run);
+      if (!dedupKey) continue;
+      const currentRun = mythicPlusRunsByFingerprint.get(dedupKey);
+      mythicPlusRunsByFingerprint.set(dedupKey, mergeMythicPlusRunData(currentRun, run));
     }
     const mythicPlusRuns = Array.from(mythicPlusRunsByFingerprint.values());
     mythicPlusRuns.sort(
       (a, b) => (b.completedAt ?? b.startDate ?? b.observedAt ?? 0) - (a.completedAt ?? a.startDate ?? a.observedAt ?? 0),
     );
+
+    // Reconcile pending members from durable SavedVariables store
+    const pendingPayload = pendingMembersStore[charKey];
+    if (isRecord(pendingPayload)) {
+      reconcilePendingMembers(mythicPlusRuns, pendingPayload);
+    }
 
     result.push({
       name: String(char.name),
@@ -1073,13 +1366,14 @@ async function findAndParseAddonData(
         }
 
         const existingRunsByFingerprint = new Map(
-          existing.mythicPlusRuns.map((run) => [run.fingerprint, run] as const),
+          existing.mythicPlusRuns.map((run) => [getMythicPlusRunDedupKey(run), run] as const),
         );
         for (const run of char.mythicPlusRuns) {
-          const currentRun = existingRunsByFingerprint.get(run.fingerprint);
+          const dedupKey = getMythicPlusRunDedupKey(run);
+          const currentRun = existingRunsByFingerprint.get(dedupKey);
           if (!currentRun) {
             existing.mythicPlusRuns.push(run);
-            existingRunsByFingerprint.set(run.fingerprint, run);
+            existingRunsByFingerprint.set(dedupKey, run);
             continue;
           }
 
@@ -1103,462 +1397,6 @@ async function findAndParseAddonData(
       : null;
 
   return { characters, accountsFound, fileStats };
-}
-
-const SYNC_BUFFER_SECONDS = 60;
-const SNAPSHOT_FULL_RETENTION_DAYS = 7;
-
-function getDayBucket(timestampSeconds: number): string {
-  return new Date(timestampSeconds * 1000).toISOString().slice(0, 10);
-}
-
-function sortByTimestampAsc(records: unknown[], field: string): unknown[] {
-  return records.sort((a, b) => {
-    const left = isRecord(a) ? toOptionalNumber(a[field]) ?? 0 : 0;
-    const right = isRecord(b) ? toOptionalNumber(b[field]) ?? 0 : 0;
-    return left - right;
-  });
-}
-
-function sortRunsDesc(records: unknown[]): unknown[] {
-  return records.sort((a, b) => {
-    const left = isRecord(a)
-      ? toOptionalMythicPlusTimestamp(a.completedAt) ??
-        toOptionalMythicPlusTimestamp(a.startDate) ??
-        toOptionalNumber(a.observedAt) ??
-        0
-      : 0;
-    const right = isRecord(b)
-      ? toOptionalMythicPlusTimestamp(b.completedAt) ??
-        toOptionalMythicPlusTimestamp(b.startDate) ??
-        toOptionalNumber(b.observedAt) ??
-        0
-      : 0;
-    return right - left;
-  });
-}
-
-function compactSnapshotsInPlace(
-  entry: LuaTable,
-  lastSyncedAt: number,
-  nowSeconds: number,
-): { before: number; after: number; changed: boolean } {
-  const hadSnapshotsArray = Array.isArray(entry.snapshots);
-  const snapshots = hadSnapshotsArray ? (entry.snapshots as unknown[]).slice() : [];
-  if (!hadSnapshotsArray) {
-    entry.snapshots = snapshots;
-  }
-
-  const before = snapshots.length;
-  if (before === 0 || lastSyncedAt <= 0) {
-    return { before, after: before, changed: !hadSnapshotsArray };
-  }
-
-  const uploadedCutoff = Math.max(0, lastSyncedAt - SYNC_BUFFER_SECONDS);
-  const keepFullSince = nowSeconds - SNAPSHOT_FULL_RETENTION_DAYS * 86_400;
-  const keep = snapshots.filter((snapshot) => {
-    if (!isRecord(snapshot)) return true;
-    const takenAt = toOptionalNumber(snapshot.takenAt);
-    return takenAt === undefined || takenAt > uploadedCutoff || takenAt >= keepFullSince;
-  });
-
-  const buckets = new Map<string, { takenAt: number; snapshot: unknown }>();
-  for (const snapshot of snapshots) {
-    if (!isRecord(snapshot)) continue;
-    const takenAt = toOptionalNumber(snapshot.takenAt);
-    if (takenAt === undefined || takenAt > uploadedCutoff || takenAt >= keepFullSince) {
-      continue;
-    }
-
-    const bucketKey = getDayBucket(takenAt);
-    const existing = buckets.get(bucketKey);
-    if (!existing || takenAt > existing.takenAt) {
-      buckets.set(bucketKey, { takenAt, snapshot });
-    }
-  }
-
-  for (const { snapshot } of buckets.values()) {
-    keep.push(snapshot);
-  }
-
-  entry.snapshots = sortByTimestampAsc(keep, "takenAt");
-  return {
-    before,
-    after: Array.isArray(entry.snapshots) ? entry.snapshots.length : before,
-    changed: !hadSnapshotsArray || keep.length !== before,
-  };
-}
-
-function compactMythicPlusDebugInPlace(entry: LuaTable): boolean {
-  if (!("mythicPlusDebug" in entry)) return false;
-  delete entry.mythicPlusDebug;
-  return true;
-}
-
-function compactMythicPlusRunsInPlace(
-  entry: LuaTable,
-  _lastSyncedAt: number,
-  _nowSeconds: number,
-): {
-  before: number;
-  after: number;
-  changed: boolean;
-  rawRunsTrimmed: number;
-  membersTrimmed: number;
-} {
-  const hadRunsArray = Array.isArray(entry.mythicPlusRuns);
-  const runs = hadRunsArray ? (entry.mythicPlusRuns as unknown[]).slice() : [];
-  if (!hadRunsArray) {
-    entry.mythicPlusRuns = runs;
-  }
-
-  const before = runs.length;
-  let changed = !hadRunsArray;
-  let rawRunsTrimmed = 0;
-  let membersTrimmed = 0;
-
-  const dedupedRuns: unknown[] = [];
-  const dedupeKeys: Record<string, boolean> = {};
-
-  for (const runValue of runs) {
-    if (!isRecord(runValue)) {
-      changed = true;
-      continue;
-    }
-
-    const normalized = normalizeStoredMythicPlusRun(runValue);
-
-    if (runValue.fingerprint !== normalized.fingerprint) {
-      runValue.fingerprint = normalized.fingerprint;
-      changed = true;
-    }
-    if (normalized.observedAt > 0 && runValue.observedAt !== normalized.observedAt) {
-      runValue.observedAt = normalized.observedAt;
-      changed = true;
-    }
-    if (normalized.seasonID !== undefined && runValue.seasonID !== normalized.seasonID) {
-      runValue.seasonID = normalized.seasonID;
-      changed = true;
-    }
-    if (
-      normalized.mapChallengeModeID !== undefined &&
-      runValue.mapChallengeModeID !== normalized.mapChallengeModeID
-    ) {
-      runValue.mapChallengeModeID = normalized.mapChallengeModeID;
-      changed = true;
-    }
-    if (normalized.mapName && runValue.mapName !== normalized.mapName) {
-      runValue.mapName = normalized.mapName;
-      changed = true;
-    }
-    if (normalized.level !== undefined && runValue.level !== normalized.level) {
-      runValue.level = normalized.level;
-      changed = true;
-    }
-    if (normalized.durationMs !== undefined && runValue.durationMs !== normalized.durationMs) {
-      runValue.durationMs = normalized.durationMs;
-      changed = true;
-    }
-    if (normalized.runScore !== undefined && runValue.runScore !== normalized.runScore) {
-      runValue.runScore = normalized.runScore;
-      changed = true;
-    }
-    if (normalized.completedAt !== undefined && runValue.completedAt !== normalized.completedAt) {
-      runValue.completedAt = normalized.completedAt;
-      changed = true;
-    }
-    if (normalized.startDate !== undefined && runValue.startDate !== normalized.startDate) {
-      runValue.startDate = normalized.startDate;
-      changed = true;
-    }
-    if (JSON.stringify(runValue.members) !== JSON.stringify(normalized.members)) {
-      if (normalized.members === undefined) {
-        if ("members" in runValue) {
-          delete runValue.members;
-          changed = true;
-        }
-      } else {
-        runValue.members = normalized.members;
-        changed = true;
-      }
-    }
-    if (normalized.completed !== undefined && runValue.completed !== normalized.completed) {
-      runValue.completed = normalized.completed;
-      changed = true;
-    }
-    if (
-      normalized.completedInTime !== undefined &&
-      runValue.completedInTime !== normalized.completedInTime
-    ) {
-      runValue.completedInTime = normalized.completedInTime;
-      changed = true;
-    }
-
-    if (!runValue.fingerprint || dedupeKeys[String(runValue.fingerprint)]) {
-      changed = true;
-      continue;
-    }
-    dedupeKeys[String(runValue.fingerprint)] = true;
-
-    if ("source" in runValue) {
-      delete runValue.source;
-      changed = true;
-    }
-    if ("raw" in runValue) {
-      delete runValue.raw;
-      rawRunsTrimmed++;
-      changed = true;
-    }
-
-    dedupedRuns.push(runValue);
-  }
-
-  entry.mythicPlusRuns = sortRunsDesc(dedupedRuns);
-  entry.mythicPlusRunKeys = dedupeKeys;
-
-  if (compactMythicPlusDebugInPlace(entry)) {
-    changed = true;
-  }
-
-  return {
-    before,
-    after: Array.isArray(entry.mythicPlusRuns) ? entry.mythicPlusRuns.length : before,
-    changed: changed || before !== dedupedRuns.length,
-    rawRunsTrimmed,
-    membersTrimmed,
-  };
-}
-
-function compactAddonDb(
-  db: LuaTable,
-  lastSyncedAt: number,
-  nowSeconds: number,
-): Omit<
-  CompactAddonResult,
-  | "status"
-  | "wowProcesses"
-  | "filesProcessed"
-  | "filesChanged"
-  | "backupsWritten"
-  | "bytesBefore"
-  | "bytesAfter"
-> & { changed: boolean } {
-  const characters = isRecord(db.characters) ? db.characters : {};
-  if (!isRecord(db.characters)) {
-    db.characters = characters;
-  }
-
-  let snapshotsBefore = 0;
-  let snapshotsAfter = 0;
-  let mythicPlusRunsBefore = 0;
-  let mythicPlusRunsAfter = 0;
-  let rawRunsTrimmed = 0;
-  let membersTrimmed = 0;
-  let changed = false;
-
-  for (const value of Object.values(characters)) {
-    if (!isRecord(value)) continue;
-
-    const snapshotStats = compactSnapshotsInPlace(value, lastSyncedAt, nowSeconds);
-    const mythicPlusStats = compactMythicPlusRunsInPlace(value, lastSyncedAt, nowSeconds);
-
-    snapshotsBefore += snapshotStats.before;
-    snapshotsAfter += snapshotStats.after;
-    mythicPlusRunsBefore += mythicPlusStats.before;
-    mythicPlusRunsAfter += mythicPlusStats.after;
-    rawRunsTrimmed += mythicPlusStats.rawRunsTrimmed;
-    membersTrimmed += mythicPlusStats.membersTrimmed;
-    changed = changed || snapshotStats.changed || mythicPlusStats.changed;
-  }
-
-  return {
-    changed,
-    snapshotsBefore,
-    snapshotsAfter,
-    mythicPlusRunsBefore,
-    mythicPlusRunsAfter,
-    rawRunsTrimmed,
-    membersTrimmed,
-  };
-}
-
-function serializeLuaValue(value: unknown, indent = 0): string {
-  const spacing = "  ".repeat(indent);
-  const innerSpacing = "  ".repeat(indent + 1);
-
-  if (value === null || value === undefined) return "nil";
-  if (typeof value === "number") return Number.isFinite(value) ? String(value) : "0";
-  if (typeof value === "boolean") return value ? "true" : "false";
-  if (typeof value === "string") return JSON.stringify(value);
-
-  if (Array.isArray(value)) {
-    if (value.length === 0) return "{}";
-    return `{\n${value
-      .map((entry) => `${innerSpacing}${serializeLuaValue(entry, indent + 1)}`)
-      .join(",\n")}\n${spacing}}`;
-  }
-
-  if (isRecord(value)) {
-    const entries = Object.entries(value)
-      .filter(([, entryValue]) => entryValue !== undefined)
-      .sort(([left], [right]) => left.localeCompare(right));
-    if (entries.length === 0) return "{}";
-
-    return `{\n${entries
-      .map(
-        ([key, entryValue]) =>
-          `${innerSpacing}[${JSON.stringify(key)}] = ${serializeLuaValue(entryValue, indent + 1)}`,
-      )
-      .join(",\n")}\n${spacing}}`;
-  }
-
-  return "nil";
-}
-
-function serializeAddonDb(db: LuaTable): string {
-  return `WowDashboardDB = ${serializeLuaValue(db)}\n`;
-}
-
-async function findAddonDataFiles(retailPath: string): Promise<string[]> {
-  const wtfAccountPath = join(retailPath, "WTF", "Account");
-  let accounts: string[];
-  try {
-    accounts = await fs.promises.readdir(wtfAccountPath);
-  } catch {
-    return [];
-  }
-
-  const files: string[] = [];
-  for (const account of accounts) {
-    const luaPath = join(wtfAccountPath, account, "SavedVariables", "wow-dashboard.lua");
-    try {
-      await fs.promises.access(luaPath, fs.constants.F_OK);
-      files.push(luaPath);
-    } catch {
-      // ignore missing files
-    }
-  }
-
-  return files;
-}
-
-async function parseAddonDbFile(luaPath: string): Promise<{ content: string; db: LuaTable | null }> {
-  const content = await fs.promises.readFile(luaPath, "utf-8");
-  let db: LuaTable | null = null;
-  try {
-    db = new LuaParser(content).parseFile();
-  } catch (error) {
-    console.error(`[wow-dashboard] Lua parse error for ${luaPath}:`, error);
-  }
-  return { content, db };
-}
-
-async function listRunningProcesses(): Promise<string[]> {
-  try {
-    if (process.platform === "win32") {
-      const { stdout } = await execFileAsync("tasklist", ["/fo", "csv", "/nh"]);
-      return stdout
-        .split(/\r?\n/)
-        .map((line) => {
-          const match = line.match(/^"([^"]+)"/);
-          return match?.[1] ?? "";
-        })
-        .filter(Boolean);
-    }
-
-    const { stdout } = await execFileAsync("ps", ["-A", "-o", "comm="]);
-    return stdout
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
-function getWowProcesses(processNames: string[]): string[] {
-  const wowProcessPattern =
-    /^(wow(?:classic(?:era)?|b|t|ptr)?(?:-64)?\.exe|world of warcraft.*)$/i;
-  return processNames.filter((processName) => wowProcessPattern.test(processName));
-}
-
-async function compactAddonData(
-  retailPath: string,
-  lastSyncedAt: number,
-  forceIfRunning: boolean,
-): Promise<CompactAddonResult> {
-  const wowProcesses = getWowProcesses(await listRunningProcesses());
-  if (wowProcesses.length > 0 && !forceIfRunning) {
-    return {
-      status: "blocked",
-      wowProcesses,
-      filesProcessed: 0,
-      filesChanged: 0,
-      backupsWritten: 0,
-      bytesBefore: 0,
-      bytesAfter: 0,
-      snapshotsBefore: 0,
-      snapshotsAfter: 0,
-      mythicPlusRunsBefore: 0,
-      mythicPlusRunsAfter: 0,
-      rawRunsTrimmed: 0,
-      membersTrimmed: 0,
-    };
-  }
-
-  const files = await findAddonDataFiles(retailPath);
-  const result: CompactAddonResult = {
-    status: "completed",
-    wowProcesses,
-    filesProcessed: files.length,
-    filesChanged: 0,
-    backupsWritten: 0,
-    bytesBefore: 0,
-    bytesAfter: 0,
-    snapshotsBefore: 0,
-    snapshotsAfter: 0,
-    mythicPlusRunsBefore: 0,
-    mythicPlusRunsAfter: 0,
-    rawRunsTrimmed: 0,
-    membersTrimmed: 0,
-  };
-
-  if (files.length === 0) return result;
-
-  const nowSeconds = Math.floor(Date.now() / 1000);
-  ignoreAddonWatchEventsUntil = Date.now() + 10_000;
-
-  for (const luaPath of files) {
-    const { content, db } = await parseAddonDbFile(luaPath);
-    if (!db) continue;
-
-    const beforeBytes = Buffer.byteLength(content, "utf-8");
-    const compacted = compactAddonDb(db, lastSyncedAt, nowSeconds);
-
-    result.bytesBefore += beforeBytes;
-    result.snapshotsBefore += compacted.snapshotsBefore;
-    result.snapshotsAfter += compacted.snapshotsAfter;
-    result.mythicPlusRunsBefore += compacted.mythicPlusRunsBefore;
-    result.mythicPlusRunsAfter += compacted.mythicPlusRunsAfter;
-    result.rawRunsTrimmed += compacted.rawRunsTrimmed;
-    result.membersTrimmed += compacted.membersTrimmed;
-
-    if (!compacted.changed) {
-      result.bytesAfter += beforeBytes;
-      continue;
-    }
-
-    const serialized = serializeAddonDb(db);
-    const backupPath = `${luaPath}.bak`;
-    await fs.promises.copyFile(luaPath, backupPath);
-    result.backupsWritten += 1;
-    await fs.promises.writeFile(luaPath, serialized, "utf-8");
-
-    result.filesChanged += 1;
-    result.bytesAfter += Buffer.byteLength(serialized, "utf-8");
-  }
-
-  return result;
 }
 
 // ─── Window ───────────────────────────────────────────────────────────────────
@@ -1762,6 +1600,9 @@ ipcMain.handle("wow:selectRetailFolder", async () => {
   const settings = await getSettings();
   settings.retailPath = folder;
   await saveSettings(settings);
+  void stageLatestAddonUpdate().catch((error) => {
+    console.warn("[wow-dashboard] Failed to stage addon update after folder selection:", error);
+  });
   return folder;
 });
 
@@ -1770,17 +1611,6 @@ ipcMain.handle("wow:readAddonData", async () => {
   const retailPath = settings.retailPath as string | undefined;
   if (!retailPath) return null;
   return findAndParseAddonData(retailPath);
-});
-
-ipcMain.handle("wow:compactAddonData", async (_, forceIfRunning = false) => {
-  const settings = await getSettings();
-  const retailPath = settings.retailPath as string | undefined;
-  if (!retailPath) {
-    throw new Error("WoW retail path is not configured");
-  }
-
-  const lastSyncedAt = (settings.lastSyncedAt as number) ?? 0;
-  return compactAddonData(retailPath, lastSyncedAt, forceIfRunning);
 });
 
 function stopAddonWatcher() {
@@ -1803,7 +1633,6 @@ ipcMain.handle("wow:watchAddonFile", async () => {
   try {
     addonWatcher = fs.watch(watchPath, { recursive: true }, (_event, filename) => {
       if (!filename?.endsWith("wow-dashboard.lua")) return;
-      if (Date.now() < ignoreAddonWatchEventsUntil) return;
       if (addonWatchDebounce) clearTimeout(addonWatchDebounce);
       addonWatchDebounce = setTimeout(() => {
         mainWindow?.webContents.send("wow:addonFileChanged");
@@ -1819,6 +1648,56 @@ ipcMain.handle("wow:unwatchAddonFile", () => {
 });
 
 // Addon installation
+const GITHUB_REPO = "zirkumflex-group/wow-dashboard";
+
+interface AddonReleaseInfo {
+  url: string;
+  checksumUrl: string | null;
+  version: string;
+}
+
+interface StagedAddonUpdate {
+  version: string;
+  checksumUrl: string | null;
+  downloadedAt: number;
+}
+
+function getAddonPath(retailPath: string): string {
+  return join(retailPath, "Interface", "AddOns", "wow-dashboard");
+}
+
+function getAddonTocPath(retailPath: string): string {
+  return join(getAddonPath(retailPath), "wow-dashboard.toc");
+}
+
+function getAddonUpdateStageDir(): string {
+  return join(app.getPath("userData"), "addon-update");
+}
+
+function getStagedAddonZipPath(): string {
+  return join(getAddonUpdateStageDir(), "wow-dashboard.zip");
+}
+
+function getStagedAddonChecksumPath(): string {
+  return join(getAddonUpdateStageDir(), "wow-dashboard.zip.sha256");
+}
+
+function getStagedAddonMetaPath(): string {
+  return join(getAddonUpdateStageDir(), "staged.json");
+}
+
+function isOutdatedVersion(installed: string, latest: string): boolean {
+  const a = installed.split(".").map(Number);
+  const b = latest.split(".").map(Number);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const ai = a[i] ?? 0;
+    const bi = b[i] ?? 0;
+    if (ai < bi) return true;
+    if (ai > bi) return false;
+  }
+  return false;
+}
+
 function downloadFile(url: string, destPath: string): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const request = net.request({ url, useSessionCookies: false });
@@ -1865,32 +1744,24 @@ async function extractZip(zipPath: string, destDir: string): Promise<void> {
   }
 }
 
-ipcMain.handle("wow:checkAddonInstalled", async () => {
-  const settings = await getSettings();
-  const retailPath = settings.retailPath as string | undefined;
-  if (!retailPath) return false;
-  const addonPath = join(retailPath, "Interface", "AddOns", "wow-dashboard");
+async function isAddonInstalledForRetailPath(retailPath: string): Promise<boolean> {
   try {
-    await fs.promises.access(addonPath, fs.constants.F_OK);
+    await fs.promises.access(getAddonPath(retailPath), fs.constants.F_OK);
     return true;
   } catch {
     return false;
   }
-});
+}
 
-ipcMain.handle("wow:getInstalledAddonVersion", async () => {
-  const settings = await getSettings();
-  const retailPath = settings.retailPath as string | undefined;
-  if (!retailPath) return null;
-  const tocPath = join(retailPath, "Interface", "AddOns", "wow-dashboard", "wow-dashboard.toc");
+async function getInstalledAddonVersionForRetailPath(retailPath: string): Promise<string | null> {
   try {
-    const content = await fs.promises.readFile(tocPath, "utf-8");
+    const content = await fs.promises.readFile(getAddonTocPath(retailPath), "utf-8");
     const match = content.match(/^##\s*Version:\s*(.+)$/m);
     return match?.[1]?.trim() ?? null;
   } catch {
     return null;
   }
-});
+}
 
 function validateGitHubUrl(url: string): void {
   let parsedUrl: URL;
@@ -1917,45 +1788,61 @@ async function computeFileSha256(filePath: string): Promise<string> {
   });
 }
 
-ipcMain.handle("wow:installAddon", async (_, downloadUrl: string, checksumUrl: string) => {
-  // Validate both URLs come from GitHub only.
+async function verifyAddonPackage(zipPath: string, checksumPath: string | null): Promise<void> {
+  if (!checksumPath) return;
+  const checksumContent = await fs.promises.readFile(checksumPath, "utf-8");
+  const expectedHash = checksumContent.trim().split(/\s+/)[0];
+  const actualHash = await computeFileSha256(zipPath);
+  if (actualHash !== expectedHash) {
+    throw new Error(
+      `Checksum mismatch - addon package may be corrupted or tampered with.\nExpected: ${expectedHash}\nGot: ${actualHash}`,
+    );
+  }
+}
+
+async function downloadAddonPackage(
+  downloadUrl: string,
+  checksumUrl: string | null,
+  zipPath: string,
+  checksumPath: string | null,
+): Promise<void> {
   validateGitHubUrl(downloadUrl);
   if (checksumUrl) validateGitHubUrl(checksumUrl);
 
-  const settings = await getSettings();
-  const retailPath = settings.retailPath as string | undefined;
-  if (!retailPath) throw new Error("WoW retail path is not configured");
+  await fs.promises.mkdir(path.dirname(zipPath), { recursive: true });
+  await downloadFile(downloadUrl, zipPath);
 
-  const tmpDir = os.tmpdir();
-  const zipPath = join(tmpDir, "wow-dashboard-addon.zip");
-  const checksumPath = join(tmpDir, "wow-dashboard-addon.zip.sha256");
-  const extractDir = join(tmpDir, "wow-dashboard-addon-extract");
+  if (!checksumUrl) {
+    if (checksumPath) {
+      await fs.promises.rm(checksumPath, { force: true }).catch(() => {});
+    }
+    return;
+  }
+
+  if (!checksumPath) {
+    throw new Error("Checksum URL provided without a checksum destination");
+  }
+
+  await downloadFile(checksumUrl, checksumPath);
+  await verifyAddonPackage(zipPath, checksumPath);
+}
+
+async function installAddonFromPackage(
+  retailPath: string,
+  zipPath: string,
+  checksumPath: string | null,
+): Promise<void> {
+  await verifyAddonPackage(zipPath, checksumPath);
+
+  const extractDir = await fs.promises.mkdtemp(join(os.tmpdir(), "wow-dashboard-addon-extract-"));
   const addonsDir = join(retailPath, "Interface", "AddOns");
   const addonDest = join(addonsDir, "wow-dashboard");
 
   try {
-    await downloadFile(downloadUrl, zipPath);
-
-    // Verify SHA256 checksum if a checksum URL was provided.
-    if (checksumUrl) {
-      await downloadFile(checksumUrl, checksumPath);
-      const checksumContent = await fs.promises.readFile(checksumPath, "utf-8");
-      const expectedHash = checksumContent.trim().split(/\s+/)[0];
-      const actualHash = await computeFileSha256(zipPath);
-      if (actualHash !== expectedHash) {
-        throw new Error(
-          `Checksum mismatch — addon package may be corrupted or tampered with.\nExpected: ${expectedHash}\nGot: ${actualHash}`,
-        );
-      }
-    }
-
-    await fs.promises.rm(extractDir, { recursive: true, force: true });
-    await fs.promises.mkdir(extractDir, { recursive: true });
-
     await extractZip(zipPath, extractDir);
 
     const entries = await fs.promises.readdir(extractDir, { withFileTypes: true });
-    const dirs = entries.filter((e) => e.isDirectory());
+    const dirs = entries.filter((entry) => entry.isDirectory());
     const addonSrc =
       dirs.length === 1
         ? (() => {
@@ -1973,15 +1860,11 @@ ipcMain.handle("wow:installAddon", async (_, downloadUrl: string, checksumUrl: s
     await fs.promises.rm(addonDest, { recursive: true, force: true });
     await fs.promises.cp(addonSrc, addonDest, { recursive: true });
   } finally {
-    await fs.promises.rm(zipPath, { force: true }).catch(() => {});
-    await fs.promises.rm(checksumPath, { force: true }).catch(() => {});
     await fs.promises.rm(extractDir, { recursive: true, force: true }).catch(() => {});
   }
-});
+}
 
-const GITHUB_REPO = "zirkumflex-group/wow-dashboard";
-
-ipcMain.handle("wow:getLatestAddonRelease", async () => {
+async function fetchLatestAddonRelease(): Promise<AddonReleaseInfo> {
   const res = await net.fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases`, {
     headers: { Accept: "application/vnd.github+json" },
   });
@@ -1990,19 +1873,206 @@ ipcMain.handle("wow:getLatestAddonRelease", async () => {
   const releases = (await res.json()) as any[];
   const addonRelease = releases.find(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (r: any) => r.tag_name.startsWith("addon-v") && !r.draft && !r.prerelease,
+    (release: any) => release.tag_name.startsWith("addon-v") && !release.draft && !release.prerelease,
   );
   if (!addonRelease) throw new Error("No addon release found on GitHub");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const asset = addonRelease.assets.find((a: any) => a.name === "wow-dashboard.zip");
+  const asset = addonRelease.assets.find((asset: any) => asset.name === "wow-dashboard.zip");
   if (!asset) throw new Error("No wow-dashboard.zip asset found in latest addon release");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const checksumAsset = addonRelease.assets.find((a: any) => a.name === "wow-dashboard.zip.sha256");
+  const checksumAsset = addonRelease.assets.find((asset: any) => asset.name === "wow-dashboard.zip.sha256");
   return {
     url: asset.browser_download_url as string,
     checksumUrl: checksumAsset ? (checksumAsset.browser_download_url as string) : null,
     version: (addonRelease.tag_name as string).replace("addon-v", ""),
   };
+}
+
+async function readStagedAddonUpdate(): Promise<StagedAddonUpdate | null> {
+  try {
+    const raw = await fs.promises.readFile(getStagedAddonMetaPath(), "utf-8");
+    const parsed = JSON.parse(raw) as Partial<StagedAddonUpdate>;
+    if (typeof parsed.version !== "string") return null;
+    return {
+      version: parsed.version,
+      checksumUrl: typeof parsed.checksumUrl === "string" ? parsed.checksumUrl : null,
+      downloadedAt: typeof parsed.downloadedAt === "number" ? parsed.downloadedAt : 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function writeStagedAddonUpdate(update: StagedAddonUpdate): Promise<void> {
+  await fs.promises.mkdir(getAddonUpdateStageDir(), { recursive: true });
+  await fs.promises.writeFile(getStagedAddonMetaPath(), JSON.stringify(update, null, 2), "utf-8");
+}
+
+async function clearStagedAddonUpdate(): Promise<void> {
+  await fs.promises.rm(getAddonUpdateStageDir(), { recursive: true, force: true }).catch(() => {});
+}
+
+async function stagedAddonPayloadExists(checksumUrl: string | null): Promise<boolean> {
+  try {
+    await fs.promises.access(getStagedAddonZipPath(), fs.constants.F_OK);
+    if (checksumUrl) {
+      await fs.promises.access(getStagedAddonChecksumPath(), fs.constants.F_OK);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function isWowRunning(): Promise<boolean> {
+  if (process.platform !== "win32") return false;
+  try {
+    const { stdout } = await execFileAsync(
+      "tasklist",
+      ["/FI", "IMAGENAME eq Wow.exe", "/FO", "CSV", "/NH"],
+      { windowsHide: true },
+    );
+    return stdout.toLowerCase().includes('"wow.exe"');
+  } catch {
+    return false;
+  }
+}
+
+async function downloadAndInstallAddonRelease(
+  release: AddonReleaseInfo,
+  retailPath: string,
+): Promise<void> {
+  const downloadDir = await fs.promises.mkdtemp(join(os.tmpdir(), "wow-dashboard-addon-download-"));
+  const zipPath = join(downloadDir, "wow-dashboard.zip");
+  const checksumPath = release.checksumUrl ? join(downloadDir, "wow-dashboard.zip.sha256") : null;
+  try {
+    await downloadAddonPackage(release.url, release.checksumUrl, zipPath, checksumPath);
+    await installAddonFromPackage(retailPath, zipPath, checksumPath);
+  } finally {
+    await fs.promises.rm(downloadDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function stageLatestAddonUpdate(): Promise<void> {
+  const settings = await getSettings();
+  const retailPath = settings.retailPath as string | undefined;
+  if (!retailPath) return;
+
+  const installedVersion = await getInstalledAddonVersionForRetailPath(retailPath);
+  if (!installedVersion) return;
+
+  const latestRelease = await fetchLatestAddonRelease();
+  if (!isOutdatedVersion(installedVersion, latestRelease.version)) {
+    const staged = await readStagedAddonUpdate();
+    if (staged && !isOutdatedVersion(installedVersion, staged.version)) {
+      await clearStagedAddonUpdate();
+    }
+    return;
+  }
+
+  const staged = await readStagedAddonUpdate();
+  if (
+    staged &&
+    staged.version === latestRelease.version &&
+    staged.checksumUrl === latestRelease.checksumUrl &&
+    (await stagedAddonPayloadExists(staged.checksumUrl))
+  ) {
+    return;
+  }
+
+  const checksumPath = latestRelease.checksumUrl ? getStagedAddonChecksumPath() : null;
+  await downloadAddonPackage(
+    latestRelease.url,
+    latestRelease.checksumUrl,
+    getStagedAddonZipPath(),
+    checksumPath,
+  );
+  await writeStagedAddonUpdate({
+    version: latestRelease.version,
+    checksumUrl: latestRelease.checksumUrl,
+    downloadedAt: Date.now(),
+  });
+  mainWindow?.webContents.send("wow:addonUpdateStaged", latestRelease.version);
+}
+
+async function applyStagedAddonUpdateOnLaunch(): Promise<void> {
+  const staged = await readStagedAddonUpdate();
+  if (!staged) return;
+
+  const settings = await getSettings();
+  const retailPath = settings.retailPath as string | undefined;
+  if (!retailPath) return;
+
+  const installedVersion = await getInstalledAddonVersionForRetailPath(retailPath);
+  if (!installedVersion) {
+    await clearStagedAddonUpdate();
+    return;
+  }
+
+  if (!isOutdatedVersion(installedVersion, staged.version)) {
+    await clearStagedAddonUpdate();
+    return;
+  }
+
+  if (!(await stagedAddonPayloadExists(staged.checksumUrl))) {
+    await clearStagedAddonUpdate();
+    return;
+  }
+
+  if (await isWowRunning()) {
+    return;
+  }
+
+  try {
+    await installAddonFromPackage(
+      retailPath,
+      getStagedAddonZipPath(),
+      staged.checksumUrl ? getStagedAddonChecksumPath() : null,
+    );
+    await clearStagedAddonUpdate();
+  } catch (error) {
+    console.warn("[wow-dashboard] Failed to apply staged addon update:", error);
+    if (error instanceof Error && error.message.includes("Checksum mismatch")) {
+      await clearStagedAddonUpdate();
+    }
+  }
+}
+
+ipcMain.handle("wow:checkAddonInstalled", async () => {
+  const settings = await getSettings();
+  const retailPath = settings.retailPath as string | undefined;
+  if (!retailPath) return false;
+  return isAddonInstalledForRetailPath(retailPath);
+});
+
+ipcMain.handle("wow:getInstalledAddonVersion", async () => {
+  const settings = await getSettings();
+  const retailPath = settings.retailPath as string | undefined;
+  if (!retailPath) return null;
+  return getInstalledAddonVersionForRetailPath(retailPath);
+});
+
+ipcMain.handle("wow:installAddon", async (_, downloadUrl: string, checksumUrl: string | null) => {
+  const settings = await getSettings();
+  const retailPath = settings.retailPath as string | undefined;
+  if (!retailPath) throw new Error("WoW retail path is not configured");
+
+  await downloadAndInstallAddonRelease({ url: downloadUrl, checksumUrl, version: "" }, retailPath);
+  await clearStagedAddonUpdate();
+});
+
+ipcMain.handle("wow:getLatestAddonRelease", () => fetchLatestAddonRelease());
+
+ipcMain.handle("wow:getAddonUpdateStatus", async () => {
+  const staged = await readStagedAddonUpdate();
+  if (!staged) {
+    return { stagedVersion: null as string | null };
+  }
+  if (!(await stagedAddonPayloadExists(staged.checksumUrl))) {
+    await clearStagedAddonUpdate();
+    return { stagedVersion: null as string | null };
+  }
+  return { stagedVersion: staged.version };
 });
 
 // Shell
@@ -2019,7 +2089,7 @@ ipcMain.handle("app:openExternal", (_, url: string) => {
 });
 ipcMain.handle("app:getVersion", () => app.getVersion());
 
-// Trigger a silent install and relaunch — used by the "Restart Now" button in the renderer.
+// Trigger a silent install and relaunch immediately if the user explicitly asks for it.
 ipcMain.handle("app:installUpdate", () => {
   autoUpdater.quitAndInstall(true, true);
 });
@@ -2121,17 +2191,31 @@ app.whenReady().then(async () => {
     }
   }
 
+  await applyStagedAddonUpdateOnLaunch().catch((error) => {
+    console.warn("[wow-dashboard] Failed to apply staged addon update on launch:", error);
+  });
+
   createWindow();
   void createTray().catch((error) => {
     console.warn("[wow-dashboard] Failed to create tray:", error);
   });
 
+  const ADDON_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+  void stageLatestAddonUpdate().catch((error) => {
+    console.warn("[wow-dashboard] Failed to stage addon update:", error);
+  });
+  setInterval(() => {
+    void stageLatestAddonUpdate().catch((error) => {
+      console.warn("[wow-dashboard] Failed to stage addon update:", error);
+    });
+  }, ADDON_UPDATE_CHECK_INTERVAL_MS);
+
   // Check for app updates (only in packaged builds).
-  // Updates download in the background and install silently on next quit (autoInstallOnAppQuit
-  // is true by default in electron-updater). The renderer shows a banner so the user can also
-  // trigger an immediate restart via app:installUpdate.
+  // Updates download in the background and install automatically on the next real app quit.
   if (app.isPackaged) {
     const CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+    autoUpdater.autoDownload = true;
+    autoUpdater.autoInstallOnAppQuit = true;
     autoUpdater.checkForUpdates().catch(() => {});
     setInterval(() => autoUpdater.checkForUpdates().catch(() => {}), CHECK_INTERVAL_MS);
     autoUpdater.on("update-available", (info) => {
@@ -2139,7 +2223,6 @@ app.whenReady().then(async () => {
     });
     autoUpdater.on("update-downloaded", (info) => {
       mainWindow?.webContents.send("app:updateDownloaded", info.version);
-      // No blocking dialog — the renderer banner handles user interaction.
     });
     autoUpdater.on("update-not-available", () => {
       mainWindow?.webContents.send("app:updateNotAvailable");

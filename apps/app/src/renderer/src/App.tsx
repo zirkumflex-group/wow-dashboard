@@ -81,22 +81,6 @@ interface AddonFileStats {
   totalMythicPlusRuns: number;
 }
 
-interface CompactAddonResult {
-  status: "completed" | "blocked";
-  wowProcesses: string[];
-  filesProcessed: number;
-  filesChanged: number;
-  backupsWritten: number;
-  bytesBefore: number;
-  bytesAfter: number;
-  snapshotsBefore: number;
-  snapshotsAfter: number;
-  mythicPlusRunsBefore: number;
-  mythicPlusRunsAfter: number;
-  rawRunsTrimmed: number;
-  membersTrimmed: number;
-}
-
 interface PendingUploadCounts {
   snapshots: number;
   mythicPlusRuns: number;
@@ -123,14 +107,15 @@ declare global {
           accountsFound: string[];
           fileStats: AddonFileStats | null;
         } | null>;
-        compactAddonData: (forceIfRunning?: boolean) => Promise<CompactAddonResult>;
         checkAddonInstalled: () => Promise<boolean>;
         getInstalledAddonVersion: () => Promise<string | null>;
         installAddon: (downloadUrl: string, checksumUrl: string | null) => Promise<void>;
         getLatestAddonRelease: () => Promise<{ url: string; checksumUrl: string | null; version: string }>;
+        getAddonUpdateStatus: () => Promise<{ stagedVersion: string | null }>;
         watchAddonFile: () => Promise<void>;
         unwatchAddonFile: () => Promise<void>;
         onAddonFileChanged: (cb: () => void) => void;
+        onAddonUpdateStaged: (cb: (version: string) => void) => void;
       };
       settings: {
         getAppSettings: () => Promise<{ closeBehavior: "tray" | "exit"; autostart: boolean; launchMinimized: boolean; lastSyncedAt: number }>;
@@ -241,14 +226,6 @@ function isOutdated(installed: string, latest: string): boolean {
   return false;
 }
 
-function formatTime(s: number) {
-  const m = Math.floor(s / 60)
-    .toString()
-    .padStart(2, "0");
-  const sec = (s % 60).toString().padStart(2, "0");
-  return `${m}:${sec}`;
-}
-
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -261,6 +238,11 @@ function formatDate(ms: number) {
 
 function formatDateTime(ms: number) {
   return new Date(ms).toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+function formatLastSyncTime(lastSyncedAt: number) {
+  if (lastSyncedAt <= 0) return "Never";
+  return formatDateTime(lastSyncedAt * 1000);
 }
 
 function hasUploadableSnapshotSpec(spec: string) {
@@ -381,7 +363,6 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
   const characters = useQuery(api.characters.getMyCharactersWithSnapshot);
 
   const [syncing, setSyncing] = useState(false);
-  const [timeLeft, setTimeLeft] = useState(15 * 60);
   const [retailPath, setRetailPath] = useState<string | null>(null);
   const [closeBehavior, setCloseBehavior] = useState<"tray" | "exit">("tray");
   const [autostart, setAutostart] = useState(false);
@@ -390,6 +371,7 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
   const [addonInstalled, setAddonInstalled] = useState<boolean | null>(null);
   const [addonVersion, setAddonVersion] = useState<string | null>(null);
   const [latestAddonVersion, setLatestAddonVersion] = useState<string | null>(null);
+  const [addonStagedVersion, setAddonStagedVersion] = useState<string | null>(null);
   const [installing, setInstalling] = useState(false);
   const [installError, setInstallError] = useState<string | null>(null);
   const [appUpdateAvailable, setAppUpdateAvailable] = useState<string | null>(null);
@@ -411,9 +393,6 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
   } | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadWarn, setUploadWarn] = useState<string | null>(null);
-  const [compacting, setCompacting] = useState(false);
-  const [compactionResult, setCompactionResult] = useState<CompactAddonResult | null>(null);
-  const [compactionError, setCompactionError] = useState<string | null>(null);
 
   const syncingRef = useRef(false);
   const lastSyncedAtRef = useRef(0);
@@ -457,12 +436,17 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
       lastSyncedAtRef.current = s.lastSyncedAt;
     });
     window.electron.updates.onUpdateAvailable((v) => setAppUpdateAvailable(v));
-    window.electron.updates.onUpdateDownloaded((v) => setAppUpdateDownloaded(v));
+    window.electron.updates.onUpdateDownloaded((v) => {
+      setAppUpdateAvailable(v);
+      setAppUpdateDownloaded(v);
+    });
     window.electron.updates.onUpdateNotAvailable(() => {
       setCheckingAppUpdate(false);
       setAppUpToDate(true);
       setTimeout(() => setAppUpToDate(false), 3000);
     });
+    window.electron.wow.getAddonUpdateStatus().then(({ stagedVersion }) => setAddonStagedVersion(stagedVersion));
+    window.electron.wow.onAddonUpdateStaged((version) => setAddonStagedVersion(version));
     window.electron.wow
       .getLatestAddonRelease()
       .then(({ version }) => setLatestAddonVersion(version))
@@ -512,6 +496,7 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
       await window.electron.wow.installAddon(url, checksumUrl ?? null);
       setAddonInstalled(true);
       setAddonVersion(version);
+      setAddonStagedVersion(null);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setInstallError(msg);
@@ -554,39 +539,8 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
       setUploadError(null);
       setUploadWarn(null);
       setPendingUploadCounts(null);
-      setCompactionResult(null);
-      setCompactionError(null);
       const installed = await window.electron.wow.checkAddonInstalled();
       setAddonInstalled(installed);
-    }
-  }
-
-  async function handleCompactAddon(forceIfRunning = false) {
-    if (!retailPath) return;
-
-    setCompacting(true);
-    setCompactionError(null);
-    setCompactionResult(null);
-
-    try {
-      const result = await window.electron.wow.compactAddonData(forceIfRunning);
-      if (result.status === "blocked" && !forceIfRunning) {
-        setCompacting(false);
-        const confirmed = window.confirm(
-          `World of Warcraft appears to be running (${result.wowProcesses.join(", ")}).\n\nCompacting while the game is open is not recommended because the client can overwrite the file. Continue anyway?`,
-        );
-        if (confirmed) {
-          await handleCompactAddon(true);
-        }
-        return;
-      }
-
-      setCompactionResult(result);
-      await refreshAddonFileState();
-    } catch (e) {
-      setCompactionError(e instanceof Error ? e.message : "Compaction failed");
-    } finally {
-      setCompacting(false);
     }
   }
 
@@ -656,7 +610,6 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
     } finally {
       syncingRef.current = false;
       setSyncing(false);
-      setTimeLeft(15 * 60);
     }
   }
 
@@ -665,15 +618,9 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
 
   // 15-minute fallback sync; primary sync is triggered by the file watcher.
   useEffect(() => {
-    let count = 15 * 60;
     const id = setInterval(() => {
-      count -= 1;
-      if (count <= 0) {
-        doUploadRef.current();
-        count = 15 * 60;
-      }
-      setTimeLeft(count);
-    }, 1000);
+      void doUploadRef.current();
+    }, 15 * 60 * 1000);
     return () => clearInterval(id);
   }, []);
 
@@ -711,35 +658,29 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
 
         {/* App update banners */}
         {appUpdateDownloaded && (
-          <div className="flex items-center justify-between rounded-lg border border-green-700 bg-green-950 px-4 py-3 text-sm text-green-300">
-            <span>App v{appUpdateDownloaded} downloaded — restart to apply the update.</span>
-            <button
-              onClick={() => window.electron.installUpdate()}
-              className="ml-4 rounded bg-green-700 px-3 py-1 text-xs font-medium hover:bg-green-600"
-            >
-              Restart Now
-            </button>
+          <div className="rounded-lg border border-green-700 bg-green-950 px-4 py-3 text-sm text-green-300">
+            App v{appUpdateDownloaded} is downloaded and will install automatically the next time
+            WoW Dashboard fully exits.
           </div>
         )}
         {appUpdateAvailable && !appUpdateDownloaded && (
           <div className="rounded-lg border border-blue-700 bg-blue-950 px-4 py-3 text-sm text-blue-300">
-            App update v{appUpdateAvailable} is available and downloading…
+            App update v{appUpdateAvailable} is downloading in the background.
           </div>
         )}
 
         {/* Addon update banner */}
-        {showAddonOutdated && (
+        {addonStagedVersion ? (
           <div className="rounded-lg border border-yellow-700 bg-yellow-950 px-4 py-3 text-sm text-yellow-300">
-            Addon update available: v{addonVersion} → v{latestAddonVersion}.{" "}
-            <button
-              onClick={handleInstallAddon}
-              disabled={installing}
-              className="underline hover:text-yellow-100 disabled:opacity-50"
-            >
-              Update Addon
-            </button>
+            Addon v{addonStagedVersion} is downloaded and will install automatically the next time
+            WoW Dashboard starts while WoW is closed.
           </div>
-        )}
+        ) : showAddonOutdated ? (
+          <div className="rounded-lg border border-yellow-700 bg-yellow-950 px-4 py-3 text-sm text-yellow-300">
+            Addon update available: v{addonVersion} to v{latestAddonVersion}. It will download in
+            the background and install automatically on a later app launch while WoW is closed.
+          </div>
+        ) : null}
 
         {/* WoW folder selector */}
         <div className="rounded-lg border border-gray-800 p-4 space-y-2">
@@ -779,15 +720,22 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
             <div>
               <h2 className="font-medium text-gray-300">WoW Addon</h2>
               {retailPath && addonInstalled !== null && (
-                <p className="mt-0.5 text-xs">
-                  {addonInstalled ? (
-                    <span className="text-green-400">
-                      Installed{addonVersion ? ` v${addonVersion}` : ""}
-                    </span>
-                  ) : (
-                    <span className="text-yellow-400">Not installed</span>
+                <>
+                  <p className="mt-0.5 text-xs">
+                    {addonInstalled ? (
+                      <span className="text-green-400">
+                        Installed{addonVersion ? ` v${addonVersion}` : ""}
+                      </span>
+                    ) : (
+                      <span className="text-yellow-400">Not installed</span>
+                    )}
+                  </p>
+                  {addonStagedVersion && (
+                    <p className="mt-0.5 text-xs text-yellow-400">
+                      Auto-update staged for v{addonStagedVersion}
+                    </p>
                   )}
-                </p>
+                </>
               )}
             </div>
             {retailPath ? (
@@ -795,10 +743,16 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
                 {addonInstalled && (
                   <button
                     onClick={handleCheckAddonUpdate}
-                    disabled={checkingAddonUpdate || installing}
+                    disabled={checkingAddonUpdate || installing || !!addonStagedVersion}
                     className="rounded bg-gray-700 px-3 py-1.5 text-sm font-medium hover:bg-gray-600 disabled:opacity-50"
                   >
-                    {checkingAddonUpdate ? "Checking…" : addonUpToDate ? "Up to date" : "Check for Updates"}
+                    {addonStagedVersion
+                      ? "Staged"
+                      : checkingAddonUpdate
+                        ? "Checking…"
+                        : addonUpToDate
+                          ? "Up to date"
+                          : "Check for Updates"}
                   </button>
                 )}
                 <button
@@ -828,28 +782,19 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
                 </span>
               )}
             </div>
-            <div className="flex items-center gap-3">
-              <button
-                onClick={() => handleCompactAddon()}
-                disabled={compacting || syncing || !retailPath}
-                className="rounded bg-gray-700 px-3 py-1.5 text-sm font-medium hover:bg-gray-600 disabled:opacity-50"
-              >
-                {compacting ? "Compacting..." : "Compact File"}
-              </button>
-              <button
-                onClick={() => doUpload()}
-                disabled={syncing || compacting}
-                className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
-              >
-                {syncing ? "Syncing..." : "Sync Now"}
-              </button>
-            </div>
+            <button
+              onClick={() => doUpload()}
+              disabled={syncing}
+              className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+            >
+              {syncing ? "Syncing..." : "Sync Now"}
+            </button>
           </div>
           <p className="text-xs text-gray-500">
             Manual sync uploads addon snapshots and Mythic+ runs, then refreshes Battle.net character data.
           </p>
           <p className="text-xs text-gray-500">
-            Fallback sync in {formatTime(timeLeft)} if no addon file change is detected.
+            Last successful sync: {formatLastSyncTime(lastSyncedAt)}
           </p>
 
           {/* Status area */}
@@ -891,22 +836,6 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
             </p>
           )}
 
-          {compactionError && (
-            <div className="rounded border border-red-700 bg-red-950 px-3 py-2 text-sm text-red-400">
-              {compactionError}
-            </div>
-          )}
-
-          {compactionResult?.status === "completed" && (
-            <div className="rounded border border-gray-800 bg-gray-900 px-3 py-2 text-xs text-gray-400">
-              Compaction: {compactionResult.filesChanged}/{compactionResult.filesProcessed} file
-              {compactionResult.filesProcessed !== 1 ? "s" : ""} rewritten, {formatBytes(compactionResult.bytesBefore)} to{" "}
-              {formatBytes(compactionResult.bytesAfter)}, snapshots {compactionResult.snapshotsBefore.toLocaleString()} to{" "}
-              {compactionResult.snapshotsAfter.toLocaleString()}, M+ runs {compactionResult.mythicPlusRunsBefore.toLocaleString()} to{" "}
-              {compactionResult.mythicPlusRunsAfter.toLocaleString()}.
-            </div>
-          )}
-
           {/* Addon file metadata */}
           {addonFileStats && (
             <div className="grid grid-cols-2 gap-x-4 gap-y-1 pt-1 text-xs text-gray-500">
@@ -922,7 +851,7 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
               <span className="text-gray-400">{formatDate(addonFileStats.modifiedAt)}</span>
               <span>Last synced</span>
               <span className="text-gray-400">
-                {lastSyncedAt > 0 ? formatDateTime(lastSyncedAt * 1000) : "Never"}
+                {formatLastSyncTime(lastSyncedAt)}
               </span>
             </div>
           )}

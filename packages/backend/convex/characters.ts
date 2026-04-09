@@ -6,6 +6,7 @@ import { internalMutation, mutation, query } from "./_generated/server";
 import { authComponent } from "./auth";
 import {
   getMythicPlusRunDedupKey,
+  getMythicPlusRunTimedState,
   getMythicPlusRunUpgradeCount,
   getMythicPlusRunSortValue,
   shouldReplaceMythicPlusRun,
@@ -42,9 +43,8 @@ function isCompletedRun(run: MythicPlusRunDoc): boolean {
   return run.completed === true || hasRecordedCompletionEvidence(run);
 }
 
-function isTimedRun(run: MythicPlusRunDoc): boolean {
-  if (run.completedInTime !== undefined) return run.completedInTime;
-  return run.completed === true;
+function isTimedRun(run: MythicPlusRunDoc): boolean | null {
+  return getMythicPlusRunTimedState(run);
 }
 
 function shouldReplaceBestTimedRun(
@@ -59,8 +59,8 @@ function shouldReplaceBestTimedRun(
     return candidateLevel > currentLevel;
   }
 
-  const currentUpgradeCount = getMythicPlusRunUpgradeCount(currentRun);
-  const candidateUpgradeCount = getMythicPlusRunUpgradeCount(candidateRun);
+  const currentUpgradeCount = getMythicPlusRunUpgradeCount(currentRun) ?? -1;
+  const candidateUpgradeCount = getMythicPlusRunUpgradeCount(candidateRun) ?? -1;
   if (candidateUpgradeCount !== currentUpgradeCount) {
     return candidateUpgradeCount > currentUpgradeCount;
   }
