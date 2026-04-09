@@ -29,6 +29,9 @@ contextBridge.exposeInMainWorld("electron", {
     onAddonUpdateStaged: (cb: (version: string) => void) => {
       ipcRenderer.on("wow:addonUpdateStaged", (_, version: string) => cb(version));
     },
+    onAddonUpdateApplied: (cb: (version: string) => void) => {
+      ipcRenderer.on("wow:addonUpdateApplied", (_, version: string) => cb(version));
+    },
   },
   settings: {
     getAppSettings: () => ipcRenderer.invoke("settings:getAppSettings"),

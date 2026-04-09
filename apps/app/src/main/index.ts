@@ -36,6 +36,8 @@ let cachedElectronToken: string | null = null;
 let storedSessionToken: string | null = null;
 let pendingLoginResolve: ((token: string) => void) | null = null;
 let pendingLoginReject: ((err: Error) => void) | null = null;
+let stagingAddonUpdate = false;
+let applyingStagedAddonUpdate = false;
 const execFileAsync = promisify(execFile);
 
 // ─── Token persistence via OS keychain (safeStorage) ──────────────────────────
@@ -1954,48 +1956,59 @@ async function downloadAndInstallAddonRelease(
 }
 
 async function stageLatestAddonUpdate(): Promise<void> {
-  const settings = await getSettings();
-  const retailPath = settings.retailPath as string | undefined;
-  if (!retailPath) return;
+  if (stagingAddonUpdate) return;
+  stagingAddonUpdate = true;
+  try {
+    const settings = await getSettings();
+    const retailPath = settings.retailPath as string | undefined;
+    if (!retailPath) return;
 
-  const installedVersion = await getInstalledAddonVersionForRetailPath(retailPath);
-  if (!installedVersion) return;
+    const installedVersion = await getInstalledAddonVersionForRetailPath(retailPath);
+    if (!installedVersion) return;
 
-  const latestRelease = await fetchLatestAddonRelease();
-  if (!isOutdatedVersion(installedVersion, latestRelease.version)) {
-    const staged = await readStagedAddonUpdate();
-    if (staged && !isOutdatedVersion(installedVersion, staged.version)) {
-      await clearStagedAddonUpdate();
+    const latestRelease = await fetchLatestAddonRelease();
+    if (!isOutdatedVersion(installedVersion, latestRelease.version)) {
+      const staged = await readStagedAddonUpdate();
+      if (staged && !isOutdatedVersion(installedVersion, staged.version)) {
+        await clearStagedAddonUpdate();
+      }
+      return;
     }
-    return;
-  }
 
-  const staged = await readStagedAddonUpdate();
-  if (
-    staged &&
-    staged.version === latestRelease.version &&
-    staged.checksumUrl === latestRelease.checksumUrl &&
-    (await stagedAddonPayloadExists(staged.checksumUrl))
-  ) {
-    return;
-  }
+    const staged = await readStagedAddonUpdate();
+    if (
+      staged &&
+      staged.version === latestRelease.version &&
+      staged.checksumUrl === latestRelease.checksumUrl &&
+      (await stagedAddonPayloadExists(staged.checksumUrl))
+    ) {
+      await applyStagedAddonUpdateIfReady();
+      return;
+    }
 
-  const checksumPath = latestRelease.checksumUrl ? getStagedAddonChecksumPath() : null;
-  await downloadAddonPackage(
-    latestRelease.url,
-    latestRelease.checksumUrl,
-    getStagedAddonZipPath(),
-    checksumPath,
-  );
-  await writeStagedAddonUpdate({
-    version: latestRelease.version,
-    checksumUrl: latestRelease.checksumUrl,
-    downloadedAt: Date.now(),
-  });
-  mainWindow?.webContents.send("wow:addonUpdateStaged", latestRelease.version);
+    const checksumPath = latestRelease.checksumUrl ? getStagedAddonChecksumPath() : null;
+    await downloadAddonPackage(
+      latestRelease.url,
+      latestRelease.checksumUrl,
+      getStagedAddonZipPath(),
+      checksumPath,
+    );
+    await writeStagedAddonUpdate({
+      version: latestRelease.version,
+      checksumUrl: latestRelease.checksumUrl,
+      downloadedAt: Date.now(),
+    });
+    mainWindow?.webContents.send("wow:addonUpdateStaged", latestRelease.version);
+    await applyStagedAddonUpdateIfReady();
+  } finally {
+    stagingAddonUpdate = false;
+  }
 }
 
-async function applyStagedAddonUpdateOnLaunch(): Promise<void> {
+async function applyStagedAddonUpdateIfReady(): Promise<void> {
+  if (applyingStagedAddonUpdate) return;
+  applyingStagedAddonUpdate = true;
+  try {
   const staged = await readStagedAddonUpdate();
   if (!staged) return;
 
@@ -2030,11 +2043,15 @@ async function applyStagedAddonUpdateOnLaunch(): Promise<void> {
       staged.checksumUrl ? getStagedAddonChecksumPath() : null,
     );
     await clearStagedAddonUpdate();
+    mainWindow?.webContents.send("wow:addonUpdateApplied", staged.version);
   } catch (error) {
     console.warn("[wow-dashboard] Failed to apply staged addon update:", error);
     if (error instanceof Error && error.message.includes("Checksum mismatch")) {
       await clearStagedAddonUpdate();
     }
+  }
+  } finally {
+    applyingStagedAddonUpdate = false;
   }
 }
 
@@ -2191,7 +2208,7 @@ app.whenReady().then(async () => {
     }
   }
 
-  await applyStagedAddonUpdateOnLaunch().catch((error) => {
+  await applyStagedAddonUpdateIfReady().catch((error) => {
     console.warn("[wow-dashboard] Failed to apply staged addon update on launch:", error);
   });
 
@@ -2201,6 +2218,7 @@ app.whenReady().then(async () => {
   });
 
   const ADDON_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+  const ADDON_UPDATE_APPLY_INTERVAL_MS = 60 * 1000; // 1 minute
   void stageLatestAddonUpdate().catch((error) => {
     console.warn("[wow-dashboard] Failed to stage addon update:", error);
   });
@@ -2209,6 +2227,11 @@ app.whenReady().then(async () => {
       console.warn("[wow-dashboard] Failed to stage addon update:", error);
     });
   }, ADDON_UPDATE_CHECK_INTERVAL_MS);
+  setInterval(() => {
+    void applyStagedAddonUpdateIfReady().catch((error) => {
+      console.warn("[wow-dashboard] Failed to apply staged addon update:", error);
+    });
+  }, ADDON_UPDATE_APPLY_INTERVAL_MS);
 
   // Check for app updates (only in packaged builds).
   // Updates download in the background and install automatically on the next real app quit.

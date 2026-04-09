@@ -116,6 +116,7 @@ declare global {
         unwatchAddonFile: () => Promise<void>;
         onAddonFileChanged: (cb: () => void) => void;
         onAddonUpdateStaged: (cb: (version: string) => void) => void;
+        onAddonUpdateApplied: (cb: (version: string) => void) => void;
       };
       settings: {
         getAppSettings: () => Promise<{ closeBehavior: "tray" | "exit"; autostart: boolean; launchMinimized: boolean; lastSyncedAt: number }>;
@@ -447,6 +448,12 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
     });
     window.electron.wow.getAddonUpdateStatus().then(({ stagedVersion }) => setAddonStagedVersion(stagedVersion));
     window.electron.wow.onAddonUpdateStaged((version) => setAddonStagedVersion(version));
+    window.electron.wow.onAddonUpdateApplied((version) => {
+      setAddonStagedVersion(null);
+      setAddonInstalled(true);
+      setAddonVersion(version);
+      setLatestAddonVersion(version);
+    });
     window.electron.wow
       .getLatestAddonRelease()
       .then(({ version }) => setLatestAddonVersion(version))
@@ -672,13 +679,13 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
         {/* Addon update banner */}
         {addonStagedVersion ? (
           <div className="rounded-lg border border-yellow-700 bg-yellow-950 px-4 py-3 text-sm text-yellow-300">
-            Addon v{addonStagedVersion} is downloaded and will install automatically the next time
-            WoW Dashboard starts while WoW is closed.
+            Addon v{addonStagedVersion} is downloaded and will install automatically once WoW is
+            closed. No app restart is required.
           </div>
         ) : showAddonOutdated ? (
           <div className="rounded-lg border border-yellow-700 bg-yellow-950 px-4 py-3 text-sm text-yellow-300">
             Addon update available: v{addonVersion} to v{latestAddonVersion}. It will download in
-            the background and install automatically on a later app launch while WoW is closed.
+            the background and install automatically once WoW is closed.
           </div>
         ) : null}
 
