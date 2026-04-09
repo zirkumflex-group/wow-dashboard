@@ -607,6 +607,7 @@ local NormalizeMythicPlusDate
 local NormalizeOptionalBoolean
 local GetRunSortValue
 local NormalizeStoredMythicPlusRun
+local MergeStoredMythicPlusRun
 local ShouldReplaceStoredRun
 
 local function EnsureCharacterEntry(key, name, realm, charInfo)
@@ -1920,7 +1921,7 @@ local function PickDefinedValue(preferredValue, fallbackValue)
     return fallbackValue
 end
 
-local function MergeStoredMythicPlusRun(currentRun, candidateRun)
+MergeStoredMythicPlusRun = function(currentRun, candidateRun)
     if type(currentRun) ~= "table" then
         return candidateRun
     end

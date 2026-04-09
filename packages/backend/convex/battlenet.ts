@@ -20,30 +20,36 @@ interface BattleNetWowProfileResponse {
   wow_accounts?: BattleNetWowAccount[];
 }
 
-const REGIONS = ["us", "eu", "kr", "tw"] as const;
+const REGIONS = ["eu"] as const;
 type Region = (typeof REGIONS)[number];
 
 async function fetchCharactersForRegion(
   accessToken: string,
   region: Region,
 ): Promise<{ region: Region; characters: BattleNetCharacter[] } | null> {
-  const url = `https://${region}.api.blizzard.com/profile/user/wow?namespace=profile-${region}&locale=en_US`;
-  const resp = await fetch(url, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
+  try {
+    const url = `https://${region}.api.blizzard.com/profile/user/wow?namespace=profile-${region}&locale=en_US`;
+    const resp = await fetch(url, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
 
-  if (!resp.ok) {
-    if (resp.status !== 404) {
-      console.error(
-        `Battle.net WoW profile API error for region ${region}: ${resp.status} ${resp.statusText}`,
-      );
+    if (!resp.ok) {
+      if (resp.status !== 404) {
+        console.error(
+          `Battle.net WoW profile API error for region ${region}: ${resp.status} ${resp.statusText}`,
+        );
+      }
+      return null;
     }
+
+    const data = (await resp.json()) as BattleNetWowProfileResponse;
+    const characters = (data.wow_accounts ?? []).flatMap((acct) => acct.characters ?? []);
+    return { region, characters };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Battle.net WoW profile request failed for region ${region}: ${message}`);
     return null;
   }
-
-  const data = (await resp.json()) as BattleNetWowProfileResponse;
-  const characters = (data.wow_accounts ?? []).flatMap((acct) => acct.characters ?? []);
-  return { region, characters };
 }
 
 export const syncCharacters = internalAction({
