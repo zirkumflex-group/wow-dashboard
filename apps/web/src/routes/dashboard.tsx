@@ -12,6 +12,7 @@ import { HeartPulse, RefreshCw, Shield, Star, Swords } from "lucide-react";
 import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { PlaytimeBreakdown } from "../components/playtime-breakdown";
+import { getClassBgColor, getClassTextColor } from "../lib/class-colors";
 
 const HIDE_BELOW_90_KEY = "wow_dashboard_hide_below_90";
 const MIN_ILVL_KEY = "wow_dashboard_min_ilvl";
@@ -34,44 +35,12 @@ function RedirectToHome() {
   return null;
 }
 
-const CLASS_COLORS: Record<string, string> = {
-  warrior: "text-amber-500",
-  paladin: "text-pink-400",
-  hunter: "text-green-500",
-  rogue: "text-yellow-400",
-  priest: "text-gray-100",
-  "death knight": "text-red-500",
-  shaman: "text-blue-400",
-  mage: "text-cyan-400",
-  warlock: "text-purple-400",
-  monk: "text-emerald-400",
-  druid: "text-orange-400",
-  "demon hunter": "text-violet-500",
-  evoker: "text-teal-400",
-};
-
-const CLASS_BG_COLORS: Record<string, string> = {
-  warrior: "bg-amber-500/10 border-amber-500/20",
-  paladin: "bg-pink-400/10 border-pink-400/20",
-  hunter: "bg-green-500/10 border-green-500/20",
-  rogue: "bg-yellow-400/10 border-yellow-400/20",
-  priest: "bg-gray-100/10 border-gray-100/20",
-  "death knight": "bg-red-500/10 border-red-500/20",
-  shaman: "bg-blue-400/10 border-blue-400/20",
-  mage: "bg-cyan-400/10 border-cyan-400/20",
-  warlock: "bg-purple-400/10 border-purple-400/20",
-  monk: "bg-emerald-400/10 border-emerald-400/20",
-  druid: "bg-orange-400/10 border-orange-400/20",
-  "demon hunter": "bg-violet-500/10 border-violet-500/20",
-  evoker: "bg-teal-400/10 border-teal-400/20",
-};
-
 function classColor(cls: string) {
-  return CLASS_COLORS[cls.toLowerCase()] ?? "text-foreground";
+  return getClassTextColor(cls);
 }
 
 function classBg(cls: string) {
-  return CLASS_BG_COLORS[cls.toLowerCase()] ?? "bg-card border-border";
+  return getClassBgColor(cls);
 }
 
 /** Parse gold stored as GGGGG.SSCC decimal (e.g. 366492.2707) */

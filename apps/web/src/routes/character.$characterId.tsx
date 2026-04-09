@@ -6,6 +6,7 @@ import {
   getMythicPlusDungeonTimerMs,
   getRaiderIoScoreColor,
 } from "../lib/mythic-plus-static";
+import { getClassTextColor } from "../lib/class-colors";
 import { usePinnedCharacters } from "../lib/pinned-characters";
 import { formatPlaytime, PlaytimeBreakdown } from "../components/playtime-breakdown";
 import { Badge } from "@wow-dashboard/ui/components/badge";
@@ -34,9 +35,11 @@ import {
   Star,
   Sword,
   X,
+  Eye,
+  EyeOff,
   Zap,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   CartesianGrid,
@@ -55,38 +58,6 @@ export const Route = createFileRoute("/character/$characterId")({
 });
 
 // ── Constants ────────────────────────────────────────────────────────────────
-
-const CLASS_COLORS: Record<string, string> = {
-  warrior: "text-amber-500",
-  paladin: "text-pink-400",
-  hunter: "text-green-500",
-  rogue: "text-yellow-400",
-  priest: "text-gray-100",
-  "death knight": "text-red-500",
-  shaman: "text-blue-400",
-  mage: "text-cyan-400",
-  warlock: "text-purple-400",
-  monk: "text-emerald-400",
-  druid: "text-orange-400",
-  "demon hunter": "text-violet-500",
-  evoker: "text-teal-400",
-};
-
-const CLASS_TAG_TO_COLOR_KEY: Record<string, string> = {
-  WARRIOR: "warrior",
-  PALADIN: "paladin",
-  HUNTER: "hunter",
-  ROGUE: "rogue",
-  PRIEST: "priest",
-  DEATHKNIGHT: "death knight",
-  SHAMAN: "shaman",
-  MAGE: "mage",
-  WARLOCK: "warlock",
-  MONK: "monk",
-  DRUID: "druid",
-  DEMONHUNTER: "demon hunter",
-  EVOKER: "evoker",
-};
 
 const ROLE_LABELS: Record<string, string> = { tank: "Tank", healer: "Healer", dps: "DPS" };
 const INITIAL_RECENT_RUN_COUNT = 20;
@@ -194,10 +165,7 @@ function LayoutSwitcher({
 // ── Formatters ────────────────────────────────────────────────────────────────
 
 function classColor(cls: string) {
-  const trimmed = cls.trim();
-  const normalizedToken = trimmed.toUpperCase().replace(/[\s_-]/g, "");
-  const colorKey = CLASS_TAG_TO_COLOR_KEY[normalizedToken] ?? trimmed.toLowerCase();
-  return CLASS_COLORS[colorKey] ?? "text-foreground";
+  return getClassTextColor(cls);
 }
 
 function formatDate(takenAtSeconds: number) {
@@ -513,6 +481,72 @@ function getDisplayedRunMembers(members: MythicPlusRunMember[] | undefined) {
   return members.slice(0, 5);
 }
 
+// ── Hidden-player helpers ────────────────────────────────────────────────────
+
+const HIDDEN_PLAYERS_KEY = "wow-hidden-run-players";
+
+function getMemberKey(member: MythicPlusRunMember, characterRealm: string): string {
+  const realm = member.realm?.trim() || characterRealm.trim();
+  return `${member.name.toLowerCase()}|${realm.toLowerCase()}`;
+}
+
+function buildMemberRaiderIoUrl(
+  member: MythicPlusRunMember,
+  characterRealm: string,
+  characterRegion: string,
+): string {
+  const realm = member.realm?.trim() || characterRealm.trim();
+  const region = characterRegion.toLowerCase();
+  return `https://raider.io/characters/${region}/${realm}/${member.name}`;
+}
+
+function readHiddenPlayers(): Set<string> {
+  try {
+    const raw = localStorage.getItem(HIDDEN_PLAYERS_KEY);
+    if (!raw) return new Set();
+    return new Set(JSON.parse(raw) as string[]);
+  } catch {
+    return new Set();
+  }
+}
+
+function writeHiddenPlayers(keys: Set<string>) {
+  try {
+    localStorage.setItem(HIDDEN_PLAYERS_KEY, JSON.stringify([...keys]));
+  } catch {
+    /* ignore */
+  }
+}
+
+function useHiddenPlayers() {
+  const [hidden, setHidden] = useState<Set<string>>(() => readHiddenPlayers());
+
+  const hide = useCallback((key: string) => {
+    setHidden((prev) => {
+      const next = new Set(prev);
+      next.add(key);
+      writeHiddenPlayers(next);
+      return next;
+    });
+  }, []);
+
+  const unhide = useCallback((key: string) => {
+    setHidden((prev) => {
+      const next = new Set(prev);
+      next.delete(key);
+      writeHiddenPlayers(next);
+      return next;
+    });
+  }, []);
+
+  const unhideAll = useCallback(() => {
+    setHidden(new Set());
+    writeHiddenPlayers(new Set());
+  }, []);
+
+  return { hidden, hide, unhide, unhideAll };
+}
+
 function RecentRunPlayedAt({ run }: { run: MythicPlusRun }) {
   const playedAt = getRunPlayedAt(run);
 
@@ -535,25 +569,132 @@ function RecentRunKeyCell({ run }: { run: MythicPlusRun }) {
 function RecentRunPartyMembers({
   run,
   characterRealm,
+  characterRegion,
+  hiddenKeys,
+  onHide,
 }: {
   run: MythicPlusRun;
   characterRealm: string;
+  characterRegion: string;
+  hiddenKeys: Set<string>;
+  onHide: (key: string) => void;
 }) {
-  const members = getDisplayedRunMembers(run.members);
-  if (members.length === 0) {
-    return null;
-  }
+  const allMembers = getDisplayedRunMembers(run.members);
+  if (allMembers.length === 0) return null;
 
   return (
-    <div className="mt-0.5 min-w-0 text-[11px] leading-tight text-muted-foreground/80">
-      {members.map((member, index) => (
-        <span key={`${member.name}:${member.realm ?? ""}`}>
-          {index > 0 && <span className="px-1 text-muted-foreground/40">/</span>}
-          <span className={`font-medium ${classColor(member.classTag ?? "")}`}>
-            {formatRunMemberName(member, characterRealm)}
+    <div className="mt-1 flex min-w-0 flex-nowrap items-center gap-x-0.5 overflow-visible whitespace-nowrap text-[11px] leading-tight">
+      {allMembers.map((member, index) => {
+        const key = getMemberKey(member, characterRealm);
+        const isHidden = hiddenKeys.has(key);
+
+        if (isHidden) {
+          return (
+            <span key={key} className="inline-flex shrink-0 items-center whitespace-nowrap">
+              {index > 0 && <span className="shrink-0 px-0.5 text-muted-foreground/25">/</span>}
+              <span
+                className="inline-block h-[0.65em] w-10 shrink-0 rounded-sm bg-muted-foreground/25 blur-[5px]"
+                aria-hidden="true"
+              />
+            </span>
+          );
+        }
+
+        const url = buildMemberRaiderIoUrl(member, characterRealm, characterRegion);
+        return (
+          <span
+            key={key}
+            className="group/member relative inline-flex shrink-0 items-center whitespace-nowrap after:absolute after:left-0 after:right-0 after:top-full after:h-2 after:content-['']"
+          >
+            {index > 0 && <span className="shrink-0 px-0.5 text-muted-foreground/25">/</span>}
+            <a
+              href={url}
+              target="_blank"
+              rel="noreferrer"
+              className={`inline-flex shrink-0 whitespace-nowrap font-medium hover:underline decoration-current/40 underline-offset-2 ${classColor(member.classTag ?? "")}`}
+              title={`View ${member.name} on Raider.IO`}
+            >
+              {formatRunMemberName(member, characterRealm)}
+            </a>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onHide(key);
+              }}
+              className="pointer-events-none absolute left-1/2 top-[calc(100%+1px)] z-10 -translate-x-1/2 rounded-sm border border-border/70 bg-background/95 p-1 text-muted-foreground/55 opacity-0 shadow-sm transition-opacity duration-150 group-hover/member:pointer-events-auto group-hover/member:opacity-100 group-focus-within/member:pointer-events-auto group-focus-within/member:opacity-100 hover:text-foreground"
+              title={`Hide ${member.name}`}
+              aria-label={`Hide ${member.name}`}
+            >
+              <EyeOff size={9} className="shrink-0" />
+            </button>
           </span>
-        </span>
-      ))}
+        );
+      })}
+    </div>
+  );
+}
+
+function HiddenPlayersControl({
+  hiddenKeys,
+  onUnhide,
+  onUnhideAll,
+}: {
+  hiddenKeys: Set<string>;
+  onUnhide: (key: string) => void;
+  onUnhideAll: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const keys = [...hiddenKeys];
+  if (keys.length === 0) return null;
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1.5 rounded-md border border-border/60 bg-muted/30 px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+      >
+        <EyeOff size={11} />
+        {keys.length} hidden
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full z-20 mt-1 min-w-[180px] rounded-md border border-border/60 bg-card p-2 shadow-lg">
+          <div className="mb-1.5 flex items-center justify-between">
+            <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+              Hidden players
+            </span>
+            <button
+              type="button"
+              onClick={() => { onUnhideAll(); setOpen(false); }}
+              className="text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+            >
+              Show all
+            </button>
+          </div>
+          <div className="space-y-0.5">
+            {keys.map((key) => {
+              const [name] = key.split("|");
+              return (
+                <div
+                  key={key}
+                  className="flex items-center justify-between gap-2 rounded px-1.5 py-1 text-xs hover:bg-muted/30"
+                >
+                  <span className="truncate text-foreground/80">{name}</span>
+                  <button
+                    type="button"
+                    onClick={() => onUnhide(key)}
+                    className="shrink-0 rounded p-0.5 text-muted-foreground/50 transition-colors hover:text-foreground"
+                    title="Show player"
+                  >
+                    <Eye size={12} />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -644,11 +785,14 @@ function MythicPlusResultBadge({ run }: { run: MythicPlusRun }) {
 function MythicPlusSection({
   data,
   characterRealm,
+  characterRegion,
 }: {
   data: MythicPlusData | null | undefined;
   characterRealm: string;
+  characterRegion: string;
 }) {
   const [visibleRecentRunCount, setVisibleRecentRunCount] = useState(INITIAL_RECENT_RUN_COUNT);
+  const { hidden: hiddenPlayerKeys, hide: hidePlayer, unhide: unhidePlayer, unhideAll: unhideAllPlayers } = useHiddenPlayers();
   const [summaryCardHeight, setSummaryCardHeight] = useState<number | null>(null);
   const summaryCardRef = useRef<HTMLDivElement | null>(null);
   const recentRunsResetKey = `${data?.runs.length ?? 0}:${data?.runs[0]?.fingerprint ?? ""}`;
@@ -868,15 +1012,24 @@ function MythicPlusSection({
         style={summaryCardHeight === null ? undefined : { height: `${summaryCardHeight}px` }}
       >
         <CardHeader className="border-b pb-3">
-          <CardTitle className="flex items-center gap-2 text-lg">
-            <Clock size={16} className="text-muted-foreground" />
-            Recent Runs
-          </CardTitle>
+          <div className="flex items-center justify-between gap-3">
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <Clock size={16} className="text-muted-foreground" />
+              Recent Runs
+            </CardTitle>
+            {hiddenPlayerKeys.size > 0 && (
+              <HiddenPlayersControl
+                hiddenKeys={hiddenPlayerKeys}
+                onUnhide={unhidePlayer}
+                onUnhideAll={unhideAllPlayers}
+              />
+            )}
+          </div>
         </CardHeader>
         <CardContent className="flex min-h-0 flex-1 flex-col pt-4">
-          <div className="dark-scrollbar min-h-0 flex-1 overflow-auto rounded-md border">
+          <div className="dark-scrollbar min-h-0 flex-1 overflow-auto rounded-md border border-border/60">
             <table className="w-full min-w-[760px] text-sm">
-              <thead className="bg-muted/40 text-muted-foreground">
+              <thead className="bg-muted/30 text-[11px] uppercase tracking-wider text-muted-foreground">
                 <tr>
                   <th className="px-3 py-2 text-left font-medium">Played</th>
                   <th className="px-3 py-2 text-left font-medium">Dungeon</th>
@@ -886,32 +1039,35 @@ function MythicPlusSection({
                   <th className="px-3 py-2 text-right font-medium">Time</th>
                 </tr>
               </thead>
-              <tbody>
+              <tbody className="divide-y divide-border/50">
                 {visibleRecentRuns.map((run) => (
-                  <tr key={run.fingerprint} className="border-t">
-                    <td className="px-3 py-2 text-muted-foreground align-top">
+                  <tr key={run.fingerprint} className="transition-colors hover:bg-muted/15">
+                    <td className="px-3 py-2.5 text-muted-foreground align-top">
                       <RecentRunPlayedAt run={run} />
                     </td>
-                    <td className="px-3 py-2 align-top">
-                      <div className="flex items-center gap-2.5">
+                    <td className="px-3 py-2.5 align-top">
+                      <div className="flex items-center gap-2">
                         <DungeonIcon
                           mapChallengeModeID={run.mapChallengeModeID}
                           mapName={run.mapName}
                         />
-                        <div className="font-medium text-foreground">{getRunLabel(run)}</div>
+                        <div className="font-medium text-foreground leading-tight">{getRunLabel(run)}</div>
                       </div>
                       <RecentRunPartyMembers
                         run={run}
                         characterRealm={characterRealm}
+                        characterRegion={characterRegion}
+                        hiddenKeys={hiddenPlayerKeys}
+                        onHide={hidePlayer}
                       />
                     </td>
-                    <td className="px-3 py-2 align-top text-right">
+                    <td className="px-3 py-2.5 align-top text-right">
                       <RecentRunKeyCell run={run} />
                     </td>
-                    <td className="px-3 py-2 align-top">
+                    <td className="px-3 py-2.5 align-top">
                       <MythicPlusResultBadge run={run} />
                     </td>
-                    <td className="px-3 py-2 align-top text-right">
+                    <td className="px-3 py-2.5 align-top text-right">
                       <div className="flex items-center justify-end gap-1.5 tabular-nums">
                         <span>{formatRunScore(run.runScore)}</span>
                         {formatRunScoreIncrease(run.scoreIncrease) && (
@@ -921,13 +1077,13 @@ function MythicPlusSection({
                         )}
                       </div>
                     </td>
-                    <td className="px-3 py-2 align-top text-right tabular-nums">
+                    <td className="px-3 py-2.5 align-top text-right tabular-nums text-muted-foreground">
                       {formatRunTimeComparison(run)}
                     </td>
                   </tr>
                 ))}
                 {hasMoreRecentRuns && (
-                  <tr className="border-t bg-muted/10">
+                  <tr className="bg-muted/10">
                     <td colSpan={6} className="px-3 py-3 text-center">
                       <Button size="sm" variant="outline" onClick={loadMoreRecentRuns}>
                         Load {nextRecentRunCount} More
@@ -1042,6 +1198,7 @@ type LayoutProps = {
   filteredSnapshots: Snapshot[];
   mythicPlus?: MythicPlusData | null;
   characterRealm: string;
+  characterRegion: string;
   timeFrame: TimeFrame;
   setTimeFrame: (f: TimeFrame) => void;
 };
@@ -1853,6 +2010,7 @@ function OverviewLayout({
   chartSnapshots,
   mythicPlus,
   characterRealm,
+  characterRegion,
   timeFrame,
   setTimeFrame,
 }: LayoutProps) {
@@ -1893,6 +2051,7 @@ function OverviewLayout({
           <MythicPlusSection
             data={mythicPlus}
             characterRealm={characterRealm}
+            characterRegion={characterRegion}
           />
         </div>
       </div>
@@ -2371,6 +2530,7 @@ function RouteComponent() {
     filteredSnapshots: snapshots,
     mythicPlus: mythicPlus as MythicPlusData | null | undefined,
     characterRealm: character.realm,
+    characterRegion: character.region,
     timeFrame,
     setTimeFrame,
   };
@@ -2553,6 +2713,7 @@ function RouteComponent() {
         <MythicPlusSection
           data={mythicPlus as MythicPlusData | null | undefined}
           characterRealm={character.realm}
+          characterRegion={character.region}
         />
       )}
       <SnapshotHistorySection snapshots={snapshots} layoutMode={layoutMode} />
