@@ -1235,6 +1235,11 @@ type Snapshot = {
   playtimeSeconds: number;
   playtimeThisLevelSeconds?: number;
   mythicPlusScore: number;
+  ownedKeystone?: {
+    level: number;
+    mapChallengeModeID?: number;
+    mapName?: string;
+  };
   currencies: {
     adventurerDawncrest: number;
     veteranDawncrest: number;
@@ -1999,6 +2004,25 @@ function CurrentSnapshotCard({ snapshot }: { snapshot: Snapshot }) {
   );
 }
 
+function OwnedKeystoneMetric({ keystone }: { keystone?: Snapshot["ownedKeystone"] }) {
+  if (!keystone) {
+    return <span className="text-base text-muted-foreground">None</span>;
+  }
+
+  const dungeonMeta = getMythicPlusDungeonMeta(keystone.mapChallengeModeID, keystone.mapName);
+  const dungeonName = dungeonMeta?.name ?? keystone.mapName ?? "Unknown Dungeon";
+
+  return (
+    <div className="flex min-w-0 items-center gap-2 leading-tight" title={dungeonName}>
+      <DungeonIcon mapChallengeModeID={keystone.mapChallengeModeID} mapName={keystone.mapName} />
+      <div className="min-w-0">
+        <div className="tabular-nums text-violet-300">{`+${keystone.level}`}</div>
+        <div className="truncate text-xs font-medium text-muted-foreground">{dungeonName}</div>
+      </div>
+    </div>
+  );
+}
+
 // ── Snapshot history table ────────────────────────────────────────────────────
 
 function SnapshotHistoryTable({
@@ -2686,8 +2710,7 @@ function RouteComponent() {
 
         {latest && (
           <CardContent className="px-6 pb-5 pt-4">
-            <div className="grid gap-3 xl:grid-cols-5">
-              <TopMetricCard label="Level" meta="Current" value={latest.level} />
+            <div className="grid gap-3 xl:grid-cols-4">
               <TopMetricCard
                 label="Item level"
                 meta="Equipped"
@@ -2698,7 +2721,11 @@ function RouteComponent() {
                 meta="Current"
                 value={<span className="tabular-nums">{latest.mythicPlusScore.toLocaleString()}</span>}
               />
-              <TopMetricCard label="Gold" meta="On hand" value={<GoldDisplay value={latest.gold} />} />
+              <TopMetricCard
+                label="Keystone"
+                meta="Owned"
+                value={<OwnedKeystoneMetric keystone={latest.ownedKeystone} />}
+              />
               <TopMetricCard
                 label="Playtime"
                 meta="Total / this lvl"
@@ -2716,16 +2743,7 @@ function RouteComponent() {
               />
             </div>
 
-            <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-              <div className="rounded-md border border-border/60 bg-card px-4 py-3">
-                <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground/75">
-                  Spec
-                </div>
-                <div className="mt-3 space-y-2">
-                  <StatRow label="Spec" value={latest.spec} />
-                  <StatRow label="Role" value={ROLE_LABELS[latest.role] ?? latest.role} />
-                </div>
-              </div>
+            <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
               <div className="rounded-md border border-border/60 bg-card px-4 py-3">
                 <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground/75">
                   Character

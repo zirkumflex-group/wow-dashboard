@@ -206,6 +206,10 @@ end
 --       playtimeSeconds   number  -- total /played seconds
 --       playtimeThisLevelSeconds number  -- /played seconds on current level
 --       mythicPlusScore   number
+--       ownedKeystone     table?
+--         level               number
+--         mapChallengeModeID  number?
+--         mapName             string?
 --       currencies        table
 --         adventurerDawncrest  number
 --         veteranDawncrest     number
@@ -2405,6 +2409,33 @@ local function BuildPendingSnapshot()
         mplusScore = C_ChallengeMode.GetOverallDungeonScore() or 0
     end
 
+    local ownedKeystone = nil
+    if C_MythicPlus then
+        local ownedKeystoneLevel = nil
+        if type(C_MythicPlus.GetOwnedKeystoneLevel) == "function" then
+            local ok, result = pcall(C_MythicPlus.GetOwnedKeystoneLevel)
+            if ok then
+                ownedKeystoneLevel = tonumber(result)
+            end
+        end
+
+        if ownedKeystoneLevel and ownedKeystoneLevel > 0 then
+            local mapChallengeModeID = nil
+            if type(C_MythicPlus.GetOwnedKeystoneChallengeMapID) == "function" then
+                local ok, result = pcall(C_MythicPlus.GetOwnedKeystoneChallengeMapID)
+                if ok then
+                    mapChallengeModeID = tonumber(result)
+                end
+            end
+
+            ownedKeystone = {
+                level = ownedKeystoneLevel,
+                mapChallengeModeID = mapChallengeModeID,
+                mapName = GetChallengeModeMapName(mapChallengeModeID),
+            }
+        end
+    end
+
     return {
         key      = key,
         name     = name,
@@ -2420,6 +2451,7 @@ local function BuildPendingSnapshot()
             playtimeSeconds = 0,
             playtimeThisLevelSeconds = 0,
             mythicPlusScore = mplusScore,
+            ownedKeystone   = ownedKeystone,
             currencies      = currencies,
             stats           = stats,
         },

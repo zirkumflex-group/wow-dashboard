@@ -85,6 +85,7 @@ function getSnapshotCompletenessScore(snapshot: SnapshotDoc) {
 
   if (snapshot.playtimeSeconds > 0) score += 1;
   if (snapshot.playtimeThisLevelSeconds !== undefined) score += 1;
+  if (snapshot.ownedKeystone !== undefined) score += 1;
   if (snapshot.stats.speedPercent !== undefined) score += 2;
   if (snapshot.stats.leechPercent !== undefined) score += 2;
   if (snapshot.stats.avoidancePercent !== undefined) score += 2;

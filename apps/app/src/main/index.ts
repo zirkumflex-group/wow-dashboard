@@ -12,8 +12,6 @@ import {
   nativeImage,
 } from "electron";
 import { autoUpdater } from "electron-updater";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import * as fs from "fs";
 import * as path from "path";
 import { join, resolve, sep } from "path";
@@ -38,7 +36,6 @@ let pendingLoginResolve: ((token: string) => void) | null = null;
 let pendingLoginReject: ((err: Error) => void) | null = null;
 let stagingAddonUpdate = false;
 let applyingStagedAddonUpdate = false;
-const execFileAsync = promisify(execFile);
 
 // ─── Token persistence via OS keychain (safeStorage) ──────────────────────────
 
@@ -396,6 +393,11 @@ interface SnapshotData {
   playtimeSeconds: number;
   playtimeThisLevelSeconds?: number;
   mythicPlusScore: number;
+  ownedKeystone?: {
+    level: number;
+    mapChallengeModeID?: number;
+    mapName?: string;
+  };
   currencies: {
     adventurerDawncrest: number;
     veteranDawncrest: number;
@@ -443,6 +445,7 @@ function getSnapshotCompletenessScore(snapshot: SnapshotData): number {
 
   if (snapshot.playtimeSeconds > 0) score += 1;
   if (snapshot.playtimeThisLevelSeconds !== undefined) score += 1;
+  if (snapshot.ownedKeystone !== undefined) score += 1;
   if (snapshot.stats.speedPercent !== undefined) score += 2;
   if (snapshot.stats.leechPercent !== undefined) score += 2;
   if (snapshot.stats.avoidancePercent !== undefined) score += 2;
@@ -461,6 +464,7 @@ function mergeSnapshotData(current: SnapshotData, candidate: SnapshotData): Snap
     playtimeSeconds: preferred.playtimeSeconds > 0 ? preferred.playtimeSeconds : fallback.playtimeSeconds,
     playtimeThisLevelSeconds:
       preferred.playtimeThisLevelSeconds ?? fallback.playtimeThisLevelSeconds,
+    ownedKeystone: preferred.ownedKeystone ?? fallback.ownedKeystone,
     stats: {
       ...preferred.stats,
       speedPercent: preferred.stats.speedPercent ?? fallback.stats.speedPercent,
@@ -1228,6 +1232,10 @@ function extractCharacters(db: Record<string, unknown>): CharacterData[] {
 
       const currencies = (snap.currencies ?? {}) as Record<string, unknown>;
       const stats = (snap.stats ?? {}) as Record<string, unknown>;
+      const ownedKeystoneRaw = isRecord(snap.ownedKeystone) ? snap.ownedKeystone : null;
+      const ownedKeystoneLevel = ownedKeystoneRaw
+        ? toOptionalNumber(ownedKeystoneRaw.level)
+        : undefined;
 
       snapshots.push({
         takenAt: Number(snap.takenAt),
@@ -1239,6 +1247,14 @@ function extractCharacters(db: Record<string, unknown>): CharacterData[] {
         playtimeSeconds: Number(snap.playtimeSeconds),
         playtimeThisLevelSeconds: toOptionalNumber(snap.playtimeThisLevelSeconds),
         mythicPlusScore: Number(snap.mythicPlusScore),
+        ownedKeystone:
+          ownedKeystoneLevel && ownedKeystoneLevel > 0
+            ? {
+                level: ownedKeystoneLevel,
+                mapChallengeModeID: toOptionalNumber(ownedKeystoneRaw?.mapChallengeModeID),
+                mapName: toOptionalString(ownedKeystoneRaw?.mapName),
+              }
+            : undefined,
         currencies: {
           adventurerDawncrest: Number(currencies.adventurerDawncrest ?? 0),
           veteranDawncrest: Number(currencies.veteranDawncrest ?? 0),
@@ -1926,20 +1942,6 @@ async function stagedAddonPayloadExists(checksumUrl: string | null): Promise<boo
   }
 }
 
-async function isWowRunning(): Promise<boolean> {
-  if (process.platform !== "win32") return false;
-  try {
-    const { stdout } = await execFileAsync(
-      "tasklist",
-      ["/FI", "IMAGENAME eq Wow.exe", "/FO", "CSV", "/NH"],
-      { windowsHide: true },
-    );
-    return stdout.toLowerCase().includes('"wow.exe"');
-  } catch {
-    return false;
-  }
-}
-
 async function downloadAndInstallAddonRelease(
   release: AddonReleaseInfo,
   retailPath: string,
@@ -2009,47 +2011,43 @@ async function applyStagedAddonUpdateIfReady(): Promise<void> {
   if (applyingStagedAddonUpdate) return;
   applyingStagedAddonUpdate = true;
   try {
-  const staged = await readStagedAddonUpdate();
-  if (!staged) return;
+    const staged = await readStagedAddonUpdate();
+    if (!staged) return;
 
-  const settings = await getSettings();
-  const retailPath = settings.retailPath as string | undefined;
-  if (!retailPath) return;
+    const settings = await getSettings();
+    const retailPath = settings.retailPath as string | undefined;
+    if (!retailPath) return;
 
-  const installedVersion = await getInstalledAddonVersionForRetailPath(retailPath);
-  if (!installedVersion) {
-    await clearStagedAddonUpdate();
-    return;
-  }
-
-  if (!isOutdatedVersion(installedVersion, staged.version)) {
-    await clearStagedAddonUpdate();
-    return;
-  }
-
-  if (!(await stagedAddonPayloadExists(staged.checksumUrl))) {
-    await clearStagedAddonUpdate();
-    return;
-  }
-
-  if (await isWowRunning()) {
-    return;
-  }
-
-  try {
-    await installAddonFromPackage(
-      retailPath,
-      getStagedAddonZipPath(),
-      staged.checksumUrl ? getStagedAddonChecksumPath() : null,
-    );
-    await clearStagedAddonUpdate();
-    mainWindow?.webContents.send("wow:addonUpdateApplied", staged.version);
-  } catch (error) {
-    console.warn("[wow-dashboard] Failed to apply staged addon update:", error);
-    if (error instanceof Error && error.message.includes("Checksum mismatch")) {
+    const installedVersion = await getInstalledAddonVersionForRetailPath(retailPath);
+    if (!installedVersion) {
       await clearStagedAddonUpdate();
+      return;
     }
-  }
+
+    if (!isOutdatedVersion(installedVersion, staged.version)) {
+      await clearStagedAddonUpdate();
+      return;
+    }
+
+    if (!(await stagedAddonPayloadExists(staged.checksumUrl))) {
+      await clearStagedAddonUpdate();
+      return;
+    }
+
+    try {
+      await installAddonFromPackage(
+        retailPath,
+        getStagedAddonZipPath(),
+        staged.checksumUrl ? getStagedAddonChecksumPath() : null,
+      );
+      await clearStagedAddonUpdate();
+      mainWindow?.webContents.send("wow:addonUpdateApplied", staged.version);
+    } catch (error) {
+      console.warn("[wow-dashboard] Failed to apply staged addon update:", error);
+      if (error instanceof Error && error.message.includes("Checksum mismatch")) {
+        await clearStagedAddonUpdate();
+      }
+    }
   } finally {
     applyingStagedAddonUpdate = false;
   }

@@ -679,13 +679,13 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
         {/* Addon update banner */}
         {addonStagedVersion ? (
           <div className="rounded-lg border border-yellow-700 bg-yellow-950 px-4 py-3 text-sm text-yellow-300">
-            Addon v{addonStagedVersion} is downloaded and will install automatically once WoW is
-            closed. No app restart is required.
+            Addon v{addonStagedVersion} is downloaded and will install automatically in the
+            background. No app restart is required.
           </div>
         ) : showAddonOutdated ? (
           <div className="rounded-lg border border-yellow-700 bg-yellow-950 px-4 py-3 text-sm text-yellow-300">
             Addon update available: v{addonVersion} to v{latestAddonVersion}. It will download in
-            the background and install automatically once WoW is closed.
+            the background and install automatically.
           </div>
         ) : null}
 

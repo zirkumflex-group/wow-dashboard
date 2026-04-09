@@ -101,6 +101,12 @@ export function normalizeSnapshotSpec(value: string): string | null {
   return validSnapshotSpecNames.has(normalized) ? normalized : null;
 }
 
+export const ownedKeystoneValidator = v.object({
+  level: v.number(),
+  mapChallengeModeID: v.optional(v.number()),
+  mapName: v.optional(v.string()),
+});
+
 export const snapshotsTable = defineTable({
   characterId: v.id("characters"),
   takenAt: v.number(),
@@ -112,6 +118,7 @@ export const snapshotsTable = defineTable({
   playtimeSeconds: v.number(),
   playtimeThisLevelSeconds: v.optional(v.number()),
   mythicPlusScore: v.number(),
+  ownedKeystone: v.optional(ownedKeystoneValidator),
   currencies: v.object({
     adventurerDawncrest: v.number(),
     veteranDawncrest: v.number(),

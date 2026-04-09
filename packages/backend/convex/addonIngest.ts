@@ -10,7 +10,7 @@ import {
 } from "./mythicPlus";
 import { rateLimiter } from "./rateLimiter";
 import { mythicPlusRunValidator } from "./schemas/mythicPlusRuns";
-import { normalizeSnapshotSpec } from "./schemas/snapshots";
+import { normalizeSnapshotSpec, ownedKeystoneValidator } from "./schemas/snapshots";
 import { internal } from "./_generated/api";
 
 const currenciesValidator = v.object({
@@ -46,6 +46,7 @@ const snapshotValidator = v.object({
   playtimeSeconds: v.number(),
   playtimeThisLevelSeconds: v.optional(v.number()),
   mythicPlusScore: v.number(),
+  ownedKeystone: v.optional(ownedKeystoneValidator),
   currencies: currenciesValidator,
   stats: statsValidator,
 });
@@ -62,6 +63,7 @@ type SnapshotFields = Pick<
   | "playtimeSeconds"
   | "playtimeThisLevelSeconds"
   | "mythicPlusScore"
+  | "ownedKeystone"
   | "currencies"
   | "stats"
 >;
@@ -120,6 +122,7 @@ function toSnapshotFields(snapshot: SnapshotFields): SnapshotFields {
     playtimeSeconds: snapshot.playtimeSeconds,
     playtimeThisLevelSeconds: snapshot.playtimeThisLevelSeconds,
     mythicPlusScore: snapshot.mythicPlusScore,
+    ownedKeystone: snapshot.ownedKeystone,
     currencies: snapshot.currencies,
     stats: snapshot.stats,
   };
@@ -132,6 +135,7 @@ function mergeSnapshotFields(existingSnapshot: SnapshotFields, incomingSnapshot:
       incomingSnapshot.playtimeSeconds > 0 ? incomingSnapshot.playtimeSeconds : existingSnapshot.playtimeSeconds,
     playtimeThisLevelSeconds:
       incomingSnapshot.playtimeThisLevelSeconds ?? existingSnapshot.playtimeThisLevelSeconds,
+    ownedKeystone: incomingSnapshot.ownedKeystone ?? existingSnapshot.ownedKeystone,
     stats: {
       ...incomingSnapshot.stats,
       speedPercent: incomingSnapshot.stats.speedPercent ?? existingSnapshot.stats.speedPercent,
@@ -273,6 +277,7 @@ export const ingestAddonData = mutation({
           playtimeSeconds: snap.playtimeSeconds,
           playtimeThisLevelSeconds: snap.playtimeThisLevelSeconds,
           mythicPlusScore: snap.mythicPlusScore,
+          ownedKeystone: snap.ownedKeystone,
           currencies: snap.currencies,
           stats: snap.stats,
         };

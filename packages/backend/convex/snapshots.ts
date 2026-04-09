@@ -11,6 +11,11 @@ function snapshotKey(snap: {
   playtimeSeconds: number;
   playtimeThisLevelSeconds?: number;
   mythicPlusScore: number;
+  ownedKeystone?: {
+    level: number;
+    mapChallengeModeID?: number;
+    mapName?: string;
+  };
   currencies: {
     adventurerDawncrest: number;
     veteranDawncrest: number;
@@ -43,6 +48,7 @@ function snapshotKey(snap: {
     playtimeSeconds: snap.playtimeSeconds,
     playtimeThisLevelSeconds: snap.playtimeThisLevelSeconds,
     mythicPlusScore: snap.mythicPlusScore,
+    ownedKeystone: snap.ownedKeystone,
     currencies: snap.currencies,
     stats: snap.stats,
   });
