@@ -1021,6 +1021,52 @@ local function GetImprovedMythicPlusMembers(currentMembers, candidateMembers)
         or nil
 end
 
+local function AreMythicPlusMemberListsEqual(leftMembers, rightMembers)
+    local function BuildComparableTokens(members)
+        if type(members) ~= "table" or #members == 0 then
+            return nil
+        end
+
+        local tokens = {}
+        for _, member in ipairs(members) do
+            local normalized = NormalizeMythicPlusMember(member)
+            if normalized ~= nil then
+                tokens[#tokens + 1] = table.concat({
+                    string.lower(normalized.name or ""),
+                    string.lower(normalized.realm or ""),
+                    normalized.classTag or "",
+                    normalized.role or "",
+                }, "|")
+            end
+        end
+
+        if #tokens == 0 then
+            return nil
+        end
+
+        table.sort(tokens)
+        return tokens
+    end
+
+    local leftTokens = BuildComparableTokens(leftMembers)
+    local rightTokens = BuildComparableTokens(rightMembers)
+
+    if leftTokens == nil then
+        return rightTokens == nil
+    end
+    if rightTokens == nil or #leftTokens ~= #rightTokens then
+        return false
+    end
+
+    for index = 1, #leftTokens do
+        if leftTokens[index] ~= rightTokens[index] then
+            return false
+        end
+    end
+
+    return true
+end
+
 local function BuildMythicPlusMemberFromUnit(unit)
     if type(unit) ~= "string" or not UnitExists(unit) or not UnitIsPlayer(unit) then
         return nil
@@ -2238,7 +2284,7 @@ local function SyncMythicPlusHistory(reason, options)
                 local existing = entry.mythicPlusRuns[existingIndex]
                 local merged = MergeStoredMythicPlusRun(existing, run)
                 -- Only count as updated if meaningful fields changed (not just observedAt)
-                if existing.members ~= merged.members
+                if not AreMythicPlusMemberListsEqual(existing.members, merged.members)
                     or existing.completed ~= merged.completed
                     or existing.completedInTime ~= merged.completedInTime
                     or existing.durationMs ~= merged.durationMs
@@ -2453,11 +2499,16 @@ local function CollectSnapshot(forceFresh)
     RequestTimePlayed()
 
     -- Failsafe: if TIME_PLAYED_MSG never arrives, unblock after timeout
+    local timeoutSnapshot = snapshot
     C_Timer.After(PLAYTIME_TIMEOUT, function()
-        if waitingForPlaytime then
+        if waitingForPlaytime and pendingSnapshot == timeoutSnapshot then
             waitingForPlaytime = false
             RestoreTimePlayedMessages()
             pendingSnapshot = nil
+            if queuedFreshSnapshot then
+                queuedFreshSnapshot = false
+                CollectSnapshot(true)
+            end
         end
     end)
     return true

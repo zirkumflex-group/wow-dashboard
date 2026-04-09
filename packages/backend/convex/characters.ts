@@ -486,7 +486,7 @@ export const getCharacterMythicPlus = query({
         .query("mythicPlusRuns")
         .withIndex("by_character_and_observedAt", (q) => q.eq("characterId", characterId))
         .order("desc")
-        .take(300),
+        .collect(),
       ctx.db
         .query("snapshots")
         .withIndex("by_character_and_time", (q) => q.eq("characterId", characterId))
