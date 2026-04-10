@@ -926,7 +926,11 @@ function getRunIdentityCandidates(run: Partial<MythicPlusRunData>): number[] {
   pushCandidate(run.abandonedAt);
   pushCandidate(getRunDerivedStartTimestamp(run));
   pushCandidate(getRunDerivedEndTimestamp(run));
-  pushCandidate(getLikelyPlayedAtTimestamp(run));
+  const likelyPlayedAt = getLikelyPlayedAtTimestamp(run);
+  pushCandidate(likelyPlayedAt);
+  if (likelyPlayedAt > 0) {
+    pushCandidate(Math.floor(likelyPlayedAt / 60) * 60);
+  }
 
   return candidates;
 }

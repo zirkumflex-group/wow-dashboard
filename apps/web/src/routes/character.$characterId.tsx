@@ -330,13 +330,13 @@ function formatKeyLevel(level?: number | null) {
 }
 
 function formatTimedKeyLevel(level?: number | null, upgradeCount?: number | null) {
-  if (level === undefined || level === null) return "â€”";
+  if (level === undefined || level === null) return "-";
   const normalizedUpgradeCount = Math.max(1, Math.min(3, upgradeCount ?? 1));
   return `${"+".repeat(normalizedUpgradeCount)}${level}`;
 }
 
 function formatRunScore(value?: number | null) {
-  if (value === undefined || value === null) return "â€”";
+  if (value === undefined || value === null) return "-";
   const hasFraction = Math.abs(value % 1) > 0.001;
   return value.toLocaleString(undefined, {
     minimumFractionDigits: hasFraction ? 1 : 0,
@@ -519,7 +519,7 @@ function MythicPlusKeyPill({
   compact?: boolean;
 }) {
   if (level === undefined || level === null) {
-    return <span className="text-muted-foreground">â€”</span>;
+    return <span className="text-muted-foreground">-</span>;
   }
 
   const normalizedUpgradeCount = Math.max(1, Math.min(3, upgradeCount ?? 1));
