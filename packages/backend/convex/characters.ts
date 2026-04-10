@@ -5,7 +5,9 @@ import { components, internal } from "./_generated/api";
 import { internalMutation, mutation, query } from "./_generated/server";
 import { authComponent } from "./auth";
 import {
+  getMythicPlusRunDedupKeys,
   getMythicPlusRunDedupKey,
+  hasMythicPlusRunDedupKeyOverlap,
   getMythicPlusRunLifecycleStatus,
   getMythicPlusRunTimedState,
   getMythicPlusRunUpgradeCount,
@@ -376,17 +378,36 @@ function buildRecentRuns(runs: MythicPlusRunDoc[]) {
 }
 
 function dedupeMythicPlusRuns(runs: MythicPlusRunDoc[]) {
-  const dedupedRuns = new Map<string, MythicPlusRunDoc>();
+  const dedupedRuns: MythicPlusRunDoc[] = [];
 
   for (const run of runs) {
-    const dedupKey = getMythicPlusRunDedupKey(run) ?? run._id;
-    const current = dedupedRuns.get(dedupKey);
+    const runDedupKeys = getMythicPlusRunDedupKeys(run);
+    let matchIndex = -1;
+
+    for (let index = 0; index < dedupedRuns.length; index += 1) {
+      const current = dedupedRuns[index]!;
+      const currentDedupKey = getMythicPlusRunDedupKey(current);
+      if (
+        (currentDedupKey !== null && runDedupKeys.includes(currentDedupKey)) ||
+        hasMythicPlusRunDedupKeyOverlap(current, run)
+      ) {
+        matchIndex = index;
+        break;
+      }
+    }
+
+    if (matchIndex < 0) {
+      dedupedRuns.push(run);
+      continue;
+    }
+
+    const current = dedupedRuns[matchIndex]!;
     if (shouldReplaceMythicPlusRun(current, run)) {
-      dedupedRuns.set(dedupKey, run);
+      dedupedRuns[matchIndex] = run;
     }
   }
 
-  return Array.from(dedupedRuns.values()).sort((a, b) => {
+  return dedupedRuns.sort((a, b) => {
     const timeDiff = getRunTimestamp(b) - getRunTimestamp(a);
     if (timeDiff !== 0) return timeDiff;
     return b.observedAt - a.observedAt;

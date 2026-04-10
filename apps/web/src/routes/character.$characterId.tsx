@@ -1126,7 +1126,7 @@ function MythicPlusSection({
                     value={currentSeason.timedRuns.toLocaleString()}
                   />
                 </div>
-                <div className="grid gap-1.5 sm:grid-cols-2 xl:grid-cols-5">
+                <div className="grid gap-1.5 sm:grid-cols-2 xl:grid-cols-3">
                   <StatGrid
                     compact
                     label="Total Attempts"
@@ -1141,11 +1141,6 @@ function MythicPlusSection({
                     compact
                     label="Abandoned"
                     value={(currentSeason.abandonedRuns ?? 0).toLocaleString()}
-                  />
-                  <StatGrid
-                    compact
-                    label="Active"
-                    value={(currentSeason.activeRuns ?? 0).toLocaleString()}
                   />
                 </div>
                 <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">

@@ -5,6 +5,7 @@ import { mutation, query } from "./_generated/server";
 import { authComponent } from "./auth";
 import {
   buildCanonicalMythicPlusRunFingerprint,
+  getMythicPlusRunDedupKeys,
   getMythicPlusRunLifecycleStatus,
   mergeMythicPlusRunMembers,
   shouldReplaceMythicPlusRun,
@@ -95,8 +96,9 @@ function registerRunLookups(
   run: MythicPlusRunDoc,
   aliases: Array<string | undefined | null> = [],
 ) {
-  const canonicalFingerprint = buildCanonicalMythicPlusRunFingerprint(run);
-  setPreferredRunLookup(lookups.byDedupKey, canonicalFingerprint ?? run.fingerprint, run);
+  for (const dedupKey of getMythicPlusRunDedupKeys(run)) {
+    setPreferredRunLookup(lookups.byDedupKey, dedupKey, run);
+  }
 
   const fingerprintAliases = new Set<string>();
   if (run.fingerprint) {
@@ -111,6 +113,21 @@ function registerRunLookups(
   for (const fingerprint of fingerprintAliases) {
     setPreferredRunLookup(lookups.byFingerprint, fingerprint, run);
   }
+}
+
+function findMatchingExistingRunByDedupKeys(
+  lookups: {
+    byDedupKey: Map<string, MythicPlusRunDoc>;
+  },
+  run: MythicPlusRunInput,
+) {
+  for (const dedupKey of getMythicPlusRunDedupKeys(run)) {
+    const candidate = lookups.byDedupKey.get(dedupKey);
+    if (candidate) {
+      return candidate;
+    }
+  }
+  return undefined;
 }
 
 function toSnapshotFields(snapshot: SnapshotFields): SnapshotFields {
@@ -395,24 +412,31 @@ export const ingestAddonData = mutation({
         registerRunLookups(existingRunLookups, existingRun);
       }
 
-      // Dedup incoming runs by canonical or legacy fingerprint.
-      const incomingRunsByDedupKey = new Map<string, MythicPlusRunInput>();
+      // Dedup incoming runs deterministically using compatibility dedup keys.
+      const incomingRunsDeduped: MythicPlusRunInput[] = [];
       for (const incomingRun of charData.mythicPlusRuns ?? []) {
         const normalizedIncomingRun = mergeMythicPlusRunData(undefined, incomingRun);
-        const dedupKey =
-          buildCanonicalMythicPlusRunFingerprint(normalizedIncomingRun) ??
-          normalizedIncomingRun.fingerprint;
-        if (!dedupKey) {
-          continue;
+        let matchedIndex = -1;
+        for (let index = 0; index < incomingRunsDeduped.length; index += 1) {
+          const currentRun = incomingRunsDeduped[index]!;
+          const currentKeys = new Set(getMythicPlusRunDedupKeys(currentRun));
+          const incomingKeys = getMythicPlusRunDedupKeys(normalizedIncomingRun);
+          if (incomingKeys.some((key) => currentKeys.has(key))) {
+            matchedIndex = index;
+            break;
+          }
         }
-        const current = incomingRunsByDedupKey.get(dedupKey);
-        incomingRunsByDedupKey.set(
-          dedupKey,
-          mergeMythicPlusRunData(current, normalizedIncomingRun),
-        );
+        if (matchedIndex < 0) {
+          incomingRunsDeduped.push(normalizedIncomingRun);
+        } else {
+          incomingRunsDeduped[matchedIndex] = mergeMythicPlusRunData(
+            incomingRunsDeduped[matchedIndex],
+            normalizedIncomingRun,
+          );
+        }
       }
 
-      for (const run of incomingRunsByDedupKey.values()) {
+      for (const run of incomingRunsDeduped) {
         const nextFingerprint = run.fingerprint;
         const dedupKey = buildCanonicalMythicPlusRunFingerprint(run) ?? nextFingerprint;
         if (!dedupKey || !nextFingerprint) {
@@ -422,6 +446,9 @@ export const ingestAddonData = mutation({
         let existingRun = existingRunLookups.byDedupKey.get(dedupKey);
         if (!existingRun) {
           existingRun = existingRunLookups.byFingerprint.get(nextFingerprint);
+        }
+        if (!existingRun) {
+          existingRun = findMatchingExistingRunByDedupKeys(existingRunLookups, run);
         }
 
         if (!existingRun) {
