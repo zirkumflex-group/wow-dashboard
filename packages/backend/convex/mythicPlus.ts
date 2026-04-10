@@ -11,6 +11,7 @@ type MythicPlusRunLike = {
   _id?: string;
   fingerprint?: string;
   attemptId?: string;
+  canonicalKey?: string;
   observedAt?: number;
   seasonID?: number;
   mapChallengeModeID?: number;
@@ -100,6 +101,27 @@ function normalizeAttemptId(value: unknown): string | null {
   return normalized === "" ? null : normalized;
 }
 
+function normalizeCanonicalKey(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim();
+  if (normalized === "") {
+    return null;
+  }
+  if (!normalized.startsWith("aid|") && !normalized.startsWith("run|")) {
+    return null;
+  }
+  return normalized;
+}
+
+function normalizeLifecycleTimestamp(value: number | null | undefined): number | null {
+  if (value === null || value === undefined || !Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+  return Math.floor(value);
+}
+
 function buildRunAttemptIdFromStartDate(run: MythicPlusRunLike): string | null {
   const mapToken = getRunMapFingerprintToken(run);
   const startDate = run.startDate;
@@ -122,7 +144,7 @@ function buildRunAttemptIdFromStartDate(run: MythicPlusRunLike): string | null {
   ].join("|");
 }
 
-function getRunAttemptId(run: MythicPlusRunLike): string | null {
+export function getMythicPlusRunAttemptId(run: MythicPlusRunLike): string | null {
   const explicitAttemptId = normalizeAttemptId(run.attemptId);
   if (explicitAttemptId !== null) {
     return explicitAttemptId;
@@ -210,7 +232,7 @@ function hasStrongCompletedRunIdentitySignature(run: MythicPlusRunLike): boolean
 }
 
 function shouldApplyLegacyHistoryDstForwardShift(run: MythicPlusRunLike): boolean {
-  if (getRunAttemptId(run) !== null) {
+  if (getMythicPlusRunAttemptId(run) !== null) {
     return false;
   }
   if (run.startDate !== undefined) {
@@ -230,13 +252,13 @@ function shouldApplyLegacyHistoryDstForwardShift(run: MythicPlusRunLike): boolea
   return true;
 }
 
-function getRunIdentityCandidates(run: MythicPlusRunLike): number[] {
+function getRunCompatibilityTimestampAliases(run: MythicPlusRunLike): number[] {
   const candidates: number[] = [];
   const seen = new Set<number>();
 
   const pushCandidate = (value: number | null | undefined) => {
-    if (value === null || value === undefined || !Number.isFinite(value) || value <= 0) return;
-    const normalized = Math.floor(value);
+    const normalized = normalizeLifecycleTimestamp(value);
+    if (normalized === null) return;
     if (seen.has(normalized)) return;
     seen.add(normalized);
     candidates.push(normalized);
@@ -274,6 +296,26 @@ function getRunIdentityCandidates(run: MythicPlusRunLike): number[] {
   return candidates;
 }
 
+function getRunCanonicalEventTimestamp(run: MythicPlusRunLike): number | null {
+  const explicitTimestamps = [run.startDate, run.completedAt, run.endedAt, run.abandonedAt];
+  for (const timestamp of explicitTimestamps) {
+    const normalized = normalizeLifecycleTimestamp(timestamp);
+    if (normalized !== null) {
+      return normalized;
+    }
+  }
+
+  const derivedCandidates = [getRunDerivedStartTimestamp(run), getRunDerivedEndTimestamp(run)];
+  for (const timestamp of derivedCandidates) {
+    const normalized = normalizeLifecycleTimestamp(timestamp);
+    if (normalized !== null) {
+      return normalized;
+    }
+  }
+
+  return null;
+}
+
 function buildRunFingerprintWithIdentity(
   run: MythicPlusRunLike,
   identityTimestamp: number,
@@ -294,10 +336,6 @@ function buildRunFingerprintWithIdentity(
     toFingerprintToken(run.level),
     toFingerprintToken(identityTimestamp),
   ].join("|");
-}
-
-function getRunIdentityTimestamp(run: MythicPlusRunLike) {
-  return getRunIdentityCandidates(run)[0] ?? null;
 }
 
 export function hasMythicPlusRunCompletionEvidence(run: MythicPlusRunLike): boolean {
@@ -505,36 +543,242 @@ export function getMythicPlusRunTimedState(run: MythicPlusRunLike): boolean | nu
   return upgradeCount > 0;
 }
 
-export function buildCanonicalMythicPlusRunFingerprint(run: MythicPlusRunLike) {
-  const attemptId = getRunAttemptId(run);
-  if (attemptId !== null) {
-    return `aid|${attemptId}`;
-  }
-
-  const identityTimestamp = getRunIdentityTimestamp(run);
-  const durationMs = getSanitizedRunDurationMs(run);
-
-  if (identityTimestamp !== null) {
-    const fingerprint = buildRunFingerprintWithIdentity(run, identityTimestamp);
-    if (fingerprint !== null) return fingerprint;
-  }
-
+function buildRunCanonicalKeyWithIdentityTimestamp(
+  run: MythicPlusRunLike,
+  identityTimestamp: number,
+): string | null {
   const mapToken = getRunMapFingerprintToken(run);
   if (mapToken === "" || run.level === undefined) {
     return null;
   }
 
-  if (durationMs !== undefined || run.runScore !== undefined) {
-    return [
-      toFingerprintToken(run.seasonID),
-      mapToken,
-      toFingerprintToken(run.level),
-      toFingerprintToken(durationMs),
-      toFingerprintToken(run.runScore),
-    ].join("|");
+  return [
+    "run",
+    toFingerprintToken(run.seasonID),
+    mapToken,
+    toFingerprintToken(run.level),
+    toFingerprintToken(identityTimestamp),
+  ].join("|");
+}
+
+export function getMythicPlusRunCanonicalKey(run: MythicPlusRunLike): string | null {
+  const explicitCanonicalKey = normalizeCanonicalKey(run.canonicalKey);
+  if (explicitCanonicalKey !== null) {
+    return explicitCanonicalKey;
   }
 
-  return null;
+  const attemptId = getMythicPlusRunAttemptId(run);
+  if (attemptId !== null) {
+    return `aid|${attemptId}`;
+  }
+
+  const identityTimestamp = getRunCanonicalEventTimestamp(run);
+  if (identityTimestamp === null) {
+    return null;
+  }
+
+  return buildRunCanonicalKeyWithIdentityTimestamp(run, identityTimestamp);
+}
+
+export function buildCanonicalMythicPlusRunFingerprint(run: MythicPlusRunLike) {
+  return getMythicPlusRunCanonicalKey(run);
+}
+
+function getRunLegacyFingerprintAliasesForTimestamp(
+  run: MythicPlusRunLike,
+  identityTimestamp: number,
+): string[] {
+  const aliases: string[] = [];
+  const seen = new Set<string>();
+  const mapTokens = getRunMapFingerprintTokens(run);
+  const seasonTokens = getRunSeasonTokens(run);
+
+  const pushAlias = (value: string | null) => {
+    if (value === null || value === "" || seen.has(value)) {
+      return;
+    }
+    seen.add(value);
+    aliases.push(value);
+  };
+
+  // First include the strict season/map token pair.
+  pushAlias(buildRunFingerprintWithIdentity(run, identityTimestamp));
+
+  // Compatibility aliases from historical fingerprint formats.
+  for (const mapToken of mapTokens) {
+    for (const seasonToken of seasonTokens) {
+      pushAlias(buildRunFingerprintWithIdentity(run, identityTimestamp, { seasonToken, mapToken }));
+    }
+  }
+
+  return aliases;
+}
+
+function getRunLegacyDstShiftCompatibilityTimestamps(run: MythicPlusRunLike): number[] {
+  if (run.startDate !== undefined || !hasStrongCompletedRunIdentitySignature(run)) {
+    return [];
+  }
+
+  const derivedEnd = getRunDerivedEndTimestamp(run);
+  const shiftSources = [run.completedAt, run.endedAt, run.abandonedAt, derivedEnd];
+  const shiftedTimestamps: number[] = [];
+  const seen = new Set<number>();
+  for (const source of shiftSources) {
+    const normalizedSource = normalizeLifecycleTimestamp(source);
+    if (normalizedSource === null) {
+      continue;
+    }
+    for (const shiftedTimestamp of [
+      normalizedSource - LEGACY_DST_SHIFT_SECONDS,
+      normalizedSource + LEGACY_DST_SHIFT_SECONDS,
+    ]) {
+      const normalizedShifted = normalizeLifecycleTimestamp(shiftedTimestamp);
+      if (normalizedShifted === null || seen.has(normalizedShifted)) {
+        continue;
+      }
+      seen.add(normalizedShifted);
+      shiftedTimestamps.push(normalizedShifted);
+    }
+  }
+
+  return shiftedTimestamps;
+}
+
+export function getMythicPlusRunCompatibilityLookupAliases(run: MythicPlusRunLike): string[] {
+  const aliases: string[] = [];
+  const seen = new Set<string>();
+  const pushAlias = (value: string | null | undefined) => {
+    if (!value || seen.has(value)) {
+      return;
+    }
+    seen.add(value);
+    aliases.push(value);
+  };
+
+  for (const timestamp of getRunCompatibilityTimestampAliases(run)) {
+    for (const alias of getRunLegacyFingerprintAliasesForTimestamp(run, timestamp)) {
+      pushAlias(alias);
+    }
+  }
+
+  for (const timestamp of getRunLegacyDstShiftCompatibilityTimestamps(run)) {
+    for (const alias of getRunLegacyFingerprintAliasesForTimestamp(run, timestamp)) {
+      pushAlias(alias);
+    }
+  }
+
+  pushAlias(run.fingerprint);
+  return aliases;
+}
+
+function getRunStrictEventTimestamps(run: MythicPlusRunLike): number[] {
+  const timestamps: number[] = [];
+  const seen = new Set<number>();
+  const pushTimestamp = (value: number | null | undefined) => {
+    const normalized = normalizeLifecycleTimestamp(value);
+    if (normalized === null || seen.has(normalized)) {
+      return;
+    }
+    seen.add(normalized);
+    timestamps.push(normalized);
+  };
+
+  pushTimestamp(run.startDate);
+  pushTimestamp(run.completedAt);
+  pushTimestamp(run.endedAt);
+  pushTimestamp(run.abandonedAt);
+
+  if (run.startDate === undefined) {
+    pushTimestamp(getRunDerivedStartTimestamp(run));
+  }
+  if (run.completedAt === undefined && run.endedAt === undefined && run.abandonedAt === undefined) {
+    pushTimestamp(getRunDerivedEndTimestamp(run));
+  }
+
+  return timestamps;
+}
+
+function areRunCoreIdentityFieldsCompatible(a: MythicPlusRunLike, b: MythicPlusRunLike): boolean {
+  const mapTokenA = getRunMapFingerprintToken(a);
+  const mapTokenB = getRunMapFingerprintToken(b);
+  if (mapTokenA === "" || mapTokenB === "" || mapTokenA !== mapTokenB) {
+    return false;
+  }
+
+  if (a.level === undefined || b.level === undefined || a.level !== b.level) {
+    return false;
+  }
+
+  const seasonTokenA = toFingerprintToken(a.seasonID);
+  const seasonTokenB = toFingerprintToken(b.seasonID);
+  if (seasonTokenA !== "" && seasonTokenB !== "" && seasonTokenA !== seasonTokenB) {
+    return false;
+  }
+
+  return true;
+}
+
+function hasSharedStrictCompatibilityTimestamp(a: MythicPlusRunLike, b: MythicPlusRunLike): boolean {
+  const timestampsA = new Set(getRunStrictEventTimestamps(a));
+  for (const timestamp of getRunStrictEventTimestamps(b)) {
+    if (timestampsA.has(timestamp)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function hasCompatibleLegacyDstShift(a: MythicPlusRunLike, b: MythicPlusRunLike): boolean {
+  if (!hasStrongCompletedRunIdentitySignature(a) || !hasStrongCompletedRunIdentitySignature(b)) {
+    return false;
+  }
+
+  const aTimestamps = getRunStrictEventTimestamps(a);
+  const bTimestamps = getRunStrictEventTimestamps(b);
+  if (aTimestamps.length === 0 || bTimestamps.length === 0) {
+    return false;
+  }
+
+  const aDuration = getSanitizedRunDurationMs(a);
+  const bDuration = getSanitizedRunDurationMs(b);
+  if (aDuration !== undefined && bDuration !== undefined && aDuration !== bDuration) {
+    return false;
+  }
+
+  if (a.runScore !== undefined && b.runScore !== undefined && a.runScore !== b.runScore) {
+    return false;
+  }
+
+  for (const timestampA of aTimestamps) {
+    for (const timestampB of bTimestamps) {
+      if (Math.abs(timestampA - timestampB) === LEGACY_DST_SHIFT_SECONDS) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+export function canUseMythicPlusRunCompatibilityAliasMatch(
+  existingRun: MythicPlusRunLike,
+  candidateRun: MythicPlusRunLike,
+): boolean {
+  const existingAttemptId = getMythicPlusRunAttemptId(existingRun);
+  const candidateAttemptId = getMythicPlusRunAttemptId(candidateRun);
+  if (existingAttemptId !== null && candidateAttemptId !== null) {
+    return existingAttemptId === candidateAttemptId;
+  }
+
+  if (!areRunCoreIdentityFieldsCompatible(existingRun, candidateRun)) {
+    return false;
+  }
+
+  if (hasSharedStrictCompatibilityTimestamp(existingRun, candidateRun)) {
+    return true;
+  }
+
+  return hasCompatibleLegacyDstShift(existingRun, candidateRun);
 }
 
 export function getMythicPlusRunCompletenessScore(run: MythicPlusRunLike) {
@@ -546,7 +790,8 @@ export function getMythicPlusRunCompletenessScore(run: MythicPlusRunLike) {
   if (run.mapChallengeModeID !== undefined) score += 3;
   if (typeof run.mapName === "string" && run.mapName.trim() !== "") score += 1;
   if (run.level !== undefined) score += 2;
-  if (getRunAttemptId(run) !== null) score += 4;
+  if (getMythicPlusRunAttemptId(run) !== null) score += 4;
+  if (getMythicPlusRunCanonicalKey(run) !== null) score += 4;
   if (status === "active") score += 2;
   if (status === "abandoned") score += 3;
   if (status === "completed") score += 4;
@@ -579,8 +824,8 @@ export function shouldReplaceMythicPlusRun(
     return candidateStatusPriority > currentStatusPriority;
   }
 
-  const currentCanonicalFingerprint = buildCanonicalMythicPlusRunFingerprint(currentRun);
-  const candidateCanonicalFingerprint = buildCanonicalMythicPlusRunFingerprint(candidateRun);
+  const currentCanonicalFingerprint = getMythicPlusRunCanonicalKey(currentRun);
+  const candidateCanonicalFingerprint = getMythicPlusRunCanonicalKey(candidateRun);
   if (
     currentCanonicalFingerprint !== null &&
     candidateCanonicalFingerprint !== null &&
@@ -611,7 +856,6 @@ export function shouldReplaceMythicPlusRun(
 export function getMythicPlusRunDedupKeys(run: MythicPlusRunLike): string[] {
   const keys: string[] = [];
   const seen = new Set<string>();
-  const durationMs = getSanitizedRunDurationMs(run);
 
   const pushKey = (key: string | null | undefined) => {
     if (!key || seen.has(key)) return;
@@ -619,62 +863,35 @@ export function getMythicPlusRunDedupKeys(run: MythicPlusRunLike): string[] {
     keys.push(key);
   };
 
-  const identityCandidates = getRunIdentityCandidates(run);
-  const mapTokens = getRunMapFingerprintTokens(run);
-  const seasonTokens = getRunSeasonTokens(run);
-  const attemptId = getRunAttemptId(run);
-
+  const attemptId = getMythicPlusRunAttemptId(run);
   if (attemptId !== null) {
-    pushKey(`aid|${attemptId}`);
     pushKey(attemptId);
   }
 
-  for (const identityTimestamp of identityCandidates) {
-    pushKey(buildRunFingerprintWithIdentity(run, identityTimestamp));
+  pushKey(getMythicPlusRunCanonicalKey(run));
+  for (const alias of getMythicPlusRunCompatibilityLookupAliases(run)) {
+    pushKey(alias);
   }
-
-  for (const identityTimestamp of identityCandidates) {
-    for (const mapToken of mapTokens) {
-      for (const seasonToken of seasonTokens) {
-        pushKey(buildRunFingerprintWithIdentity(run, identityTimestamp, { seasonToken, mapToken }));
-      }
-    }
-  }
-  pushKey(buildCanonicalMythicPlusRunFingerprint(run));
-
-  if (
-    keys.length === 0 &&
-    mapTokens.length > 0 &&
-    run.level !== undefined &&
-    (durationMs !== undefined || run.runScore !== undefined)
-  ) {
-    for (const mapToken of mapTokens) {
-      for (const seasonToken of seasonTokens) {
-        pushKey([
-          seasonToken,
-          mapToken,
-          toFingerprintToken(run.level),
-          toFingerprintToken(durationMs),
-          toFingerprintToken(run.runScore),
-        ].join("|"));
-      }
-    }
-  }
-
-  pushKey(run.fingerprint);
-  pushKey(run._id);
 
   return keys;
 }
 
 export function hasMythicPlusRunDedupKeyOverlap(a: MythicPlusRunLike, b: MythicPlusRunLike): boolean {
-  const keysA = new Set(getMythicPlusRunDedupKeys(a));
-  for (const key of getMythicPlusRunDedupKeys(b)) {
-    if (keysA.has(key)) return true;
+  const canonicalA = getMythicPlusRunCanonicalKey(a);
+  const canonicalB = getMythicPlusRunCanonicalKey(b);
+  if (canonicalA !== null && canonicalB !== null && canonicalA === canonicalB) {
+    return true;
   }
+
+  const attemptA = getMythicPlusRunAttemptId(a);
+  const attemptB = getMythicPlusRunAttemptId(b);
+  if (attemptA !== null && attemptB !== null && attemptA === attemptB) {
+    return true;
+  }
+
   return false;
 }
 
 export function getMythicPlusRunDedupKey(run: MythicPlusRunLike) {
-  return getMythicPlusRunDedupKeys(run)[0] ?? null;
+  return getMythicPlusRunCanonicalKey(run) ?? getMythicPlusRunDedupKeys(run)[0] ?? null;
 }

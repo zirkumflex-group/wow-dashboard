@@ -13,6 +13,7 @@ export const mythicPlusRunMemberValidator = v.object(mythicPlusRunMemberFields);
 const mythicPlusRunFields = {
   fingerprint: v.string(),
   attemptId: v.optional(v.string()),
+  canonicalKey: v.optional(v.string()),
   observedAt: v.number(),
   seasonID: v.optional(v.number()),
   mapChallengeModeID: v.optional(v.number()),
@@ -50,5 +51,7 @@ export const mythicPlusRunsTable = defineTable({
   ...mythicPlusRunFields,
 })
   .index("by_character", ["characterId"])
+  .index("by_character_and_attemptId", ["characterId", "attemptId"])
+  .index("by_character_and_canonicalKey", ["characterId", "canonicalKey"])
   .index("by_character_and_fingerprint", ["characterId", "fingerprint"])
   .index("by_character_and_observedAt", ["characterId", "observedAt"]);

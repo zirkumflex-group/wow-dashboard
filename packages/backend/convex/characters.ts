@@ -6,9 +6,8 @@ import { internalMutation, mutation, query } from "./_generated/server";
 import { authComponent } from "./auth";
 import {
   buildCanonicalMythicPlusRunFingerprint,
-  getMythicPlusRunDedupKeys,
-  getMythicPlusRunDedupKey,
-  hasMythicPlusRunDedupKeyOverlap,
+  getMythicPlusRunAttemptId,
+  getMythicPlusRunCanonicalKey,
   getMythicPlusRunLifecycleStatus,
   mergeMythicPlusRunMembers,
   getMythicPlusRunTimedState,
@@ -18,7 +17,7 @@ import {
 } from "./mythicPlus";
 import { rateLimiter } from "./rateLimiter";
 
-type MythicPlusRunDoc = Doc<"mythicPlusRuns">;
+type MythicPlusRunDoc = Doc<"mythicPlusRuns"> & { canonicalKey?: string };
 type SnapshotDoc = Doc<"snapshots">;
 
 function getRunTimestamp(run: MythicPlusRunDoc): number {
@@ -435,7 +434,14 @@ function dedupeMythicPlusRuns(runs: MythicPlusRunDoc[]) {
         mergedObservedAt > 0
           ? mergedObservedAt
           : pickDefinedValue(preferredRun.observedAt, fallbackRun.observedAt) ?? 0,
-      attemptId: pickDefinedValue(preferredRun.attemptId, fallbackRun.attemptId),
+      attemptId: pickDefinedValue(
+        getMythicPlusRunAttemptId(preferredRun) ?? undefined,
+        getMythicPlusRunAttemptId(fallbackRun) ?? undefined,
+      ),
+      canonicalKey: pickDefinedValue(
+        getMythicPlusRunCanonicalKey(preferredRun) ?? undefined,
+        getMythicPlusRunCanonicalKey(fallbackRun) ?? undefined,
+      ),
       seasonID: pickDefinedValue(preferredRun.seasonID, fallbackRun.seasonID),
       mapChallengeModeID: pickDefinedValue(preferredRun.mapChallengeModeID, fallbackRun.mapChallengeModeID),
       mapName: pickDefinedValue(preferredRun.mapName, fallbackRun.mapName),
@@ -458,6 +464,8 @@ function dedupeMythicPlusRuns(runs: MythicPlusRunDoc[]) {
     if (canonicalFingerprint) {
       merged.fingerprint = canonicalFingerprint;
     }
+    merged.canonicalKey = getMythicPlusRunCanonicalKey(merged) ?? merged.canonicalKey;
+    merged.attemptId = getMythicPlusRunAttemptId(merged) ?? merged.attemptId;
 
     const status = getMythicPlusRunLifecycleStatus(merged);
     if (status !== undefined) {
@@ -475,16 +483,21 @@ function dedupeMythicPlusRuns(runs: MythicPlusRunDoc[]) {
   };
 
   for (const run of runs) {
-    const runDedupKeys = getMythicPlusRunDedupKeys(run);
+    const runAttemptId = getMythicPlusRunAttemptId(run);
+    const runCanonicalKey = getMythicPlusRunCanonicalKey(run);
     let matchIndex = -1;
 
     for (let index = 0; index < dedupedRuns.length; index += 1) {
       const current = dedupedRuns[index]!;
-      const currentDedupKey = getMythicPlusRunDedupKey(current);
-      if (
-        (currentDedupKey !== null && runDedupKeys.includes(currentDedupKey)) ||
-        hasMythicPlusRunDedupKeyOverlap(current, run)
-      ) {
+      const currentAttemptId = getMythicPlusRunAttemptId(current);
+      const currentCanonicalKey = getMythicPlusRunCanonicalKey(current);
+      const hasExactAttemptMatch =
+        runAttemptId !== null && currentAttemptId !== null && runAttemptId === currentAttemptId;
+      const hasExactCanonicalMatch =
+        runCanonicalKey !== null &&
+        currentCanonicalKey !== null &&
+        runCanonicalKey === currentCanonicalKey;
+      if (hasExactAttemptMatch || hasExactCanonicalMatch) {
         matchIndex = index;
         break;
       }
@@ -504,6 +517,10 @@ function dedupeMythicPlusRuns(runs: MythicPlusRunDoc[]) {
     return b.observedAt - a.observedAt;
   });
 }
+
+export const __testables = {
+  dedupeMythicPlusRuns,
+};
 
 export const upsertFromBattleNet = internalMutation({
   args: {
