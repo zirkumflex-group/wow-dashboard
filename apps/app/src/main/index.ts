@@ -1202,6 +1202,30 @@ function getMythicPlusRunSortValue(run: Partial<MythicPlusRunData>): number {
   return getLikelyPlayedAtTimestamp(run);
 }
 
+function mergeLifecycleTimestamp(
+  preferredValue: number | undefined,
+  fallbackValue: number | undefined,
+): number | undefined {
+  if (preferredValue === undefined) {
+    return fallbackValue;
+  }
+  if (fallbackValue === undefined) {
+    return preferredValue;
+  }
+
+  const preferredTimestamp = Math.floor(preferredValue);
+  const fallbackTimestamp = Math.floor(fallbackValue);
+  if (preferredTimestamp === fallbackTimestamp) {
+    return preferredTimestamp;
+  }
+
+  if (Math.abs(preferredTimestamp - fallbackTimestamp) === LEGACY_DST_SHIFT_SECONDS) {
+    return Math.max(preferredTimestamp, fallbackTimestamp);
+  }
+
+  return preferredValue;
+}
+
 function getMythicPlusRunCompletenessScore(run: Partial<MythicPlusRunData>): number {
   let score = 0;
   const status = getMythicPlusRunStatus(run);
@@ -1312,10 +1336,10 @@ function mergeMythicPlusRunData(
     completedInTime: preferredRun.completedInTime ?? fallbackRun.completedInTime,
     durationMs: preferredRun.durationMs ?? fallbackRun.durationMs,
     runScore: preferredRun.runScore ?? fallbackRun.runScore,
-    startDate: preferredRun.startDate ?? fallbackRun.startDate,
-    completedAt: preferredRun.completedAt ?? fallbackRun.completedAt,
-    endedAt: preferredRun.endedAt ?? fallbackRun.endedAt,
-    abandonedAt: preferredRun.abandonedAt ?? fallbackRun.abandonedAt,
+    startDate: mergeLifecycleTimestamp(preferredRun.startDate, fallbackRun.startDate),
+    completedAt: mergeLifecycleTimestamp(preferredRun.completedAt, fallbackRun.completedAt),
+    endedAt: mergeLifecycleTimestamp(preferredRun.endedAt, fallbackRun.endedAt),
+    abandonedAt: mergeLifecycleTimestamp(preferredRun.abandonedAt, fallbackRun.abandonedAt),
     abandonReason: preferredRun.abandonReason ?? fallbackRun.abandonReason,
     thisWeek: preferredRun.thisWeek ?? fallbackRun.thisWeek,
     members: mergeMythicPlusRunMembers(currentRun.members, candidateRun.members),

@@ -2098,6 +2098,7 @@ end
 local ATTEMPT_MERGE_WINDOW_SECONDS = 45 * 60
 local ATTEMPT_MAX_DURATION_SECONDS = 4 * 60 * 60
 local LEAVER_TIMER_REASON_WINDOW_SECONDS = 10 * 60
+local LEGACY_DST_SHIFT_SECONDS = 60 * 60
 
 local function NormalizeLifecycleTimestamp(value)
     local normalized = NormalizeMythicPlusDate(value)
@@ -2361,6 +2362,28 @@ local function PickDefinedValue(preferredValue, fallbackValue)
     return fallbackValue
 end
 
+local function MergeLifecycleTimestampValues(preferredValue, fallbackValue)
+    local preferredTimestamp = NormalizeMythicPlusDate(preferredValue)
+    local fallbackTimestamp = NormalizeMythicPlusDate(fallbackValue)
+
+    if preferredTimestamp == nil then
+        return fallbackTimestamp
+    end
+    if fallbackTimestamp == nil then
+        return preferredTimestamp
+    end
+
+    if preferredTimestamp == fallbackTimestamp then
+        return preferredTimestamp
+    end
+
+    if math.abs(preferredTimestamp - fallbackTimestamp) == LEGACY_DST_SHIFT_SECONDS then
+        return math.max(preferredTimestamp, fallbackTimestamp)
+    end
+
+    return preferredTimestamp
+end
+
 MergeStoredMythicPlusRun = function(currentRun, candidateRun)
     if type(currentRun) ~= "table" then
         return candidateRun
@@ -2397,10 +2420,10 @@ MergeStoredMythicPlusRun = function(currentRun, candidateRun)
         completedInTime = PickDefinedValue(preferredRun.completedInTime, fallbackRun.completedInTime),
         durationMs = PickDefinedValue(preferredRun.durationMs, fallbackRun.durationMs),
         runScore = PickDefinedValue(preferredRun.runScore, fallbackRun.runScore),
-        startDate = PickDefinedValue(preferredRun.startDate, fallbackRun.startDate),
-        completedAt = PickDefinedValue(preferredRun.completedAt, fallbackRun.completedAt),
-        endedAt = PickDefinedValue(preferredRun.endedAt, fallbackRun.endedAt),
-        abandonedAt = PickDefinedValue(preferredRun.abandonedAt, fallbackRun.abandonedAt),
+        startDate = MergeLifecycleTimestampValues(preferredRun.startDate, fallbackRun.startDate),
+        completedAt = MergeLifecycleTimestampValues(preferredRun.completedAt, fallbackRun.completedAt),
+        endedAt = MergeLifecycleTimestampValues(preferredRun.endedAt, fallbackRun.endedAt),
+        abandonedAt = MergeLifecycleTimestampValues(preferredRun.abandonedAt, fallbackRun.abandonedAt),
         abandonReason = PickDefinedValue(preferredRun.abandonReason, fallbackRun.abandonReason),
         thisWeek = PickDefinedValue(preferredRun.thisWeek, fallbackRun.thisWeek),
     }

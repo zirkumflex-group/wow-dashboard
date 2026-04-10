@@ -977,6 +977,10 @@ function getTertiaryStats(snapshot: Snapshot) {
 function MythicPlusResultBadge({ run }: { run: MythicPlusRun }) {
   const status = getMythicPlusRunStatus(run);
   const timedState = getMythicPlusRunTimedState(run);
+  const normalizedUpgradeCount =
+    run.upgradeCount !== undefined && run.upgradeCount !== null
+      ? Math.max(1, Math.min(3, run.upgradeCount))
+      : null;
 
   if (status === "active") {
     return (
@@ -995,7 +999,7 @@ function MythicPlusResultBadge({ run }: { run: MythicPlusRun }) {
   if (timedState === true) {
     return (
       <Badge className="rounded-md border-emerald-400/40 bg-emerald-500/18 px-1.5 py-0.5 text-[11px] font-semibold tracking-[0.08em] text-emerald-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-        Timed
+        {normalizedUpgradeCount !== null ? `+${normalizedUpgradeCount}` : "Timed"}
       </Badge>
     );
   }

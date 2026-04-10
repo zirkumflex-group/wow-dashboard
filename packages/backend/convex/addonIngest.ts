@@ -93,6 +93,7 @@ type MythicPlusRunPatch = {
   thisWeek?: boolean;
   members?: MythicPlusRunMembers;
 };
+const LEGACY_DST_SHIFT_SECONDS = 60 * 60;
 
 function setPreferredRunLookup(
   map: Map<string, MythicPlusRunDoc>,
@@ -204,6 +205,30 @@ function snapshotFieldsEqual(a: SnapshotFields, b: SnapshotFields) {
 
 function pickDefinedValue<T>(preferredValue: T | undefined, fallbackValue: T | undefined): T | undefined {
   return preferredValue !== undefined ? preferredValue : fallbackValue;
+}
+
+function mergeLifecycleTimestamp(
+  preferredValue: number | undefined,
+  fallbackValue: number | undefined,
+): number | undefined {
+  if (preferredValue === undefined) {
+    return fallbackValue;
+  }
+  if (fallbackValue === undefined) {
+    return preferredValue;
+  }
+
+  const preferredTimestamp = Math.floor(preferredValue);
+  const fallbackTimestamp = Math.floor(fallbackValue);
+  if (preferredTimestamp === fallbackTimestamp) {
+    return preferredTimestamp;
+  }
+
+  if (Math.abs(preferredTimestamp - fallbackTimestamp) === LEGACY_DST_SHIFT_SECONDS) {
+    return Math.max(preferredTimestamp, fallbackTimestamp);
+  }
+
+  return preferredValue;
 }
 
 function normalizeAttemptId(value: unknown): string | undefined {
@@ -333,10 +358,10 @@ function mergeMythicPlusRunData(
     completedInTime: pickDefinedValue(preferredRun.completedInTime, fallbackRun.completedInTime),
     durationMs: pickDefinedValue(preferredRun.durationMs, fallbackRun.durationMs),
     runScore: pickDefinedValue(preferredRun.runScore, fallbackRun.runScore),
-    startDate: pickDefinedValue(preferredRun.startDate, fallbackRun.startDate),
-    completedAt: pickDefinedValue(preferredRun.completedAt, fallbackRun.completedAt),
-    endedAt: pickDefinedValue(preferredRun.endedAt, fallbackRun.endedAt),
-    abandonedAt: pickDefinedValue(preferredRun.abandonedAt, fallbackRun.abandonedAt),
+    startDate: mergeLifecycleTimestamp(preferredRun.startDate, fallbackRun.startDate),
+    completedAt: mergeLifecycleTimestamp(preferredRun.completedAt, fallbackRun.completedAt),
+    endedAt: mergeLifecycleTimestamp(preferredRun.endedAt, fallbackRun.endedAt),
+    abandonedAt: mergeLifecycleTimestamp(preferredRun.abandonedAt, fallbackRun.abandonedAt),
     abandonReason: pickDefinedValue(preferredRun.abandonReason, fallbackRun.abandonReason),
     thisWeek: pickDefinedValue(preferredRun.thisWeek, fallbackRun.thisWeek),
     members: mergeMythicPlusRunMembers(currentRun.members, candidateRun.members),
