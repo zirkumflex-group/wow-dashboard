@@ -270,21 +270,40 @@ function formatRunDate(ts?: number | null) {
 }
 
 function formatRunDuration(durationMs?: number | null) {
-  if (!durationMs || durationMs <= 0) return "—";
+  if (!durationMs || durationMs <= 0 || durationMs > MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS) {
+    return "—";
+  }
   const totalSeconds = Math.floor(durationMs / 1000);
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
+const MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS = 4 * 60 * 60 * 1000;
+
 function getRunDurationMs(run: MythicPlusRun): number | undefined {
-  if (run.durationMs !== undefined && run.durationMs > 0) {
+  if (
+    run.durationMs !== undefined &&
+    run.durationMs > 0 &&
+    run.durationMs <= MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS
+  ) {
     return run.durationMs;
   }
 
   const runEndAt = run.endedAt ?? run.abandonedAt ?? run.completedAt;
-  if (run.startDate !== undefined && runEndAt !== undefined && runEndAt >= run.startDate) {
-    return (runEndAt - run.startDate) * 1000;
+  if (
+    run.startDate !== undefined &&
+    runEndAt !== undefined &&
+    runEndAt >= run.startDate
+  ) {
+    const derivedDurationMs = (runEndAt - run.startDate) * 1000;
+    if (
+      Number.isFinite(derivedDurationMs) &&
+      derivedDurationMs > 0 &&
+      derivedDurationMs <= MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS
+    ) {
+      return derivedDurationMs;
+    }
   }
 
   return undefined;
@@ -368,7 +387,7 @@ function getMythicPlusRunStatus(run: MythicPlusRun): MythicPlusRun["status"] | u
 
   if (
     run.completed === true ||
-    run.durationMs !== undefined ||
+    getRunDurationMs(run) !== undefined ||
     run.runScore !== undefined ||
     run.completedAt !== undefined
   ) {

@@ -507,7 +507,7 @@ function isTemporaryAttemptFingerprint(value: unknown): boolean {
 function hasRunCompletionEvidence(run: Partial<MythicPlusRunData>): boolean {
   return (
     run.completed === true ||
-    run.durationMs !== undefined ||
+    getSanitizedRunDurationMs(run) !== undefined ||
     run.runScore !== undefined ||
     run.completedAt !== undefined
   );
@@ -790,7 +790,8 @@ function normalizeSnapshotSpec(value: unknown): string {
 
 function toOptionalMythicPlusTimestamp(value: unknown): number | undefined {
   if (typeof value === "number" && Number.isFinite(value)) {
-    return value;
+    if (value <= 0) return undefined;
+    return value >= 1_000_000_000_000 ? Math.floor(value / 1000) : Math.floor(value);
   }
 
   if (!isRecord(value)) {
@@ -850,9 +851,40 @@ function getRunSeasonTokens(run: Partial<MythicPlusRunData>): string[] {
   return seasonToken === "" ? [""] : [seasonToken, ""];
 }
 
+const MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS = 4 * 60 * 60 * 1000;
+
+function getSanitizedRunDurationMs(run: Partial<MythicPlusRunData>): number | undefined {
+  const durationMs = run.durationMs;
+  if (durationMs === undefined || !Number.isFinite(durationMs) || durationMs <= 0) {
+    return undefined;
+  }
+  if (durationMs <= MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS) {
+    return Math.floor(durationMs);
+  }
+
+  const runEndAt = run.completedAt ?? run.endedAt ?? run.abandonedAt;
+  if (
+    run.startDate !== undefined &&
+    runEndAt !== undefined &&
+    runEndAt >= run.startDate
+  ) {
+    const derivedDurationMs = (runEndAt - run.startDate) * 1000;
+    if (
+      Number.isFinite(derivedDurationMs) &&
+      derivedDurationMs > 0 &&
+      derivedDurationMs <= MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS
+    ) {
+      return Math.floor(derivedDurationMs);
+    }
+  }
+
+  return undefined;
+}
+
 function getRunDurationSeconds(run: Partial<MythicPlusRunData>): number | undefined {
-  if (run.durationMs === undefined || run.durationMs <= 0) return undefined;
-  return Math.floor(run.durationMs / 1000 + 0.5);
+  const durationMs = getSanitizedRunDurationMs(run);
+  if (durationMs === undefined) return undefined;
+  return Math.floor(durationMs / 1000 + 0.5);
 }
 
 function getRunDerivedStartTimestamp(run: Partial<MythicPlusRunData>): number | undefined {
@@ -894,12 +926,36 @@ function getRunIdentityCandidates(run: Partial<MythicPlusRunData>): number[] {
   pushCandidate(run.abandonedAt);
   pushCandidate(getRunDerivedStartTimestamp(run));
   pushCandidate(getRunDerivedEndTimestamp(run));
+  pushCandidate(getLikelyPlayedAtTimestamp(run));
 
   return candidates;
 }
 
 function getRunIdentityTimestamp(run: Partial<MythicPlusRunData>): number | null {
   return getRunIdentityCandidates(run)[0] ?? null;
+}
+
+function getLikelyPlayedAtTimestamp(run: Partial<MythicPlusRunData>): number {
+  const primaryTimestamp = run.endedAt ?? run.abandonedAt ?? run.completedAt ?? run.startDate;
+  if (primaryTimestamp === undefined) {
+    return run.observedAt ?? 0;
+  }
+
+  const observedAt = run.observedAt;
+  if (observedAt !== undefined) {
+    const driftSeconds = observedAt - primaryTimestamp;
+    const roundedHourDriftSeconds = Math.round(driftSeconds / 3600) * 3600;
+    const looksLikeLegacyUtcDrift =
+      roundedHourDriftSeconds >= 3600 &&
+      roundedHourDriftSeconds <= 3 * 3600 &&
+      Math.abs(driftSeconds - roundedHourDriftSeconds) <= 10 * 60;
+
+    if (looksLikeLegacyUtcDrift) {
+      return primaryTimestamp + roundedHourDriftSeconds;
+    }
+  }
+
+  return primaryTimestamp;
 }
 
 function buildRunFingerprintWithIdentity(
@@ -926,6 +982,7 @@ function buildRunFingerprintWithIdentity(
 
 function buildCanonicalMythicPlusRunFingerprint(run: Partial<MythicPlusRunData>): string | undefined {
   const identityTimestamp = getRunIdentityTimestamp(run);
+  const durationMs = getSanitizedRunDurationMs(run);
 
   if (identityTimestamp !== null) {
     const fingerprint = buildRunFingerprintWithIdentity(run, identityTimestamp);
@@ -937,12 +994,12 @@ function buildCanonicalMythicPlusRunFingerprint(run: Partial<MythicPlusRunData>)
     return undefined;
   }
 
-  if (run.durationMs !== undefined || run.runScore !== undefined) {
+  if (durationMs !== undefined || run.runScore !== undefined) {
     return [
       toFingerprintToken(run.seasonID),
       mapToken,
       toFingerprintToken(run.level),
-      toFingerprintToken(run.durationMs),
+      toFingerprintToken(durationMs),
       toFingerprintToken(run.runScore),
     ].join("|");
   }
@@ -1003,15 +1060,16 @@ function getMythicPlusRunDedupKeys(run: Partial<MythicPlusRunData>): string[] {
     keys.length === 0 &&
     mapTokens.length > 0 &&
     run.level !== undefined &&
-    (run.durationMs !== undefined || run.runScore !== undefined)
+    (getSanitizedRunDurationMs(run) !== undefined || run.runScore !== undefined)
   ) {
+    const durationMs = getSanitizedRunDurationMs(run);
     for (const mapToken of mapTokens) {
       for (const seasonToken of seasonTokens) {
         pushKey([
           seasonToken,
           mapToken,
           toFingerprintToken(run.level),
-          toFingerprintToken(run.durationMs),
+          toFingerprintToken(durationMs),
           toFingerprintToken(run.runScore),
         ].join("|"));
       }
@@ -1053,21 +1111,23 @@ function findMergeableMythicPlusRun(
 }
 
 function getMythicPlusRunCompletionEstimate(run: Partial<MythicPlusRunData>): number | undefined {
+  const durationMs = getSanitizedRunDurationMs(run);
   return run.endedAt ??
     run.abandonedAt ??
     run.completedAt ??
-    (run.startDate !== undefined && run.durationMs !== undefined
-      ? run.startDate + Math.floor(run.durationMs / 1000 + 0.5)
+    (run.startDate !== undefined && durationMs !== undefined
+      ? run.startDate + Math.floor(durationMs / 1000 + 0.5)
       : undefined);
 }
 
 function getMythicPlusRunSortValue(run: Partial<MythicPlusRunData>): number {
-  return run.endedAt ?? run.abandonedAt ?? run.completedAt ?? run.startDate ?? run.observedAt ?? 0;
+  return getLikelyPlayedAtTimestamp(run);
 }
 
 function getMythicPlusRunCompletenessScore(run: Partial<MythicPlusRunData>): number {
   let score = 0;
   const status = getMythicPlusRunStatus(run);
+  const durationMs = getSanitizedRunDurationMs(run);
 
   if (run.seasonID !== undefined) score += 1;
   if (run.mapChallengeModeID !== undefined) score += 3;
@@ -1081,7 +1141,7 @@ function getMythicPlusRunCompletenessScore(run: Partial<MythicPlusRunData>): num
   if (run.endedAt !== undefined) score += 3;
   if (run.abandonedAt !== undefined) score += 2;
   if (run.abandonReason !== undefined) score += 1;
-  if (run.durationMs !== undefined) score += 3;
+  if (durationMs !== undefined) score += 3;
   if (run.runScore !== undefined) score += 3;
   if (run.completedInTime !== undefined) score += 2;
   if (run.completed !== undefined) score += 1;
@@ -1196,16 +1256,60 @@ function mergeMythicPlusRunData(
 
 function normalizeStoredMythicPlusRun(runRaw: LuaTable): MythicPlusRunData {
   const legacyRaw = isRecord(runRaw.raw) ? runRaw.raw : null;
-  const durationMs =
-    toOptionalNumber(runRaw.durationMs) ??
-    (toOptionalNumber(runRaw.durationSec) !== undefined
-      ? Math.round((runRaw.durationSec as number) * 1000)
-      : undefined) ??
-    (toOptionalNumber(runRaw.durationSeconds) !== undefined
-      ? Math.round((runRaw.durationSeconds as number) * 1000)
-      : undefined) ??
-    toOptionalNumber(runRaw.time) ??
-    toOptionalNumber(runRaw.runDuration);
+  const startDate =
+    toOptionalMythicPlusTimestamp(runRaw.startDate) ??
+    toOptionalMythicPlusTimestamp(runRaw.startedAt);
+  const completedAt =
+    toOptionalMythicPlusTimestamp(runRaw.completedAt) ??
+    toOptionalMythicPlusTimestamp(runRaw.completionDate) ??
+    toOptionalMythicPlusTimestamp(runRaw.completedDate) ??
+    toOptionalMythicPlusTimestamp(runRaw.endTime);
+  const endedAt =
+    toOptionalMythicPlusTimestamp(runRaw.endedAt) ??
+    toOptionalMythicPlusTimestamp(runRaw.abandonedAt);
+  const abandonedAt =
+    toOptionalMythicPlusTimestamp(runRaw.abandonedAt) ??
+    toOptionalMythicPlusTimestamp(runRaw.endedAt);
+
+  const readDurationCandidateMs = (...values: unknown[]) => {
+    for (const value of values) {
+      const numericValue = toOptionalNumber(value);
+      if (numericValue !== undefined && numericValue > 0) {
+        return Math.round(numericValue);
+      }
+    }
+    return undefined;
+  };
+  const readDurationCandidateSeconds = (...values: unknown[]) => {
+    for (const value of values) {
+      const numericValue = toOptionalNumber(value);
+      if (numericValue !== undefined && numericValue > 0) {
+        return Math.round(numericValue * 1000);
+      }
+    }
+    return undefined;
+  };
+  const durationMsCandidate =
+    readDurationCandidateMs(
+      runRaw.durationMs,
+      runRaw.completionMilliseconds,
+      runRaw.mapChallengeModeDuration,
+      runRaw.runDurationMs,
+      legacyRaw?.durationMs,
+      legacyRaw?.completionMilliseconds,
+      legacyRaw?.mapChallengeModeDuration,
+      legacyRaw?.runDurationMs,
+    ) ??
+    readDurationCandidateSeconds(
+      runRaw.durationSec,
+      runRaw.durationSeconds,
+      runRaw.time,
+      runRaw.runDuration,
+      legacyRaw?.durationSec,
+      legacyRaw?.durationSeconds,
+      legacyRaw?.time,
+      legacyRaw?.runDuration,
+    );
 
   const run: MythicPlusRunData = {
     fingerprint: "",
@@ -1246,26 +1350,15 @@ function normalizeStoredMythicPlusRun(runRaw: LuaTable): MythicPlusRunData {
       toOptionalBoolean(runRaw.completedInTime) ??
       toOptionalBoolean(runRaw.intime) ??
       toOptionalBoolean(runRaw.onTime),
-    durationMs,
+    durationMs: undefined,
     runScore:
       toOptionalNumber(runRaw.runScore) ??
       toOptionalNumber(runRaw.score) ??
       toOptionalNumber(runRaw.mythicRating),
-    startDate:
-      toOptionalMythicPlusTimestamp(runRaw.startDate) ??
-      toOptionalMythicPlusTimestamp(runRaw.startedAt),
-    completedAt:
-      toOptionalMythicPlusTimestamp(runRaw.completedAt) ??
-      toOptionalMythicPlusTimestamp(runRaw.completionDate) ??
-      toOptionalMythicPlusTimestamp(runRaw.completedDate) ??
-      toOptionalMythicPlusTimestamp(runRaw.endTime) ??
-      toOptionalMythicPlusTimestamp(runRaw.startDate),
-    endedAt:
-      toOptionalMythicPlusTimestamp(runRaw.endedAt) ??
-      toOptionalMythicPlusTimestamp(runRaw.abandonedAt),
-    abandonedAt:
-      toOptionalMythicPlusTimestamp(runRaw.abandonedAt) ??
-      toOptionalMythicPlusTimestamp(runRaw.endedAt),
+    startDate,
+    completedAt,
+    endedAt,
+    abandonedAt,
     abandonReason: (() => {
       const reasonValue = toOptionalString(runRaw.abandonReason);
       if (
@@ -1294,6 +1387,11 @@ function normalizeStoredMythicPlusRun(runRaw: LuaTable): MythicPlusRunData {
           )
         : undefined),
   };
+
+  run.durationMs = getSanitizedRunDurationMs({
+    ...run,
+    durationMs: durationMsCandidate,
+  });
 
   if (
     run.completed !== true &&

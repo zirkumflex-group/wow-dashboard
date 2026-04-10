@@ -286,6 +286,7 @@ local ACTIVE_RUN_MEMBER_RETENTION = 4 * 60 * 60
 local ACTIVE_ATTEMPT_RECONCILE_GRACE = 8
 local RECENT_COMPLETION_EVENT_GRACE = 20
 local STALE_ATTEMPT_RECOVERY_SECONDS = 10 * 60
+local MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS = 4 * 60 * 60 * 1000
 local MYTHIC_PLUS_DEBUG_EVENT_LIMIT = 30
 local PLAYTIME_TIMEOUT = 30             -- seconds before we give up waiting for TIME_PLAYED_MSG
 local MAX_SNAPSHOTS_PER_CHARACTER = 500
@@ -1499,8 +1500,8 @@ end
 
 local function GetRunDurationMs(run)
     local durationMs = tonumber(run.durationMs)
-    if durationMs ~= nil and durationMs > 0 then
-        return durationMs
+    if durationMs ~= nil and durationMs > 0 and durationMs <= MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS then
+        return math.floor(durationMs + 0.5)
     end
 
     local durationSeconds = GetFirstField(run, {
@@ -1509,7 +1510,7 @@ local function GetRunDurationMs(run)
         "time",
         "runDuration",
     })
-    if type(durationSeconds) == "number" and durationSeconds > 0 then
+    if type(durationSeconds) == "number" and durationSeconds > 0 and durationSeconds <= (MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS / 1000) then
         return math.floor(durationSeconds * 1000 + 0.5)
     end
 
@@ -2449,9 +2450,15 @@ NormalizeStoredMythicPlusRun = function(run)
             "time",
             "runDuration",
         })
-        if type(durationSeconds) == "number" then
+        if type(durationSeconds) == "number"
+            and durationSeconds > 0
+            and durationSeconds <= (MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS / 1000)
+        then
             run.durationMs = math.floor(durationSeconds * 1000 + 0.5)
         end
+    end
+    if type(run.durationMs) == "number" and (run.durationMs <= 0 or run.durationMs > MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS) then
+        run.durationMs = nil
     end
 
     if run.completedAt == nil then
@@ -2567,9 +2574,15 @@ local function NormalizeMythicPlusRun(rawRun, seasonID)
             "time",
             "runDuration",
         })
-        if type(durationSeconds) == "number" then
+        if type(durationSeconds) == "number"
+            and durationSeconds > 0
+            and durationSeconds <= (MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS / 1000)
+        then
             durationMs = math.floor(durationSeconds * 1000 + 0.5)
         end
+    end
+    if type(durationMs) == "number" and (durationMs <= 0 or durationMs > MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS) then
+        durationMs = nil
     end
 
     local mapChallengeModeID = GetFirstField(rawRun, { "mapChallengeModeID", "challengeModeID", "mapID" })

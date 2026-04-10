@@ -57,6 +57,7 @@ const MYTHIC_PLUS_TIMER_MS_BY_MAP_ID = new Map<number, number>(
 const MYTHIC_PLUS_TIMER_MS_BY_MAP_NAME = new Map<string, number>(
   MYTHIC_PLUS_DUNGEONS.map((dungeon) => [normalizeMapName(dungeon.name), dungeon.timerMs] as const),
 );
+const MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS = 4 * 60 * 60 * 1000;
 
 function toFingerprintToken(value: boolean | number | string | null | undefined) {
   if (value === undefined || value === null) return "";
@@ -95,8 +96,37 @@ function getRunSeasonTokens(run: MythicPlusRunLike): string[] {
 }
 
 function getRunDurationSeconds(run: MythicPlusRunLike): number | null {
-  if (run.durationMs === undefined || run.durationMs <= 0) return null;
-  return Math.floor(run.durationMs / 1000 + 0.5);
+  const durationMs = getSanitizedRunDurationMs(run);
+  if (durationMs === undefined) return null;
+  return Math.floor(durationMs / 1000 + 0.5);
+}
+
+function getSanitizedRunDurationMs(run: MythicPlusRunLike): number | undefined {
+  const durationMs = run.durationMs;
+  if (durationMs === undefined || !Number.isFinite(durationMs) || durationMs <= 0) {
+    return undefined;
+  }
+  if (durationMs <= MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS) {
+    return Math.floor(durationMs);
+  }
+
+  const runEndAt = run.completedAt ?? run.endedAt ?? run.abandonedAt;
+  if (
+    run.startDate !== undefined &&
+    runEndAt !== undefined &&
+    runEndAt >= run.startDate
+  ) {
+    const derivedDurationMs = (runEndAt - run.startDate) * 1000;
+    if (
+      Number.isFinite(derivedDurationMs) &&
+      derivedDurationMs > 0 &&
+      derivedDurationMs <= MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS
+    ) {
+      return Math.floor(derivedDurationMs);
+    }
+  }
+
+  return undefined;
 }
 
 function getRunDerivedStartTimestamp(run: MythicPlusRunLike): number | null {
@@ -145,6 +175,7 @@ function getRunIdentityCandidates(run: MythicPlusRunLike): number[] {
   // Derived compatibility keys to bridge old/new payload shapes.
   pushCandidate(getRunDerivedStartTimestamp(run));
   pushCandidate(getRunDerivedEndTimestamp(run));
+  pushCandidate(getLikelyPlayedAtTimestamp(run));
 
   return candidates;
 }
@@ -176,7 +207,7 @@ function getRunIdentityTimestamp(run: MythicPlusRunLike) {
 }
 
 export function hasMythicPlusRunCompletionEvidence(run: MythicPlusRunLike): boolean {
-  return run.completed === true || run.durationMs !== undefined || run.runScore !== undefined || run.completedAt !== undefined;
+  return run.completed === true || getSanitizedRunDurationMs(run) !== undefined || run.runScore !== undefined || run.completedAt !== undefined;
 }
 
 function hasMythicPlusRunAbandonmentEvidence(run: MythicPlusRunLike): boolean {
@@ -350,11 +381,12 @@ export function getMythicPlusRunTimerMs(
 }
 
 export function getMythicPlusRunUpgradeCount(run: MythicPlusRunLike): number | null {
+  const durationMs = getSanitizedRunDurationMs(run);
   const timerMs = getMythicPlusRunTimerMs(run);
-  if (timerMs !== null && run.durationMs !== undefined && run.durationMs > 0) {
-    if (run.durationMs <= timerMs * 0.6) return 3;
-    if (run.durationMs <= timerMs * 0.8) return 2;
-    if (run.durationMs <= timerMs) return 1;
+  if (timerMs !== null && durationMs !== undefined) {
+    if (durationMs <= timerMs * 0.6) return 3;
+    if (durationMs <= timerMs * 0.8) return 2;
+    if (durationMs <= timerMs) return 1;
     return 0;
   }
 
@@ -377,6 +409,7 @@ export function getMythicPlusRunTimedState(run: MythicPlusRunLike): boolean | nu
 
 export function buildCanonicalMythicPlusRunFingerprint(run: MythicPlusRunLike) {
   const identityTimestamp = getRunIdentityTimestamp(run);
+  const durationMs = getSanitizedRunDurationMs(run);
 
   if (identityTimestamp !== null) {
     const fingerprint = buildRunFingerprintWithIdentity(run, identityTimestamp);
@@ -388,12 +421,12 @@ export function buildCanonicalMythicPlusRunFingerprint(run: MythicPlusRunLike) {
     return null;
   }
 
-  if (run.durationMs !== undefined || run.runScore !== undefined) {
+  if (durationMs !== undefined || run.runScore !== undefined) {
     return [
       toFingerprintToken(run.seasonID),
       mapToken,
       toFingerprintToken(run.level),
-      toFingerprintToken(run.durationMs),
+      toFingerprintToken(durationMs),
       toFingerprintToken(run.runScore),
     ].join("|");
   }
@@ -404,6 +437,7 @@ export function buildCanonicalMythicPlusRunFingerprint(run: MythicPlusRunLike) {
 export function getMythicPlusRunCompletenessScore(run: MythicPlusRunLike) {
   let score = 0;
   const status = getMythicPlusRunLifecycleStatus(run);
+  const durationMs = getSanitizedRunDurationMs(run);
 
   if (run.seasonID !== undefined) score += 1;
   if (run.mapChallengeModeID !== undefined) score += 3;
@@ -417,7 +451,7 @@ export function getMythicPlusRunCompletenessScore(run: MythicPlusRunLike) {
   if (run.endedAt !== undefined) score += 3;
   if (run.abandonedAt !== undefined) score += 2;
   if (run.abandonReason !== undefined) score += 1;
-  if (run.durationMs !== undefined) score += 3;
+  if (durationMs !== undefined) score += 3;
   if (run.runScore !== undefined) score += 3;
   if (run.completedInTime !== undefined) score += 2;
   if (run.completed !== undefined) score += 1;
@@ -473,6 +507,7 @@ export function shouldReplaceMythicPlusRun(
 export function getMythicPlusRunDedupKeys(run: MythicPlusRunLike): string[] {
   const keys: string[] = [];
   const seen = new Set<string>();
+  const durationMs = getSanitizedRunDurationMs(run);
 
   const pushKey = (key: string | null | undefined) => {
     if (!key || seen.has(key)) return;
@@ -501,7 +536,7 @@ export function getMythicPlusRunDedupKeys(run: MythicPlusRunLike): string[] {
     keys.length === 0 &&
     mapTokens.length > 0 &&
     run.level !== undefined &&
-    (run.durationMs !== undefined || run.runScore !== undefined)
+    (durationMs !== undefined || run.runScore !== undefined)
   ) {
     for (const mapToken of mapTokens) {
       for (const seasonToken of seasonTokens) {
@@ -509,7 +544,7 @@ export function getMythicPlusRunDedupKeys(run: MythicPlusRunLike): string[] {
           seasonToken,
           mapToken,
           toFingerprintToken(run.level),
-          toFingerprintToken(run.durationMs),
+          toFingerprintToken(durationMs),
           toFingerprintToken(run.runScore),
         ].join("|"));
       }
