@@ -1,7 +1,7 @@
 ## X-Flavor: retail
 ## X-Expansion: TWW
 ## Interface: 120001
-## Version: 1.2.7
+## Version: 1.2.8
 
 ## Title: WoW Dashboard
 ## Notes: A WoW Dashboard addon.|n|nOpen with Slash Command:|n/wowdashboard
