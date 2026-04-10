@@ -74,6 +74,7 @@ type MythicPlusRunMembers = MythicPlusRunDoc["members"];
 type MythicPlusRunInput = Omit<MythicPlusRunDoc, "_id" | "_creationTime" | "characterId">;
 type MythicPlusRunPatch = {
   fingerprint?: string;
+  attemptId?: string;
   observedAt?: number;
   seasonID?: number;
   mapChallengeModeID?: number;
@@ -112,6 +113,7 @@ function registerRunLookups(
   lookups: {
     byDedupKey: Map<string, MythicPlusRunDoc>;
     byFingerprint: Map<string, MythicPlusRunDoc>;
+    byAttemptId: Map<string, MythicPlusRunDoc>;
   },
   run: MythicPlusRunDoc,
   aliases: Array<string | undefined | null> = [],
@@ -133,14 +135,26 @@ function registerRunLookups(
   for (const fingerprint of fingerprintAliases) {
     setPreferredRunLookup(lookups.byFingerprint, fingerprint, run);
   }
+
+  if (run.attemptId) {
+    setPreferredRunLookup(lookups.byAttemptId, run.attemptId, run);
+  }
 }
 
 function findMatchingExistingRunByDedupKeys(
   lookups: {
     byDedupKey: Map<string, MythicPlusRunDoc>;
+    byAttemptId: Map<string, MythicPlusRunDoc>;
   },
   run: MythicPlusRunInput,
 ) {
+  if (run.attemptId) {
+    const attemptMatch = lookups.byAttemptId.get(run.attemptId);
+    if (attemptMatch) {
+      return attemptMatch;
+    }
+  }
+
   for (const dedupKey of getMythicPlusRunDedupKeys(run)) {
     const candidate = lookups.byDedupKey.get(dedupKey);
     if (candidate) {
@@ -192,6 +206,72 @@ function pickDefinedValue<T>(preferredValue: T | undefined, fallbackValue: T | u
   return preferredValue !== undefined ? preferredValue : fallbackValue;
 }
 
+function normalizeAttemptId(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.trim();
+  return normalized === "" ? undefined : normalized;
+}
+
+function getRunMapTokenForAttemptId(run: {
+  mapChallengeModeID?: number;
+  mapName?: string;
+}): string | undefined {
+  if (run.mapChallengeModeID !== undefined) {
+    return String(run.mapChallengeModeID);
+  }
+
+  if (typeof run.mapName === "string") {
+    const normalized = run.mapName.trim().toLowerCase();
+    return normalized === "" ? undefined : normalized;
+  }
+
+  return undefined;
+}
+
+function deriveAttemptIdFromRun(run: {
+  attemptId?: string;
+  fingerprint?: string;
+  seasonID?: number;
+  mapChallengeModeID?: number;
+  mapName?: string;
+  level?: number;
+  startDate?: number;
+}): string | undefined {
+  const explicitAttemptId = normalizeAttemptId(run.attemptId);
+  if (explicitAttemptId) {
+    return explicitAttemptId;
+  }
+
+  const fingerprintAttemptId = normalizeAttemptId(run.fingerprint);
+  if (fingerprintAttemptId?.startsWith("attempt|")) {
+    return fingerprintAttemptId;
+  }
+
+  if (
+    run.level === undefined ||
+    run.startDate === undefined ||
+    !Number.isFinite(run.startDate) ||
+    run.startDate <= 0
+  ) {
+    return undefined;
+  }
+
+  const mapToken = getRunMapTokenForAttemptId(run);
+  if (!mapToken) {
+    return undefined;
+  }
+
+  return [
+    "attempt",
+    run.seasonID !== undefined ? String(run.seasonID) : "",
+    mapToken,
+    String(run.level),
+    String(Math.floor(run.startDate)),
+  ].join("|");
+}
+
 function mergeMythicPlusRunData(
   currentRun: MythicPlusRunInput | undefined,
   candidateRun: MythicPlusRunInput,
@@ -199,9 +279,10 @@ function mergeMythicPlusRunData(
   if (!currentRun) {
     const merged = {
       ...candidateRun,
-      fingerprint:
-        buildCanonicalMythicPlusRunFingerprint(candidateRun) ?? candidateRun.fingerprint,
+      attemptId: deriveAttemptIdFromRun(candidateRun),
+      fingerprint: candidateRun.fingerprint,
     };
+    merged.fingerprint = buildCanonicalMythicPlusRunFingerprint(merged) ?? candidateRun.fingerprint;
     const status = getMythicPlusRunLifecycleStatus(merged);
     if (status !== undefined) {
       merged.status = status;
@@ -239,6 +320,10 @@ function mergeMythicPlusRunData(
       mergedObservedAt > 0
         ? mergedObservedAt
         : pickDefinedValue(preferredRun.observedAt, fallbackRun.observedAt) ?? 0,
+    attemptId: pickDefinedValue(
+      deriveAttemptIdFromRun(preferredRun),
+      deriveAttemptIdFromRun(fallbackRun),
+    ),
     seasonID: pickDefinedValue(preferredRun.seasonID, fallbackRun.seasonID),
     mapChallengeModeID: pickDefinedValue(preferredRun.mapChallengeModeID, fallbackRun.mapChallengeModeID),
     mapName: pickDefinedValue(preferredRun.mapName, fallbackRun.mapName),
@@ -261,6 +346,7 @@ function mergeMythicPlusRunData(
   if (canonicalFingerprint) {
     merged.fingerprint = canonicalFingerprint;
   }
+  merged.attemptId = deriveAttemptIdFromRun(merged);
 
   const status = getMythicPlusRunLifecycleStatus(merged);
   if (status !== undefined) {
@@ -283,6 +369,9 @@ function buildMythicPlusRunPatch(
 ): MythicPlusRunPatch {
   const patch: MythicPlusRunPatch = {};
   if (existingRun.fingerprint !== mergedRun.fingerprint) patch.fingerprint = mergedRun.fingerprint;
+  if (mergedRun.attemptId !== undefined && existingRun.attemptId !== mergedRun.attemptId) {
+    patch.attemptId = mergedRun.attemptId;
+  }
   if (existingRun.observedAt !== mergedRun.observedAt) patch.observedAt = mergedRun.observedAt;
   if (mergedRun.seasonID !== undefined && existingRun.seasonID !== mergedRun.seasonID) patch.seasonID = mergedRun.seasonID;
   if (
@@ -552,6 +641,7 @@ export const ingestAddonData = mutation({
       const existingRunLookups = {
         byDedupKey: new Map<string, MythicPlusRunDoc>(),
         byFingerprint: new Map<string, MythicPlusRunDoc>(),
+        byAttemptId: new Map<string, MythicPlusRunDoc>(),
       };
       for (const existingRun of existingCharacterRuns) {
         registerRunLookups(existingRunLookups, existingRun);
@@ -588,7 +678,12 @@ export const ingestAddonData = mutation({
           continue;
         }
 
-        let existingRun = existingRunLookups.byDedupKey.get(dedupKey);
+        let existingRun = run.attemptId
+          ? existingRunLookups.byAttemptId.get(run.attemptId)
+          : undefined;
+        if (!existingRun) {
+          existingRun = existingRunLookups.byDedupKey.get(dedupKey);
+        }
         if (!existingRun) {
           existingRun = existingRunLookups.byFingerprint.get(nextFingerprint);
         }
@@ -600,6 +695,7 @@ export const ingestAddonData = mutation({
           const insertedId = await ctx.db.insert("mythicPlusRuns", {
             characterId,
             fingerprint: nextFingerprint,
+            attemptId: run.attemptId,
             observedAt: run.observedAt,
             seasonID: run.seasonID,
             mapChallengeModeID: run.mapChallengeModeID,
@@ -625,6 +721,7 @@ export const ingestAddonData = mutation({
               _creationTime: now,
               characterId,
               fingerprint: nextFingerprint,
+              attemptId: run.attemptId,
               observedAt: run.observedAt,
               seasonID: run.seasonID,
               mapChallengeModeID: run.mapChallengeModeID,

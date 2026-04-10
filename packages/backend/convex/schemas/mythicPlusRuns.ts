@@ -12,6 +12,7 @@ export const mythicPlusRunMemberValidator = v.object(mythicPlusRunMemberFields);
 
 const mythicPlusRunFields = {
   fingerprint: v.string(),
+  attemptId: v.optional(v.string()),
   observedAt: v.number(),
   seasonID: v.optional(v.number()),
   mapChallengeModeID: v.optional(v.number()),

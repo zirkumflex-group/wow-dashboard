@@ -5,10 +5,12 @@ import { components, internal } from "./_generated/api";
 import { internalMutation, mutation, query } from "./_generated/server";
 import { authComponent } from "./auth";
 import {
+  buildCanonicalMythicPlusRunFingerprint,
   getMythicPlusRunDedupKeys,
   getMythicPlusRunDedupKey,
   hasMythicPlusRunDedupKeyOverlap,
   getMythicPlusRunLifecycleStatus,
+  mergeMythicPlusRunMembers,
   getMythicPlusRunTimedState,
   getMythicPlusRunUpgradeCount,
   getMythicPlusRunSortValue,
@@ -380,6 +382,73 @@ function buildRecentRuns(runs: MythicPlusRunDoc[]) {
 function dedupeMythicPlusRuns(runs: MythicPlusRunDoc[]) {
   const dedupedRuns: MythicPlusRunDoc[] = [];
 
+  const pickDefinedValue = <T>(preferredValue: T | undefined, fallbackValue: T | undefined) =>
+    preferredValue !== undefined ? preferredValue : fallbackValue;
+
+  const mergeDuplicateRuns = (currentRun: MythicPlusRunDoc, candidateRun: MythicPlusRunDoc) => {
+    const candidatePreferred = shouldReplaceMythicPlusRun(currentRun, candidateRun);
+    const preferredRun = candidatePreferred ? candidateRun : currentRun;
+    const fallbackRun = candidatePreferred ? currentRun : candidateRun;
+
+    const preferredObservedAt = preferredRun.observedAt ?? 0;
+    const fallbackObservedAt = fallbackRun.observedAt ?? 0;
+    const mergedObservedAt =
+      preferredObservedAt > 0 && fallbackObservedAt > 0
+        ? Math.min(preferredObservedAt, fallbackObservedAt)
+        : preferredObservedAt > 0
+          ? preferredObservedAt
+          : fallbackObservedAt;
+
+    const merged: MythicPlusRunDoc = {
+      ...fallbackRun,
+      ...preferredRun,
+      fingerprint:
+        buildCanonicalMythicPlusRunFingerprint(preferredRun) ??
+        buildCanonicalMythicPlusRunFingerprint(fallbackRun) ??
+        preferredRun.fingerprint,
+      observedAt:
+        mergedObservedAt > 0
+          ? mergedObservedAt
+          : pickDefinedValue(preferredRun.observedAt, fallbackRun.observedAt) ?? 0,
+      attemptId: pickDefinedValue(preferredRun.attemptId, fallbackRun.attemptId),
+      seasonID: pickDefinedValue(preferredRun.seasonID, fallbackRun.seasonID),
+      mapChallengeModeID: pickDefinedValue(preferredRun.mapChallengeModeID, fallbackRun.mapChallengeModeID),
+      mapName: pickDefinedValue(preferredRun.mapName, fallbackRun.mapName),
+      level: pickDefinedValue(preferredRun.level, fallbackRun.level),
+      status: pickDefinedValue(preferredRun.status, fallbackRun.status),
+      completed: pickDefinedValue(preferredRun.completed, fallbackRun.completed),
+      completedInTime: pickDefinedValue(preferredRun.completedInTime, fallbackRun.completedInTime),
+      durationMs: pickDefinedValue(preferredRun.durationMs, fallbackRun.durationMs),
+      runScore: pickDefinedValue(preferredRun.runScore, fallbackRun.runScore),
+      startDate: pickDefinedValue(preferredRun.startDate, fallbackRun.startDate),
+      completedAt: pickDefinedValue(preferredRun.completedAt, fallbackRun.completedAt),
+      endedAt: pickDefinedValue(preferredRun.endedAt, fallbackRun.endedAt),
+      abandonedAt: pickDefinedValue(preferredRun.abandonedAt, fallbackRun.abandonedAt),
+      abandonReason: pickDefinedValue(preferredRun.abandonReason, fallbackRun.abandonReason),
+      thisWeek: pickDefinedValue(preferredRun.thisWeek, fallbackRun.thisWeek),
+      members: mergeMythicPlusRunMembers(currentRun.members, candidateRun.members),
+    };
+
+    const canonicalFingerprint = buildCanonicalMythicPlusRunFingerprint(merged);
+    if (canonicalFingerprint) {
+      merged.fingerprint = canonicalFingerprint;
+    }
+
+    const status = getMythicPlusRunLifecycleStatus(merged);
+    if (status !== undefined) {
+      merged.status = status;
+      if (status === "completed") {
+        merged.completed = true;
+        merged.endedAt = merged.endedAt ?? merged.completedAt;
+      } else if (status === "abandoned") {
+        merged.endedAt = merged.endedAt ?? merged.abandonedAt;
+        merged.abandonedAt = merged.abandonedAt ?? merged.endedAt;
+      }
+    }
+
+    return merged;
+  };
+
   for (const run of runs) {
     const runDedupKeys = getMythicPlusRunDedupKeys(run);
     let matchIndex = -1;
@@ -401,10 +470,7 @@ function dedupeMythicPlusRuns(runs: MythicPlusRunDoc[]) {
       continue;
     }
 
-    const current = dedupedRuns[matchIndex]!;
-    if (shouldReplaceMythicPlusRun(current, run)) {
-      dedupedRuns[matchIndex] = run;
-    }
+    dedupedRuns[matchIndex] = mergeDuplicateRuns(dedupedRuns[matchIndex]!, run);
   }
 
   return dedupedRuns.sort((a, b) => {

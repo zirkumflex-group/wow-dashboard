@@ -178,6 +178,7 @@ end
 --     faction      string   -- "alliance" | "horde"
 --     mythicPlusRuns    array
 --       fingerprint         string
+--       attemptId           string?
 --       observedAt          number
 --       seasonID            number?
 --       mapChallengeModeID  number?
@@ -1982,6 +1983,19 @@ local function IsTemporaryRunFingerprint(fingerprint)
     return type(fingerprint) == "string" and string.sub(fingerprint, 1, 8) == "attempt|"
 end
 
+local function NormalizeAttemptID(value)
+    if type(value) ~= "string" then
+        return nil
+    end
+
+    local normalized = strtrim(value)
+    if normalized == "" then
+        return nil
+    end
+
+    return normalized
+end
+
 local function GetRunMapFingerprintToken(run)
     if run.mapChallengeModeID ~= nil then
         return ToFingerprintToken(run.mapChallengeModeID)
@@ -2004,8 +2018,39 @@ local function GetRunIdentityTimestamp(run)
         or NormalizeMythicPlusDate(run.abandonedAt)
 end
 
+local function BuildRunAttemptIDFromStartDate(run)
+    local mapToken = GetRunMapFingerprintToken(run)
+    local startDate = NormalizeMythicPlusDate(run.startDate)
+    if mapToken == "" or run.level == nil or startDate == nil or startDate <= 0 then
+        return nil
+    end
+
+    return table.concat({
+        "attempt",
+        ToFingerprintToken(run.seasonID),
+        mapToken,
+        ToFingerprintToken(run.level),
+        ToFingerprintToken(startDate),
+    }, "|")
+end
+
+local function GetRunAttemptID(run)
+    local explicitAttemptID = NormalizeAttemptID(run.attemptId)
+    if explicitAttemptID ~= nil then
+        return explicitAttemptID
+    end
+
+    local fingerprintAttemptID = NormalizeAttemptID(run.fingerprint)
+    if fingerprintAttemptID ~= nil and IsTemporaryRunFingerprint(fingerprintAttemptID) then
+        return fingerprintAttemptID
+    end
+
+    return BuildRunAttemptIDFromStartDate(run)
+end
+
 local function BuildLegacyRunFingerprint(run)
     return table.concat({
+        ToFingerprintToken(GetRunAttemptID(run)),
         ToFingerprintToken(run.seasonID),
         GetRunMapFingerprintToken(run),
         ToFingerprintToken(run.level),
@@ -2023,6 +2068,11 @@ local function BuildLegacyRunFingerprint(run)
 end
 
 local function BuildRunFingerprint(run)
+    local attemptID = GetRunAttemptID(run)
+    if attemptID ~= nil then
+        return "aid|" .. attemptID
+    end
+
     local mapToken = GetRunMapFingerprintToken(run)
     local identityTimestamp = GetRunIdentityTimestamp(run)
 
@@ -2095,16 +2145,14 @@ local function GetChallengeModeStartTimestamp()
 end
 
 local function BuildSyntheticAttemptFingerprint(run)
-    local mapToken = GetRunMapFingerprintToken(run)
-    local startToken = ToFingerprintToken(run.startDate or run.observedAt or time())
-
-    return table.concat({
-        "attempt",
-        ToFingerprintToken(run.seasonID),
-        mapToken,
-        ToFingerprintToken(run.level),
-        startToken,
-    }, "|")
+    return BuildRunAttemptIDFromStartDate(run)
+        or table.concat({
+            "attempt",
+            ToFingerprintToken(run.seasonID),
+            GetRunMapFingerprintToken(run),
+            ToFingerprintToken(run.level),
+            ToFingerprintToken(run.startDate or run.observedAt or time()),
+        }, "|")
 end
 
 local function GetRunStartTimestampForMatch(run)
@@ -2268,6 +2316,7 @@ local function DidMythicPlusRunChange(currentRun, mergedRun)
     end
 
     if currentRun.fingerprint ~= mergedRun.fingerprint then return true end
+    if currentRun.attemptId ~= mergedRun.attemptId then return true end
     if currentRun.status ~= mergedRun.status then return true end
     if currentRun.completed ~= mergedRun.completed then return true end
     if currentRun.completedInTime ~= mergedRun.completedInTime then return true end
@@ -2296,6 +2345,7 @@ local function GetRunCompletenessScore(run)
     if run.mapChallengeModeID ~= nil then score = score + 3 end
     if type(run.mapName) == "string" and run.mapName ~= "" then score = score + 1 end
     if run.level ~= nil then score = score + 2 end
+    if GetRunAttemptID(run) ~= nil then score = score + 4 end
     if status == "active" then score = score + 2 end
     if status == "abandoned" then score = score + 3 end
     if status == "completed" then score = score + 4 end
@@ -2347,6 +2397,7 @@ MergeStoredMythicPlusRun = function(currentRun, candidateRun)
 
     local mergedRun = {
         fingerprint = PickDefinedValue(preferredRun.fingerprint, fallbackRun.fingerprint),
+        attemptId = PickDefinedValue(GetRunAttemptID(preferredRun), GetRunAttemptID(fallbackRun)),
         observedAt = mergedObservedAt > 0 and mergedObservedAt or PickDefinedValue(preferredRun.observedAt, fallbackRun.observedAt),
         seasonID = PickDefinedValue(preferredRun.seasonID, fallbackRun.seasonID),
         mapChallengeModeID = PickDefinedValue(preferredRun.mapChallengeModeID, fallbackRun.mapChallengeModeID),
@@ -2392,6 +2443,7 @@ MergeStoredMythicPlusRun = function(currentRun, candidateRun)
     if canonicalFingerprint ~= nil and (mergedRun.status ~= "active" or not IsTemporaryRunFingerprint(mergedRun.fingerprint)) then
         mergedRun.fingerprint = canonicalFingerprint
     end
+    mergedRun.attemptId = GetRunAttemptID(mergedRun)
 
     return mergedRun
 end
@@ -2438,6 +2490,10 @@ NormalizeStoredMythicPlusRun = function(run)
     end
 
     local legacyRaw = type(run.raw) == "table" and run.raw or nil
+    run.attemptId = NormalizeAttemptID(run.attemptId)
+        or NormalizeAttemptID(run.attemptID)
+        or (legacyRaw and NormalizeAttemptID(legacyRaw.attemptId))
+        or (legacyRaw and NormalizeAttemptID(legacyRaw.attemptID))
     local rawMembers = GetFirstField(run, { "members", "partyMembers", "groupMembers", "roster" })
     if rawMembers == nil and legacyRaw ~= nil then
         rawMembers = GetFirstField(legacyRaw, { "members", "partyMembers", "groupMembers", "roster" })
@@ -2540,6 +2596,7 @@ NormalizeStoredMythicPlusRun = function(run)
     else
         run.fingerprint = BuildRunFingerprint(run)
     end
+    run.attemptId = GetRunAttemptID(run)
     return run
 end
 
@@ -2610,6 +2667,7 @@ local function NormalizeMythicPlusRun(rawRun, seasonID)
 
     local run = {
         observedAt          = nil,
+        attemptId           = NormalizeAttemptID(GetFirstField(rawRun, { "attemptId", "attemptID" })),
         seasonID            = seasonID,
         mapChallengeModeID  = mapChallengeModeID,
         mapName             = GetFirstField(rawRun, { "mapName", "name", "zoneName", "shortName" })
@@ -2656,6 +2714,7 @@ local function NormalizeMythicPlusRun(rawRun, seasonID)
     end
 
     run.fingerprint = BuildRunFingerprint(run)
+    run.attemptId = GetRunAttemptID(run)
 
     return run
 end
@@ -2848,16 +2907,18 @@ local function UpsertSyntheticActiveAttempt(reason, options)
     local startDate = NormalizeLifecycleTimestamp(options.startDate) or GetChallengeModeStartTimestamp()
     local seasonID = tonumber(options.seasonID) or GetCurrentMythicPlusSeasonID()
     local mapName = options.mapName or GetChallengeModeMapName(context.mapChallengeModeID)
+    local attemptID = BuildSyntheticAttemptFingerprint({
+        seasonID = seasonID,
+        mapChallengeModeID = context.mapChallengeModeID,
+        mapName = mapName,
+        level = context.level,
+        startDate = startDate,
+        observedAt = time(),
+    })
 
     local attempt = {
-        fingerprint = BuildSyntheticAttemptFingerprint({
-            seasonID = seasonID,
-            mapChallengeModeID = context.mapChallengeModeID,
-            mapName = mapName,
-            level = context.level,
-            startDate = startDate,
-            observedAt = time(),
-        }),
+        fingerprint = attemptID,
+        attemptId = attemptID,
         observedAt = time(),
         seasonID = seasonID,
         mapChallengeModeID = context.mapChallengeModeID,
@@ -2909,6 +2970,7 @@ local function MarkAttemptCompleted(reason, options)
     local completionMembers = NormalizeMythicPlusMembers(options.members)
     local completionRun = {
         fingerprint = type(activeRun) == "table" and activeRun.fingerprint or nil,
+        attemptId = type(activeRun) == "table" and activeRun.attemptId or nil,
         observedAt = time(),
         seasonID = tonumber(options.seasonID) or (type(activeRun) == "table" and activeRun.seasonID) or GetCurrentMythicPlusSeasonID(),
         mapChallengeModeID = tonumber(options.mapChallengeModeID) or (type(activeRun) == "table" and activeRun.mapChallengeModeID),
@@ -2978,6 +3040,7 @@ local function FinalizeActiveAttemptAsAbandoned(reason, options)
 
     local abandonedRun = {
         fingerprint = activeRun.fingerprint,
+        attemptId = activeRun.attemptId,
         observedAt = time(),
         seasonID = activeRun.seasonID,
         mapChallengeModeID = activeRun.mapChallengeModeID,

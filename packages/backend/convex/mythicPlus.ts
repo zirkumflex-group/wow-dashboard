@@ -10,6 +10,7 @@ export type MythicPlusRunAbandonReason =
 type MythicPlusRunLike = {
   _id?: string;
   fingerprint?: string;
+  attemptId?: string;
   observedAt?: number;
   seasonID?: number;
   mapChallengeModeID?: number;
@@ -58,6 +59,7 @@ const MYTHIC_PLUS_TIMER_MS_BY_MAP_NAME = new Map<string, number>(
   MYTHIC_PLUS_DUNGEONS.map((dungeon) => [normalizeMapName(dungeon.name), dungeon.timerMs] as const),
 );
 const MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS = 4 * 60 * 60 * 1000;
+const LEGACY_DST_SHIFT_SECONDS = 60 * 60;
 
 function toFingerprintToken(value: boolean | number | string | null | undefined) {
   if (value === undefined || value === null) return "";
@@ -88,6 +90,50 @@ function getRunMapFingerprintTokens(run: MythicPlusRunLike): string[] {
 
 function getRunMapFingerprintToken(run: MythicPlusRunLike) {
   return getRunMapFingerprintTokens(run)[0] ?? "";
+}
+
+function normalizeAttemptId(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim();
+  return normalized === "" ? null : normalized;
+}
+
+function buildRunAttemptIdFromStartDate(run: MythicPlusRunLike): string | null {
+  const mapToken = getRunMapFingerprintToken(run);
+  const startDate = run.startDate;
+  if (
+    mapToken === "" ||
+    run.level === undefined ||
+    startDate === undefined ||
+    !Number.isFinite(startDate) ||
+    startDate <= 0
+  ) {
+    return null;
+  }
+
+  return [
+    "attempt",
+    toFingerprintToken(run.seasonID),
+    mapToken,
+    toFingerprintToken(run.level),
+    toFingerprintToken(Math.floor(startDate)),
+  ].join("|");
+}
+
+function getRunAttemptId(run: MythicPlusRunLike): string | null {
+  const explicitAttemptId = normalizeAttemptId(run.attemptId);
+  if (explicitAttemptId !== null) {
+    return explicitAttemptId;
+  }
+
+  const fingerprint = normalizeAttemptId(run.fingerprint);
+  if (fingerprint !== null && fingerprint.startsWith("attempt|")) {
+    return fingerprint;
+  }
+
+  return buildRunAttemptIdFromStartDate(run);
 }
 
 function getRunSeasonTokens(run: MythicPlusRunLike): string[] {
@@ -154,6 +200,15 @@ function getRunDerivedEndTimestamp(run: MythicPlusRunLike): number | null {
   return null;
 }
 
+function hasStrongCompletedRunIdentitySignature(run: MythicPlusRunLike): boolean {
+  return (
+    run.level !== undefined &&
+    getRunMapFingerprintToken(run) !== "" &&
+    getSanitizedRunDurationMs(run) !== undefined &&
+    run.runScore !== undefined
+  );
+}
+
 function getRunIdentityCandidates(run: MythicPlusRunLike): number[] {
   const candidates: number[] = [];
   const seen = new Set<number>();
@@ -166,6 +221,8 @@ function getRunIdentityCandidates(run: MythicPlusRunLike): number[] {
     candidates.push(normalized);
   };
 
+  const derivedStart = getRunDerivedStartTimestamp(run);
+  const derivedEnd = getRunDerivedEndTimestamp(run);
   // Legacy priority (older parser/addon behavior).
   pushCandidate(run.startDate);
   pushCandidate(run.completedAt);
@@ -173,12 +230,24 @@ function getRunIdentityCandidates(run: MythicPlusRunLike): number[] {
   pushCandidate(run.abandonedAt);
 
   // Derived compatibility keys to bridge old/new payload shapes.
-  pushCandidate(getRunDerivedStartTimestamp(run));
-  pushCandidate(getRunDerivedEndTimestamp(run));
+  pushCandidate(derivedStart);
+  pushCandidate(derivedEnd);
   const likelyPlayedAt = getLikelyPlayedAtTimestamp(run);
   pushCandidate(likelyPlayedAt);
   if (likelyPlayedAt > 0) {
     pushCandidate(Math.floor(likelyPlayedAt / 60) * 60);
+  }
+
+  // Compatibility alias for legacy vs new completion timestamps around DST
+  // transitions. Restrict to strong completed-run signatures and history-like
+  // rows (no explicit startDate) to avoid over-merging genuinely distinct runs.
+  if (run.startDate === undefined && hasStrongCompletedRunIdentitySignature(run)) {
+    const shiftSources = [run.completedAt, run.endedAt, run.abandonedAt, derivedEnd];
+    for (const source of shiftSources) {
+      if (source === undefined || source === null) continue;
+      pushCandidate(source - LEGACY_DST_SHIFT_SECONDS);
+      pushCandidate(source + LEGACY_DST_SHIFT_SECONDS);
+    }
   }
 
   return candidates;
@@ -412,6 +481,11 @@ export function getMythicPlusRunTimedState(run: MythicPlusRunLike): boolean | nu
 }
 
 export function buildCanonicalMythicPlusRunFingerprint(run: MythicPlusRunLike) {
+  const attemptId = getRunAttemptId(run);
+  if (attemptId !== null) {
+    return `aid|${attemptId}`;
+  }
+
   const identityTimestamp = getRunIdentityTimestamp(run);
   const durationMs = getSanitizedRunDurationMs(run);
 
@@ -447,6 +521,7 @@ export function getMythicPlusRunCompletenessScore(run: MythicPlusRunLike) {
   if (run.mapChallengeModeID !== undefined) score += 3;
   if (typeof run.mapName === "string" && run.mapName.trim() !== "") score += 1;
   if (run.level !== undefined) score += 2;
+  if (getRunAttemptId(run) !== null) score += 4;
   if (status === "active") score += 2;
   if (status === "abandoned") score += 3;
   if (status === "completed") score += 4;
@@ -522,6 +597,12 @@ export function getMythicPlusRunDedupKeys(run: MythicPlusRunLike): string[] {
   const identityCandidates = getRunIdentityCandidates(run);
   const mapTokens = getRunMapFingerprintTokens(run);
   const seasonTokens = getRunSeasonTokens(run);
+  const attemptId = getRunAttemptId(run);
+
+  if (attemptId !== null) {
+    pushKey(`aid|${attemptId}`);
+    pushKey(attemptId);
+  }
 
   for (const identityTimestamp of identityCandidates) {
     pushKey(buildRunFingerprintWithIdentity(run, identityTimestamp));

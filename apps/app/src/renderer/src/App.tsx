@@ -42,6 +42,7 @@ interface SnapshotData {
 
 interface MythicPlusRunData {
   fingerprint: string;
+  attemptId?: string;
   observedAt: number;
   seasonID?: number;
   mapChallengeModeID?: number;

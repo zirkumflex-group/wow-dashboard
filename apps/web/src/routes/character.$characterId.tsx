@@ -1471,6 +1471,7 @@ type MythicPlusRunMember = {
 
 type MythicPlusRun = {
   fingerprint: string;
+  attemptId?: string;
   observedAt: number;
   seasonID?: number;
   mapChallengeModeID?: number;

@@ -368,6 +368,7 @@ interface MythicPlusRunMemberData {
 
 interface MythicPlusRunData {
   fingerprint: string;
+  attemptId?: string;
   observedAt: number;
   seasonID?: number;
   mapChallengeModeID?: number;
@@ -846,12 +847,55 @@ function getRunMapFingerprintToken(run: Partial<MythicPlusRunData>): string {
   return getRunMapFingerprintTokens(run)[0] ?? "";
 }
 
+function normalizeAttemptId(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  return normalized === "" ? undefined : normalized;
+}
+
+function buildRunAttemptIdFromStartDate(run: Partial<MythicPlusRunData>): string | undefined {
+  const mapToken = getRunMapFingerprintToken(run);
+  const startDate = run.startDate;
+  if (
+    mapToken === "" ||
+    run.level === undefined ||
+    startDate === undefined ||
+    !Number.isFinite(startDate) ||
+    startDate <= 0
+  ) {
+    return undefined;
+  }
+
+  return [
+    "attempt",
+    toFingerprintToken(run.seasonID),
+    mapToken,
+    toFingerprintToken(run.level),
+    toFingerprintToken(Math.floor(startDate)),
+  ].join("|");
+}
+
+function getRunAttemptId(run: Partial<MythicPlusRunData>): string | undefined {
+  const explicitAttemptId = normalizeAttemptId(run.attemptId);
+  if (explicitAttemptId) {
+    return explicitAttemptId;
+  }
+
+  const fingerprintAttemptId = normalizeAttemptId(run.fingerprint);
+  if (fingerprintAttemptId && isTemporaryAttemptFingerprint(fingerprintAttemptId)) {
+    return fingerprintAttemptId;
+  }
+
+  return buildRunAttemptIdFromStartDate(run);
+}
+
 function getRunSeasonTokens(run: Partial<MythicPlusRunData>): string[] {
   const seasonToken = run.seasonID !== undefined ? toFingerprintToken(run.seasonID) : "";
   return seasonToken === "" ? [""] : [seasonToken, ""];
 }
 
 const MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS = 4 * 60 * 60 * 1000;
+const LEGACY_DST_SHIFT_SECONDS = 60 * 60;
 
 function getSanitizedRunDurationMs(run: Partial<MythicPlusRunData>): number | undefined {
   const durationMs = run.durationMs;
@@ -908,6 +952,15 @@ function getRunDerivedEndTimestamp(run: Partial<MythicPlusRunData>): number | un
   return undefined;
 }
 
+function hasStrongCompletedRunIdentitySignature(run: Partial<MythicPlusRunData>): boolean {
+  return (
+    run.level !== undefined &&
+    getRunMapFingerprintToken(run) !== "" &&
+    getSanitizedRunDurationMs(run) !== undefined &&
+    run.runScore !== undefined
+  );
+}
+
 function getRunIdentityCandidates(run: Partial<MythicPlusRunData>): number[] {
   const candidates: number[] = [];
   const seen = new Set<number>();
@@ -920,16 +973,27 @@ function getRunIdentityCandidates(run: Partial<MythicPlusRunData>): number[] {
     candidates.push(normalized);
   };
 
+  const derivedStart = getRunDerivedStartTimestamp(run);
+  const derivedEnd = getRunDerivedEndTimestamp(run);
   pushCandidate(run.startDate);
   pushCandidate(run.completedAt);
   pushCandidate(run.endedAt);
   pushCandidate(run.abandonedAt);
-  pushCandidate(getRunDerivedStartTimestamp(run));
-  pushCandidate(getRunDerivedEndTimestamp(run));
+  pushCandidate(derivedStart);
+  pushCandidate(derivedEnd);
   const likelyPlayedAt = getLikelyPlayedAtTimestamp(run);
   pushCandidate(likelyPlayedAt);
   if (likelyPlayedAt > 0) {
     pushCandidate(Math.floor(likelyPlayedAt / 60) * 60);
+  }
+
+  if (run.startDate === undefined && hasStrongCompletedRunIdentitySignature(run)) {
+    const shiftSources = [run.completedAt, run.endedAt, run.abandonedAt, derivedEnd];
+    for (const source of shiftSources) {
+      if (source === undefined || source === null) continue;
+      pushCandidate(source - LEGACY_DST_SHIFT_SECONDS);
+      pushCandidate(source + LEGACY_DST_SHIFT_SECONDS);
+    }
   }
 
   return candidates;
@@ -985,6 +1049,11 @@ function buildRunFingerprintWithIdentity(
 }
 
 function buildCanonicalMythicPlusRunFingerprint(run: Partial<MythicPlusRunData>): string | undefined {
+  const attemptId = getRunAttemptId(run);
+  if (attemptId) {
+    return `aid|${attemptId}`;
+  }
+
   const identityTimestamp = getRunIdentityTimestamp(run);
   const durationMs = getSanitizedRunDurationMs(run);
 
@@ -1013,6 +1082,7 @@ function buildCanonicalMythicPlusRunFingerprint(run: Partial<MythicPlusRunData>)
 
 function buildRunFingerprint(run: Partial<MythicPlusRunData>): string {
   return [
+    toFingerprintToken(getRunAttemptId(run)),
     toFingerprintToken(run.seasonID),
     toFingerprintToken(run.mapChallengeModeID),
     toFingerprintToken(run.level),
@@ -1045,6 +1115,10 @@ function getMythicPlusRunDedupKeys(run: Partial<MythicPlusRunData>): string[] {
   const identityCandidates = getRunIdentityCandidates(run);
   const mapTokens = getRunMapFingerprintTokens(run);
   const seasonTokens = getRunSeasonTokens(run);
+  const attemptId = getRunAttemptId(run);
+
+  pushKey(attemptId ? `aid|${attemptId}` : undefined);
+  pushKey(attemptId);
 
   for (const identityTimestamp of identityCandidates) {
     pushKey(buildRunFingerprintWithIdentity(run, identityTimestamp));
@@ -1137,6 +1211,7 @@ function getMythicPlusRunCompletenessScore(run: Partial<MythicPlusRunData>): num
   if (run.mapChallengeModeID !== undefined) score += 3;
   if (typeof run.mapName === "string" && run.mapName.trim() !== "") score += 1;
   if (run.level !== undefined) score += 2;
+  if (getRunAttemptId(run) !== undefined) score += 4;
   if (status === "active") score += 2;
   if (status === "abandoned") score += 3;
   if (status === "completed") score += 4;
@@ -1205,7 +1280,10 @@ function mergeMythicPlusRunData(
   candidateRun: MythicPlusRunData,
 ): MythicPlusRunData {
   if (!currentRun) {
-    return candidateRun;
+    const mergedRun = { ...candidateRun };
+    mergedRun.attemptId = getRunAttemptId(mergedRun);
+    mergedRun.fingerprint = getMythicPlusRunDedupKey(mergedRun);
+    return mergedRun;
   }
 
   const candidatePreferred = shouldReplaceMythicPlusRun(currentRun, candidateRun);
@@ -1223,6 +1301,7 @@ function mergeMythicPlusRunData(
 
   const mergedRun: MythicPlusRunData = {
     fingerprint: preferredRun.fingerprint || fallbackRun.fingerprint,
+    attemptId: getRunAttemptId(preferredRun) ?? getRunAttemptId(fallbackRun),
     observedAt: mergedObservedAt,
     seasonID: preferredRun.seasonID ?? fallbackRun.seasonID,
     mapChallengeModeID: preferredRun.mapChallengeModeID ?? fallbackRun.mapChallengeModeID,
@@ -1255,6 +1334,7 @@ function mergeMythicPlusRunData(
   }
 
   mergedRun.fingerprint = getMythicPlusRunDedupKey(mergedRun);
+  mergedRun.attemptId = getRunAttemptId(mergedRun);
   return mergedRun;
 }
 
@@ -1317,6 +1397,13 @@ function normalizeStoredMythicPlusRun(runRaw: LuaTable): MythicPlusRunData {
 
   const run: MythicPlusRunData = {
     fingerprint: "",
+    attemptId:
+      normalizeAttemptId(runRaw.attemptId) ??
+      normalizeAttemptId(runRaw.attemptID) ??
+      (legacyRaw
+        ? normalizeAttemptId(legacyRaw.attemptId ?? legacyRaw.attemptID)
+        : undefined) ??
+      undefined,
     observedAt:
       toOptionalNumber(runRaw.observedAt) ??
       toOptionalMythicPlusTimestamp(runRaw.completedAt) ??
@@ -1423,6 +1510,7 @@ function normalizeStoredMythicPlusRun(runRaw: LuaTable): MythicPlusRunData {
     buildCanonicalMythicPlusRunFingerprint(run) ??
     toOptionalString(runRaw.fingerprint) ??
     buildRunFingerprint(run);
+  run.attemptId = getRunAttemptId(run);
   return run;
 }
 
