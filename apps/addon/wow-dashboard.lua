@@ -2095,8 +2095,6 @@ GetRunDedupKey = function(run)
     return BuildRunFingerprint(run)
 end
 
-local ATTEMPT_MERGE_WINDOW_SECONDS = 45 * 60
-local ATTEMPT_MAX_DURATION_SECONDS = 4 * 60 * 60
 local LEAVER_TIMER_REASON_WINDOW_SECONDS = 10 * 60
 
 local function NormalizeLifecycleTimestamp(value)
@@ -2144,156 +2142,56 @@ local function BuildSyntheticAttemptFingerprint(run)
         }, "|")
 end
 
-local function GetRunStartTimestampForMatch(run)
-    local startDate = NormalizeMythicPlusDate(run.startDate)
-    if startDate ~= nil then
-        return startDate
-    end
-
-    local completedAt = NormalizeMythicPlusDate(run.completedAt)
-    local durationMs = tonumber(run.durationMs)
-    if completedAt ~= nil and durationMs ~= nil and durationMs > 0 then
-        return completedAt - math.floor(durationMs / 1000 + 0.5)
-    end
-
-    return nil
-end
-
-local function GetRunEndTimestampForMatch(run)
-    return NormalizeMythicPlusDate(run.endedAt)
-        or NormalizeMythicPlusDate(run.abandonedAt)
-        or NormalizeMythicPlusDate(run.completedAt)
-end
-
-local function AreRunMapsEquivalent(currentRun, candidateRun)
-    local currentMapID = tonumber(currentRun.mapChallengeModeID)
-    local candidateMapID = tonumber(candidateRun.mapChallengeModeID)
-    if currentMapID ~= nil and candidateMapID ~= nil then
-        return currentMapID == candidateMapID
-    end
-
-    local currentMapName = type(currentRun.mapName) == "string" and string.lower(strtrim(currentRun.mapName)) or nil
-    local candidateMapName = type(candidateRun.mapName) == "string" and string.lower(strtrim(candidateRun.mapName)) or nil
-    if currentMapName ~= nil and currentMapName ~= "" and candidateMapName ~= nil and candidateMapName ~= "" then
-        return currentMapName == candidateMapName
-    end
-
-    return currentMapID == nil or candidateMapID == nil
-end
-
-local function AreRunLevelsEquivalent(currentRun, candidateRun)
-    local currentLevel = tonumber(currentRun.level)
-    local candidateLevel = tonumber(candidateRun.level)
-    return currentLevel == nil or candidateLevel == nil or currentLevel == candidateLevel
-end
-
-local function GetAttemptMatchDiffSeconds(currentRun, candidateRun)
-    if not AreRunMapsEquivalent(currentRun, candidateRun) or not AreRunLevelsEquivalent(currentRun, candidateRun) then
+local function NormalizeRunIdentityString(value)
+    if type(value) ~= "string" then
         return nil
     end
-
-    local currentStart = GetRunStartTimestampForMatch(currentRun)
-    local candidateStart = GetRunStartTimestampForMatch(candidateRun)
-    local currentEnd = GetRunEndTimestampForMatch(currentRun)
-    local candidateEnd = GetRunEndTimestampForMatch(candidateRun)
-    local bestDiff = nil
-
-    local function ConsiderDiff(diff)
-        if diff == nil then
-            return
-        end
-        if bestDiff == nil or diff < bestDiff then
-            bestDiff = diff
-        end
+    local trimmed = strtrim(value)
+    if trimmed == "" then
+        return nil
     end
-
-    if currentStart ~= nil and candidateStart ~= nil then
-        local diff = math.abs(currentStart - candidateStart)
-        if diff <= ATTEMPT_MERGE_WINDOW_SECONDS then
-            ConsiderDiff(diff)
-        end
-    end
-
-    if currentEnd ~= nil and candidateEnd ~= nil then
-        local diff = math.abs(currentEnd - candidateEnd)
-        if diff <= ATTEMPT_MERGE_WINDOW_SECONDS then
-            ConsiderDiff(diff)
-        end
-    end
-
-    local candidateDurationSeconds = tonumber(candidateRun.durationMs)
-    if candidateDurationSeconds ~= nil then
-        candidateDurationSeconds = math.floor(candidateDurationSeconds / 1000 + 0.5)
-    end
-    local currentDurationSeconds = tonumber(currentRun.durationMs)
-    if currentDurationSeconds ~= nil then
-        currentDurationSeconds = math.floor(currentDurationSeconds / 1000 + 0.5)
-    end
-
-    if currentStart ~= nil and candidateEnd ~= nil and candidateEnd >= currentStart then
-        local elapsed = candidateEnd - currentStart
-        if elapsed <= ATTEMPT_MAX_DURATION_SECONDS then
-            local diff = nil
-            if candidateDurationSeconds ~= nil then
-                diff = math.abs(elapsed - candidateDurationSeconds)
-                if diff > (20 * 60) then
-                    diff = nil
-                end
-            else
-                diff = elapsed
-            end
-            ConsiderDiff(diff)
-        end
-    end
-
-    if candidateStart ~= nil and currentEnd ~= nil and currentEnd >= candidateStart then
-        local elapsed = currentEnd - candidateStart
-        if elapsed <= ATTEMPT_MAX_DURATION_SECONDS then
-            local diff = nil
-            if currentDurationSeconds ~= nil then
-                diff = math.abs(elapsed - currentDurationSeconds)
-                if diff > (20 * 60) then
-                    diff = nil
-                end
-            else
-                diff = elapsed
-            end
-            ConsiderDiff(diff)
-        end
-    end
-
-    return bestDiff
+    return trimmed
 end
 
-local function FindMergeableMythicPlusRunIndex(runs, candidateRun)
+local function FindExactMythicPlusRunIdentityIndex(runs, candidateRun)
     if type(runs) ~= "table" or type(candidateRun) ~= "table" then
         return nil
     end
 
-    local candidateFingerprint = candidateRun.fingerprint
+    local candidateAttemptID = GetRunAttemptID(candidateRun)
+    local candidateFingerprint = NormalizeRunIdentityString(candidateRun.fingerprint)
     local candidateDedupKey = GetRunDedupKey(candidateRun)
-    local bestIndex = nil
-    local bestDiff = nil
+    if candidateAttemptID == nil and candidateFingerprint == nil and candidateDedupKey == nil then
+        return nil
+    end
 
     for index, currentRun in ipairs(runs) do
         if type(currentRun) == "table" then
-            if candidateFingerprint ~= nil and currentRun.fingerprint == candidateFingerprint then
-                return index
+            if candidateAttemptID ~= nil then
+                local currentAttemptID = GetRunAttemptID(currentRun)
+                if currentAttemptID ~= nil and currentAttemptID == candidateAttemptID then
+                    return index
+                end
+            end
+
+            if candidateFingerprint ~= nil then
+                local currentFingerprint = NormalizeRunIdentityString(currentRun.fingerprint)
+                if currentFingerprint ~= nil and currentFingerprint == candidateFingerprint then
+                    return index
+                end
             end
 
             if candidateDedupKey ~= nil and GetRunDedupKey(currentRun) == candidateDedupKey then
                 return index
             end
-
-            local diffSeconds = GetAttemptMatchDiffSeconds(currentRun, candidateRun)
-            if diffSeconds ~= nil and (bestDiff == nil or diffSeconds < bestDiff) then
-                bestDiff = diffSeconds
-                bestIndex = index
-            end
         end
     end
 
-    return bestIndex
+    return nil
+end
+
+local function FindMergeableMythicPlusRunIndex(runs, candidateRun)
+    return FindExactMythicPlusRunIdentityIndex(runs, candidateRun)
 end
 
 local function DidMythicPlusRunChange(currentRun, mergedRun)
@@ -2882,6 +2780,25 @@ local function ResolveAbandonReason(characterKey, fallbackReason)
     return NormalizeAbandonReason(fallbackReason) or "unknown"
 end
 
+local function FindLifecycleMythicPlusRunIndex(entry, run, options)
+    if type(entry) ~= "table" or type(run) ~= "table" then
+        return nil
+    end
+    options = options or {}
+
+    if options.matchActive then
+        local activeIndex = FindActiveMythicPlusAttemptIndex(entry, {
+            mapChallengeModeID = run.mapChallengeModeID,
+            level = run.level,
+        })
+        if activeIndex ~= nil then
+            return activeIndex
+        end
+    end
+
+    return FindMergeableMythicPlusRunIndex(entry.mythicPlusRuns, run)
+end
+
 local function UpsertLifecycleMythicPlusRun(entry, candidateRun, options)
     if type(entry) ~= "table" or type(candidateRun) ~= "table" then
         return nil, false
@@ -2896,16 +2813,7 @@ local function UpsertLifecycleMythicPlusRun(entry, candidateRun, options)
         run.observedAt = time()
     end
 
-    local existingIndex = nil
-    if options.matchActive then
-        existingIndex = FindActiveMythicPlusAttemptIndex(entry, {
-            mapChallengeModeID = run.mapChallengeModeID,
-            level = run.level,
-        })
-    end
-    if existingIndex == nil then
-        existingIndex = FindMergeableMythicPlusRunIndex(entry.mythicPlusRuns, run)
-    end
+    local existingIndex = FindLifecycleMythicPlusRunIndex(entry, run, options)
 
     if existingIndex == nil then
         entry.mythicPlusRuns[#entry.mythicPlusRuns + 1] = run
