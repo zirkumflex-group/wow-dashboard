@@ -1983,19 +1983,6 @@ local function IsTemporaryRunFingerprint(fingerprint)
     return type(fingerprint) == "string" and string.sub(fingerprint, 1, 8) == "attempt|"
 end
 
-local function NormalizeAttemptID(value)
-    if type(value) ~= "string" then
-        return nil
-    end
-
-    local normalized = strtrim(value)
-    if normalized == "" then
-        return nil
-    end
-
-    return normalized
-end
-
 local function GetRunMapFingerprintToken(run)
     if run.mapChallengeModeID ~= nil then
         return ToFingerprintToken(run.mapChallengeModeID)
@@ -2018,7 +2005,23 @@ local function GetRunIdentityTimestamp(run)
         or NormalizeMythicPlusDate(run.abandonedAt)
 end
 
-local function BuildRunAttemptIDFromStartDate(run)
+local function GetRunAttemptID(run)
+    local explicitAttemptID = type(run.attemptId) == "string" and strtrim(run.attemptId) or nil
+    if explicitAttemptID == "" then
+        explicitAttemptID = nil
+    end
+    if explicitAttemptID ~= nil then
+        return explicitAttemptID
+    end
+
+    local fingerprintAttemptID = type(run.fingerprint) == "string" and strtrim(run.fingerprint) or nil
+    if fingerprintAttemptID == "" then
+        fingerprintAttemptID = nil
+    end
+    if fingerprintAttemptID ~= nil and IsTemporaryRunFingerprint(fingerprintAttemptID) then
+        return fingerprintAttemptID
+    end
+
     local mapToken = GetRunMapFingerprintToken(run)
     local startDate = NormalizeMythicPlusDate(run.startDate)
     if mapToken == "" or run.level == nil or startDate == nil or startDate <= 0 then
@@ -2032,20 +2035,6 @@ local function BuildRunAttemptIDFromStartDate(run)
         ToFingerprintToken(run.level),
         ToFingerprintToken(startDate),
     }, "|")
-end
-
-local function GetRunAttemptID(run)
-    local explicitAttemptID = NormalizeAttemptID(run.attemptId)
-    if explicitAttemptID ~= nil then
-        return explicitAttemptID
-    end
-
-    local fingerprintAttemptID = NormalizeAttemptID(run.fingerprint)
-    if fingerprintAttemptID ~= nil and IsTemporaryRunFingerprint(fingerprintAttemptID) then
-        return fingerprintAttemptID
-    end
-
-    return BuildRunAttemptIDFromStartDate(run)
 end
 
 local function BuildLegacyRunFingerprint(run)
@@ -2145,7 +2134,7 @@ local function GetChallengeModeStartTimestamp()
 end
 
 local function BuildSyntheticAttemptFingerprint(run)
-    return BuildRunAttemptIDFromStartDate(run)
+    return GetRunAttemptID(run)
         or table.concat({
             "attempt",
             ToFingerprintToken(run.seasonID),
@@ -2490,10 +2479,25 @@ NormalizeStoredMythicPlusRun = function(run)
     end
 
     local legacyRaw = type(run.raw) == "table" and run.raw or nil
-    run.attemptId = NormalizeAttemptID(run.attemptId)
-        or NormalizeAttemptID(run.attemptID)
-        or (legacyRaw and NormalizeAttemptID(legacyRaw.attemptId))
-        or (legacyRaw and NormalizeAttemptID(legacyRaw.attemptID))
+    do
+        local attemptCandidates = {
+            run.attemptId,
+            run.attemptID,
+            legacyRaw and legacyRaw.attemptId or nil,
+            legacyRaw and legacyRaw.attemptID or nil,
+        }
+        local normalizedAttemptID = nil
+        for _, candidate in ipairs(attemptCandidates) do
+            if type(candidate) == "string" then
+                local trimmed = strtrim(candidate)
+                if trimmed ~= "" then
+                    normalizedAttemptID = trimmed
+                    break
+                end
+            end
+        end
+        run.attemptId = normalizedAttemptID
+    end
     local rawMembers = GetFirstField(run, { "members", "partyMembers", "groupMembers", "roster" })
     if rawMembers == nil and legacyRaw ~= nil then
         rawMembers = GetFirstField(legacyRaw, { "members", "partyMembers", "groupMembers", "roster" })
@@ -2667,7 +2671,14 @@ local function NormalizeMythicPlusRun(rawRun, seasonID)
 
     local run = {
         observedAt          = nil,
-        attemptId           = NormalizeAttemptID(GetFirstField(rawRun, { "attemptId", "attemptID" })),
+        attemptId           = (function()
+            local value = GetFirstField(rawRun, { "attemptId", "attemptID" })
+            if type(value) ~= "string" then
+                return nil
+            end
+            value = strtrim(value)
+            return value ~= "" and value or nil
+        end)(),
         seasonID            = seasonID,
         mapChallengeModeID  = mapChallengeModeID,
         mapName             = GetFirstField(rawRun, { "mapName", "name", "zoneName", "shortName" })
