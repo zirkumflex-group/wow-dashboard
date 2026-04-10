@@ -43,6 +43,7 @@ interface SnapshotData {
 interface MythicPlusRunData {
   fingerprint: string;
   attemptId?: string;
+  canonicalKey?: string;
   observedAt: number;
   seasonID?: number;
   mapChallengeModeID?: number;
@@ -268,16 +269,20 @@ function isUploadableSnapshot(snapshot: SnapshotData, sinceTs: number) {
 
 const MYTHIC_PLUS_UPLOAD_LOOKBACK_SECONDS = 2 * 60 * 60;
 
+function getMythicPlusRunLastMutationTimestamp(run: MythicPlusRunData) {
+  const newestLifecycleTimestamp = Math.max(
+    run.startDate ?? 0,
+    run.completedAt ?? 0,
+    run.endedAt ?? 0,
+    run.abandonedAt ?? 0,
+  );
+  return Math.max(newestLifecycleTimestamp, run.observedAt ?? 0);
+}
+
 function isUploadableMythicPlusRun(run: MythicPlusRunData, sinceTs: number) {
   const nowTs = Math.floor(Date.now() / 1000);
   const effectiveSinceTs = Math.min(sinceTs, nowTs - MYTHIC_PLUS_UPLOAD_LOOKBACK_SECONDS);
-  const lastRelevantAt =
-    run.observedAt ??
-    run.endedAt ??
-    run.abandonedAt ??
-    run.completedAt ??
-    run.startDate ??
-    0;
+  const lastRelevantAt = getMythicPlusRunLastMutationTimestamp(run);
   return lastRelevantAt > effectiveSinceTs;
 }
 
@@ -414,9 +419,17 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
 
   const syncingRef = useRef(false);
   const lastSyncedAtRef = useRef(0);
+  const addonFileListenerTokenRef = useRef<symbol | null>(null);
   // Always points to the latest doUpload closure so stale-closure effects stay current.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const doUploadRef = useRef<() => Promise<void>>(null as any);
+  const applyAddonFileState = useCallback(
+    (chars: CharacterData[], fileStats: AddonFileStats | null, sinceTs: number) => {
+      setPendingUploadCounts(getPendingUploadCounts(chars, sinceTs));
+      setAddonFileStats(fileStats);
+    },
+    [],
+  );
   const refreshAddonFileState = useCallback(async () => {
     if (!retailPath) {
       setPendingUploadCounts(null);
@@ -434,13 +447,12 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
 
       const { characters: chars, fileStats } = addonData;
       const sinceTs = lastSyncedAtRef.current - 60;
-      setPendingUploadCounts(getPendingUploadCounts(chars, sinceTs));
-      setAddonFileStats(fileStats);
+      applyAddonFileState(chars, fileStats, sinceTs);
     } catch {
       setPendingUploadCounts({ snapshots: 0, mythicPlusRuns: 0 });
       setAddonFileStats(null);
     }
-  }, [retailPath]);
+  }, [applyAddonFileState, retailPath]);
 
   // Load persisted settings on mount
   useEffect(() => {
@@ -484,15 +496,30 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
       setAddonVersion(null);
       setPendingUploadCounts(null);
       setAddonFileStats(null);
-      window.electron.wow.unwatchAddonFile();
+      void window.electron.wow.unwatchAddonFile();
       setWatchingFile(false);
       return;
     }
-    window.electron.wow.watchAddonFile();
-    setWatchingFile(true);
+    let cancelled = false;
+    window.electron.wow
+      .watchAddonFile()
+      .then(() => {
+        if (!cancelled) {
+          setWatchingFile(true);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setWatchingFile(false);
+        }
+      });
     window.electron.wow.checkAddonInstalled().then(setAddonInstalled);
     window.electron.wow.getInstalledAddonVersion().then(setAddonVersion);
     void refreshAddonFileState();
+    return () => {
+      cancelled = true;
+      void window.electron.wow.unwatchAddonFile();
+    };
   }, [refreshAddonFileState, retailPath]);
 
   async function handleCloseBehaviorChange(value: boolean) {
@@ -579,7 +606,8 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
         const addonData = await window.electron.wow.readAddonData();
         if (!addonData) return;
         const { characters: addonChars, accountsFound, fileStats } = addonData;
-        if (fileStats) setAddonFileStats(fileStats);
+        const preUploadSinceTs = lastSyncedAtRef.current - 60;
+        applyAddonFileState(addonChars, fileStats, preUploadSinceTs);
 
         if (addonChars.length === 0) {
           setUploadWarn(
@@ -589,7 +617,7 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
           );
         } else {
           // Only send records newer than the last successful sync (60s buffer for clock skew).
-          const sinceTs = lastSyncedAtRef.current - 60;
+          const sinceTs = preUploadSinceTs;
           const pendingChars = addonChars
             .map((c) => ({
               ...c,
@@ -597,8 +625,6 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
               mythicPlusRuns: c.mythicPlusRuns.filter((run) => isUploadableMythicPlusRun(run, sinceTs)),
             }))
             .filter((c) => c.snapshots.length > 0 || c.mythicPlusRuns.length > 0);
-
-          setPendingUploadCounts(getPendingUploadCounts(addonChars, sinceTs));
 
           if (pendingChars.length > 0) {
             const result = await uploadAddon({
@@ -613,7 +639,7 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
             setLastSyncedAt(now);
             lastSyncedAtRef.current = now;
             await window.electron.settings.setLastSyncedAt(now);
-            await refreshAddonFileState();
+            applyAddonFileState(addonChars, fileStats, now - 60);
           } else {
             setLastUploadResult({ newChars: 0, newSnapshots: 0, newMythicPlusRuns: 0 });
           }
@@ -650,9 +676,21 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
 
   // Register file-change listener once on mount.
   useEffect(() => {
+    const listenerToken = Symbol("addon-file-listener");
+    addonFileListenerTokenRef.current = listenerToken;
+
     window.electron.wow.onAddonFileChanged(() => {
-      doUploadRef.current();
+      if (addonFileListenerTokenRef.current !== listenerToken) {
+        return;
+      }
+      void doUploadRef.current();
     });
+
+    return () => {
+      if (addonFileListenerTokenRef.current === listenerToken) {
+        addonFileListenerTokenRef.current = null;
+      }
+    };
   }, []);
 
   const retailPathValid = retailPath ? isValidRetailPath(retailPath) : true;
