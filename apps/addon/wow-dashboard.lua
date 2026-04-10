@@ -2098,7 +2098,6 @@ end
 local ATTEMPT_MERGE_WINDOW_SECONDS = 45 * 60
 local ATTEMPT_MAX_DURATION_SECONDS = 4 * 60 * 60
 local LEAVER_TIMER_REASON_WINDOW_SECONDS = 10 * 60
-local LEGACY_DST_SHIFT_SECONDS = 60 * 60
 
 local function NormalizeLifecycleTimestamp(value)
     local normalized = NormalizeMythicPlusDate(value)
@@ -2362,28 +2361,6 @@ local function PickDefinedValue(preferredValue, fallbackValue)
     return fallbackValue
 end
 
-local function MergeLifecycleTimestampValues(preferredValue, fallbackValue)
-    local preferredTimestamp = NormalizeMythicPlusDate(preferredValue)
-    local fallbackTimestamp = NormalizeMythicPlusDate(fallbackValue)
-
-    if preferredTimestamp == nil then
-        return fallbackTimestamp
-    end
-    if fallbackTimestamp == nil then
-        return preferredTimestamp
-    end
-
-    if preferredTimestamp == fallbackTimestamp then
-        return preferredTimestamp
-    end
-
-    if math.abs(preferredTimestamp - fallbackTimestamp) == LEGACY_DST_SHIFT_SECONDS then
-        return math.max(preferredTimestamp, fallbackTimestamp)
-    end
-
-    return preferredTimestamp
-end
-
 MergeStoredMythicPlusRun = function(currentRun, candidateRun)
     if type(currentRun) ~= "table" then
         return candidateRun
@@ -2396,6 +2373,27 @@ MergeStoredMythicPlusRun = function(currentRun, candidateRun)
     local preferredRun = candidatePreferred and candidateRun or currentRun
     local fallbackRun = candidatePreferred and currentRun or candidateRun
     local mergedMembers = MergeMythicPlusMemberLists(currentRun.members, candidateRun.members)
+    local function MergeLifecycleTimestampValues(preferredValue, fallbackValue)
+        local preferredTimestamp = NormalizeMythicPlusDate(preferredValue)
+        local fallbackTimestamp = NormalizeMythicPlusDate(fallbackValue)
+
+        if preferredTimestamp == nil then
+            return fallbackTimestamp
+        end
+        if fallbackTimestamp == nil then
+            return preferredTimestamp
+        end
+
+        if preferredTimestamp == fallbackTimestamp then
+            return preferredTimestamp
+        end
+
+        if math.abs(preferredTimestamp - fallbackTimestamp) == (60 * 60) then
+            return math.max(preferredTimestamp, fallbackTimestamp)
+        end
+
+        return preferredTimestamp
+    end
     local preferredObservedAt = tonumber(preferredRun.observedAt) or 0
     local fallbackObservedAt = tonumber(fallbackRun.observedAt) or 0
     local mergedObservedAt

@@ -536,6 +536,54 @@ function MythicPlusKeyPill({
   );
 }
 
+function getRunAttemptId(run: MythicPlusRun) {
+  const explicitAttemptId = run.attemptId?.trim();
+  if (explicitAttemptId) {
+    return explicitAttemptId;
+  }
+
+  if (typeof run.fingerprint === "string" && run.fingerprint.startsWith("attempt|")) {
+    return run.fingerprint;
+  }
+
+  return undefined;
+}
+
+function hasStrongCompletedRunIdentitySignature(run: MythicPlusRun) {
+  return (
+    run.level !== undefined &&
+    (run.mapChallengeModeID !== undefined || (run.mapName && run.mapName.trim() !== "")) &&
+    getRunDurationMs(run) !== undefined &&
+    run.runScore !== undefined
+  );
+}
+
+function shouldApplyLegacyHistoryDstForwardShift(run: MythicPlusRun) {
+  if (getRunAttemptId(run) !== undefined) {
+    return false;
+  }
+  if (run.startDate !== undefined) {
+    return false;
+  }
+  if (!hasStrongCompletedRunIdentitySignature(run)) {
+    return false;
+  }
+  const primaryTimestamp = run.endedAt ?? run.abandonedAt ?? run.completedAt;
+  if (primaryTimestamp === undefined) {
+    return false;
+  }
+
+  // Legacy history rows built from UTC-like date tuples were parsed with
+  // standard-time offset, ending up one hour low during DST months.
+  // Detect DST in the viewer's locale and apply a deterministic +1h only then.
+  const playedAtDate = new Date(primaryTimestamp * 1000);
+  const janOffset = new Date(playedAtDate.getFullYear(), 0, 1).getTimezoneOffset();
+  const julOffset = new Date(playedAtDate.getFullYear(), 6, 1).getTimezoneOffset();
+  const standardOffset = Math.max(janOffset, julOffset);
+  const isDstAtPlayedAt = playedAtDate.getTimezoneOffset() < standardOffset;
+  return isDstAtPlayedAt;
+}
+
 function getRunPlayedAt(run: MythicPlusRun) {
   const primaryTimestamp = run.endedAt ?? run.abandonedAt ?? run.completedAt ?? run.startDate;
   if (primaryTimestamp === undefined) {
@@ -554,6 +602,10 @@ function getRunPlayedAt(run: MythicPlusRun) {
     if (looksLikeLegacyUtcDrift) {
       return primaryTimestamp + roundedHourDriftSeconds;
     }
+  }
+
+  if (shouldApplyLegacyHistoryDstForwardShift(run)) {
+    return primaryTimestamp + 60 * 60;
   }
 
   return primaryTimestamp;

@@ -961,6 +961,27 @@ function hasStrongCompletedRunIdentitySignature(run: Partial<MythicPlusRunData>)
   );
 }
 
+function shouldApplyLegacyHistoryDstForwardShift(run: Partial<MythicPlusRunData>): boolean {
+  if (getRunAttemptId(run) !== undefined) {
+    return false;
+  }
+  if (run.startDate !== undefined) {
+    return false;
+  }
+  if (!hasStrongCompletedRunIdentitySignature(run)) {
+    return false;
+  }
+  const primaryTimestamp = run.endedAt ?? run.abandonedAt ?? run.completedAt;
+  if (primaryTimestamp === undefined) {
+    return false;
+  }
+  if (run.observedAt !== undefined && Math.abs(run.observedAt - primaryTimestamp) <= 6 * 3600) {
+    return false;
+  }
+
+  return true;
+}
+
 function getRunIdentityCandidates(run: Partial<MythicPlusRunData>): number[] {
   const candidates: number[] = [];
   const seen = new Set<number>();
@@ -1021,6 +1042,10 @@ function getLikelyPlayedAtTimestamp(run: Partial<MythicPlusRunData>): number {
     if (looksLikeLegacyUtcDrift) {
       return primaryTimestamp + roundedHourDriftSeconds;
     }
+  }
+
+  if (shouldApplyLegacyHistoryDstForwardShift(run)) {
+    return primaryTimestamp + LEGACY_DST_SHIFT_SECONDS;
   }
 
   return primaryTimestamp;
