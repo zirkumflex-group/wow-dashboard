@@ -5,6 +5,7 @@ import { mutation, query } from "./_generated/server";
 import { authComponent } from "./auth";
 import {
   buildCanonicalMythicPlusRunFingerprint,
+  getMythicPlusRunLifecycleStatus,
   mergeMythicPlusRunMembers,
   shouldReplaceMythicPlusRun,
 } from "./mythicPlus";
@@ -69,6 +70,7 @@ type SnapshotFields = Pick<
 >;
 type MythicPlusRunDoc = Doc<"mythicPlusRuns">;
 type MythicPlusRunMembers = MythicPlusRunDoc["members"];
+type MythicPlusRunInput = Omit<MythicPlusRunDoc, "_id" | "_creationTime" | "characterId">;
 
 function setPreferredRunLookup(
   map: Map<string, MythicPlusRunDoc>,
@@ -149,18 +151,93 @@ function snapshotFieldsEqual(a: SnapshotFields, b: SnapshotFields) {
   return JSON.stringify(toSnapshotFields(a)) === JSON.stringify(toSnapshotFields(b));
 }
 
-function getMergedRunMembers(
-  currentMembers: MythicPlusRunMembers | undefined,
-  candidateMembers: MythicPlusRunMembers | undefined,
-) {
-  const mergedMembers = mergeMythicPlusRunMembers(currentMembers, candidateMembers);
-  if (!mergedMembers) {
-    return undefined;
+function pickDefinedValue<T>(preferredValue: T | undefined, fallbackValue: T | undefined): T | undefined {
+  return preferredValue !== undefined ? preferredValue : fallbackValue;
+}
+
+function mergeMythicPlusRunData(
+  currentRun: MythicPlusRunInput | undefined,
+  candidateRun: MythicPlusRunInput,
+): MythicPlusRunInput {
+  if (!currentRun) {
+    const merged = {
+      ...candidateRun,
+      fingerprint:
+        buildCanonicalMythicPlusRunFingerprint(candidateRun) ?? candidateRun.fingerprint,
+    };
+    const status = getMythicPlusRunLifecycleStatus(merged);
+    if (status !== undefined) {
+      merged.status = status;
+      if (status === "completed") {
+        merged.completed = true;
+        merged.endedAt = merged.endedAt ?? merged.completedAt;
+      } else if (status === "abandoned") {
+        merged.endedAt = merged.endedAt ?? merged.abandonedAt;
+        merged.abandonedAt = merged.abandonedAt ?? merged.endedAt;
+      }
+    }
+    return merged;
   }
 
-  return JSON.stringify(currentMembers ?? []) === JSON.stringify(mergedMembers)
-    ? undefined
-    : mergedMembers;
+  const candidatePreferred = shouldReplaceMythicPlusRun(currentRun, candidateRun);
+  const preferredRun = candidatePreferred ? candidateRun : currentRun;
+  const fallbackRun = candidatePreferred ? currentRun : candidateRun;
+
+  const preferredObservedAt = preferredRun.observedAt ?? 0;
+  const fallbackObservedAt = fallbackRun.observedAt ?? 0;
+  const mergedObservedAt =
+    preferredObservedAt > 0 && fallbackObservedAt > 0
+      ? Math.min(preferredObservedAt, fallbackObservedAt)
+      : preferredObservedAt > 0
+        ? preferredObservedAt
+        : fallbackObservedAt;
+
+  const merged: MythicPlusRunInput = {
+    fingerprint:
+      buildCanonicalMythicPlusRunFingerprint(preferredRun) ??
+      buildCanonicalMythicPlusRunFingerprint(fallbackRun) ??
+      preferredRun.fingerprint ??
+      fallbackRun.fingerprint,
+    observedAt:
+      mergedObservedAt > 0
+        ? mergedObservedAt
+        : pickDefinedValue(preferredRun.observedAt, fallbackRun.observedAt) ?? 0,
+    seasonID: pickDefinedValue(preferredRun.seasonID, fallbackRun.seasonID),
+    mapChallengeModeID: pickDefinedValue(preferredRun.mapChallengeModeID, fallbackRun.mapChallengeModeID),
+    mapName: pickDefinedValue(preferredRun.mapName, fallbackRun.mapName),
+    level: pickDefinedValue(preferredRun.level, fallbackRun.level),
+    status: pickDefinedValue(preferredRun.status, fallbackRun.status),
+    completed: pickDefinedValue(preferredRun.completed, fallbackRun.completed),
+    completedInTime: pickDefinedValue(preferredRun.completedInTime, fallbackRun.completedInTime),
+    durationMs: pickDefinedValue(preferredRun.durationMs, fallbackRun.durationMs),
+    runScore: pickDefinedValue(preferredRun.runScore, fallbackRun.runScore),
+    startDate: pickDefinedValue(preferredRun.startDate, fallbackRun.startDate),
+    completedAt: pickDefinedValue(preferredRun.completedAt, fallbackRun.completedAt),
+    endedAt: pickDefinedValue(preferredRun.endedAt, fallbackRun.endedAt),
+    abandonedAt: pickDefinedValue(preferredRun.abandonedAt, fallbackRun.abandonedAt),
+    abandonReason: pickDefinedValue(preferredRun.abandonReason, fallbackRun.abandonReason),
+    thisWeek: pickDefinedValue(preferredRun.thisWeek, fallbackRun.thisWeek),
+    members: mergeMythicPlusRunMembers(currentRun.members, candidateRun.members),
+  };
+
+  const canonicalFingerprint = buildCanonicalMythicPlusRunFingerprint(merged);
+  if (canonicalFingerprint) {
+    merged.fingerprint = canonicalFingerprint;
+  }
+
+  const status = getMythicPlusRunLifecycleStatus(merged);
+  if (status !== undefined) {
+    merged.status = status;
+    if (status === "completed") {
+      merged.completed = true;
+      merged.endedAt = merged.endedAt ?? merged.completedAt;
+    } else if (status === "abandoned") {
+      merged.endedAt = merged.endedAt ?? merged.abandonedAt;
+      merged.abandonedAt = merged.abandonedAt ?? merged.endedAt;
+    }
+  }
+
+  return merged;
 }
 
 const characterValidator = v.object({
@@ -318,23 +395,33 @@ export const ingestAddonData = mutation({
         registerRunLookups(existingRunLookups, existingRun);
       }
 
-      // Dedup incoming runs by canonical or legacy fingerprint
-      const incomingRunsByDedupKey = new Map<string, NonNullable<typeof charData.mythicPlusRuns>[number]>();
-      for (const run of charData.mythicPlusRuns ?? []) {
-        const canonicalFingerprint = buildCanonicalMythicPlusRunFingerprint(run);
-        const dedupKey = canonicalFingerprint ?? run.fingerprint;
-        const current = incomingRunsByDedupKey.get(dedupKey);
-        if (shouldReplaceMythicPlusRun(current, run)) {
-          incomingRunsByDedupKey.set(dedupKey, run);
+      // Dedup incoming runs by canonical or legacy fingerprint.
+      const incomingRunsByDedupKey = new Map<string, MythicPlusRunInput>();
+      for (const incomingRun of charData.mythicPlusRuns ?? []) {
+        const normalizedIncomingRun = mergeMythicPlusRunData(undefined, incomingRun);
+        const dedupKey =
+          buildCanonicalMythicPlusRunFingerprint(normalizedIncomingRun) ??
+          normalizedIncomingRun.fingerprint;
+        if (!dedupKey) {
+          continue;
         }
+        const current = incomingRunsByDedupKey.get(dedupKey);
+        incomingRunsByDedupKey.set(
+          dedupKey,
+          mergeMythicPlusRunData(current, normalizedIncomingRun),
+        );
       }
 
       for (const run of incomingRunsByDedupKey.values()) {
-        const canonicalFingerprint = buildCanonicalMythicPlusRunFingerprint(run);
-        const nextFingerprint = canonicalFingerprint ?? run.fingerprint;
-        let existingRun = existingRunLookups.byDedupKey.get(nextFingerprint);
-        if (!existingRun && run.fingerprint) {
-          existingRun = existingRunLookups.byFingerprint.get(run.fingerprint);
+        const nextFingerprint = run.fingerprint;
+        const dedupKey = buildCanonicalMythicPlusRunFingerprint(run) ?? nextFingerprint;
+        if (!dedupKey || !nextFingerprint) {
+          continue;
+        }
+
+        let existingRun = existingRunLookups.byDedupKey.get(dedupKey);
+        if (!existingRun) {
+          existingRun = existingRunLookups.byFingerprint.get(nextFingerprint);
         }
 
         if (!existingRun) {
@@ -346,12 +433,16 @@ export const ingestAddonData = mutation({
             mapChallengeModeID: run.mapChallengeModeID,
             mapName: run.mapName,
             level: run.level,
+            status: run.status,
             completed: run.completed,
             completedInTime: run.completedInTime,
             durationMs: run.durationMs,
             runScore: run.runScore,
             startDate: run.startDate,
             completedAt: run.completedAt,
+            endedAt: run.endedAt,
+            abandonedAt: run.abandonedAt,
+            abandonReason: run.abandonReason,
             thisWeek: run.thisWeek,
             members: run.members,
           });
@@ -367,12 +458,16 @@ export const ingestAddonData = mutation({
               mapChallengeModeID: run.mapChallengeModeID,
               mapName: run.mapName,
               level: run.level,
+              status: run.status,
               completed: run.completed,
               completedInTime: run.completedInTime,
               durationMs: run.durationMs,
               runScore: run.runScore,
               startDate: run.startDate,
               completedAt: run.completedAt,
+              endedAt: run.endedAt,
+              abandonedAt: run.abandonedAt,
+              abandonReason: run.abandonReason,
               thisWeek: run.thisWeek,
               members: run.members,
             },
@@ -380,51 +475,68 @@ export const ingestAddonData = mutation({
           );
           newMythicPlusRuns++;
         } else {
+          const mergedRun = mergeMythicPlusRunData(existingRun, run);
           const patch: {
             fingerprint?: string;
+            observedAt?: number;
             seasonID?: number;
             mapChallengeModeID?: number;
             mapName?: string;
             level?: number;
+            status?: MythicPlusRunDoc["status"];
             completed?: boolean;
             completedInTime?: boolean;
             durationMs?: number;
             runScore?: number;
             startDate?: number;
             completedAt?: number;
+            endedAt?: number;
+            abandonedAt?: number;
+            abandonReason?: MythicPlusRunDoc["abandonReason"];
             thisWeek?: boolean;
             members?: MythicPlusRunMembers;
           } = {};
 
-          if (existingRun.fingerprint !== nextFingerprint) patch.fingerprint = nextFingerprint;
-          if (existingRun.seasonID === undefined && run.seasonID !== undefined) patch.seasonID = run.seasonID;
+          if (existingRun.fingerprint !== mergedRun.fingerprint) patch.fingerprint = mergedRun.fingerprint;
+          if (existingRun.observedAt !== mergedRun.observedAt) patch.observedAt = mergedRun.observedAt;
+          if (mergedRun.seasonID !== undefined && existingRun.seasonID !== mergedRun.seasonID) patch.seasonID = mergedRun.seasonID;
           if (
-            existingRun.mapChallengeModeID === undefined &&
-            run.mapChallengeModeID !== undefined
+            mergedRun.mapChallengeModeID !== undefined &&
+            existingRun.mapChallengeModeID !== mergedRun.mapChallengeModeID
           ) {
-            patch.mapChallengeModeID = run.mapChallengeModeID;
+            patch.mapChallengeModeID = mergedRun.mapChallengeModeID;
           }
-          if (!existingRun.mapName && run.mapName) patch.mapName = run.mapName;
-          if (existingRun.level === undefined && run.level !== undefined) patch.level = run.level;
-          if (existingRun.completed === undefined && run.completed !== undefined) patch.completed = run.completed;
+          if (mergedRun.mapName !== undefined && existingRun.mapName !== mergedRun.mapName) patch.mapName = mergedRun.mapName;
+          if (mergedRun.level !== undefined && existingRun.level !== mergedRun.level) patch.level = mergedRun.level;
+          if (mergedRun.status !== undefined && existingRun.status !== mergedRun.status) patch.status = mergedRun.status;
+          if (mergedRun.completed !== undefined && existingRun.completed !== mergedRun.completed) patch.completed = mergedRun.completed;
           if (
-            existingRun.completedInTime === undefined &&
-            run.completedInTime !== undefined
+            mergedRun.completedInTime !== undefined &&
+            existingRun.completedInTime !== mergedRun.completedInTime
           ) {
-            patch.completedInTime = run.completedInTime;
+            patch.completedInTime = mergedRun.completedInTime;
           }
-          if (existingRun.durationMs === undefined && run.durationMs !== undefined) {
-            patch.durationMs = run.durationMs;
+          if (mergedRun.durationMs !== undefined && existingRun.durationMs !== mergedRun.durationMs) {
+            patch.durationMs = mergedRun.durationMs;
           }
-          if (existingRun.runScore === undefined && run.runScore !== undefined) patch.runScore = run.runScore;
-          if (existingRun.startDate === undefined && run.startDate !== undefined) patch.startDate = run.startDate;
-          if (existingRun.completedAt === undefined && run.completedAt !== undefined) {
-            patch.completedAt = run.completedAt;
+          if (mergedRun.runScore !== undefined && existingRun.runScore !== mergedRun.runScore) patch.runScore = mergedRun.runScore;
+          if (mergedRun.startDate !== undefined && existingRun.startDate !== mergedRun.startDate) patch.startDate = mergedRun.startDate;
+          if (mergedRun.completedAt !== undefined && existingRun.completedAt !== mergedRun.completedAt) {
+            patch.completedAt = mergedRun.completedAt;
           }
-          if (existingRun.thisWeek === undefined && run.thisWeek !== undefined) patch.thisWeek = run.thisWeek;
-          const mergedMembers = getMergedRunMembers(existingRun.members, run.members);
-          if (mergedMembers !== undefined) {
-            patch.members = mergedMembers;
+          if (mergedRun.endedAt !== undefined && existingRun.endedAt !== mergedRun.endedAt) patch.endedAt = mergedRun.endedAt;
+          if (mergedRun.abandonedAt !== undefined && existingRun.abandonedAt !== mergedRun.abandonedAt) {
+            patch.abandonedAt = mergedRun.abandonedAt;
+          }
+          if (
+            mergedRun.abandonReason !== undefined &&
+            existingRun.abandonReason !== mergedRun.abandonReason
+          ) {
+            patch.abandonReason = mergedRun.abandonReason;
+          }
+          if (mergedRun.thisWeek !== undefined && existingRun.thisWeek !== mergedRun.thisWeek) patch.thisWeek = mergedRun.thisWeek;
+          if (JSON.stringify(existingRun.members ?? []) !== JSON.stringify(mergedRun.members ?? [])) {
+            patch.members = mergedRun.members;
           }
 
           if (Object.keys(patch).length > 0) {
@@ -432,13 +544,14 @@ export const ingestAddonData = mutation({
             registerRunLookups(
               existingRunLookups,
               { ...existingRun, ...patch },
-              [existingRun.fingerprint, run.fingerprint, nextFingerprint],
+              [existingRun.fingerprint, run.fingerprint, mergedRun.fingerprint, dedupKey],
             );
           } else {
             registerRunLookups(existingRunLookups, existingRun, [
               existingRun.fingerprint,
               run.fingerprint,
-              nextFingerprint,
+              mergedRun.fingerprint,
+              dedupKey,
             ]);
           }
         }

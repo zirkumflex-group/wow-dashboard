@@ -47,12 +47,22 @@ interface MythicPlusRunData {
   mapChallengeModeID?: number;
   mapName?: string;
   level?: number;
+  status?: "active" | "completed" | "abandoned";
   completed?: boolean;
   completedInTime?: boolean;
   durationMs?: number;
   runScore?: number;
   startDate?: number;
   completedAt?: number;
+  endedAt?: number;
+  abandonedAt?: number;
+  abandonReason?:
+    | "challenge_mode_reset"
+    | "left_instance"
+    | "leaver_timer"
+    | "history_incomplete"
+    | "stale_recovery"
+    | "unknown";
   thisWeek?: boolean;
   members?: {
     name: string;
@@ -260,7 +270,13 @@ const MYTHIC_PLUS_UPLOAD_LOOKBACK_SECONDS = 2 * 60 * 60;
 function isUploadableMythicPlusRun(run: MythicPlusRunData, sinceTs: number) {
   const nowTs = Math.floor(Date.now() / 1000);
   const effectiveSinceTs = Math.min(sinceTs, nowTs - MYTHIC_PLUS_UPLOAD_LOOKBACK_SECONDS);
-  const lastRelevantAt = run.observedAt ?? run.completedAt ?? run.startDate ?? 0;
+  const lastRelevantAt =
+    run.observedAt ??
+    run.endedAt ??
+    run.abandonedAt ??
+    run.completedAt ??
+    run.startDate ??
+    0;
   return lastRelevantAt > effectiveSinceTs;
 }
 

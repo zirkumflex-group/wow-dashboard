@@ -1,3 +1,12 @@
+export type MythicPlusRunStatus = "active" | "completed" | "abandoned";
+export type MythicPlusRunAbandonReason =
+  | "challenge_mode_reset"
+  | "left_instance"
+  | "leaver_timer"
+  | "history_incomplete"
+  | "stale_recovery"
+  | "unknown";
+
 type MythicPlusRunLike = {
   _id?: string;
   fingerprint?: string;
@@ -6,12 +15,16 @@ type MythicPlusRunLike = {
   mapChallengeModeID?: number;
   mapName?: string;
   level?: number;
+  status?: MythicPlusRunStatus;
   completed?: boolean;
   completedInTime?: boolean;
   durationMs?: number;
   runScore?: number;
   startDate?: number;
   completedAt?: number;
+  endedAt?: number;
+  abandonedAt?: number;
+  abandonReason?: MythicPlusRunAbandonReason;
   thisWeek?: boolean;
   members?: {
     name: string;
@@ -66,11 +79,50 @@ function getRunMapFingerprintToken(run: MythicPlusRunLike) {
 }
 
 function getRunIdentityTimestamp(run: MythicPlusRunLike) {
-  return run.startDate ?? run.completedAt ?? null;
+  return run.startDate ?? run.completedAt ?? run.endedAt ?? run.abandonedAt ?? null;
+}
+
+export function hasMythicPlusRunCompletionEvidence(run: MythicPlusRunLike): boolean {
+  return run.completed === true || run.durationMs !== undefined || run.runScore !== undefined || run.completedAt !== undefined;
+}
+
+function hasMythicPlusRunAbandonmentEvidence(run: MythicPlusRunLike): boolean {
+  return run.abandonedAt !== undefined ||
+    run.abandonReason !== undefined ||
+    (run.endedAt !== undefined && !hasMythicPlusRunCompletionEvidence(run));
+}
+
+export function getMythicPlusRunLifecycleStatus(
+  run: MythicPlusRunLike,
+): MythicPlusRunStatus | undefined {
+  if (run.status === "active" || run.status === "completed" || run.status === "abandoned") {
+    return run.status;
+  }
+
+  if (hasMythicPlusRunCompletionEvidence(run)) {
+    return "completed";
+  }
+
+  if (hasMythicPlusRunAbandonmentEvidence(run)) {
+    return "abandoned";
+  }
+
+  return undefined;
+}
+
+function getRunStatusPriority(status: MythicPlusRunStatus | undefined): number {
+  if (status === "completed") return 3;
+  if (status === "abandoned") return 2;
+  if (status === "active") return 1;
+  return 0;
+}
+
+function isTemporaryAttemptFingerprint(fingerprint: string | undefined): boolean {
+  return typeof fingerprint === "string" && fingerprint.startsWith("attempt|");
 }
 
 function getLikelyPlayedAtTimestamp(run: MythicPlusRunLike) {
-  const primaryTimestamp = run.completedAt ?? run.startDate;
+  const primaryTimestamp = run.endedAt ?? run.abandonedAt ?? run.completedAt ?? run.startDate;
   if (primaryTimestamp === undefined) {
     return run.observedAt ?? 0;
   }
@@ -262,13 +314,20 @@ export function buildCanonicalMythicPlusRunFingerprint(run: MythicPlusRunLike) {
 
 export function getMythicPlusRunCompletenessScore(run: MythicPlusRunLike) {
   let score = 0;
+  const status = getMythicPlusRunLifecycleStatus(run);
 
   if (run.seasonID !== undefined) score += 1;
   if (run.mapChallengeModeID !== undefined) score += 3;
   if (typeof run.mapName === "string" && run.mapName.trim() !== "") score += 1;
   if (run.level !== undefined) score += 2;
+  if (status === "active") score += 2;
+  if (status === "abandoned") score += 3;
+  if (status === "completed") score += 4;
   if (run.startDate !== undefined) score += 4;
   if (run.completedAt !== undefined) score += 4;
+  if (run.endedAt !== undefined) score += 3;
+  if (run.abandonedAt !== undefined) score += 2;
+  if (run.abandonReason !== undefined) score += 1;
   if (run.durationMs !== undefined) score += 3;
   if (run.runScore !== undefined) score += 3;
   if (run.completedInTime !== undefined) score += 2;
@@ -284,6 +343,28 @@ export function shouldReplaceMythicPlusRun(
   candidateRun: MythicPlusRunLike,
 ) {
   if (!currentRun) return true;
+
+  const currentStatus = getMythicPlusRunLifecycleStatus(currentRun);
+  const candidateStatus = getMythicPlusRunLifecycleStatus(candidateRun);
+  const currentStatusPriority = getRunStatusPriority(currentStatus);
+  const candidateStatusPriority = getRunStatusPriority(candidateStatus);
+  if (candidateStatusPriority !== currentStatusPriority) {
+    return candidateStatusPriority > currentStatusPriority;
+  }
+
+  const currentCanonicalFingerprint = buildCanonicalMythicPlusRunFingerprint(currentRun);
+  const candidateCanonicalFingerprint = buildCanonicalMythicPlusRunFingerprint(candidateRun);
+  if (
+    currentCanonicalFingerprint !== null &&
+    candidateCanonicalFingerprint !== null &&
+    currentCanonicalFingerprint === candidateCanonicalFingerprint
+  ) {
+    const currentIsTemporary = isTemporaryAttemptFingerprint(currentRun.fingerprint);
+    const candidateIsTemporary = isTemporaryAttemptFingerprint(candidateRun.fingerprint);
+    if (currentIsTemporary !== candidateIsTemporary) {
+      return !candidateIsTemporary;
+    }
+  }
 
   const currentScore = getMythicPlusRunCompletenessScore(currentRun);
   const candidateScore = getMythicPlusRunCompletenessScore(candidateRun);

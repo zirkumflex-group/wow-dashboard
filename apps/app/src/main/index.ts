@@ -373,12 +373,22 @@ interface MythicPlusRunData {
   mapChallengeModeID?: number;
   mapName?: string;
   level?: number;
+  status?: "active" | "completed" | "abandoned";
   completed?: boolean;
   completedInTime?: boolean;
   durationMs?: number;
   runScore?: number;
   startDate?: number;
   completedAt?: number;
+  endedAt?: number;
+  abandonedAt?: number;
+  abandonReason?:
+    | "challenge_mode_reset"
+    | "left_instance"
+    | "leaver_timer"
+    | "history_incomplete"
+    | "stale_recovery"
+    | "unknown";
   thisWeek?: boolean;
   members?: MythicPlusRunMemberData[];
 }
@@ -488,6 +498,92 @@ function toOptionalBoolean(value: unknown): boolean | undefined {
 
 function toOptionalString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
+}
+
+const MYTHIC_PLUS_RUN_MATCH_WINDOW_SECONDS = 5 * 60;
+
+function isTemporaryAttemptFingerprint(value: unknown): boolean {
+  return typeof value === "string" && value.startsWith("attempt|");
+}
+
+function hasRunCompletionEvidence(run: Partial<MythicPlusRunData>): boolean {
+  return (
+    run.completed === true ||
+    run.durationMs !== undefined ||
+    run.runScore !== undefined ||
+    run.completedAt !== undefined
+  );
+}
+
+function hasRunAbandonmentEvidence(run: Partial<MythicPlusRunData>): boolean {
+  return (
+    run.abandonedAt !== undefined ||
+    run.abandonReason !== undefined ||
+    (run.endedAt !== undefined && !hasRunCompletionEvidence(run))
+  );
+}
+
+function getMythicPlusRunStatus(
+  run: Partial<MythicPlusRunData>,
+): MythicPlusRunData["status"] | undefined {
+  if (run.status === "active" || run.status === "completed" || run.status === "abandoned") {
+    return run.status;
+  }
+  if (hasRunCompletionEvidence(run)) {
+    return "completed";
+  }
+  if (hasRunAbandonmentEvidence(run)) {
+    return "abandoned";
+  }
+  return undefined;
+}
+
+function getMythicPlusRunStatusPriority(status: MythicPlusRunData["status"] | undefined): number {
+  if (status === "completed") return 3;
+  if (status === "abandoned") return 2;
+  if (status === "active") return 1;
+  return 0;
+}
+
+function getRunIdentityMatchTimestamp(run: Partial<MythicPlusRunData>): number | undefined {
+  return run.startDate ?? run.completedAt ?? run.endedAt ?? run.abandonedAt;
+}
+
+function areLikelySameMythicPlusAttempt(
+  leftRun: Partial<MythicPlusRunData>,
+  rightRun: Partial<MythicPlusRunData>,
+): boolean {
+  if (
+    leftRun.mapChallengeModeID !== undefined &&
+    rightRun.mapChallengeModeID !== undefined &&
+    leftRun.mapChallengeModeID !== rightRun.mapChallengeModeID
+  ) {
+    return false;
+  }
+
+  if (
+    leftRun.level !== undefined &&
+    rightRun.level !== undefined &&
+    leftRun.level !== rightRun.level
+  ) {
+    return false;
+  }
+
+  if (
+    leftRun.seasonID !== undefined &&
+    rightRun.seasonID !== undefined &&
+    leftRun.seasonID !== rightRun.seasonID
+  ) {
+    return false;
+  }
+
+  const leftIdentityTs = getRunIdentityMatchTimestamp(leftRun);
+  const rightIdentityTs = getRunIdentityMatchTimestamp(rightRun);
+  if (leftIdentityTs === undefined || rightIdentityTs === undefined) {
+    return false;
+  }
+
+  return Math.abs(leftIdentityTs - rightIdentityTs) <= MYTHIC_PLUS_RUN_MATCH_WINDOW_SECONDS;
 }
 
 function normalizeRunMemberRole(value: unknown): Role | undefined {
@@ -781,7 +877,7 @@ function getRunMapFingerprintToken(run: Partial<MythicPlusRunData>): string {
 }
 
 function getRunIdentityTimestamp(run: Partial<MythicPlusRunData>): number | null {
-  return run.startDate ?? run.completedAt ?? null;
+  return run.startDate ?? run.completedAt ?? run.endedAt ?? run.abandonedAt ?? null;
 }
 
 function buildCanonicalMythicPlusRunFingerprint(run: Partial<MythicPlusRunData>): string | undefined {
@@ -819,10 +915,14 @@ function buildRunFingerprint(run: Partial<MythicPlusRunData>): string {
     toFingerprintToken(run.seasonID),
     toFingerprintToken(run.mapChallengeModeID),
     toFingerprintToken(run.level),
+    toFingerprintToken(run.status),
     toFingerprintToken(run.completed),
     toFingerprintToken(run.completedInTime),
     toFingerprintToken(run.durationMs),
     toFingerprintToken(run.runScore),
+    toFingerprintToken(run.endedAt),
+    toFingerprintToken(run.abandonedAt),
+    toFingerprintToken(run.abandonReason),
     toFingerprintToken(run.completedAt),
     toFingerprintToken(run.startDate),
   ].join("|");
@@ -832,26 +932,54 @@ function getMythicPlusRunDedupKey(run: Partial<MythicPlusRunData>): string {
   return buildCanonicalMythicPlusRunFingerprint(run) ?? run.fingerprint ?? buildRunFingerprint(run);
 }
 
+function findMergeableMythicPlusRun(
+  runsByDedupKey: Map<string, MythicPlusRunData>,
+  candidateRun: MythicPlusRunData,
+  candidateDedupKey: string,
+): { dedupKey: string; run: MythicPlusRunData } | null {
+  const directMatch = runsByDedupKey.get(candidateDedupKey);
+  if (directMatch) {
+    return { dedupKey: candidateDedupKey, run: directMatch };
+  }
+
+  for (const [existingDedupKey, existingRun] of runsByDedupKey.entries()) {
+    if (areLikelySameMythicPlusAttempt(existingRun, candidateRun)) {
+      return { dedupKey: existingDedupKey, run: existingRun };
+    }
+  }
+
+  return null;
+}
+
 function getMythicPlusRunCompletionEstimate(run: Partial<MythicPlusRunData>): number | undefined {
-  return run.completedAt ??
+  return run.endedAt ??
+    run.abandonedAt ??
+    run.completedAt ??
     (run.startDate !== undefined && run.durationMs !== undefined
       ? run.startDate + Math.floor(run.durationMs / 1000 + 0.5)
       : undefined);
 }
 
 function getMythicPlusRunSortValue(run: Partial<MythicPlusRunData>): number {
-  return run.completedAt ?? run.startDate ?? run.observedAt ?? 0;
+  return run.endedAt ?? run.abandonedAt ?? run.completedAt ?? run.startDate ?? run.observedAt ?? 0;
 }
 
 function getMythicPlusRunCompletenessScore(run: Partial<MythicPlusRunData>): number {
   let score = 0;
+  const status = getMythicPlusRunStatus(run);
 
   if (run.seasonID !== undefined) score += 1;
   if (run.mapChallengeModeID !== undefined) score += 3;
   if (typeof run.mapName === "string" && run.mapName.trim() !== "") score += 1;
   if (run.level !== undefined) score += 2;
+  if (status === "active") score += 2;
+  if (status === "abandoned") score += 3;
+  if (status === "completed") score += 4;
   if (run.startDate !== undefined) score += 4;
   if (run.completedAt !== undefined) score += 4;
+  if (run.endedAt !== undefined) score += 3;
+  if (run.abandonedAt !== undefined) score += 2;
+  if (run.abandonReason !== undefined) score += 1;
   if (run.durationMs !== undefined) score += 3;
   if (run.runScore !== undefined) score += 3;
   if (run.completedInTime !== undefined) score += 2;
@@ -868,6 +996,28 @@ function shouldReplaceMythicPlusRun(
 ): boolean {
   if (!currentRun) {
     return true;
+  }
+
+  const currentStatus = getMythicPlusRunStatus(currentRun);
+  const candidateStatus = getMythicPlusRunStatus(candidateRun);
+  const currentStatusPriority = getMythicPlusRunStatusPriority(currentStatus);
+  const candidateStatusPriority = getMythicPlusRunStatusPriority(candidateStatus);
+  if (candidateStatusPriority !== currentStatusPriority) {
+    return candidateStatusPriority > currentStatusPriority;
+  }
+
+  const currentCanonicalFingerprint = buildCanonicalMythicPlusRunFingerprint(currentRun);
+  const candidateCanonicalFingerprint = buildCanonicalMythicPlusRunFingerprint(candidateRun);
+  if (
+    currentCanonicalFingerprint &&
+    candidateCanonicalFingerprint &&
+    currentCanonicalFingerprint === candidateCanonicalFingerprint
+  ) {
+    const currentIsTemporary = isTemporaryAttemptFingerprint(currentRun.fingerprint);
+    const candidateIsTemporary = isTemporaryAttemptFingerprint(candidateRun.fingerprint);
+    if (currentIsTemporary !== candidateIsTemporary) {
+      return !candidateIsTemporary;
+    }
   }
 
   const currentScore = getMythicPlusRunCompletenessScore(currentRun);
@@ -913,15 +1063,31 @@ function mergeMythicPlusRunData(
     mapChallengeModeID: preferredRun.mapChallengeModeID ?? fallbackRun.mapChallengeModeID,
     mapName: preferredRun.mapName ?? fallbackRun.mapName,
     level: preferredRun.level ?? fallbackRun.level,
+    status: preferredRun.status ?? fallbackRun.status,
     completed: preferredRun.completed ?? fallbackRun.completed,
     completedInTime: preferredRun.completedInTime ?? fallbackRun.completedInTime,
     durationMs: preferredRun.durationMs ?? fallbackRun.durationMs,
     runScore: preferredRun.runScore ?? fallbackRun.runScore,
     startDate: preferredRun.startDate ?? fallbackRun.startDate,
     completedAt: preferredRun.completedAt ?? fallbackRun.completedAt,
+    endedAt: preferredRun.endedAt ?? fallbackRun.endedAt,
+    abandonedAt: preferredRun.abandonedAt ?? fallbackRun.abandonedAt,
+    abandonReason: preferredRun.abandonReason ?? fallbackRun.abandonReason,
     thisWeek: preferredRun.thisWeek ?? fallbackRun.thisWeek,
     members: mergeMythicPlusRunMembers(currentRun.members, candidateRun.members),
   };
+
+  const mergedStatus = getMythicPlusRunStatus(mergedRun);
+  if (mergedStatus !== undefined) {
+    mergedRun.status = mergedStatus;
+    if (mergedStatus === "completed") {
+      mergedRun.completed = true;
+      mergedRun.endedAt = mergedRun.endedAt ?? mergedRun.completedAt;
+    } else if (mergedStatus === "abandoned") {
+      mergedRun.endedAt = mergedRun.endedAt ?? mergedRun.abandonedAt;
+      mergedRun.abandonedAt = mergedRun.abandonedAt ?? mergedRun.endedAt;
+    }
+  }
 
   mergedRun.fingerprint = getMythicPlusRunDedupKey(mergedRun);
   return mergedRun;
@@ -964,6 +1130,13 @@ function normalizeStoredMythicPlusRun(runRaw: LuaTable): MythicPlusRunData {
           )
         : undefined),
     level: toOptionalNumber(runRaw.level) ?? toOptionalNumber(runRaw.keystoneLevel),
+    status: (() => {
+      const statusValue = toOptionalString(runRaw.status);
+      if (statusValue === "active" || statusValue === "completed" || statusValue === "abandoned") {
+        return statusValue;
+      }
+      return undefined;
+    })(),
     completed:
       toOptionalBoolean(runRaw.completed) ??
       toOptionalBoolean(runRaw.finishedSuccess) ??
@@ -986,6 +1159,26 @@ function normalizeStoredMythicPlusRun(runRaw: LuaTable): MythicPlusRunData {
       toOptionalMythicPlusTimestamp(runRaw.completedDate) ??
       toOptionalMythicPlusTimestamp(runRaw.endTime) ??
       toOptionalMythicPlusTimestamp(runRaw.startDate),
+    endedAt:
+      toOptionalMythicPlusTimestamp(runRaw.endedAt) ??
+      toOptionalMythicPlusTimestamp(runRaw.abandonedAt),
+    abandonedAt:
+      toOptionalMythicPlusTimestamp(runRaw.abandonedAt) ??
+      toOptionalMythicPlusTimestamp(runRaw.endedAt),
+    abandonReason: (() => {
+      const reasonValue = toOptionalString(runRaw.abandonReason);
+      if (
+        reasonValue === "challenge_mode_reset" ||
+        reasonValue === "left_instance" ||
+        reasonValue === "leaver_timer" ||
+        reasonValue === "history_incomplete" ||
+        reasonValue === "stale_recovery" ||
+        reasonValue === "unknown"
+      ) {
+        return reasonValue;
+      }
+      return undefined;
+    })(),
     thisWeek: toOptionalBoolean(runRaw.thisWeek) ?? toOptionalBoolean(runRaw.isThisWeek),
     members:
       normalizeMythicPlusRunMembers(
@@ -1008,7 +1201,22 @@ function normalizeStoredMythicPlusRun(runRaw: LuaTable): MythicPlusRunData {
     run.completed = true;
   }
 
+  const derivedStatus = getMythicPlusRunStatus(run);
+  if (derivedStatus !== undefined) {
+    run.status = derivedStatus;
+    if (derivedStatus === "completed") {
+      run.completed = true;
+      run.endedAt = run.endedAt ?? run.completedAt;
+    } else if (derivedStatus === "abandoned") {
+      run.endedAt = run.endedAt ?? run.abandonedAt;
+      run.abandonedAt = run.abandonedAt ?? run.endedAt;
+    }
+  }
+
   run.fingerprint =
+    (toOptionalString(runRaw.fingerprint) && isTemporaryAttemptFingerprint(toOptionalString(runRaw.fingerprint))
+      ? toOptionalString(runRaw.fingerprint)
+      : undefined) ??
     buildCanonicalMythicPlusRunFingerprint(run) ??
     toOptionalString(runRaw.fingerprint) ??
     buildRunFingerprint(run);
@@ -1285,12 +1493,24 @@ function extractCharacters(db: Record<string, unknown>): CharacterData[] {
       const run = normalizeStoredMythicPlusRun(runRaw);
       const dedupKey = getMythicPlusRunDedupKey(run);
       if (!dedupKey) continue;
-      const currentRun = mythicPlusRunsByFingerprint.get(dedupKey);
-      mythicPlusRunsByFingerprint.set(dedupKey, mergeMythicPlusRunData(currentRun, run));
+      const mergeableRun = findMergeableMythicPlusRun(mythicPlusRunsByFingerprint, run, dedupKey);
+      if (!mergeableRun) {
+        mythicPlusRunsByFingerprint.set(dedupKey, run);
+        continue;
+      }
+
+      const mergedRun = mergeMythicPlusRunData(mergeableRun.run, run);
+      const mergedDedupKey = getMythicPlusRunDedupKey(mergedRun);
+      if (mergedDedupKey !== mergeableRun.dedupKey) {
+        mythicPlusRunsByFingerprint.delete(mergeableRun.dedupKey);
+      }
+      mythicPlusRunsByFingerprint.set(mergedDedupKey, mergedRun);
     }
     const mythicPlusRuns = Array.from(mythicPlusRunsByFingerprint.values());
     mythicPlusRuns.sort(
-      (a, b) => (b.completedAt ?? b.startDate ?? b.observedAt ?? 0) - (a.completedAt ?? a.startDate ?? a.observedAt ?? 0),
+      (a, b) =>
+        (b.endedAt ?? b.abandonedAt ?? b.completedAt ?? b.startDate ?? b.observedAt ?? 0) -
+        (a.endedAt ?? a.abandonedAt ?? a.completedAt ?? a.startDate ?? a.observedAt ?? 0),
     );
 
     // Reconcile pending members from durable SavedVariables store
@@ -1388,19 +1608,25 @@ async function findAndParseAddonData(
         );
         for (const run of char.mythicPlusRuns) {
           const dedupKey = getMythicPlusRunDedupKey(run);
-          const currentRun = existingRunsByFingerprint.get(dedupKey);
-          if (!currentRun) {
+          const mergeableRun = findMergeableMythicPlusRun(existingRunsByFingerprint, run, dedupKey);
+          if (!mergeableRun) {
             existing.mythicPlusRuns.push(run);
             existingRunsByFingerprint.set(dedupKey, run);
             continue;
           }
 
-          Object.assign(currentRun, mergeMythicPlusRunData(currentRun, run));
+          const mergedRun = mergeMythicPlusRunData(mergeableRun.run, run);
+          Object.assign(mergeableRun.run, mergedRun);
+          const mergedDedupKey = getMythicPlusRunDedupKey(mergedRun);
+          if (mergedDedupKey !== mergeableRun.dedupKey) {
+            existingRunsByFingerprint.delete(mergeableRun.dedupKey);
+          }
+          existingRunsByFingerprint.set(mergedDedupKey, mergeableRun.run);
         }
         existing.mythicPlusRuns.sort(
           (a, b) =>
-            (b.completedAt ?? b.startDate ?? b.observedAt ?? 0) -
-            (a.completedAt ?? a.startDate ?? a.observedAt ?? 0),
+            (b.endedAt ?? b.abandonedAt ?? b.completedAt ?? b.startDate ?? b.observedAt ?? 0) -
+            (a.endedAt ?? a.abandonedAt ?? a.completedAt ?? a.startDate ?? a.observedAt ?? 0),
         );
       }
     }

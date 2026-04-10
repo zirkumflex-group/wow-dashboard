@@ -6,6 +6,7 @@ import { internalMutation, mutation, query } from "./_generated/server";
 import { authComponent } from "./auth";
 import {
   getMythicPlusRunDedupKey,
+  getMythicPlusRunLifecycleStatus,
   getMythicPlusRunTimedState,
   getMythicPlusRunUpgradeCount,
   getMythicPlusRunSortValue,
@@ -35,12 +36,20 @@ function getMythicPlusRunProgressionKey(run: MythicPlusRunDoc): string {
   return `${seasonToken}|${mapToken}`;
 }
 
-function hasRecordedCompletionEvidence(run: MythicPlusRunDoc): boolean {
-  return run.durationMs !== undefined || run.runScore !== undefined || run.completedAt !== undefined;
+function isCompletedRun(run: MythicPlusRunDoc): boolean {
+  return getMythicPlusRunLifecycleStatus(run) === "completed";
 }
 
-function isCompletedRun(run: MythicPlusRunDoc): boolean {
-  return run.completed === true || hasRecordedCompletionEvidence(run);
+function isAbandonedRun(run: MythicPlusRunDoc): boolean {
+  return getMythicPlusRunLifecycleStatus(run) === "abandoned";
+}
+
+function isActiveRun(run: MythicPlusRunDoc): boolean {
+  return getMythicPlusRunLifecycleStatus(run) === "active";
+}
+
+function isTerminalRun(run: MythicPlusRunDoc): boolean {
+  return isCompletedRun(run) || isAbandonedRun(run);
 }
 
 function isTimedRun(run: MythicPlusRunDoc): boolean | null {
@@ -121,7 +130,10 @@ function dedupeSnapshotsByTakenAt(snapshots: SnapshotDoc[]) {
 }
 
 function buildMythicPlusBucketSummary(runs: MythicPlusRunDoc[]) {
+  let totalAttempts = 0;
   let completedRuns = 0;
+  let abandonedRuns = 0;
+  let activeRuns = 0;
   let timedRuns = 0;
   let timed2To9 = 0;
   let timed10To11 = 0;
@@ -140,8 +152,21 @@ function buildMythicPlusBucketSummary(runs: MythicPlusRunDoc[]) {
     const runAt = getRunTimestamp(run);
     if (lastRunAt === null || runAt > lastRunAt) lastRunAt = runAt;
 
-    if (isCompletedRun(run)) completedRuns += 1;
-    if (isTimedRun(run)) {
+    const completed = isCompletedRun(run);
+    const abandoned = isAbandonedRun(run);
+    const active = isActiveRun(run);
+
+    if (completed) {
+      completedRuns += 1;
+      totalAttempts += 1;
+    } else if (abandoned) {
+      abandonedRuns += 1;
+      totalAttempts += 1;
+    } else if (active) {
+      activeRuns += 1;
+    }
+
+    if (completed && isTimedRun(run)) {
       timedRuns += 1;
       if (shouldReplaceBestTimedRun(bestTimedRun, run)) {
         bestTimedRun = run;
@@ -159,13 +184,13 @@ function buildMythicPlusBucketSummary(runs: MythicPlusRunDoc[]) {
       }
     }
 
-    if (run.level !== undefined) {
+    if ((completed || abandoned) && run.level !== undefined) {
       bestLevel = bestLevel === null ? run.level : Math.max(bestLevel, run.level);
       totalLevel += run.level;
       levelCount += 1;
     }
 
-    if (run.runScore !== undefined) {
+    if ((completed || abandoned) && run.runScore !== undefined) {
       bestScore = bestScore === null ? run.runScore : Math.max(bestScore, run.runScore);
       totalScore += run.runScore;
       scoreCount += 1;
@@ -173,8 +198,11 @@ function buildMythicPlusBucketSummary(runs: MythicPlusRunDoc[]) {
   }
 
   return {
-    totalRuns: runs.length,
+    totalRuns: totalAttempts,
+    totalAttempts,
     completedRuns,
+    abandonedRuns,
+    activeRuns,
     timedRuns,
     timed2To9,
     timed10To11,
@@ -212,6 +240,10 @@ function buildDungeonSummaries(runs: MythicPlusRunDoc[]) {
   >();
 
   for (const run of runs) {
+    if (!isTerminalRun(run)) {
+      continue;
+    }
+
     const key = String(run.mapChallengeModeID ?? getMapLabel(run));
     const current = byDungeon.get(key) ?? {
       mapChallengeModeID: run.mapChallengeModeID ?? null,
@@ -229,7 +261,7 @@ function buildDungeonSummaries(runs: MythicPlusRunDoc[]) {
     };
 
     current.totalRuns += 1;
-    if (isTimedRun(run)) {
+    if (isCompletedRun(run) && isTimedRun(run)) {
       current.timedRuns += 1;
       if (shouldReplaceBestTimedRun(current.bestTimedRun, run)) {
         current.bestTimedRun = run;
@@ -332,11 +364,15 @@ function buildRecentRuns(runs: MythicPlusRunDoc[]) {
     );
   }
 
-  return runs.map((run) => ({
-    ...run,
-    upgradeCount: getMythicPlusRunUpgradeCount(run),
-    scoreIncrease: scoreIncreaseByRunId.get(run._id) ?? null,
-  }));
+  return runs.map((run) => {
+    const status = getMythicPlusRunLifecycleStatus(run);
+    return {
+      ...run,
+      status,
+      upgradeCount: getMythicPlusRunUpgradeCount(run),
+      scoreIncrease: scoreIncreaseByRunId.get(run._id) ?? null,
+    };
+  });
 }
 
 function dedupeMythicPlusRuns(runs: MythicPlusRunDoc[]) {

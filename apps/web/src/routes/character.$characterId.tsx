@@ -277,14 +277,31 @@ function formatRunDuration(durationMs?: number | null) {
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
-function formatRunTimeComparison(run: MythicPlusRun) {
-  const actualTime = formatRunDuration(run.durationMs);
-  const maxTime = formatRunDuration(getMythicPlusDungeonTimerMs(run.mapChallengeModeID, run.mapName));
+function getRunDurationMs(run: MythicPlusRun): number | undefined {
+  if (run.durationMs !== undefined && run.durationMs > 0) {
+    return run.durationMs;
+  }
 
-  if (maxTime === "â€”") {
+  const runEndAt = run.endedAt ?? run.abandonedAt ?? run.completedAt;
+  if (run.startDate !== undefined && runEndAt !== undefined && runEndAt >= run.startDate) {
+    return (runEndAt - run.startDate) * 1000;
+  }
+
+  return undefined;
+}
+
+function formatRunTimeComparison(run: MythicPlusRun) {
+  if (getMythicPlusRunStatus(run) === "active") {
+    return "In progress";
+  }
+
+  const actualTime = formatRunDuration(getRunDurationMs(run));
+  const timerMs = getMythicPlusDungeonTimerMs(run.mapChallengeModeID, run.mapName);
+  if (timerMs === null || timerMs === undefined) {
     return actualTime;
   }
 
+  const maxTime = formatRunDuration(timerMs);
   return `${actualTime} / ${maxTime}`;
 }
 
@@ -344,16 +361,42 @@ function getRunLabel(run: MythicPlusRun) {
   return "Unknown Dungeon";
 }
 
-function isCompletedMythicPlusRun(run: MythicPlusRun) {
-  return (
+function getMythicPlusRunStatus(run: MythicPlusRun): MythicPlusRun["status"] | undefined {
+  if (run.status === "active" || run.status === "completed" || run.status === "abandoned") {
+    return run.status;
+  }
+
+  if (
     run.completed === true ||
     run.durationMs !== undefined ||
     run.runScore !== undefined ||
     run.completedAt !== undefined
-  );
+  ) {
+    return "completed";
+  }
+
+  if (
+    run.abandonedAt !== undefined ||
+    run.abandonReason !== undefined ||
+    (run.endedAt !== undefined &&
+      run.durationMs === undefined &&
+      run.runScore === undefined &&
+      run.completedAt === undefined)
+  ) {
+    return "abandoned";
+  }
+
+  return undefined;
+}
+
+function isCompletedMythicPlusRun(run: MythicPlusRun) {
+  return getMythicPlusRunStatus(run) === "completed";
 }
 
 function getMythicPlusRunTimedState(run: MythicPlusRun): boolean | null {
+  if (getMythicPlusRunStatus(run) !== "completed") {
+    return null;
+  }
   if (run.upgradeCount !== undefined && run.upgradeCount !== null) {
     return run.upgradeCount > 0;
   }
@@ -475,7 +518,7 @@ function MythicPlusKeyPill({
 }
 
 function getRunPlayedAt(run: MythicPlusRun) {
-  const primaryTimestamp = run.completedAt ?? run.startDate;
+  const primaryTimestamp = run.endedAt ?? run.abandonedAt ?? run.completedAt ?? run.startDate;
   if (primaryTimestamp === undefined) {
     return run.observedAt;
   }
@@ -913,13 +956,27 @@ function getTertiaryStats(snapshot: Snapshot) {
 }
 
 function MythicPlusResultBadge({ run }: { run: MythicPlusRun }) {
+  const status = getMythicPlusRunStatus(run);
   const timedState = getMythicPlusRunTimedState(run);
 
+  if (status === "active") {
+    return (
+      <Badge className="rounded-md border-sky-400/35 bg-sky-500/16 px-1.5 py-0.5 text-[11px] font-semibold tracking-[0.08em] text-sky-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+        Active
+      </Badge>
+    );
+  }
+  if (status === "abandoned") {
+    return (
+      <Badge className="rounded-md border-rose-400/35 bg-rose-500/16 px-1.5 py-0.5 text-[11px] font-semibold tracking-[0.08em] text-rose-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+        Abandoned
+      </Badge>
+    );
+  }
   if (timedState === true) {
-    const upgradeCount = Math.max(1, Math.min(3, run.upgradeCount ?? 1));
     return (
       <Badge className="rounded-md border-emerald-400/40 bg-emerald-500/18 px-1.5 py-0.5 text-[11px] font-semibold tracking-[0.08em] text-emerald-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-        {`+${upgradeCount}`}
+        Timed
       </Badge>
     );
   }
@@ -937,11 +994,7 @@ function MythicPlusResultBadge({ run }: { run: MythicPlusRun }) {
       </Badge>
     );
   }
-  return (
-    <Badge className="rounded-md border-rose-400/35 bg-rose-500/16 px-1.5 py-0.5 text-[11px] font-semibold tracking-[0.08em] text-rose-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-      Failed
-    </Badge>
-  );
+  return null;
 }
 
 function MythicPlusSection({
@@ -1048,7 +1101,7 @@ function MythicPlusSection({
                   <Flame size={14} className="text-muted-foreground" />
                   <h3 className="text-sm font-semibold">Current Season</h3>
                 </div>
-                <div className="grid gap-1.5 sm:grid-cols-2 xl:grid-cols-4">
+                <div className="grid gap-1.5 sm:grid-cols-2 xl:grid-cols-3">
                   <StatGrid
                     compact
                     label="Current Score"
@@ -1072,10 +1125,27 @@ function MythicPlusSection({
                     label="Timed Runs"
                     value={currentSeason.timedRuns.toLocaleString()}
                   />
+                </div>
+                <div className="grid gap-1.5 sm:grid-cols-2 xl:grid-cols-5">
                   <StatGrid
                     compact
-                    label="Total Runs"
-                    value={currentSeason.totalRuns.toLocaleString()}
+                    label="Total Attempts"
+                    value={(currentSeason.totalAttempts ?? currentSeason.totalRuns).toLocaleString()}
+                  />
+                  <StatGrid
+                    compact
+                    label="Completed"
+                    value={currentSeason.completedRuns.toLocaleString()}
+                  />
+                  <StatGrid
+                    compact
+                    label="Abandoned"
+                    value={(currentSeason.abandonedRuns ?? 0).toLocaleString()}
+                  />
+                  <StatGrid
+                    compact
+                    label="Active"
+                    value={(currentSeason.activeRuns ?? 0).toLocaleString()}
                   />
                 </div>
                 <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
@@ -1392,12 +1462,22 @@ type MythicPlusRun = {
   mapChallengeModeID?: number;
   mapName?: string;
   level?: number;
+  status?: "active" | "completed" | "abandoned";
   completed?: boolean;
   completedInTime?: boolean;
   durationMs?: number;
   runScore?: number;
   startDate?: number;
   completedAt?: number;
+  endedAt?: number;
+  abandonedAt?: number;
+  abandonReason?:
+    | "challenge_mode_reset"
+    | "left_instance"
+    | "leaver_timer"
+    | "history_incomplete"
+    | "stale_recovery"
+    | "unknown";
   thisWeek?: boolean;
   members?: MythicPlusRunMember[];
   upgradeCount?: number | null;
@@ -1406,7 +1486,10 @@ type MythicPlusRun = {
 
 type MythicPlusBucketSummary = {
   totalRuns: number;
+  totalAttempts?: number;
   completedRuns: number;
+  abandonedRuns?: number;
+  activeRuns?: number;
   timedRuns: number;
   timed2To9: number;
   timed10To11: number;

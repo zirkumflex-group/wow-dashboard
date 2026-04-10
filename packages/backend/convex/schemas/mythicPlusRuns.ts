@@ -17,12 +17,27 @@ const mythicPlusRunFields = {
   mapChallengeModeID: v.optional(v.number()),
   mapName: v.optional(v.string()),
   level: v.optional(v.number()),
+  status: v.optional(
+    v.union(v.literal("active"), v.literal("completed"), v.literal("abandoned")),
+  ),
   completed: v.optional(v.boolean()),
   completedInTime: v.optional(v.boolean()),
   durationMs: v.optional(v.number()),
   runScore: v.optional(v.number()),
   startDate: v.optional(v.number()),
   completedAt: v.optional(v.number()),
+  endedAt: v.optional(v.number()),
+  abandonedAt: v.optional(v.number()),
+  abandonReason: v.optional(
+    v.union(
+      v.literal("challenge_mode_reset"),
+      v.literal("left_instance"),
+      v.literal("leaver_timer"),
+      v.literal("history_incomplete"),
+      v.literal("stale_recovery"),
+      v.literal("unknown"),
+    ),
+  ),
   thisWeek: v.optional(v.boolean()),
   members: v.optional(v.array(mythicPlusRunMemberValidator)),
 } as const;

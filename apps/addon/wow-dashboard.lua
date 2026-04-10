@@ -183,19 +183,23 @@ end
 --       mapChallengeModeID  number?
 --       mapName             string?
 --       level               number?
+--       status              string? -- "active" | "completed" | "abandoned"
 --       completed           boolean?
 --       completedInTime     boolean?
 --       durationMs          number?
 --       runScore            number?
 --       startDate           number?
 --       completedAt         number?
+--       endedAt             number?
+--       abandonedAt         number?
+--       abandonReason       string?
 --       thisWeek            boolean?
 --       members            array?
 --         name             string
 --         realm            string?
 --         classTag         string?
 --         role             string?  -- "tank" | "healer" | "dps"
---     mythicPlusRunKeys table -- keyed by fingerprint for dedupe
+--     mythicPlusRunKeys table -- keyed by dedupe fingerprint/canonical key
 --     snapshots    array
 --       takenAt           number  -- Unix timestamp
 --       level             number
@@ -279,6 +283,9 @@ local PENDING_RUN_MEMBER_RETENTION = 30 * 60
 local PENDING_RUN_MEMBER_MATCH_WINDOW = 5 * 60
 local PENDING_RUN_MEMBER_RETRY_DELAYS = { 5, 45, 120 }
 local ACTIVE_RUN_MEMBER_RETENTION = 4 * 60 * 60
+local ACTIVE_ATTEMPT_RECONCILE_GRACE = 8
+local RECENT_COMPLETION_EVENT_GRACE = 20
+local STALE_ATTEMPT_RECOVERY_SECONDS = 10 * 60
 local MYTHIC_PLUS_DEBUG_EVENT_LIMIT = 30
 local PLAYTIME_TIMEOUT = 30             -- seconds before we give up waiting for TIME_PLAYED_MSG
 local MAX_SNAPSHOTS_PER_CHARACTER = 500
@@ -306,6 +313,7 @@ local initialized          = false  -- true after first PLAYER_ENTERING_WORLD
 local pendingMPlusSync     = false
 local lastMPlusSyncAt      = 0
 local pendingCompletedRunMembers = nil
+local pendingActiveAttemptReconcile = false
 
 -- UI widgets — assigned after frames are built; used by the ticker
 local timerLabel = nil
@@ -610,6 +618,8 @@ end
 local NormalizeMythicPlusDate
 local NormalizeOptionalBoolean
 local GetRunSortValue
+local GetRunDedupKey
+local GetRunStatus
 local NormalizeStoredMythicPlusRun
 local MergeStoredMythicPlusRun
 local ShouldReplaceStoredRun
@@ -665,17 +675,20 @@ end
 
 local function NormalizeAndDeduplicateRuns(entry)
     local normalizedRuns = {}
-    local normalizedRunsByFingerprint = {}
+    local normalizedRunsByDedupKey = {}
     for _, run in ipairs(entry.mythicPlusRuns) do
         local normalized = NormalizeStoredMythicPlusRun(run)
-        if normalized and normalized.fingerprint then
-            local current = normalizedRunsByFingerprint[normalized.fingerprint]
-            normalizedRunsByFingerprint[normalized.fingerprint] = MergeStoredMythicPlusRun(current, normalized)
+        if normalized then
+            local dedupKey = GetRunDedupKey(normalized)
+            if dedupKey then
+                local current = normalizedRunsByDedupKey[dedupKey]
+                normalizedRunsByDedupKey[dedupKey] = MergeStoredMythicPlusRun(current, normalized)
+            end
         end
     end
     local normalizedKeys = {}
-    for fingerprint, run in pairs(normalizedRunsByFingerprint) do
-        normalizedKeys[fingerprint] = true
+    for dedupKey, run in pairs(normalizedRunsByDedupKey) do
+        normalizedKeys[dedupKey] = true
         normalizedRuns[#normalizedRuns + 1] = run
     end
     table.sort(normalizedRuns, function(a, b)
@@ -1855,7 +1868,9 @@ NormalizeMythicPlusDate = function(value)
 end
 
 GetRunSortValue = function(run)
-    return NormalizeMythicPlusDate(run.completedAt)
+    return NormalizeMythicPlusDate(run.endedAt)
+        or NormalizeMythicPlusDate(run.abandonedAt)
+        or NormalizeMythicPlusDate(run.completedAt)
         or NormalizeMythicPlusDate(run.completionDate)
         or NormalizeMythicPlusDate(run.startDate)
         or tonumber(run.observedAt)
@@ -1891,6 +1906,81 @@ local function ToFingerprintToken(value)
     return tostring(value)
 end
 
+local function NormalizeRunStatusValue(value)
+    if type(value) ~= "string" then
+        return nil
+    end
+
+    local normalized = string.lower(strtrim(value))
+    if normalized == "active" or normalized == "completed" or normalized == "abandoned" then
+        return normalized
+    end
+
+    return nil
+end
+
+local function NormalizeAbandonReason(value)
+    if type(value) ~= "string" then
+        return nil
+    end
+
+    local normalized = string.lower(strtrim(value))
+    if normalized == "challenge_mode_reset"
+        or normalized == "left_instance"
+        or normalized == "leaver_timer"
+        or normalized == "history_incomplete"
+        or normalized == "stale_recovery"
+        or normalized == "unknown" then
+        return normalized
+    end
+
+    return nil
+end
+
+local function HasRunCompletionEvidence(run)
+    return run.completed == true
+        or run.durationMs ~= nil
+        or run.runScore ~= nil
+        or NormalizeMythicPlusDate(run.completedAt) ~= nil
+end
+
+local function HasRunAbandonmentEvidence(run)
+    return NormalizeMythicPlusDate(run.abandonedAt) ~= nil
+        or NormalizeAbandonReason(run.abandonReason) ~= nil
+        or (NormalizeMythicPlusDate(run.endedAt) ~= nil and not HasRunCompletionEvidence(run))
+end
+
+GetRunStatus = function(run)
+    local explicitStatus = NormalizeRunStatusValue(run.status)
+    if explicitStatus ~= nil then
+        return explicitStatus
+    end
+    if HasRunCompletionEvidence(run) then
+        return "completed"
+    end
+    if HasRunAbandonmentEvidence(run) then
+        return "abandoned"
+    end
+    return nil
+end
+
+local function GetRunStatusPriority(status)
+    if status == "completed" then
+        return 3
+    end
+    if status == "abandoned" then
+        return 2
+    end
+    if status == "active" then
+        return 1
+    end
+    return 0
+end
+
+local function IsTemporaryRunFingerprint(fingerprint)
+    return type(fingerprint) == "string" and string.sub(fingerprint, 1, 8) == "attempt|"
+end
+
 local function GetRunMapFingerprintToken(run)
     if run.mapChallengeModeID ~= nil then
         return ToFingerprintToken(run.mapChallengeModeID)
@@ -1907,7 +1997,10 @@ local function GetRunMapFingerprintToken(run)
 end
 
 local function GetRunIdentityTimestamp(run)
-    return NormalizeMythicPlusDate(run.startDate) or NormalizeMythicPlusDate(run.completedAt)
+    return NormalizeMythicPlusDate(run.startDate)
+        or NormalizeMythicPlusDate(run.completedAt)
+        or NormalizeMythicPlusDate(run.endedAt)
+        or NormalizeMythicPlusDate(run.abandonedAt)
 end
 
 local function BuildLegacyRunFingerprint(run)
@@ -1915,10 +2008,14 @@ local function BuildLegacyRunFingerprint(run)
         ToFingerprintToken(run.seasonID),
         GetRunMapFingerprintToken(run),
         ToFingerprintToken(run.level),
+        ToFingerprintToken(run.status),
         ToFingerprintToken(run.completed),
         ToFingerprintToken(run.completedInTime),
         ToFingerprintToken(run.durationMs),
         ToFingerprintToken(run.runScore),
+        ToFingerprintToken(run.endedAt),
+        ToFingerprintToken(run.abandonedAt),
+        ToFingerprintToken(run.abandonReason),
         ToFingerprintToken(run.completedAt),
         ToFingerprintToken(run.startDate),
     }, "|")
@@ -1954,15 +2051,258 @@ local function BuildRunFingerprint(run)
     return BuildLegacyRunFingerprint(run)
 end
 
+GetRunDedupKey = function(run)
+    return BuildRunFingerprint(run)
+end
+
+local ATTEMPT_MERGE_WINDOW_SECONDS = 45 * 60
+local ATTEMPT_MAX_DURATION_SECONDS = 4 * 60 * 60
+local LEAVER_TIMER_REASON_WINDOW_SECONDS = 10 * 60
+
+local function NormalizeLifecycleTimestamp(value)
+    local normalized = NormalizeMythicPlusDate(value)
+    if type(normalized) ~= "number" then
+        return nil
+    end
+    if normalized > 10000000000 then
+        return math.floor(normalized / 1000)
+    end
+    return normalized
+end
+
+local function GetCurrentMythicPlusSeasonID()
+    if type(C_MythicPlus) == "table" and type(C_MythicPlus.GetCurrentSeason) == "function" then
+        local ok, seasonID = pcall(C_MythicPlus.GetCurrentSeason)
+        if ok then
+            return tonumber(seasonID)
+        end
+    end
+
+    return nil
+end
+
+local function GetChallengeModeStartTimestamp()
+    local startDate = nil
+    if type(C_ChallengeMode) == "table" and type(C_ChallengeMode.GetStartTime) == "function" then
+        local ok, value = pcall(C_ChallengeMode.GetStartTime)
+        if ok then
+            startDate = NormalizeLifecycleTimestamp(value)
+        end
+    end
+
+    return startDate or time()
+end
+
+local function BuildSyntheticAttemptFingerprint(run)
+    local mapToken = GetRunMapFingerprintToken(run)
+    local startToken = ToFingerprintToken(run.startDate or run.observedAt or time())
+
+    return table.concat({
+        "attempt",
+        ToFingerprintToken(run.seasonID),
+        mapToken,
+        ToFingerprintToken(run.level),
+        startToken,
+    }, "|")
+end
+
+local function GetRunStartTimestampForMatch(run)
+    local startDate = NormalizeMythicPlusDate(run.startDate)
+    if startDate ~= nil then
+        return startDate
+    end
+
+    local completedAt = NormalizeMythicPlusDate(run.completedAt)
+    local durationMs = tonumber(run.durationMs)
+    if completedAt ~= nil and durationMs ~= nil and durationMs > 0 then
+        return completedAt - math.floor(durationMs / 1000 + 0.5)
+    end
+
+    return nil
+end
+
+local function GetRunEndTimestampForMatch(run)
+    return NormalizeMythicPlusDate(run.endedAt)
+        or NormalizeMythicPlusDate(run.abandonedAt)
+        or NormalizeMythicPlusDate(run.completedAt)
+end
+
+local function AreRunMapsEquivalent(currentRun, candidateRun)
+    local currentMapID = tonumber(currentRun.mapChallengeModeID)
+    local candidateMapID = tonumber(candidateRun.mapChallengeModeID)
+    if currentMapID ~= nil and candidateMapID ~= nil then
+        return currentMapID == candidateMapID
+    end
+
+    local currentMapName = type(currentRun.mapName) == "string" and string.lower(strtrim(currentRun.mapName)) or nil
+    local candidateMapName = type(candidateRun.mapName) == "string" and string.lower(strtrim(candidateRun.mapName)) or nil
+    if currentMapName ~= nil and currentMapName ~= "" and candidateMapName ~= nil and candidateMapName ~= "" then
+        return currentMapName == candidateMapName
+    end
+
+    return currentMapID == nil or candidateMapID == nil
+end
+
+local function AreRunLevelsEquivalent(currentRun, candidateRun)
+    local currentLevel = tonumber(currentRun.level)
+    local candidateLevel = tonumber(candidateRun.level)
+    return currentLevel == nil or candidateLevel == nil or currentLevel == candidateLevel
+end
+
+local function GetAttemptMatchDiffSeconds(currentRun, candidateRun)
+    if not AreRunMapsEquivalent(currentRun, candidateRun) or not AreRunLevelsEquivalent(currentRun, candidateRun) then
+        return nil
+    end
+
+    local currentStart = GetRunStartTimestampForMatch(currentRun)
+    local candidateStart = GetRunStartTimestampForMatch(candidateRun)
+    local currentEnd = GetRunEndTimestampForMatch(currentRun)
+    local candidateEnd = GetRunEndTimestampForMatch(candidateRun)
+    local bestDiff = nil
+
+    local function ConsiderDiff(diff)
+        if diff == nil then
+            return
+        end
+        if bestDiff == nil or diff < bestDiff then
+            bestDiff = diff
+        end
+    end
+
+    if currentStart ~= nil and candidateStart ~= nil then
+        local diff = math.abs(currentStart - candidateStart)
+        if diff <= ATTEMPT_MERGE_WINDOW_SECONDS then
+            ConsiderDiff(diff)
+        end
+    end
+
+    if currentEnd ~= nil and candidateEnd ~= nil then
+        local diff = math.abs(currentEnd - candidateEnd)
+        if diff <= ATTEMPT_MERGE_WINDOW_SECONDS then
+            ConsiderDiff(diff)
+        end
+    end
+
+    local candidateDurationSeconds = tonumber(candidateRun.durationMs)
+    if candidateDurationSeconds ~= nil then
+        candidateDurationSeconds = math.floor(candidateDurationSeconds / 1000 + 0.5)
+    end
+    local currentDurationSeconds = tonumber(currentRun.durationMs)
+    if currentDurationSeconds ~= nil then
+        currentDurationSeconds = math.floor(currentDurationSeconds / 1000 + 0.5)
+    end
+
+    if currentStart ~= nil and candidateEnd ~= nil and candidateEnd >= currentStart then
+        local elapsed = candidateEnd - currentStart
+        if elapsed <= ATTEMPT_MAX_DURATION_SECONDS then
+            local diff = nil
+            if candidateDurationSeconds ~= nil then
+                diff = math.abs(elapsed - candidateDurationSeconds)
+                if diff > (20 * 60) then
+                    diff = nil
+                end
+            else
+                diff = elapsed
+            end
+            ConsiderDiff(diff)
+        end
+    end
+
+    if candidateStart ~= nil and currentEnd ~= nil and currentEnd >= candidateStart then
+        local elapsed = currentEnd - candidateStart
+        if elapsed <= ATTEMPT_MAX_DURATION_SECONDS then
+            local diff = nil
+            if currentDurationSeconds ~= nil then
+                diff = math.abs(elapsed - currentDurationSeconds)
+                if diff > (20 * 60) then
+                    diff = nil
+                end
+            else
+                diff = elapsed
+            end
+            ConsiderDiff(diff)
+        end
+    end
+
+    return bestDiff
+end
+
+local function FindMergeableMythicPlusRunIndex(runs, candidateRun)
+    if type(runs) ~= "table" or type(candidateRun) ~= "table" then
+        return nil
+    end
+
+    local candidateFingerprint = candidateRun.fingerprint
+    local candidateDedupKey = GetRunDedupKey(candidateRun)
+    local bestIndex = nil
+    local bestDiff = nil
+
+    for index, currentRun in ipairs(runs) do
+        if type(currentRun) == "table" then
+            if candidateFingerprint ~= nil and currentRun.fingerprint == candidateFingerprint then
+                return index
+            end
+
+            if candidateDedupKey ~= nil and GetRunDedupKey(currentRun) == candidateDedupKey then
+                return index
+            end
+
+            local diffSeconds = GetAttemptMatchDiffSeconds(currentRun, candidateRun)
+            if diffSeconds ~= nil and (bestDiff == nil or diffSeconds < bestDiff) then
+                bestDiff = diffSeconds
+                bestIndex = index
+            end
+        end
+    end
+
+    return bestIndex
+end
+
+local function DidMythicPlusRunChange(currentRun, mergedRun)
+    if currentRun == nil and mergedRun ~= nil then
+        return true
+    end
+    if currentRun == nil or mergedRun == nil then
+        return false
+    end
+
+    if currentRun.fingerprint ~= mergedRun.fingerprint then return true end
+    if currentRun.status ~= mergedRun.status then return true end
+    if currentRun.completed ~= mergedRun.completed then return true end
+    if currentRun.completedInTime ~= mergedRun.completedInTime then return true end
+    if currentRun.durationMs ~= mergedRun.durationMs then return true end
+    if currentRun.runScore ~= mergedRun.runScore then return true end
+    if currentRun.mapName ~= mergedRun.mapName then return true end
+    if currentRun.mapChallengeModeID ~= mergedRun.mapChallengeModeID then return true end
+    if currentRun.level ~= mergedRun.level then return true end
+    if currentRun.startDate ~= mergedRun.startDate then return true end
+    if currentRun.completedAt ~= mergedRun.completedAt then return true end
+    if currentRun.endedAt ~= mergedRun.endedAt then return true end
+    if currentRun.abandonedAt ~= mergedRun.abandonedAt then return true end
+    if currentRun.abandonReason ~= mergedRun.abandonReason then return true end
+    if currentRun.seasonID ~= mergedRun.seasonID then return true end
+    if currentRun.thisWeek ~= mergedRun.thisWeek then return true end
+    if not AreMythicPlusMemberListsEqual(currentRun.members, mergedRun.members) then return true end
+
+    return false
+end
+
 local function GetRunCompletenessScore(run)
     local score = 0
+    local status = GetRunStatus(run)
 
     if run.seasonID ~= nil then score = score + 1 end
     if run.mapChallengeModeID ~= nil then score = score + 3 end
     if type(run.mapName) == "string" and run.mapName ~= "" then score = score + 1 end
     if run.level ~= nil then score = score + 2 end
+    if status == "active" then score = score + 2 end
+    if status == "abandoned" then score = score + 3 end
+    if status == "completed" then score = score + 4 end
     if run.startDate ~= nil then score = score + 4 end
     if run.completedAt ~= nil then score = score + 4 end
+    if run.endedAt ~= nil then score = score + 3 end
+    if run.abandonedAt ~= nil then score = score + 2 end
+    if run.abandonReason ~= nil then score = score + 1 end
     if run.durationMs ~= nil then score = score + 3 end
     if run.runScore ~= nil then score = score + 3 end
     if run.completedInTime ~= nil then score = score + 2 end
@@ -2011,17 +2351,45 @@ MergeStoredMythicPlusRun = function(currentRun, candidateRun)
         mapChallengeModeID = PickDefinedValue(preferredRun.mapChallengeModeID, fallbackRun.mapChallengeModeID),
         mapName = PickDefinedValue(preferredRun.mapName, fallbackRun.mapName),
         level = PickDefinedValue(preferredRun.level, fallbackRun.level),
+        status = PickDefinedValue(preferredRun.status, fallbackRun.status),
         completed = PickDefinedValue(preferredRun.completed, fallbackRun.completed),
         completedInTime = PickDefinedValue(preferredRun.completedInTime, fallbackRun.completedInTime),
         durationMs = PickDefinedValue(preferredRun.durationMs, fallbackRun.durationMs),
         runScore = PickDefinedValue(preferredRun.runScore, fallbackRun.runScore),
         startDate = PickDefinedValue(preferredRun.startDate, fallbackRun.startDate),
         completedAt = PickDefinedValue(preferredRun.completedAt, fallbackRun.completedAt),
+        endedAt = PickDefinedValue(preferredRun.endedAt, fallbackRun.endedAt),
+        abandonedAt = PickDefinedValue(preferredRun.abandonedAt, fallbackRun.abandonedAt),
+        abandonReason = PickDefinedValue(preferredRun.abandonReason, fallbackRun.abandonReason),
         thisWeek = PickDefinedValue(preferredRun.thisWeek, fallbackRun.thisWeek),
     }
 
     if mergedMembers ~= nil then
         mergedRun.members = mergedMembers
+    end
+
+    local mergedStatus = GetRunStatus(mergedRun)
+    if mergedStatus ~= nil then
+        mergedRun.status = mergedStatus
+        if mergedStatus == "completed" then
+            mergedRun.completed = true
+            if mergedRun.endedAt == nil then
+                mergedRun.endedAt = mergedRun.completedAt
+            end
+        elseif mergedStatus == "abandoned" then
+            if mergedRun.endedAt == nil then
+                mergedRun.endedAt = mergedRun.abandonedAt
+            end
+            if mergedRun.abandonedAt == nil then
+                mergedRun.abandonedAt = mergedRun.endedAt
+            end
+            mergedRun.abandonReason = NormalizeAbandonReason(mergedRun.abandonReason) or "unknown"
+        end
+    end
+
+    local canonicalFingerprint = BuildRunFingerprint(mergedRun)
+    if canonicalFingerprint ~= nil and (mergedRun.status ~= "active" or not IsTemporaryRunFingerprint(mergedRun.fingerprint)) then
+        mergedRun.fingerprint = canonicalFingerprint
     end
 
     return mergedRun
@@ -2030,6 +2398,22 @@ end
 ShouldReplaceStoredRun = function(currentRun, candidateRun)
     if not currentRun then
         return true
+    end
+
+    local currentStatusPriority = GetRunStatusPriority(GetRunStatus(currentRun))
+    local candidateStatusPriority = GetRunStatusPriority(GetRunStatus(candidateRun))
+    if candidateStatusPriority ~= currentStatusPriority then
+        return candidateStatusPriority > currentStatusPriority
+    end
+
+    local currentDedupKey = GetRunDedupKey(currentRun)
+    local candidateDedupKey = GetRunDedupKey(candidateRun)
+    if currentDedupKey == candidateDedupKey then
+        local currentIsTemporary = IsTemporaryRunFingerprint(currentRun.fingerprint)
+        local candidateIsTemporary = IsTemporaryRunFingerprint(candidateRun.fingerprint)
+        if currentIsTemporary ~= candidateIsTemporary then
+            return not candidateIsTemporary
+        end
     end
 
     local currentScore = GetRunCompletenessScore(currentRun)
@@ -2081,6 +2465,10 @@ NormalizeStoredMythicPlusRun = function(run)
         or NormalizeMythicPlusDate(run.completionDate)
         or NormalizeMythicPlusDate(run.completedDate)
         or NormalizeMythicPlusDate(run.endTime)
+    run.endedAt = NormalizeMythicPlusDate(run.endedAt)
+        or NormalizeMythicPlusDate(GetFirstField(run, { "abandonedAt" }))
+    run.abandonedAt = NormalizeMythicPlusDate(run.abandonedAt)
+        or NormalizeMythicPlusDate(GetFirstField(run, { "endedAt" }))
     run.startDate = NormalizeMythicPlusDate(run.startDate) or NormalizeMythicPlusDate(run.startedAt)
 
     if run.mapChallengeModeID == nil then
@@ -2098,10 +2486,12 @@ NormalizeStoredMythicPlusRun = function(run)
     if run.completed == nil then
         run.completed = GetFirstField(run, { "finishedSuccess", "isCompleted" })
     end
+    run.completed = NormalizeOptionalBoolean(run.completed)
 
     if run.completedInTime == nil then
         run.completedInTime = GetFirstField(run, { "intime", "onTime" })
     end
+    run.completedInTime = NormalizeOptionalBoolean(run.completedInTime)
 
     if run.runScore == nil then
         run.runScore = GetFirstField(run, { "score", "mythicRating" })
@@ -2112,9 +2502,37 @@ NormalizeStoredMythicPlusRun = function(run)
     end
 
     run.source = nil
+    run.status = NormalizeRunStatusValue(run.status)
+    run.abandonReason = NormalizeAbandonReason(run.abandonReason)
+    run.thisWeek = NormalizeOptionalBoolean(run.thisWeek)
     run.members = NormalizeMythicPlusMembers(rawMembers)
     run.raw = nil
-    run.fingerprint = BuildRunFingerprint(run)
+
+    local derivedStatus = GetRunStatus(run)
+    if derivedStatus ~= nil then
+        run.status = derivedStatus
+        if derivedStatus == "completed" then
+            run.completed = true
+            if run.endedAt == nil then
+                run.endedAt = run.completedAt
+            end
+        elseif derivedStatus == "abandoned" then
+            if run.endedAt == nil then
+                run.endedAt = run.abandonedAt
+            end
+            if run.abandonedAt == nil then
+                run.abandonedAt = run.endedAt
+            end
+            run.abandonReason = run.abandonReason or "unknown"
+        end
+    end
+
+    if IsTemporaryRunFingerprint(run.fingerprint) and run.status == "active" then
+        -- Preserve temporary synthetic fingerprint while the attempt is active.
+        run.fingerprint = run.fingerprint
+    else
+        run.fingerprint = BuildRunFingerprint(run)
+    end
     return run
 end
 
@@ -2161,6 +2579,14 @@ local function NormalizeMythicPlusRun(rawRun, seasonID)
         "completedDate",
         "endTime",
     }))
+    local endedAt = NormalizeMythicPlusDate(GetFirstField(rawRun, {
+        "endedAt",
+        "abandonedAt",
+    }))
+    local abandonedAt = NormalizeMythicPlusDate(GetFirstField(rawRun, {
+        "abandonedAt",
+        "endedAt",
+    }))
     local startDate = NormalizeMythicPlusDate(GetFirstField(rawRun, { "startDate", "startedAt" }))
     local members = NormalizeMythicPlusMembers(GetFirstField(rawRun, {
         "members",
@@ -2180,14 +2606,40 @@ local function NormalizeMythicPlusRun(rawRun, seasonID)
         completedInTime     = GetFirstField(rawRun, { "completedInTime", "intime", "onTime" }),
         durationMs          = durationMs,
         runScore            = GetFirstField(rawRun, { "runScore", "score", "mythicRating" }),
+        status              = NormalizeRunStatusValue(GetFirstField(rawRun, { "status" })),
         startDate           = startDate,
         completedAt         = completedAt,
-        thisWeek            = GetFirstField(rawRun, { "thisWeek", "isThisWeek" }),
+        endedAt             = endedAt,
+        abandonedAt         = abandonedAt,
+        abandonReason       = NormalizeAbandonReason(GetFirstField(rawRun, { "abandonReason" })),
+        thisWeek            = NormalizeOptionalBoolean(GetFirstField(rawRun, { "thisWeek", "isThisWeek" })),
         members             = members,
     }
 
+    run.completed = NormalizeOptionalBoolean(run.completed)
+    run.completedInTime = NormalizeOptionalBoolean(run.completedInTime)
+
     if run.completed ~= true and (run.durationMs ~= nil or run.runScore ~= nil or run.completedAt ~= nil) then
         run.completed = true
+    end
+
+    local derivedStatus = GetRunStatus(run)
+    if derivedStatus ~= nil then
+        run.status = derivedStatus
+        if derivedStatus == "completed" then
+            run.completed = true
+            if run.endedAt == nil then
+                run.endedAt = run.completedAt
+            end
+        elseif derivedStatus == "abandoned" then
+            if run.endedAt == nil then
+                run.endedAt = run.abandonedAt
+            end
+            if run.abandonedAt == nil then
+                run.abandonedAt = run.endedAt
+            end
+            run.abandonReason = run.abandonReason or "history_incomplete"
+        end
     end
 
     run.fingerprint = BuildRunFingerprint(run)
@@ -2261,10 +2713,369 @@ local function CollectMythicPlusHistory()
     return normalizedRuns
 end
 
+local function IsChallengeModeAttemptActive()
+    if type(C_ChallengeMode) == "table" and type(C_ChallengeMode.IsChallengeModeActive) == "function" then
+        local ok, active = pcall(C_ChallengeMode.IsChallengeModeActive)
+        if ok then
+            return active == true
+        end
+    end
+
+    return GetCurrentActiveMythicPlusRunContext() ~= nil
+end
+
+local function FindActiveMythicPlusAttemptIndex(entry, options)
+    if type(entry) ~= "table" or type(entry.mythicPlusRuns) ~= "table" then
+        return nil
+    end
+    options = options or {}
+
+    local targetMapID = tonumber(options.mapChallengeModeID)
+    local targetLevel = tonumber(options.level)
+    local bestIndex = nil
+    local bestSortValue = nil
+
+    for index, run in ipairs(entry.mythicPlusRuns) do
+        if type(run) == "table" and GetRunStatus(run) == "active" then
+            local mapMatches = targetMapID == nil or tonumber(run.mapChallengeModeID) == targetMapID
+            local levelMatches = targetLevel == nil or tonumber(run.level) == targetLevel
+            if mapMatches and levelMatches then
+                local sortValue = GetRunSortValue(run)
+                if bestSortValue == nil or sortValue > bestSortValue then
+                    bestSortValue = sortValue
+                    bestIndex = index
+                end
+            end
+        end
+    end
+
+    return bestIndex
+end
+
+local function GetRecentCompletionEventAge(characterKey)
+    local state = GetMythicPlusDebugState(characterKey, false)
+    if type(state) ~= "table" then
+        return nil
+    end
+    local completionAt = tonumber(state.lastCompletionEventAt)
+    if completionAt == nil then
+        return nil
+    end
+    return math.abs(time() - completionAt)
+end
+
+local function ResolveAbandonReason(characterKey, fallbackReason)
+    if fallbackReason ~= nil and fallbackReason ~= "left_instance" and fallbackReason ~= "unknown" then
+        return NormalizeAbandonReason(fallbackReason) or "unknown"
+    end
+
+    local state = GetMythicPlusDebugState(characterKey, false)
+    local leaverStartedAt = type(state) == "table" and tonumber(state.lastLeaverTimerStartedAt) or nil
+    if leaverStartedAt ~= nil and math.abs(time() - leaverStartedAt) <= LEAVER_TIMER_REASON_WINDOW_SECONDS then
+        return "leaver_timer"
+    end
+
+    return NormalizeAbandonReason(fallbackReason) or "unknown"
+end
+
+local function UpsertLifecycleMythicPlusRun(entry, candidateRun, options)
+    if type(entry) ~= "table" or type(candidateRun) ~= "table" then
+        return nil, false
+    end
+    options = options or {}
+
+    local run = NormalizeStoredMythicPlusRun(candidateRun)
+    if run == nil then
+        return nil, false
+    end
+    if run.observedAt == nil or run.observedAt == 0 then
+        run.observedAt = time()
+    end
+
+    local existingIndex = nil
+    if options.matchActive then
+        existingIndex = FindActiveMythicPlusAttemptIndex(entry, {
+            mapChallengeModeID = run.mapChallengeModeID,
+            level = run.level,
+        })
+    end
+    if existingIndex == nil then
+        existingIndex = FindMergeableMythicPlusRunIndex(entry.mythicPlusRuns, run)
+    end
+
+    if existingIndex == nil then
+        entry.mythicPlusRuns[#entry.mythicPlusRuns + 1] = run
+        NormalizeAndDeduplicateRuns(entry)
+        return run, true
+    end
+
+    local existing = entry.mythicPlusRuns[existingIndex]
+    local merged = MergeStoredMythicPlusRun(existing, run)
+    local changed = DidMythicPlusRunChange(existing, merged)
+    entry.mythicPlusRuns[existingIndex] = merged
+    NormalizeAndDeduplicateRuns(entry)
+    return merged, changed
+end
+
+local function UpsertSyntheticActiveAttempt(reason, options)
+    options = options or {}
+    local key, name, realm, charInfo = GetCharacterIdentity()
+    local entry = EnsureCharacterEntry(key, name, realm, charInfo)
+    NormalizeAndDeduplicateRuns(entry)
+
+    local context = GetCurrentActiveMythicPlusRunContext({
+        mapChallengeModeID = options.mapChallengeModeID,
+        level = options.level,
+    })
+    if context == nil then
+        return nil, false
+    end
+
+    local members = NormalizeMythicPlusMembers(options.members)
+    local startDate = NormalizeLifecycleTimestamp(options.startDate) or GetChallengeModeStartTimestamp()
+    local seasonID = tonumber(options.seasonID) or GetCurrentMythicPlusSeasonID()
+    local mapName = options.mapName or GetChallengeModeMapName(context.mapChallengeModeID)
+
+    local attempt = {
+        fingerprint = BuildSyntheticAttemptFingerprint({
+            seasonID = seasonID,
+            mapChallengeModeID = context.mapChallengeModeID,
+            mapName = mapName,
+            level = context.level,
+            startDate = startDate,
+            observedAt = time(),
+        }),
+        observedAt = time(),
+        seasonID = seasonID,
+        mapChallengeModeID = context.mapChallengeModeID,
+        mapName = mapName,
+        level = context.level,
+        status = "active",
+        completed = false,
+        startDate = startDate,
+        members = members,
+    }
+
+    local merged, changed = UpsertLifecycleMythicPlusRun(entry, attempt, { matchActive = true })
+    if changed then
+        AppendMythicPlusDebugEvent(key, "attempt_active_upserted", {
+            summary = tostring(reason or "active") .. " " .. tostring(attempt.mapChallengeModeID or "?"),
+            reason = reason,
+            mapChallengeModeID = attempt.mapChallengeModeID,
+            level = attempt.level,
+            startDate = attempt.startDate,
+        })
+    end
+
+    return merged, changed
+end
+
+local function MarkAttemptCompleted(reason, options)
+    options = options or {}
+    local key, name, realm, charInfo = GetCharacterIdentity()
+    local entry = EnsureCharacterEntry(key, name, realm, charInfo)
+    NormalizeAndDeduplicateRuns(entry)
+
+    local context = GetCurrentActiveMythicPlusRunContext({
+        mapChallengeModeID = options.mapChallengeModeID,
+        level = options.level,
+    }) or {
+        mapChallengeModeID = tonumber(options.mapChallengeModeID),
+        level = tonumber(options.level),
+    }
+
+    local activeIndex = FindActiveMythicPlusAttemptIndex(entry, context)
+    local activeRun = activeIndex ~= nil and entry.mythicPlusRuns[activeIndex] or nil
+    if activeRun == nil then
+        local createdRun = UpsertSyntheticActiveAttempt("completion_backfill", options)
+        activeIndex = FindActiveMythicPlusAttemptIndex(entry, context)
+        activeRun = activeIndex ~= nil and entry.mythicPlusRuns[activeIndex] or createdRun
+    end
+
+    local completedAt = NormalizeLifecycleTimestamp(options.completedAt) or time()
+    local completionMembers = NormalizeMythicPlusMembers(options.members)
+    local completionRun = {
+        fingerprint = type(activeRun) == "table" and activeRun.fingerprint or nil,
+        observedAt = time(),
+        seasonID = tonumber(options.seasonID) or (type(activeRun) == "table" and activeRun.seasonID) or GetCurrentMythicPlusSeasonID(),
+        mapChallengeModeID = tonumber(options.mapChallengeModeID) or (type(activeRun) == "table" and activeRun.mapChallengeModeID),
+        mapName = options.mapName or (type(activeRun) == "table" and activeRun.mapName) or GetChallengeModeMapName(tonumber(options.mapChallengeModeID)),
+        level = tonumber(options.level) or (type(activeRun) == "table" and activeRun.level),
+        status = "completed",
+        completed = true,
+        completedInTime = options.completedInTime,
+        durationMs = tonumber(options.durationMs),
+        runScore = tonumber(options.runScore),
+        startDate = NormalizeLifecycleTimestamp(options.startDate) or (type(activeRun) == "table" and activeRun.startDate),
+        completedAt = completedAt,
+        endedAt = completedAt,
+        members = completionMembers,
+        thisWeek = NormalizeOptionalBoolean(options.thisWeek),
+    }
+
+    local merged, changed = UpsertLifecycleMythicPlusRun(entry, completionRun, { matchActive = true })
+    if changed then
+        AppendMythicPlusDebugEvent(key, "attempt_completed_marked", {
+            summary = tostring(reason or "completed") .. " " .. tostring(completionRun.mapChallengeModeID or "?"),
+            reason = reason,
+            mapChallengeModeID = completionRun.mapChallengeModeID,
+            level = completionRun.level,
+            completedAt = completionRun.completedAt,
+        })
+    end
+
+    return merged, changed
+end
+
+local function FinalizeActiveAttemptAsAbandoned(reason, options)
+    options = options or {}
+    local key, name, realm, charInfo = GetCharacterIdentity()
+    local entry = EnsureCharacterEntry(key, name, realm, charInfo)
+    NormalizeAndDeduplicateRuns(entry)
+
+    local activeIndex = FindActiveMythicPlusAttemptIndex(entry, {
+        mapChallengeModeID = options.mapChallengeModeID,
+        level = options.level,
+    })
+    if activeIndex == nil then
+        return false
+    end
+
+    local completionAge = GetRecentCompletionEventAge(key)
+    if completionAge ~= nil and completionAge <= RECENT_COMPLETION_EVENT_GRACE and options.ignoreRecentCompletion ~= true then
+        return false
+    end
+
+    local activeRun = entry.mythicPlusRuns[activeIndex]
+    local nowTs = NormalizeLifecycleTimestamp(options.at) or time()
+    local activeStartedAt = NormalizeMythicPlusDate(activeRun.startDate)
+        or NormalizeMythicPlusDate(activeRun.observedAt)
+        or nowTs
+
+    local abandonReason = NormalizeAbandonReason(options.abandonReason)
+    if abandonReason == nil then
+        if options.reason == "stale_recovery" or (nowTs - activeStartedAt) >= STALE_ATTEMPT_RECOVERY_SECONDS then
+            abandonReason = "stale_recovery"
+        else
+            abandonReason = ResolveAbandonReason(key, "left_instance")
+        end
+    else
+        abandonReason = ResolveAbandonReason(key, abandonReason)
+    end
+
+    local abandonedRun = {
+        fingerprint = activeRun.fingerprint,
+        observedAt = time(),
+        seasonID = activeRun.seasonID,
+        mapChallengeModeID = activeRun.mapChallengeModeID,
+        mapName = activeRun.mapName,
+        level = activeRun.level,
+        status = "abandoned",
+        completed = false,
+        completedInTime = activeRun.completedInTime,
+        durationMs = activeRun.durationMs,
+        runScore = activeRun.runScore,
+        startDate = activeRun.startDate,
+        endedAt = nowTs,
+        abandonedAt = nowTs,
+        abandonReason = abandonReason,
+        members = activeRun.members,
+        thisWeek = activeRun.thisWeek,
+    }
+
+    local _, changed = UpsertLifecycleMythicPlusRun(entry, abandonedRun, { matchActive = true })
+    if changed then
+        AppendMythicPlusDebugEvent(key, "attempt_abandoned_marked", {
+            summary = tostring(reason or "abandoned") .. " (" .. tostring(abandonReason) .. ")",
+            reason = reason,
+            abandonReason = abandonReason,
+            mapChallengeModeID = abandonedRun.mapChallengeModeID,
+            level = abandonedRun.level,
+        })
+    end
+
+    return changed
+end
+
+local ScheduleActiveAttemptReconcile
+
+local function ReconcileActiveAttemptLifecycle(reason, options)
+    options = options or {}
+    local key, name, realm, charInfo = GetCharacterIdentity()
+    local entry = EnsureCharacterEntry(key, name, realm, charInfo)
+    NormalizeAndDeduplicateRuns(entry)
+
+    local activeIndex = FindActiveMythicPlusAttemptIndex(entry)
+    if activeIndex == nil then
+        return false
+    end
+
+    if IsChallengeModeAttemptActive() then
+        return false
+    end
+
+    local completionAge = GetRecentCompletionEventAge(key)
+    if completionAge ~= nil and completionAge <= RECENT_COMPLETION_EVENT_GRACE and options.ignoreRecentCompletion ~= true then
+        return false
+    end
+
+    local activeRun = entry.mythicPlusRuns[activeIndex]
+    local nowTs = time()
+    local activeReferenceAt = NormalizeMythicPlusDate(activeRun.observedAt)
+        or NormalizeMythicPlusDate(activeRun.startDate)
+        or nowTs
+    if options.force ~= true and math.abs(nowTs - activeReferenceAt) < ACTIVE_ATTEMPT_RECONCILE_GRACE then
+        local remaining = ACTIVE_ATTEMPT_RECONCILE_GRACE - math.abs(nowTs - activeReferenceAt)
+        if remaining < 1 then
+            remaining = 1
+        end
+        ScheduleActiveAttemptReconcile(reason or "reconcile_retry", remaining, {
+            force = true,
+            ignoreRecentCompletion = options.ignoreRecentCompletion,
+        })
+        return false
+    end
+
+    local reasonValue = options.reason
+    if reasonValue == nil then
+        local startedAt = NormalizeMythicPlusDate(activeRun.startDate) or activeReferenceAt
+        if (nowTs - startedAt) >= STALE_ATTEMPT_RECOVERY_SECONDS then
+            reasonValue = "stale_recovery"
+        else
+            reasonValue = "left_instance"
+        end
+    end
+
+    return FinalizeActiveAttemptAsAbandoned(reason or "reconcile", {
+        abandonReason = reasonValue,
+        at = nowTs,
+        ignoreRecentCompletion = options.ignoreRecentCompletion,
+    })
+end
+
+ScheduleActiveAttemptReconcile = function(reason, delaySeconds, options)
+    options = options or {}
+    delaySeconds = delaySeconds or ACTIVE_ATTEMPT_RECONCILE_GRACE
+
+    if pendingActiveAttemptReconcile and not options.force then
+        return
+    end
+
+    pendingActiveAttemptReconcile = true
+    C_Timer.After(delaySeconds, function()
+        pendingActiveAttemptReconcile = false
+        ReconcileActiveAttemptLifecycle(reason, options)
+    end)
+end
+
 local function SyncMythicPlusHistory(reason, options)
     options = options or {}
     if not IsLoggedIn() then
         return false
+    end
+
+    if type(C_MythicPlus) == "table" and type(C_MythicPlus.RequestMapInfo) == "function" then
+        pcall(C_MythicPlus.RequestMapInfo)
     end
 
     local key, name, realm, charInfo = GetCharacterIdentity()
@@ -2275,40 +3086,21 @@ local function SyncMythicPlusHistory(reason, options)
     local added = 0
     local updated = false
 
-    local runIndicesByFingerprint = {}
-    for index, existingRun in ipairs(entry.mythicPlusRuns) do
-        if existingRun.fingerprint then
-            runIndicesByFingerprint[existingRun.fingerprint] = index
-        end
-    end
-
     for _, run in ipairs(runs) do
-        if run.fingerprint then
-            local existingIndex = runIndicesByFingerprint[run.fingerprint]
+        local normalizedRun = NormalizeStoredMythicPlusRun(run)
+        if normalizedRun ~= nil then
+            if normalizedRun.observedAt == nil or normalizedRun.observedAt == 0 then
+                normalizedRun.observedAt = time()
+            end
+
+            local existingIndex = FindMergeableMythicPlusRunIndex(entry.mythicPlusRuns, normalizedRun)
             if existingIndex == nil then
-                -- First time seeing this run — stamp observedAt now
-                if run.observedAt == nil or run.observedAt == 0 then
-                    run.observedAt = time()
-                end
-                entry.mythicPlusRunKeys[run.fingerprint] = true
-                entry.mythicPlusRuns[#entry.mythicPlusRuns + 1] = run
-                runIndicesByFingerprint[run.fingerprint] = #entry.mythicPlusRuns
+                entry.mythicPlusRuns[#entry.mythicPlusRuns + 1] = normalizedRun
                 added = added + 1
             else
                 local existing = entry.mythicPlusRuns[existingIndex]
-                local merged = MergeStoredMythicPlusRun(existing, run)
-                -- Only count as updated if meaningful fields changed (not just observedAt)
-                if not AreMythicPlusMemberListsEqual(existing.members, merged.members)
-                    or existing.completed ~= merged.completed
-                    or existing.completedInTime ~= merged.completedInTime
-                    or existing.durationMs ~= merged.durationMs
-                    or existing.runScore ~= merged.runScore
-                    or existing.mapName ~= merged.mapName
-                    or existing.level ~= merged.level
-                    or existing.startDate ~= merged.startDate
-                    or existing.completedAt ~= merged.completedAt
-                    or existing.seasonID ~= merged.seasonID
-                    or existing.thisWeek ~= merged.thisWeek then
+                local merged = MergeStoredMythicPlusRun(existing, normalizedRun)
+                if DidMythicPlusRunChange(existing, merged) then
                     entry.mythicPlusRuns[existingIndex] = merged
                     updated = true
                 end
@@ -2317,9 +3109,7 @@ local function SyncMythicPlusHistory(reason, options)
     end
 
     if added > 0 or updated then
-        table.sort(entry.mythicPlusRuns, function(a, b)
-            return GetRunSortValue(a) > GetRunSortValue(b)
-        end)
+        NormalizeAndDeduplicateRuns(entry)
     end
 
     lastMPlusSyncAt = GetTime()
@@ -3115,6 +3905,8 @@ eventFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
 eventFrame:RegisterEvent("CHALLENGE_MODE_START")
 eventFrame:RegisterEvent("CHALLENGE_MODE_COMPLETED")
 eventFrame:RegisterEvent("CHALLENGE_MODE_RESET")
+eventFrame:RegisterEvent("CHALLENGE_MODE_LEAVER_TIMER_STARTED")
+eventFrame:RegisterEvent("CHALLENGE_MODE_LEAVER_TIMER_ENDED")
 eventFrame:RegisterEvent("TIME_PLAYED_MSG")
 eventFrame:SetScript("OnEvent", function(self, event, ...)
     if event == "ADDON_LOADED" and ... == addonName then
@@ -3147,6 +3939,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
     elseif event == "PLAYER_ENTERING_WORLD" then
         RefreshMinimapButton()
         ReconcileActiveMythicPlusMemberCache("player_entering_world")
+        ScheduleActiveAttemptReconcile("player_entering_world", ACTIVE_ATTEMPT_RECONCILE_GRACE)
         if not initialized then
             initialized = true
             print("|cff00ccff[WoW Dashboard]|r Loaded — type |cffffffff/wowdashboard|r to open.")
@@ -3169,6 +3962,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
 
     elseif event == "ZONE_CHANGED_NEW_AREA" then
         ReconcileActiveMythicPlusMemberCache("zone_changed_new_area")
+        ScheduleActiveAttemptReconcile("zone_changed_new_area", ACTIVE_ATTEMPT_RECONCILE_GRACE)
         if GetTime() - lastSnapshotAt > 60 then
             C_Timer.After(2, CollectSnapshot)
         end
@@ -3184,10 +3978,16 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         local mapChallengeModeID = ...
         local characterKey = GetCharKey()
         local startMembers = CaptureLiveGroupMembers()
+        local startTs = GetChallengeModeStartTimestamp()
         RefreshActiveMythicPlusMemberCache("challenge_mode_start", {
             mapChallengeModeID = mapChallengeModeID,
             clearWhenInactive = false,
             members = startMembers,
+        })
+        UpsertSyntheticActiveAttempt("challenge_mode_start", {
+            mapChallengeModeID = tonumber(mapChallengeModeID),
+            members = startMembers,
+            startDate = startTs,
         })
         UpdateMythicPlusDebugState(characterKey, {
             lastChallengeStartAt = time(),
@@ -3201,14 +4001,26 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
 
     elseif event == "CHALLENGE_MODE_COMPLETED" then
         local characterKey = GetCharKey()
+        local completionApiMembers, completionInfo = CaptureCompletionInfoMembers()
         local completionMembers, completionLiveInfo = CaptureLiveGroupMembers()
+        local mergedCompletionMembers = MergeMythicPlusMemberLists(completionApiMembers, completionMembers) or {}
+        local completionAt = time()
         RefreshActiveMythicPlusMemberCache("challenge_mode_completed", {
             clearWhenInactive = false,
-            members = completionMembers,
+            members = mergedCompletionMembers,
             liveInfo = completionLiveInfo,
         })
+        MarkAttemptCompleted("challenge_mode_completed", {
+            mapChallengeModeID = completionInfo.mapChallengeModeID,
+            level = completionInfo.level,
+            durationMs = completionInfo.durationMs,
+            completedInTime = completionInfo.completedInTime,
+            completedAt = completionAt,
+            members = mergedCompletionMembers,
+            startDate = GetChallengeModeStartTimestamp(),
+        })
         UpdateMythicPlusDebugState(characterKey, {
-            lastCompletionEventAt = time(),
+            lastCompletionEventAt = completionAt,
             lastCompletionEventGroupType = completionLiveInfo.groupType,
             lastCompletionEventGroupSize = completionLiveInfo.groupSize,
         })
@@ -3217,7 +4029,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
                 .. " (" .. tostring(completionLiveInfo.groupSize or 0) .. ")",
             groupType = completionLiveInfo.groupType,
             groupSize = completionLiveInfo.groupSize,
-            memberCount = #completionMembers,
+            memberCount = #mergedCompletionMembers,
         })
         CaptureCompletedRunMembers()
         for _, retryDelay in ipairs(PENDING_RUN_MEMBER_RETRY_DELAYS) do
@@ -3225,7 +4037,29 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         end
 
     elseif event == "CHALLENGE_MODE_RESET" then
+        FinalizeActiveAttemptAsAbandoned("challenge_mode_reset", {
+            abandonReason = "challenge_mode_reset",
+        })
         ClearActiveMythicPlusMemberCache(GetCharKey(), "challenge_mode_reset")
+
+    elseif event == "CHALLENGE_MODE_LEAVER_TIMER_STARTED" then
+        local characterKey = GetCharKey()
+        UpdateMythicPlusDebugState(characterKey, {
+            lastLeaverTimerStartedAt = time(),
+            lastLeaverTimerEndedAt = nil,
+        })
+        AppendMythicPlusDebugEvent(characterKey, "leaver_timer_started", {
+            summary = "leaver timer started",
+        })
+
+    elseif event == "CHALLENGE_MODE_LEAVER_TIMER_ENDED" then
+        local characterKey = GetCharKey()
+        UpdateMythicPlusDebugState(characterKey, {
+            lastLeaverTimerEndedAt = time(),
+        })
+        AppendMythicPlusDebugEvent(characterKey, "leaver_timer_ended", {
+            summary = "leaver timer ended",
+        })
 
     elseif event == "TIME_PLAYED_MSG" then
         local totalSeconds, thisLevelSeconds = ...
@@ -3240,3 +4074,4 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         end
     end
 end)
+
