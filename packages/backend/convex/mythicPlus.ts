@@ -65,17 +65,33 @@ function toFingerprintToken(value: boolean | number | string | null | undefined)
   return value;
 }
 
-function getRunMapFingerprintToken(run: MythicPlusRunLike) {
-  if (run.mapChallengeModeID !== undefined) {
-    return toFingerprintToken(run.mapChallengeModeID);
-  }
+function getRunMapFingerprintTokens(run: MythicPlusRunLike): string[] {
+  const tokens: string[] = [];
+  const seen = new Set<string>();
+  const pushToken = (value: string | undefined) => {
+    if (!value || value === "" || seen.has(value)) return;
+    seen.add(value);
+    tokens.push(value);
+  };
 
+  if (run.mapChallengeModeID !== undefined) {
+    pushToken(toFingerprintToken(run.mapChallengeModeID));
+  }
   if (typeof run.mapName === "string") {
     const normalizedName = run.mapName.trim().toLowerCase();
-    if (normalizedName !== "") return normalizedName;
+    if (normalizedName !== "") pushToken(normalizedName);
   }
 
-  return "";
+  return tokens;
+}
+
+function getRunMapFingerprintToken(run: MythicPlusRunLike) {
+  return getRunMapFingerprintTokens(run)[0] ?? "";
+}
+
+function getRunSeasonTokens(run: MythicPlusRunLike): string[] {
+  const seasonToken = run.seasonID !== undefined ? toFingerprintToken(run.seasonID) : "";
+  return seasonToken === "" ? [""] : [seasonToken, ""];
 }
 
 function getRunDurationSeconds(run: MythicPlusRunLike): number | null {
@@ -133,14 +149,22 @@ function getRunIdentityCandidates(run: MythicPlusRunLike): number[] {
   return candidates;
 }
 
-function buildRunFingerprintWithIdentity(run: MythicPlusRunLike, identityTimestamp: number) {
-  const mapToken = getRunMapFingerprintToken(run);
+function buildRunFingerprintWithIdentity(
+  run: MythicPlusRunLike,
+  identityTimestamp: number,
+  options?: {
+    seasonToken?: string;
+    mapToken?: string;
+  },
+) {
+  const mapToken = options?.mapToken ?? getRunMapFingerprintToken(run);
   if (mapToken === "" || run.level === undefined) {
     return null;
   }
 
+  const seasonToken = options?.seasonToken ?? toFingerprintToken(run.seasonID);
   return [
-    toFingerprintToken(run.seasonID),
+    seasonToken,
     mapToken,
     toFingerprintToken(run.level),
     toFingerprintToken(identityTimestamp),
@@ -456,20 +480,40 @@ export function getMythicPlusRunDedupKeys(run: MythicPlusRunLike): string[] {
     keys.push(key);
   };
 
-  for (const identityTimestamp of getRunIdentityCandidates(run)) {
+  const identityCandidates = getRunIdentityCandidates(run);
+  const mapTokens = getRunMapFingerprintTokens(run);
+  const seasonTokens = getRunSeasonTokens(run);
+
+  for (const identityTimestamp of identityCandidates) {
     pushKey(buildRunFingerprintWithIdentity(run, identityTimestamp));
+  }
+
+  for (const identityTimestamp of identityCandidates) {
+    for (const mapToken of mapTokens) {
+      for (const seasonToken of seasonTokens) {
+        pushKey(buildRunFingerprintWithIdentity(run, identityTimestamp, { seasonToken, mapToken }));
+      }
+    }
   }
   pushKey(buildCanonicalMythicPlusRunFingerprint(run));
 
-  const mapToken = getRunMapFingerprintToken(run);
-  if (mapToken !== "" && run.level !== undefined && (run.durationMs !== undefined || run.runScore !== undefined)) {
-    pushKey([
-      toFingerprintToken(run.seasonID),
-      mapToken,
-      toFingerprintToken(run.level),
-      toFingerprintToken(run.durationMs),
-      toFingerprintToken(run.runScore),
-    ].join("|"));
+  if (
+    keys.length === 0 &&
+    mapTokens.length > 0 &&
+    run.level !== undefined &&
+    (run.durationMs !== undefined || run.runScore !== undefined)
+  ) {
+    for (const mapToken of mapTokens) {
+      for (const seasonToken of seasonTokens) {
+        pushKey([
+          seasonToken,
+          mapToken,
+          toFingerprintToken(run.level),
+          toFingerprintToken(run.durationMs),
+          toFingerprintToken(run.runScore),
+        ].join("|"));
+      }
+    }
   }
 
   pushKey(run.fingerprint);

@@ -1122,15 +1122,15 @@ function MythicPlusSection({
                   />
                   <StatGrid
                     compact
-                    label="Timed Runs"
-                    value={currentSeason.timedRuns.toLocaleString()}
+                    label="Total Attempts"
+                    value={(currentSeason.totalAttempts ?? currentSeason.totalRuns).toLocaleString()}
                   />
                 </div>
                 <div className="grid gap-1.5 sm:grid-cols-2 xl:grid-cols-3">
                   <StatGrid
                     compact
-                    label="Total Attempts"
-                    value={(currentSeason.totalAttempts ?? currentSeason.totalRuns).toLocaleString()}
+                    label="Timed Runs"
+                    value={currentSeason.timedRuns.toLocaleString()}
                   />
                   <StatGrid
                     compact
