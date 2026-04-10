@@ -1834,7 +1834,7 @@ NormalizeMythicPlusDate = function(value)
     local minute = tonumber(value.minute) or tonumber(value.min) or 0
     local second = tonumber(value.second) or tonumber(value.sec) or 0
 
-    return time({
+    local localEpoch = time({
         year = year,
         month = month + 1,
         day = day + 1,
@@ -1842,6 +1842,16 @@ NormalizeMythicPlusDate = function(value)
         min = minute,
         sec = second,
     })
+    if localEpoch == nil then
+        return nil
+    end
+
+    local utcAsLocalEpoch = time(date("!*t", localEpoch))
+    if utcAsLocalEpoch == nil then
+        return localEpoch
+    end
+
+    return localEpoch + math.floor(difftime(localEpoch, utcAsLocalEpoch))
 end
 
 GetRunSortValue = function(run)

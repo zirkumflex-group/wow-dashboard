@@ -755,7 +755,7 @@ function toOptionalMythicPlusTimestamp(value: unknown): number | undefined {
   const hour = toOptionalNumber(value.hour) ?? 0;
   const minute = toOptionalNumber(value.minute) ?? toOptionalNumber(value.min) ?? 0;
   const second = toOptionalNumber(value.second) ?? toOptionalNumber(value.sec) ?? 0;
-  const timestampMs = new Date(fullYear, month, day + 1, hour, minute, second).getTime();
+  const timestampMs = Date.UTC(fullYear, month, day + 1, hour, minute, second);
 
   return Number.isFinite(timestampMs) ? Math.floor(timestampMs / 1000) : undefined;
 }

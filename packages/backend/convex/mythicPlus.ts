@@ -69,8 +69,31 @@ function getRunIdentityTimestamp(run: MythicPlusRunLike) {
   return run.startDate ?? run.completedAt ?? null;
 }
 
+function getLikelyPlayedAtTimestamp(run: MythicPlusRunLike) {
+  const primaryTimestamp = run.completedAt ?? run.startDate;
+  if (primaryTimestamp === undefined) {
+    return run.observedAt ?? 0;
+  }
+
+  const observedAt = run.observedAt;
+  if (observedAt !== undefined) {
+    const driftSeconds = observedAt - primaryTimestamp;
+    const roundedHourDriftSeconds = Math.round(driftSeconds / 3600) * 3600;
+    const looksLikeLegacyUtcDrift =
+      roundedHourDriftSeconds >= 3600 &&
+      roundedHourDriftSeconds <= 3 * 3600 &&
+      Math.abs(driftSeconds - roundedHourDriftSeconds) <= 10 * 60;
+
+    if (looksLikeLegacyUtcDrift) {
+      return primaryTimestamp + roundedHourDriftSeconds;
+    }
+  }
+
+  return primaryTimestamp;
+}
+
 export function getMythicPlusRunSortValue(run: MythicPlusRunLike) {
-  return run.completedAt ?? run.startDate ?? run.observedAt ?? 0;
+  return getLikelyPlayedAtTimestamp(run);
 }
 
 function getNormalizedMemberName(member: MythicPlusRunMemberLike) {
