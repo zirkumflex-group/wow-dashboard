@@ -155,7 +155,7 @@ function MetricTile({
   helper?: string;
 }) {
   return (
-    <div className="rounded-md border border-border/60 bg-muted/20 p-2">
+    <div className="rounded-md border border-zinc-800/80 bg-zinc-900/60 p-2">
       <p className="text-[11px] text-muted-foreground">{label}</p>
       <p className="mt-0.5 text-sm font-semibold leading-none">{value}</p>
       {helper && <p className="mt-1 truncate text-[11px] text-muted-foreground">{helper}</p>}
@@ -334,7 +334,10 @@ function CharactersTab() {
             const scoreColor = getRaiderIoScoreColor(entry.mythicPlusScore) ?? "#f8fafc";
 
             return (
-              <Card key={entry.characterId} className="border-border/70">
+              <Card
+                key={entry.characterId}
+                className="border-zinc-800/90 bg-gradient-to-b from-zinc-900/80 to-zinc-950/90 shadow-lg"
+              >
                 <CardContent className="space-y-4 p-4">
                   <div className="flex items-start justify-between gap-3">
                     <div className="flex items-start gap-3">
@@ -438,23 +441,23 @@ function PlayersTab() {
         ? a.totalPlaytimeSeconds
         : sort === "gold"
           ? a.totalGold
-          : a.totalMythicPlusScore;
+          : a.highestMythicPlusScore;
     const valueB =
       sort === "playtime"
         ? b.totalPlaytimeSeconds
         : sort === "gold"
           ? b.totalGold
-          : b.totalMythicPlusScore;
+          : b.highestMythicPlusScore;
     const diff = valueA - valueB;
     if (diff !== 0) {
       return dir === "desc" ? -diff : diff;
     }
 
-    return b.totalMythicPlusScore - a.totalMythicPlusScore;
+    return b.highestMythicPlusScore - a.highestMythicPlusScore;
   });
 
   return (
-    <Card>
+    <Card className="border-zinc-800/90 bg-gradient-to-b from-zinc-900/80 to-zinc-950/90 shadow-lg">
       <CardContent className="p-0">
         <Table>
           <TableHeader>
@@ -465,7 +468,7 @@ function PlayersTab() {
                 className="cursor-pointer select-none text-right"
                 onClick={() => handleSort("mplus")}
               >
-                Total M+ Score
+                Highest M+ Score
                 <SortIcon column="mplus" sort={sort} direction={dir} />
               </TableHead>
               <TableHead className="hidden text-right sm:table-cell">Avg iLvl</TableHead>
@@ -498,6 +501,7 @@ function PlayersTab() {
                       mapName: entry.bestKeystoneMapName ?? undefined,
                     },
               );
+              const highestScoreColor = getRaiderIoScoreColor(entry.highestMythicPlusScore) ?? "#f8fafc";
 
               return (
                 <TableRow key={entry.playerId}>
@@ -516,8 +520,18 @@ function PlayersTab() {
                       {entry.characterCount} character{entry.characterCount !== 1 ? "s" : ""}
                     </p>
                   </TableCell>
-                  <TableCell className="text-right font-semibold tabular-nums">
-                    {Math.round(entry.totalMythicPlusScore).toLocaleString()}
+                  <TableCell className="text-right">
+                    <div className="leading-tight">
+                      <p
+                        className="font-semibold tabular-nums"
+                        style={{ color: highestScoreColor }}
+                      >
+                        {Math.round(entry.highestMythicPlusScore).toLocaleString()}
+                      </p>
+                      <p className="text-[11px] text-muted-foreground">
+                        {entry.highestMythicPlusCharacterName ?? "No character"}
+                      </p>
+                    </div>
                   </TableCell>
                   <TableCell className="hidden text-right tabular-nums sm:table-cell">
                     {entry.averageItemLevel.toFixed(1)}
@@ -555,10 +569,10 @@ function Scoreboard() {
       : "Player aggregates with click-through character rosters.";
 
   return (
-    <div className="w-full px-4 py-6 sm:px-6 lg:px-8">
+    <div className="w-full bg-[radial-gradient(circle_at_top,_rgba(245,158,11,0.12),_transparent_45%)] px-4 py-6 sm:px-6 lg:px-8">
       <div className="mb-6">
         <h1 className="flex items-center gap-2 text-3xl font-bold">
-          <Trophy className="h-7 w-7 text-yellow-400" />
+          <Trophy className="h-7 w-7 text-amber-300" />
           Scoreboard
         </h1>
         <p className="mt-1 text-sm text-muted-foreground">{subtitle}</p>

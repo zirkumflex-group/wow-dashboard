@@ -90,7 +90,7 @@ function StatCard({
   helper?: string;
 }) {
   return (
-    <Card className="border-border/60">
+    <Card className="border-zinc-800/80 bg-zinc-900/65">
       <CardContent className="p-4">
         <p className="text-[11px] uppercase tracking-wider text-muted-foreground">{label}</p>
         <p className="mt-1 text-xl font-semibold tabular-nums">{value}</p>
@@ -139,7 +139,7 @@ function RouteComponent() {
   const bestKey = getKeystoneDisplay(data.summary.bestKeystone);
 
   return (
-    <div className="w-full space-y-4 px-4 py-6 sm:px-6 lg:px-8">
+    <div className="w-full space-y-4 bg-[radial-gradient(circle_at_top,_rgba(251,191,36,0.12),_transparent_45%)] px-4 py-6 sm:px-6 lg:px-8">
       <div className="space-y-3">
         <Link
           to="/scoreboard"
@@ -159,8 +159,13 @@ function RouteComponent() {
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
         <StatCard label="Tracked" value={data.summary.trackedCharacters.toLocaleString()} />
         <StatCard
-          label="Total M+"
-          value={Math.round(data.summary.totalMythicPlusScore).toLocaleString()}
+          label="Highest M+"
+          value={
+            data.summary.highestMythicPlusScore === null
+              ? "-"
+              : Math.round(data.summary.highestMythicPlusScore).toLocaleString()
+          }
+          helper={data.summary.highestMythicPlusCharacterName ?? undefined}
         />
         <StatCard
           label="Avg iLvl"
@@ -177,7 +182,7 @@ function RouteComponent() {
         />
       </div>
 
-      <Card>
+      <Card className="border-zinc-800/90 bg-gradient-to-b from-zinc-900/80 to-zinc-950/90 shadow-lg">
         <CardHeader className="pb-3">
           <CardTitle className="text-base">
             Characters ({data.characters.length})

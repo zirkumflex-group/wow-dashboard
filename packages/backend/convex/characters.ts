@@ -770,7 +770,8 @@ export const getPlayerScoreboard = query({
         battleTag: string;
         totalPlaytimeSeconds: number;
         totalGold: number;
-        totalMythicPlusScore: number;
+        highestMythicPlusScore: number;
+        highestMythicPlusCharacterName: string | null;
         totalItemLevel: number;
         characterCount: number;
         bestKeystoneLevel: number | null;
@@ -804,7 +805,10 @@ export const getPlayerScoreboard = query({
       if (existing) {
         existing.totalPlaytimeSeconds += snapshot.playtimeSeconds;
         existing.totalGold += snapshot.gold;
-        existing.totalMythicPlusScore += snapshot.mythicPlusScore;
+        if (snapshot.mythicPlusScore > existing.highestMythicPlusScore) {
+          existing.highestMythicPlusScore = snapshot.mythicPlusScore;
+          existing.highestMythicPlusCharacterName = char.name;
+        }
         existing.totalItemLevel += snapshot.itemLevel;
         existing.characterCount += 1;
         if (
@@ -824,7 +828,8 @@ export const getPlayerScoreboard = query({
           battleTag: playerBattleTagMap.get(playerId) ?? "",
           totalPlaytimeSeconds: snapshot.playtimeSeconds,
           totalGold: snapshot.gold,
-          totalMythicPlusScore: snapshot.mythicPlusScore,
+          highestMythicPlusScore: snapshot.mythicPlusScore,
+          highestMythicPlusCharacterName: char.name,
           totalItemLevel: snapshot.itemLevel,
           characterCount: 1,
           bestKeystoneLevel: snapshot.ownedKeystone?.level ?? null,
@@ -841,7 +846,8 @@ export const getPlayerScoreboard = query({
         battleTag: player.battleTag,
         totalPlaytimeSeconds: player.totalPlaytimeSeconds,
         totalGold: player.totalGold,
-        totalMythicPlusScore: player.totalMythicPlusScore,
+        highestMythicPlusScore: player.highestMythicPlusScore,
+        highestMythicPlusCharacterName: player.highestMythicPlusCharacterName,
         averageItemLevel: player.characterCount > 0 ? player.totalItemLevel / player.characterCount : 0,
         characterCount: player.characterCount,
         bestKeystoneLevel: player.bestKeystoneLevel,
@@ -851,7 +857,7 @@ export const getPlayerScoreboard = query({
       }))
       .sort(
         (a, b) =>
-          b.totalMythicPlusScore - a.totalMythicPlusScore ||
+          b.highestMythicPlusScore - a.highestMythicPlusScore ||
           b.totalPlaytimeSeconds - a.totalPlaytimeSeconds ||
           b.totalGold - a.totalGold,
       );
@@ -889,7 +895,8 @@ export const getPlayerCharacters = query({
 
     let totalPlaytimeSeconds = 0;
     let totalGold = 0;
-    let totalMythicPlusScore = 0;
+    let highestMythicPlusScore: number | null = null;
+    let highestMythicPlusCharacterName: string | null = null;
     let totalItemLevel = 0;
     let bestKeystone:
       | {
@@ -904,7 +911,10 @@ export const getPlayerCharacters = query({
       const snapshot = character.snapshot;
       totalPlaytimeSeconds += snapshot.playtimeSeconds;
       totalGold += snapshot.gold;
-      totalMythicPlusScore += snapshot.mythicPlusScore;
+      if (highestMythicPlusScore === null || snapshot.mythicPlusScore > highestMythicPlusScore) {
+        highestMythicPlusScore = snapshot.mythicPlusScore;
+        highestMythicPlusCharacterName = character.name;
+      }
       totalItemLevel += snapshot.itemLevel;
 
       if (snapshot.ownedKeystone) {
@@ -949,7 +959,8 @@ export const getPlayerCharacters = query({
         scannedCharacters: snappedCharacters.length,
         totalPlaytimeSeconds,
         totalGold,
-        totalMythicPlusScore,
+        highestMythicPlusScore,
+        highestMythicPlusCharacterName,
         averageItemLevel: snappedCharacters.length > 0 ? totalItemLevel / snappedCharacters.length : null,
         bestKeystone,
         latestSnapshotAt,
