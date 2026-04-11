@@ -21,6 +21,23 @@ import { rateLimiter } from "./rateLimiter";
 type MythicPlusRunDoc = Doc<"mythicPlusRuns"> & { canonicalKey?: string };
 type SnapshotDoc = Doc<"snapshots">;
 
+function toSnapshotSummary(snapshot: SnapshotDoc | null) {
+  if (!snapshot) return null;
+
+  return {
+    takenAt: snapshot.takenAt,
+    level: snapshot.level,
+    spec: snapshot.spec,
+    role: snapshot.role,
+    itemLevel: snapshot.itemLevel,
+    gold: snapshot.gold,
+    playtimeSeconds: snapshot.playtimeSeconds,
+    playtimeThisLevelSeconds: snapshot.playtimeThisLevelSeconds,
+    mythicPlusScore: snapshot.mythicPlusScore,
+    ownedKeystone: snapshot.ownedKeystone,
+  };
+}
+
 async function getPlayerForAuthUser(ctx: QueryCtx, authUserId: string) {
   return await ctx.db
     .query("players")
@@ -919,7 +936,7 @@ export const getPlayerCharacters = query({
     const withSnapshots = (await getCharactersWithLatestSnapshots(ctx, characters)).map(
       ({ character, snapshot }) => ({
         ...character,
-        snapshot,
+        snapshot: toSnapshotSummary(snapshot),
       }),
     );
 
@@ -1021,7 +1038,7 @@ export const getMyCharactersWithSnapshot = query({
 
     return (await getCharactersWithLatestSnapshots(ctx, characters)).map(({ character, snapshot }) => ({
       ...character,
-      snapshot,
+      snapshot: toSnapshotSummary(snapshot),
     }));
   },
 });
@@ -1054,7 +1071,11 @@ export const getCharactersWithLatestSnapshot = query({
     return (await getCharactersWithLatestSnapshots(ctx, ownedCharacters)).map(
       ({ character, snapshot }) => ({
         ...character,
-        snapshot,
+        snapshot: snapshot
+          ? {
+              itemLevel: snapshot.itemLevel,
+            }
+          : null,
       }),
     );
   },
