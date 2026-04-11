@@ -98,6 +98,7 @@ type MythicPlusRunPatch = {
   members?: MythicPlusRunMembers;
 };
 const LEGACY_DST_SHIFT_SECONDS = 60 * 60;
+const LEGACY_DST_SHIFT_TOLERANCE_SECONDS = 2 * 60;
 
 type ExistingRunLookups = {
   byAttemptId: Map<string, MythicPlusRunDoc>;
@@ -244,7 +245,10 @@ function mergeLifecycleTimestamp(
     return preferredTimestamp;
   }
 
-  if (Math.abs(preferredTimestamp - fallbackTimestamp) === LEGACY_DST_SHIFT_SECONDS) {
+  if (
+    Math.abs(Math.abs(preferredTimestamp - fallbackTimestamp) - LEGACY_DST_SHIFT_SECONDS) <=
+    LEGACY_DST_SHIFT_TOLERANCE_SECONDS
+  ) {
     return Math.max(preferredTimestamp, fallbackTimestamp);
   }
 

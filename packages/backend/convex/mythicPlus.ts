@@ -61,6 +61,8 @@ const MYTHIC_PLUS_TIMER_MS_BY_MAP_NAME = new Map<string, number>(
 );
 const MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS = 4 * 60 * 60 * 1000;
 const LEGACY_DST_SHIFT_SECONDS = 60 * 60;
+const LEGACY_DST_SHIFT_TOLERANCE_SECONDS = 2 * 60;
+const MAX_COMPAT_DURATION_DRIFT_MS = 1000;
 
 function toFingerprintToken(value: boolean | number | string | null | undefined) {
   if (value === undefined || value === null) return "";
@@ -101,6 +103,20 @@ function normalizeAttemptId(value: unknown): string | null {
   return normalized === "" ? null : normalized;
 }
 
+function isInvalidLegacySyntheticAttemptId(attemptId: string): boolean {
+  if (!attemptId.startsWith("attempt|")) {
+    return false;
+  }
+
+  const tokens = attemptId.split("|");
+  if (tokens.length !== 5) {
+    return false;
+  }
+
+  const startToken = Number(tokens[4]);
+  return !Number.isFinite(startToken) || Math.floor(startToken) <= 0;
+}
+
 function normalizeCanonicalKey(value: unknown): string | null {
   if (typeof value !== "string") {
     return null;
@@ -120,6 +136,10 @@ function normalizeLifecycleTimestamp(value: number | null | undefined): number |
     return null;
   }
   return Math.floor(value);
+}
+
+function hasValidStartDate(run: MythicPlusRunLike): boolean {
+  return normalizeLifecycleTimestamp(run.startDate) !== null;
 }
 
 function buildRunAttemptIdFromStartDate(run: MythicPlusRunLike): string | null {
@@ -146,12 +166,16 @@ function buildRunAttemptIdFromStartDate(run: MythicPlusRunLike): string | null {
 
 export function getMythicPlusRunAttemptId(run: MythicPlusRunLike): string | null {
   const explicitAttemptId = normalizeAttemptId(run.attemptId);
-  if (explicitAttemptId !== null) {
+  if (explicitAttemptId !== null && !isInvalidLegacySyntheticAttemptId(explicitAttemptId)) {
     return explicitAttemptId;
   }
 
   const fingerprint = normalizeAttemptId(run.fingerprint);
-  if (fingerprint !== null && fingerprint.startsWith("attempt|")) {
+  if (
+    fingerprint !== null &&
+    fingerprint.startsWith("attempt|") &&
+    !isInvalidLegacySyntheticAttemptId(fingerprint)
+  ) {
     return fingerprint;
   }
 
@@ -231,11 +255,20 @@ function hasStrongCompletedRunIdentitySignature(run: MythicPlusRunLike): boolean
   );
 }
 
+function hasLegacyDstCompatibilitySignature(run: MythicPlusRunLike): boolean {
+  return (
+    run.level !== undefined &&
+    getRunMapFingerprintToken(run) !== "" &&
+    getSanitizedRunDurationMs(run) !== undefined &&
+    normalizeLifecycleTimestamp(run.completedAt ?? run.endedAt ?? run.abandonedAt) !== null
+  );
+}
+
 function shouldApplyLegacyHistoryDstForwardShift(run: MythicPlusRunLike): boolean {
   if (getMythicPlusRunAttemptId(run) !== null) {
     return false;
   }
-  if (run.startDate !== undefined) {
+  if (hasValidStartDate(run)) {
     return false;
   }
   if (!hasStrongCompletedRunIdentitySignature(run)) {
@@ -284,7 +317,7 @@ function getRunCompatibilityTimestampAliases(run: MythicPlusRunLike): number[] {
   // Compatibility alias for legacy vs new completion timestamps around DST
   // transitions. Restrict to strong completed-run signatures and history-like
   // rows (no explicit startDate) to avoid over-merging genuinely distinct runs.
-  if (run.startDate === undefined && hasStrongCompletedRunIdentitySignature(run)) {
+  if (!hasValidStartDate(run) && hasLegacyDstCompatibilitySignature(run)) {
     const shiftSources = [run.completedAt, run.endedAt, run.abandonedAt, derivedEnd];
     for (const source of shiftSources) {
       if (source === undefined || source === null) continue;
@@ -615,7 +648,7 @@ function getRunLegacyFingerprintAliasesForTimestamp(
 }
 
 function getRunLegacyDstShiftCompatibilityTimestamps(run: MythicPlusRunLike): number[] {
-  if (run.startDate !== undefined || !hasStrongCompletedRunIdentitySignature(run)) {
+  if (hasValidStartDate(run) || !hasLegacyDstCompatibilitySignature(run)) {
     return [];
   }
 
@@ -688,7 +721,7 @@ function getRunStrictEventTimestamps(run: MythicPlusRunLike): number[] {
   pushTimestamp(run.endedAt);
   pushTimestamp(run.abandonedAt);
 
-  if (run.startDate === undefined) {
+  if (!hasValidStartDate(run)) {
     pushTimestamp(getRunDerivedStartTimestamp(run));
   }
   if (run.completedAt === undefined && run.endedAt === undefined && run.abandonedAt === undefined) {
@@ -729,7 +762,7 @@ function hasSharedStrictCompatibilityTimestamp(a: MythicPlusRunLike, b: MythicPl
 }
 
 function hasCompatibleLegacyDstShift(a: MythicPlusRunLike, b: MythicPlusRunLike): boolean {
-  if (!hasStrongCompletedRunIdentitySignature(a) || !hasStrongCompletedRunIdentitySignature(b)) {
+  if (!hasLegacyDstCompatibilitySignature(a) || !hasLegacyDstCompatibilitySignature(b)) {
     return false;
   }
 
@@ -741,7 +774,11 @@ function hasCompatibleLegacyDstShift(a: MythicPlusRunLike, b: MythicPlusRunLike)
 
   const aDuration = getSanitizedRunDurationMs(a);
   const bDuration = getSanitizedRunDurationMs(b);
-  if (aDuration !== undefined && bDuration !== undefined && aDuration !== bDuration) {
+  if (
+    aDuration !== undefined &&
+    bDuration !== undefined &&
+    Math.abs(aDuration - bDuration) > MAX_COMPAT_DURATION_DRIFT_MS
+  ) {
     return false;
   }
 
@@ -751,7 +788,10 @@ function hasCompatibleLegacyDstShift(a: MythicPlusRunLike, b: MythicPlusRunLike)
 
   for (const timestampA of aTimestamps) {
     for (const timestampB of bTimestamps) {
-      if (Math.abs(timestampA - timestampB) === LEGACY_DST_SHIFT_SECONDS) {
+      if (
+        Math.abs(Math.abs(timestampA - timestampB) - LEGACY_DST_SHIFT_SECONDS) <=
+        LEGACY_DST_SHIFT_TOLERANCE_SECONDS
+      ) {
         return true;
       }
     }

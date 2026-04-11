@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 import { __testables as ingestTestables } from "./addonIngest";
 import { __testables as characterTestables } from "./characters";
 import {
+  getMythicPlusRunAttemptId,
   getMythicPlusRunCanonicalKey,
   getMythicPlusRunSortValue,
   shouldReplaceMythicPlusRun,
@@ -195,6 +196,115 @@ describe("Mythic+ identity contract", () => {
     assert.equal(matched?._id, legacyStored._id);
   });
 
+  it("does not treat synthetic attempt IDs with startDate=0 as authoritative", () => {
+    const run = makeRun({
+      attemptId: "attempt|17|560|15|0",
+      fingerprint: "aid|attempt|17|560|15|0",
+      seasonID: 17,
+      mapChallengeModeID: 560,
+      level: 15,
+      startDate: 0,
+      completedAt: 700000,
+      status: "completed",
+      observedAt: 700030,
+    });
+
+    assert.equal(getMythicPlusRunAttemptId(run as any), null);
+    assert.equal(getMythicPlusRunCanonicalKey(run as any), "run|17|560|15|700000");
+  });
+
+  it("merges scoreless startDate=0 completion with scored +3600 history row", () => {
+    const lookups = makeLookups();
+    const scorelessCompletion = makeRun({
+      fingerprint: "aid|attempt|17|557|15|0",
+      attemptId: "attempt|17|557|15|0",
+      seasonID: 17,
+      mapChallengeModeID: 557,
+      mapName: "Windrunner Spire",
+      level: 15,
+      startDate: 0,
+      completedAt: 1_775_871_828,
+      endedAt: 1_775_871_828,
+      abandonedAt: 1_775_871_828,
+      durationMs: 1_809_183,
+      completed: true,
+      completedInTime: true,
+      status: "completed",
+      observedAt: 1_775_870_056,
+      members: [
+        { name: "Bavaryâ", realm: "Silvermoon", role: "tank", classTag: "PALADIN" },
+        { name: "Rampager", realm: "Blackhand", role: "dps", classTag: "EVOKER" },
+      ],
+    });
+    ingestTestables.registerRunLookups(lookups, scorelessCompletion as any);
+
+    const scoredHistory = ingestTestables.mergeMythicPlusRunData(undefined, {
+      fingerprint: "17|557|15|1775868228",
+      seasonID: 17,
+      mapChallengeModeID: 557,
+      mapName: "Windrunner Spire",
+      level: 15,
+      completedAt: 1_775_868_228,
+      endedAt: 1_775_868_228,
+      durationMs: 1_809_000,
+      runScore: 413,
+      completed: true,
+      completedInTime: true,
+      status: "completed",
+      observedAt: 1_775_871_880,
+    } as any);
+
+    const matched = ingestTestables.findMatchingExistingRunByIdentity(lookups, scoredHistory);
+    assert.equal(matched?._id, scorelessCompletion._id);
+  });
+
+  it("query-time dedupe collapses scoreless+scored legacy-shift pair into one recent row", () => {
+    const scorelessCompletion = makeRun({
+      fingerprint: "aid|attempt|17|557|15|0",
+      attemptId: "attempt|17|557|15|0",
+      seasonID: 17,
+      mapChallengeModeID: 557,
+      mapName: "Windrunner Spire",
+      level: 15,
+      startDate: 0,
+      completedAt: 1_775_871_828,
+      endedAt: 1_775_871_828,
+      abandonedAt: 1_775_871_828,
+      durationMs: 1_809_183,
+      completed: true,
+      completedInTime: true,
+      status: "completed",
+      observedAt: 1_775_870_056,
+      members: [
+        { name: "Bavaryâ", realm: "Silvermoon", role: "tank", classTag: "PALADIN" },
+        { name: "Rampager", realm: "Blackhand", role: "dps", classTag: "EVOKER" },
+      ],
+    });
+    const scoredHistory = makeRun({
+      fingerprint: "17|557|15|1775868228",
+      seasonID: 17,
+      mapChallengeModeID: 557,
+      mapName: "Windrunner Spire",
+      level: 15,
+      completedAt: 1_775_868_228,
+      endedAt: 1_775_868_228,
+      durationMs: 1_809_000,
+      runScore: 413,
+      completed: true,
+      completedInTime: true,
+      status: "completed",
+      observedAt: 1_775_871_880,
+    });
+
+    const deduped = characterTestables.dedupeMythicPlusRuns(
+      [scorelessCompletion as any, scoredHistory as any],
+    ) as TestRun[];
+
+    assert.equal(deduped.length, 1);
+    assert.equal(deduped[0]?.runScore, 413);
+    assert.equal(deduped[0]?.members?.length, 2);
+  });
+
   it("stale recovery matches existing active attempts and transitions lifecycle to abandoned", () => {
     const lookups = makeLookups();
     const active = makeRun({
@@ -268,7 +378,7 @@ describe("Mythic+ identity contract", () => {
     assert.equal(deduped.length, 2);
   });
 
-  it("exact +3600 legacy pair can merge only when core identity is the same", () => {
+  it("narrow +3600 legacy pair merges with tiny timing jitter when core identity is the same", () => {
     const lookups = makeLookups();
     const existing = makeRun({
       fingerprint: "legacy-a",
@@ -276,7 +386,7 @@ describe("Mythic+ identity contract", () => {
       mapChallengeModeID: 402,
       level: 14,
       completedAt: 500000,
-      durationMs: 1_800_000,
+      durationMs: 1_628_000,
       runScore: 312.8,
       status: "completed",
       observedAt: 540000,
@@ -288,8 +398,8 @@ describe("Mythic+ identity contract", () => {
       seasonID: 3,
       mapChallengeModeID: 402,
       level: 14,
-      completedAt: 503600,
-      durationMs: 1_800_000,
+      completedAt: 503637,
+      durationMs: 1_628_625,
       runScore: 312.8,
       status: "completed",
       observedAt: 543600,

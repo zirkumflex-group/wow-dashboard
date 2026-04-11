@@ -416,6 +416,7 @@ function buildRecentRuns(runs: MythicPlusRunDoc[]) {
 function dedupeMythicPlusRuns(runs: MythicPlusRunDoc[]) {
   const dedupedRuns: MythicPlusRunDoc[] = [];
   const LEGACY_DST_SHIFT_SECONDS = 60 * 60;
+  const LEGACY_DST_SHIFT_TOLERANCE_SECONDS = 2 * 60;
 
   const pickDefinedValue = <T>(preferredValue: T | undefined, fallbackValue: T | undefined) =>
     preferredValue !== undefined ? preferredValue : fallbackValue;
@@ -437,7 +438,10 @@ function dedupeMythicPlusRuns(runs: MythicPlusRunDoc[]) {
       return preferredTimestamp;
     }
 
-    if (Math.abs(preferredTimestamp - fallbackTimestamp) === LEGACY_DST_SHIFT_SECONDS) {
+    if (
+      Math.abs(Math.abs(preferredTimestamp - fallbackTimestamp) - LEGACY_DST_SHIFT_SECONDS) <=
+      LEGACY_DST_SHIFT_TOLERANCE_SECONDS
+    ) {
       return Math.max(preferredTimestamp, fallbackTimestamp);
     }
 
