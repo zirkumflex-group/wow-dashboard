@@ -49,3 +49,6 @@ coverage
 .cache
 tmp
 temp
+
+# Codex local environment metadata
+.codex/environments/environment.toml

@@ -12,6 +12,7 @@ const metadataValidator = v.optional(
       newChars: v.number(),
       newSnapshots: v.number(),
       newMythicPlusRuns: v.number(),
+      collapsedMythicPlusRuns: v.optional(v.number()),
       totalCharacters: v.number(),
     }) // addon.ingest
   )

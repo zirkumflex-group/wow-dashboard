@@ -5,6 +5,11 @@ import { mutation, query } from "./_generated/server";
 import { authComponent } from "./auth";
 import {
   buildCanonicalMythicPlusRunFingerprint,
+  canUseMythicPlusRunCompatibilityAliasMatch,
+  getMythicPlusRunAttemptId,
+  getMythicPlusRunCanonicalKey,
+  getMythicPlusRunCompatibilityLookupAliases,
+  getMythicPlusRunLifecycleStatus,
   mergeMythicPlusRunMembers,
   shouldReplaceMythicPlusRun,
 } from "./mythicPlus";
@@ -67,8 +72,39 @@ type SnapshotFields = Pick<
   | "currencies"
   | "stats"
 >;
-type MythicPlusRunDoc = Doc<"mythicPlusRuns">;
+type MythicPlusRunDoc = Doc<"mythicPlusRuns"> & { canonicalKey?: string };
 type MythicPlusRunMembers = MythicPlusRunDoc["members"];
+type MythicPlusRunInput = Omit<MythicPlusRunDoc, "_id" | "_creationTime" | "characterId">;
+type MythicPlusRunPatch = {
+  fingerprint?: string;
+  attemptId?: string;
+  canonicalKey?: string;
+  observedAt?: number;
+  seasonID?: number;
+  mapChallengeModeID?: number;
+  mapName?: string;
+  level?: number;
+  status?: MythicPlusRunDoc["status"];
+  completed?: boolean;
+  completedInTime?: boolean;
+  durationMs?: number;
+  runScore?: number;
+  startDate?: number;
+  completedAt?: number;
+  endedAt?: number;
+  abandonedAt?: number;
+  abandonReason?: MythicPlusRunDoc["abandonReason"];
+  thisWeek?: boolean;
+  members?: MythicPlusRunMembers;
+};
+const LEGACY_DST_SHIFT_SECONDS = 60 * 60;
+const LEGACY_DST_SHIFT_TOLERANCE_SECONDS = 2 * 60;
+
+type ExistingRunLookups = {
+  byAttemptId: Map<string, MythicPlusRunDoc>;
+  byCanonicalKey: Map<string, MythicPlusRunDoc>;
+  byCompatibilityAlias: Map<string, MythicPlusRunDoc>;
+};
 
 function setPreferredRunLookup(
   map: Map<string, MythicPlusRunDoc>,
@@ -86,29 +122,68 @@ function setPreferredRunLookup(
 }
 
 function registerRunLookups(
-  lookups: {
-    byDedupKey: Map<string, MythicPlusRunDoc>;
-    byFingerprint: Map<string, MythicPlusRunDoc>;
-  },
+  lookups: ExistingRunLookups,
   run: MythicPlusRunDoc,
   aliases: Array<string | undefined | null> = [],
 ) {
-  const canonicalFingerprint = buildCanonicalMythicPlusRunFingerprint(run);
-  setPreferredRunLookup(lookups.byDedupKey, canonicalFingerprint ?? run.fingerprint, run);
+  const attemptId = getMythicPlusRunAttemptId(run);
+  if (attemptId) {
+    setPreferredRunLookup(lookups.byAttemptId, attemptId, run);
+  }
 
-  const fingerprintAliases = new Set<string>();
-  if (run.fingerprint) {
-    fingerprintAliases.add(run.fingerprint);
+  const canonicalKey = getMythicPlusRunCanonicalKey(run);
+  if (canonicalKey) {
+    setPreferredRunLookup(lookups.byCanonicalKey, canonicalKey, run);
+  }
+
+  const compatibilityAliases = new Set<string>();
+  for (const alias of getMythicPlusRunCompatibilityLookupAliases(run)) {
+    compatibilityAliases.add(alias);
   }
   for (const alias of aliases) {
     if (alias) {
-      fingerprintAliases.add(alias);
+      compatibilityAliases.add(alias);
     }
   }
 
-  for (const fingerprint of fingerprintAliases) {
-    setPreferredRunLookup(lookups.byFingerprint, fingerprint, run);
+  for (const compatibilityAlias of compatibilityAliases) {
+    setPreferredRunLookup(lookups.byCompatibilityAlias, compatibilityAlias, run);
   }
+}
+
+function findMatchingExistingRunByIdentity(
+  lookups: ExistingRunLookups,
+  run: MythicPlusRunInput,
+) {
+  const attemptId = getMythicPlusRunAttemptId(run);
+  if (attemptId) {
+    const attemptMatch = lookups.byAttemptId.get(attemptId);
+    if (attemptMatch) {
+      return attemptMatch;
+    }
+  }
+
+  const canonicalKey = getMythicPlusRunCanonicalKey(run);
+  if (canonicalKey) {
+    const canonicalMatch = lookups.byCanonicalKey.get(canonicalKey);
+    if (canonicalMatch) {
+      return canonicalMatch;
+    }
+  }
+
+  for (const compatibilityAlias of getMythicPlusRunCompatibilityLookupAliases(run)) {
+    const candidate = lookups.byCompatibilityAlias.get(compatibilityAlias);
+    if (!candidate) {
+      continue;
+    }
+    if (!canUseMythicPlusRunCompatibilityAliasMatch(candidate, run)) {
+      continue;
+    }
+    if (candidate) {
+      return candidate;
+    }
+  }
+  return undefined;
 }
 
 function toSnapshotFields(snapshot: SnapshotFields): SnapshotFields {
@@ -149,19 +224,300 @@ function snapshotFieldsEqual(a: SnapshotFields, b: SnapshotFields) {
   return JSON.stringify(toSnapshotFields(a)) === JSON.stringify(toSnapshotFields(b));
 }
 
-function getMergedRunMembers(
-  currentMembers: MythicPlusRunMembers | undefined,
-  candidateMembers: MythicPlusRunMembers | undefined,
-) {
-  const mergedMembers = mergeMythicPlusRunMembers(currentMembers, candidateMembers);
-  if (!mergedMembers) {
-    return undefined;
+function pickDefinedValue<T>(preferredValue: T | undefined, fallbackValue: T | undefined): T | undefined {
+  return preferredValue !== undefined ? preferredValue : fallbackValue;
+}
+
+function mergeLifecycleTimestamp(
+  preferredValue: number | undefined,
+  fallbackValue: number | undefined,
+): number | undefined {
+  if (preferredValue === undefined) {
+    return fallbackValue;
+  }
+  if (fallbackValue === undefined) {
+    return preferredValue;
   }
 
-  return JSON.stringify(currentMembers ?? []) === JSON.stringify(mergedMembers)
-    ? undefined
-    : mergedMembers;
+  const preferredTimestamp = Math.floor(preferredValue);
+  const fallbackTimestamp = Math.floor(fallbackValue);
+  if (preferredTimestamp === fallbackTimestamp) {
+    return preferredTimestamp;
+  }
+
+  if (
+    Math.abs(Math.abs(preferredTimestamp - fallbackTimestamp) - LEGACY_DST_SHIFT_SECONDS) <=
+    LEGACY_DST_SHIFT_TOLERANCE_SECONDS
+  ) {
+    return Math.max(preferredTimestamp, fallbackTimestamp);
+  }
+
+  return preferredValue;
 }
+
+function deriveAttemptIdFromRun(run: {
+  attemptId?: string;
+  fingerprint?: string;
+  canonicalKey?: string;
+  seasonID?: number;
+  mapChallengeModeID?: number;
+  mapName?: string;
+  level?: number;
+  startDate?: number;
+}): string | undefined {
+  return getMythicPlusRunAttemptId(run) ?? undefined;
+}
+
+function deriveCanonicalKeyFromRun(run: {
+  attemptId?: string;
+  canonicalKey?: string;
+  fingerprint?: string;
+  seasonID?: number;
+  mapChallengeModeID?: number;
+  mapName?: string;
+  level?: number;
+  startDate?: number;
+  completedAt?: number;
+  endedAt?: number;
+  abandonedAt?: number;
+  durationMs?: number;
+  runScore?: number;
+}): string | undefined {
+  return getMythicPlusRunCanonicalKey(run) ?? undefined;
+}
+
+function mergeMythicPlusRunData(
+  currentRun: MythicPlusRunInput | undefined,
+  candidateRun: MythicPlusRunInput,
+): MythicPlusRunInput {
+  if (!currentRun) {
+    const merged = {
+      ...candidateRun,
+      attemptId: deriveAttemptIdFromRun(candidateRun),
+      canonicalKey: deriveCanonicalKeyFromRun(candidateRun),
+      fingerprint: candidateRun.fingerprint,
+    };
+    merged.canonicalKey = deriveCanonicalKeyFromRun(merged);
+    merged.fingerprint =
+      buildCanonicalMythicPlusRunFingerprint(merged) ??
+      merged.canonicalKey ??
+      candidateRun.fingerprint;
+    const status = getMythicPlusRunLifecycleStatus(merged);
+    if (status !== undefined) {
+      merged.status = status;
+      if (status === "completed") {
+        merged.completed = true;
+        merged.endedAt = merged.endedAt ?? merged.completedAt;
+      } else if (status === "abandoned") {
+        merged.endedAt = merged.endedAt ?? merged.abandonedAt;
+        merged.abandonedAt = merged.abandonedAt ?? merged.endedAt;
+      }
+    }
+    return merged;
+  }
+
+  const candidatePreferred = shouldReplaceMythicPlusRun(currentRun, candidateRun);
+  const preferredRun = candidatePreferred ? candidateRun : currentRun;
+  const fallbackRun = candidatePreferred ? currentRun : candidateRun;
+
+  const preferredObservedAt = preferredRun.observedAt ?? 0;
+  const fallbackObservedAt = fallbackRun.observedAt ?? 0;
+  const mergedObservedAt =
+    preferredObservedAt > 0 && fallbackObservedAt > 0
+      ? Math.min(preferredObservedAt, fallbackObservedAt)
+      : preferredObservedAt > 0
+        ? preferredObservedAt
+        : fallbackObservedAt;
+
+  const merged: MythicPlusRunInput = {
+    fingerprint:
+      buildCanonicalMythicPlusRunFingerprint(preferredRun) ??
+      deriveCanonicalKeyFromRun(preferredRun) ??
+      buildCanonicalMythicPlusRunFingerprint(fallbackRun) ??
+      deriveCanonicalKeyFromRun(fallbackRun) ??
+      preferredRun.fingerprint ??
+      fallbackRun.fingerprint,
+    observedAt:
+      mergedObservedAt > 0
+        ? mergedObservedAt
+        : pickDefinedValue(preferredRun.observedAt, fallbackRun.observedAt) ?? 0,
+    attemptId: pickDefinedValue(
+      deriveAttemptIdFromRun(preferredRun),
+      deriveAttemptIdFromRun(fallbackRun),
+    ),
+    canonicalKey: pickDefinedValue(
+      deriveCanonicalKeyFromRun(preferredRun),
+      deriveCanonicalKeyFromRun(fallbackRun),
+    ),
+    seasonID: pickDefinedValue(preferredRun.seasonID, fallbackRun.seasonID),
+    mapChallengeModeID: pickDefinedValue(preferredRun.mapChallengeModeID, fallbackRun.mapChallengeModeID),
+    mapName: pickDefinedValue(preferredRun.mapName, fallbackRun.mapName),
+    level: pickDefinedValue(preferredRun.level, fallbackRun.level),
+    status: pickDefinedValue(preferredRun.status, fallbackRun.status),
+    completed: pickDefinedValue(preferredRun.completed, fallbackRun.completed),
+    completedInTime: pickDefinedValue(preferredRun.completedInTime, fallbackRun.completedInTime),
+    durationMs: pickDefinedValue(preferredRun.durationMs, fallbackRun.durationMs),
+    runScore: pickDefinedValue(preferredRun.runScore, fallbackRun.runScore),
+    startDate: mergeLifecycleTimestamp(preferredRun.startDate, fallbackRun.startDate),
+    completedAt: mergeLifecycleTimestamp(preferredRun.completedAt, fallbackRun.completedAt),
+    endedAt: mergeLifecycleTimestamp(preferredRun.endedAt, fallbackRun.endedAt),
+    abandonedAt: mergeLifecycleTimestamp(preferredRun.abandonedAt, fallbackRun.abandonedAt),
+    abandonReason: pickDefinedValue(preferredRun.abandonReason, fallbackRun.abandonReason),
+    thisWeek: pickDefinedValue(preferredRun.thisWeek, fallbackRun.thisWeek),
+    members: mergeMythicPlusRunMembers(currentRun.members, candidateRun.members),
+  };
+
+  const canonicalFingerprint = buildCanonicalMythicPlusRunFingerprint(merged);
+  if (canonicalFingerprint) {
+    merged.fingerprint = canonicalFingerprint;
+  }
+  merged.attemptId = deriveAttemptIdFromRun(merged);
+  merged.canonicalKey = deriveCanonicalKeyFromRun(merged);
+
+  const status = getMythicPlusRunLifecycleStatus(merged);
+  if (status !== undefined) {
+    merged.status = status;
+    if (status === "completed") {
+      merged.completed = true;
+      merged.endedAt = merged.endedAt ?? merged.completedAt;
+    } else if (status === "abandoned") {
+      merged.endedAt = merged.endedAt ?? merged.abandonedAt;
+      merged.abandonedAt = merged.abandonedAt ?? merged.endedAt;
+    }
+  }
+
+  return merged;
+}
+
+function buildMythicPlusRunPatch(
+  existingRun: MythicPlusRunDoc,
+  mergedRun: MythicPlusRunInput,
+): MythicPlusRunPatch {
+  const patch: MythicPlusRunPatch = {};
+  if (existingRun.fingerprint !== mergedRun.fingerprint) patch.fingerprint = mergedRun.fingerprint;
+  if (mergedRun.attemptId !== undefined && existingRun.attemptId !== mergedRun.attemptId) {
+    patch.attemptId = mergedRun.attemptId;
+  }
+  if (
+    mergedRun.canonicalKey !== undefined &&
+    (existingRun as MythicPlusRunInput).canonicalKey !== mergedRun.canonicalKey
+  ) {
+    patch.canonicalKey = mergedRun.canonicalKey;
+  }
+  if (existingRun.observedAt !== mergedRun.observedAt) patch.observedAt = mergedRun.observedAt;
+  if (mergedRun.seasonID !== undefined && existingRun.seasonID !== mergedRun.seasonID) patch.seasonID = mergedRun.seasonID;
+  if (
+    mergedRun.mapChallengeModeID !== undefined &&
+    existingRun.mapChallengeModeID !== mergedRun.mapChallengeModeID
+  ) {
+    patch.mapChallengeModeID = mergedRun.mapChallengeModeID;
+  }
+  if (mergedRun.mapName !== undefined && existingRun.mapName !== mergedRun.mapName) patch.mapName = mergedRun.mapName;
+  if (mergedRun.level !== undefined && existingRun.level !== mergedRun.level) patch.level = mergedRun.level;
+  if (mergedRun.status !== undefined && existingRun.status !== mergedRun.status) patch.status = mergedRun.status;
+  if (mergedRun.completed !== undefined && existingRun.completed !== mergedRun.completed) patch.completed = mergedRun.completed;
+  if (
+    mergedRun.completedInTime !== undefined &&
+    existingRun.completedInTime !== mergedRun.completedInTime
+  ) {
+    patch.completedInTime = mergedRun.completedInTime;
+  }
+  if (mergedRun.durationMs !== undefined && existingRun.durationMs !== mergedRun.durationMs) {
+    patch.durationMs = mergedRun.durationMs;
+  }
+  if (mergedRun.runScore !== undefined && existingRun.runScore !== mergedRun.runScore) patch.runScore = mergedRun.runScore;
+  if (mergedRun.startDate !== undefined && existingRun.startDate !== mergedRun.startDate) patch.startDate = mergedRun.startDate;
+  if (mergedRun.completedAt !== undefined && existingRun.completedAt !== mergedRun.completedAt) {
+    patch.completedAt = mergedRun.completedAt;
+  }
+  if (mergedRun.endedAt !== undefined && existingRun.endedAt !== mergedRun.endedAt) patch.endedAt = mergedRun.endedAt;
+  if (mergedRun.abandonedAt !== undefined && existingRun.abandonedAt !== mergedRun.abandonedAt) {
+    patch.abandonedAt = mergedRun.abandonedAt;
+  }
+  if (
+    mergedRun.abandonReason !== undefined &&
+    existingRun.abandonReason !== mergedRun.abandonReason
+  ) {
+    patch.abandonReason = mergedRun.abandonReason;
+  }
+  if (mergedRun.thisWeek !== undefined && existingRun.thisWeek !== mergedRun.thisWeek) patch.thisWeek = mergedRun.thisWeek;
+  if (JSON.stringify(existingRun.members ?? []) !== JSON.stringify(mergedRun.members ?? [])) {
+    patch.members = mergedRun.members;
+  }
+  return patch;
+}
+
+async function collapseDuplicateMythicPlusRunsForCharacter(
+  ctx: any,
+  characterId: MythicPlusRunDoc["characterId"],
+) {
+  const runs = await ctx.db
+    .query("mythicPlusRuns")
+    .withIndex("by_character", (q: any) => q.eq("characterId", characterId))
+    .collect();
+
+  if (runs.length < 2) {
+    return 0;
+  }
+
+  const clustersByCanonicalKey = new Map<string, {
+    representative: MythicPlusRunDoc;
+    mergedRun: MythicPlusRunInput;
+    runIds: Array<MythicPlusRunDoc["_id"]>;
+  }>();
+
+  for (const run of runs) {
+    const canonicalKey = getMythicPlusRunCanonicalKey(run);
+    if (!canonicalKey) {
+      continue;
+    }
+
+    const existingCluster = clustersByCanonicalKey.get(canonicalKey);
+    if (!existingCluster) {
+      clustersByCanonicalKey.set(canonicalKey, {
+        representative: run,
+        mergedRun: mergeMythicPlusRunData(undefined, run),
+        runIds: [run._id],
+      });
+      continue;
+    }
+
+    existingCluster.mergedRun = mergeMythicPlusRunData(existingCluster.mergedRun, run);
+    if (shouldReplaceMythicPlusRun(existingCluster.representative, run)) {
+      existingCluster.representative = run;
+    }
+    existingCluster.runIds.push(run._id);
+  }
+
+  let collapsedCount = 0;
+  for (const cluster of clustersByCanonicalKey.values()) {
+    if (cluster.runIds.length <= 1) {
+      continue;
+    }
+
+    const representativeId = cluster.representative._id;
+    const patch = buildMythicPlusRunPatch(cluster.representative, cluster.mergedRun);
+    if (Object.keys(patch).length > 0) {
+      await ctx.db.patch(representativeId, patch as any);
+    }
+
+    for (const runId of cluster.runIds) {
+      if (runId === representativeId) continue;
+      await ctx.db.delete(runId);
+      collapsedCount += 1;
+    }
+  }
+
+  return collapsedCount;
+}
+
+export const __testables = {
+  deriveAttemptIdFromRun,
+  deriveCanonicalKeyFromRun,
+  mergeMythicPlusRunData,
+  registerRunLookups,
+  findMatchingExistingRunByIdentity,
+};
 
 const characterValidator = v.object({
   name: v.string(),
@@ -215,6 +571,7 @@ export const ingestAddonData = mutation({
     let newChars = 0;
     let newSnapshots = 0;
     let newMythicPlusRuns = 0;
+    let collapsedMythicPlusRuns = 0;
 
     for (const charData of characters) {
       const existing = await ctx.db
@@ -311,50 +668,93 @@ export const ingestAddonData = mutation({
         .collect();
 
       const existingRunLookups = {
-        byDedupKey: new Map<string, MythicPlusRunDoc>(),
-        byFingerprint: new Map<string, MythicPlusRunDoc>(),
+        byAttemptId: new Map<string, MythicPlusRunDoc>(),
+        byCanonicalKey: new Map<string, MythicPlusRunDoc>(),
+        byCompatibilityAlias: new Map<string, MythicPlusRunDoc>(),
       };
       for (const existingRun of existingCharacterRuns) {
         registerRunLookups(existingRunLookups, existingRun);
       }
 
-      // Dedup incoming runs by canonical or legacy fingerprint
-      const incomingRunsByDedupKey = new Map<string, NonNullable<typeof charData.mythicPlusRuns>[number]>();
-      for (const run of charData.mythicPlusRuns ?? []) {
-        const canonicalFingerprint = buildCanonicalMythicPlusRunFingerprint(run);
-        const dedupKey = canonicalFingerprint ?? run.fingerprint;
-        const current = incomingRunsByDedupKey.get(dedupKey);
-        if (shouldReplaceMythicPlusRun(current, run)) {
-          incomingRunsByDedupKey.set(dedupKey, run);
+      // Dedup incoming runs using exact identity only (attemptId -> canonicalKey).
+      const incomingRunsDeduped: MythicPlusRunInput[] = [];
+      const incomingByAttemptId = new Map<string, number>();
+      const incomingByCanonicalKey = new Map<string, number>();
+      for (const incomingRun of charData.mythicPlusRuns ?? []) {
+        const normalizedIncomingRun = mergeMythicPlusRunData(undefined, incomingRun);
+        const incomingAttemptId = deriveAttemptIdFromRun(normalizedIncomingRun);
+        const incomingCanonicalKey = deriveCanonicalKeyFromRun(normalizedIncomingRun);
+        let matchedIndex =
+          incomingAttemptId !== undefined ? incomingByAttemptId.get(incomingAttemptId) ?? -1 : -1;
+        if (matchedIndex < 0 && incomingCanonicalKey !== undefined) {
+          matchedIndex = incomingByCanonicalKey.get(incomingCanonicalKey) ?? -1;
+        }
+
+        if (matchedIndex < 0) {
+          incomingRunsDeduped.push(normalizedIncomingRun);
+          matchedIndex = incomingRunsDeduped.length - 1;
+        } else {
+          incomingRunsDeduped[matchedIndex] = mergeMythicPlusRunData(
+            incomingRunsDeduped[matchedIndex],
+            normalizedIncomingRun,
+          );
+        }
+
+        const mergedIncomingRun = incomingRunsDeduped[matchedIndex]!;
+        const mergedAttemptId = deriveAttemptIdFromRun(mergedIncomingRun);
+        const mergedCanonicalKey = deriveCanonicalKeyFromRun(mergedIncomingRun);
+        if (mergedAttemptId !== undefined) {
+          incomingByAttemptId.set(mergedAttemptId, matchedIndex);
+        }
+        if (mergedCanonicalKey !== undefined) {
+          incomingByCanonicalKey.set(mergedCanonicalKey, matchedIndex);
         }
       }
 
-      for (const run of incomingRunsByDedupKey.values()) {
-        const canonicalFingerprint = buildCanonicalMythicPlusRunFingerprint(run);
-        const nextFingerprint = canonicalFingerprint ?? run.fingerprint;
-        let existingRun = existingRunLookups.byDedupKey.get(nextFingerprint);
-        if (!existingRun && run.fingerprint) {
-          existingRun = existingRunLookups.byFingerprint.get(run.fingerprint);
+      for (const run of incomingRunsDeduped) {
+        const nextFingerprint =
+          buildCanonicalMythicPlusRunFingerprint(run) ??
+          deriveCanonicalKeyFromRun(run) ??
+          run.fingerprint;
+        const nextCanonicalKey = deriveCanonicalKeyFromRun(run);
+        const nextAttemptId = deriveAttemptIdFromRun(run);
+        if (!nextFingerprint) {
+          continue;
         }
+
+        const nextRun: MythicPlusRunInput = {
+          ...run,
+          fingerprint: nextFingerprint,
+          attemptId: nextAttemptId,
+          canonicalKey: nextCanonicalKey,
+        };
+
+        const existingRun = findMatchingExistingRunByIdentity(existingRunLookups, nextRun);
 
         if (!existingRun) {
           const insertedId = await ctx.db.insert("mythicPlusRuns", {
             characterId,
             fingerprint: nextFingerprint,
-            observedAt: run.observedAt,
-            seasonID: run.seasonID,
-            mapChallengeModeID: run.mapChallengeModeID,
-            mapName: run.mapName,
-            level: run.level,
-            completed: run.completed,
-            completedInTime: run.completedInTime,
-            durationMs: run.durationMs,
-            runScore: run.runScore,
-            startDate: run.startDate,
-            completedAt: run.completedAt,
-            thisWeek: run.thisWeek,
-            members: run.members,
-          });
+            attemptId: nextRun.attemptId,
+            canonicalKey: nextRun.canonicalKey,
+            observedAt: nextRun.observedAt,
+            seasonID: nextRun.seasonID,
+            mapChallengeModeID: nextRun.mapChallengeModeID,
+            mapName: nextRun.mapName,
+            level: nextRun.level,
+            status: nextRun.status,
+            completed: nextRun.completed,
+            completedInTime: nextRun.completedInTime,
+            durationMs: nextRun.durationMs,
+            runScore: nextRun.runScore,
+            startDate: nextRun.startDate,
+            completedAt: nextRun.completedAt,
+            endedAt: nextRun.endedAt,
+            abandonedAt: nextRun.abandonedAt,
+            abandonReason: nextRun.abandonReason,
+            thisWeek: nextRun.thisWeek,
+            members: nextRun.members,
+          } as any);
           registerRunLookups(
             existingRunLookups,
             {
@@ -362,95 +762,65 @@ export const ingestAddonData = mutation({
               _creationTime: now,
               characterId,
               fingerprint: nextFingerprint,
-              observedAt: run.observedAt,
-              seasonID: run.seasonID,
-              mapChallengeModeID: run.mapChallengeModeID,
-              mapName: run.mapName,
-              level: run.level,
-              completed: run.completed,
-              completedInTime: run.completedInTime,
-              durationMs: run.durationMs,
-              runScore: run.runScore,
-              startDate: run.startDate,
-              completedAt: run.completedAt,
-              thisWeek: run.thisWeek,
-              members: run.members,
-            },
-            [run.fingerprint, nextFingerprint],
+              attemptId: nextRun.attemptId,
+              canonicalKey: nextRun.canonicalKey,
+              observedAt: nextRun.observedAt,
+              seasonID: nextRun.seasonID,
+              mapChallengeModeID: nextRun.mapChallengeModeID,
+              mapName: nextRun.mapName,
+              level: nextRun.level,
+              status: nextRun.status,
+              completed: nextRun.completed,
+              completedInTime: nextRun.completedInTime,
+              durationMs: nextRun.durationMs,
+              runScore: nextRun.runScore,
+              startDate: nextRun.startDate,
+              completedAt: nextRun.completedAt,
+              endedAt: nextRun.endedAt,
+              abandonedAt: nextRun.abandonedAt,
+              abandonReason: nextRun.abandonReason,
+              thisWeek: nextRun.thisWeek,
+              members: nextRun.members,
+            } as MythicPlusRunDoc,
+            [nextRun.fingerprint, nextFingerprint],
           );
           newMythicPlusRuns++;
         } else {
-          const patch: {
-            fingerprint?: string;
-            seasonID?: number;
-            mapChallengeModeID?: number;
-            mapName?: string;
-            level?: number;
-            completed?: boolean;
-            completedInTime?: boolean;
-            durationMs?: number;
-            runScore?: number;
-            startDate?: number;
-            completedAt?: number;
-            thisWeek?: boolean;
-            members?: MythicPlusRunMembers;
-          } = {};
-
-          if (existingRun.fingerprint !== nextFingerprint) patch.fingerprint = nextFingerprint;
-          if (existingRun.seasonID === undefined && run.seasonID !== undefined) patch.seasonID = run.seasonID;
-          if (
-            existingRun.mapChallengeModeID === undefined &&
-            run.mapChallengeModeID !== undefined
-          ) {
-            patch.mapChallengeModeID = run.mapChallengeModeID;
-          }
-          if (!existingRun.mapName && run.mapName) patch.mapName = run.mapName;
-          if (existingRun.level === undefined && run.level !== undefined) patch.level = run.level;
-          if (existingRun.completed === undefined && run.completed !== undefined) patch.completed = run.completed;
-          if (
-            existingRun.completedInTime === undefined &&
-            run.completedInTime !== undefined
-          ) {
-            patch.completedInTime = run.completedInTime;
-          }
-          if (existingRun.durationMs === undefined && run.durationMs !== undefined) {
-            patch.durationMs = run.durationMs;
-          }
-          if (existingRun.runScore === undefined && run.runScore !== undefined) patch.runScore = run.runScore;
-          if (existingRun.startDate === undefined && run.startDate !== undefined) patch.startDate = run.startDate;
-          if (existingRun.completedAt === undefined && run.completedAt !== undefined) {
-            patch.completedAt = run.completedAt;
-          }
-          if (existingRun.thisWeek === undefined && run.thisWeek !== undefined) patch.thisWeek = run.thisWeek;
-          const mergedMembers = getMergedRunMembers(existingRun.members, run.members);
-          if (mergedMembers !== undefined) {
-            patch.members = mergedMembers;
-          }
+          const mergedRun = mergeMythicPlusRunData(existingRun, nextRun);
+          const patch = buildMythicPlusRunPatch(existingRun, mergedRun);
 
           if (Object.keys(patch).length > 0) {
-            await ctx.db.patch(existingRun._id, patch);
+            await ctx.db.patch(existingRun._id, patch as any);
             registerRunLookups(
               existingRunLookups,
               { ...existingRun, ...patch },
-              [existingRun.fingerprint, run.fingerprint, nextFingerprint],
+              [existingRun.fingerprint, nextRun.fingerprint, mergedRun.fingerprint],
             );
           } else {
             registerRunLookups(existingRunLookups, existingRun, [
               existingRun.fingerprint,
-              run.fingerprint,
-              nextFingerprint,
+              nextRun.fingerprint,
+              mergedRun.fingerprint,
             ]);
           }
         }
       }
+
+      collapsedMythicPlusRuns += await collapseDuplicateMythicPlusRunsForCharacter(ctx, characterId);
     }
 
     await ctx.runMutation(internal.audit.log, {
       userId: authUser._id as string,
       event: "addon.ingest",
-      metadata: { newChars, newSnapshots, newMythicPlusRuns, totalCharacters: characters.length },
+      metadata: {
+        newChars,
+        newSnapshots,
+        newMythicPlusRuns,
+        collapsedMythicPlusRuns,
+        totalCharacters: characters.length,
+      },
     });
 
-    return { newChars, newSnapshots, newMythicPlusRuns };
+    return { newChars, newSnapshots, newMythicPlusRuns, collapsedMythicPlusRuns };
   },
 });

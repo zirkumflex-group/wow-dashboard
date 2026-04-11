@@ -270,21 +270,57 @@ function formatRunDate(ts?: number | null) {
 }
 
 function formatRunDuration(durationMs?: number | null) {
-  if (!durationMs || durationMs <= 0) return "—";
+  if (!durationMs || durationMs <= 0 || durationMs > MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS) {
+    return "—";
+  }
   const totalSeconds = Math.floor(durationMs / 1000);
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
-function formatRunTimeComparison(run: MythicPlusRun) {
-  const actualTime = formatRunDuration(run.durationMs);
-  const maxTime = formatRunDuration(getMythicPlusDungeonTimerMs(run.mapChallengeModeID, run.mapName));
+const MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS = 4 * 60 * 60 * 1000;
 
-  if (maxTime === "â€”") {
+function getRunDurationMs(run: MythicPlusRun): number | undefined {
+  if (
+    run.durationMs !== undefined &&
+    run.durationMs > 0 &&
+    run.durationMs <= MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS
+  ) {
+    return run.durationMs;
+  }
+
+  const runEndAt = run.endedAt ?? run.abandonedAt ?? run.completedAt;
+  if (
+    run.startDate !== undefined &&
+    runEndAt !== undefined &&
+    runEndAt >= run.startDate
+  ) {
+    const derivedDurationMs = (runEndAt - run.startDate) * 1000;
+    if (
+      Number.isFinite(derivedDurationMs) &&
+      derivedDurationMs > 0 &&
+      derivedDurationMs <= MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS
+    ) {
+      return derivedDurationMs;
+    }
+  }
+
+  return undefined;
+}
+
+function formatRunTimeComparison(run: MythicPlusRun) {
+  if (getMythicPlusRunStatus(run) === "active") {
+    return "In progress";
+  }
+
+  const actualTime = formatRunDuration(getRunDurationMs(run));
+  const timerMs = getMythicPlusDungeonTimerMs(run.mapChallengeModeID, run.mapName);
+  if (timerMs === null || timerMs === undefined) {
     return actualTime;
   }
 
+  const maxTime = formatRunDuration(timerMs);
   return `${actualTime} / ${maxTime}`;
 }
 
@@ -294,13 +330,13 @@ function formatKeyLevel(level?: number | null) {
 }
 
 function formatTimedKeyLevel(level?: number | null, upgradeCount?: number | null) {
-  if (level === undefined || level === null) return "â€”";
+  if (level === undefined || level === null) return "-";
   const normalizedUpgradeCount = Math.max(1, Math.min(3, upgradeCount ?? 1));
   return `${"+".repeat(normalizedUpgradeCount)}${level}`;
 }
 
 function formatRunScore(value?: number | null) {
-  if (value === undefined || value === null) return "â€”";
+  if (value === undefined || value === null) return "-";
   const hasFraction = Math.abs(value % 1) > 0.001;
   return value.toLocaleString(undefined, {
     minimumFractionDigits: hasFraction ? 1 : 0,
@@ -344,16 +380,42 @@ function getRunLabel(run: MythicPlusRun) {
   return "Unknown Dungeon";
 }
 
-function isCompletedMythicPlusRun(run: MythicPlusRun) {
-  return (
+function getMythicPlusRunStatus(run: MythicPlusRun): MythicPlusRun["status"] | undefined {
+  if (run.status === "active" || run.status === "completed" || run.status === "abandoned") {
+    return run.status;
+  }
+
+  if (
     run.completed === true ||
-    run.durationMs !== undefined ||
+    getRunDurationMs(run) !== undefined ||
     run.runScore !== undefined ||
     run.completedAt !== undefined
-  );
+  ) {
+    return "completed";
+  }
+
+  if (
+    run.abandonedAt !== undefined ||
+    run.abandonReason !== undefined ||
+    (run.endedAt !== undefined &&
+      run.durationMs === undefined &&
+      run.runScore === undefined &&
+      run.completedAt === undefined)
+  ) {
+    return "abandoned";
+  }
+
+  return undefined;
+}
+
+function isCompletedMythicPlusRun(run: MythicPlusRun) {
+  return getMythicPlusRunStatus(run) === "completed";
 }
 
 function getMythicPlusRunTimedState(run: MythicPlusRun): boolean | null {
+  if (getMythicPlusRunStatus(run) !== "completed") {
+    return null;
+  }
   if (run.upgradeCount !== undefined && run.upgradeCount !== null) {
     return run.upgradeCount > 0;
   }
@@ -457,7 +519,7 @@ function MythicPlusKeyPill({
   compact?: boolean;
 }) {
   if (level === undefined || level === null) {
-    return <span className="text-muted-foreground">â€”</span>;
+    return <span className="text-muted-foreground">-</span>;
   }
 
   const normalizedUpgradeCount = Math.max(1, Math.min(3, upgradeCount ?? 1));
@@ -475,26 +537,43 @@ function MythicPlusKeyPill({
 }
 
 function getRunPlayedAt(run: MythicPlusRun) {
-  const primaryTimestamp = run.completedAt ?? run.startDate;
-  if (primaryTimestamp === undefined) {
-    return run.observedAt;
+  if (run.playedAt !== undefined) {
+    return run.playedAt;
+  }
+  if (run.sortTimestamp !== undefined) {
+    return run.sortTimestamp;
   }
 
-  const observedAt = run.observedAt;
-  if (observedAt !== undefined) {
-    const driftSeconds = observedAt - primaryTimestamp;
-    const roundedHourDriftSeconds = Math.round(driftSeconds / 3600) * 3600;
-    const looksLikeLegacyUtcDrift =
-      roundedHourDriftSeconds >= 3600 &&
-      roundedHourDriftSeconds <= 3 * 3600 &&
-      Math.abs(driftSeconds - roundedHourDriftSeconds) <= 10 * 60;
+  return run.observedAt;
+}
 
-    if (looksLikeLegacyUtcDrift) {
-      return primaryTimestamp + roundedHourDriftSeconds;
-    }
+function getRecentRunRowKey(run: MythicPlusRun) {
+  if (typeof run.rowKey === "string" && run.rowKey.trim() !== "") {
+    return run.rowKey;
   }
 
-  return primaryTimestamp;
+  if (typeof run._id === "string" && run._id.trim() !== "") {
+    return run._id;
+  }
+
+  const identityTokens: string[] = [];
+  const explicitAttemptId = run.attemptId?.trim();
+  if (explicitAttemptId) {
+    identityTokens.push(`aid:${explicitAttemptId}`);
+  }
+
+  const explicitCanonicalKey = run.canonicalKey?.trim();
+  if (explicitCanonicalKey) {
+    identityTokens.push(`ck:${explicitCanonicalKey}`);
+  }
+
+  const normalizedFingerprint = run.fingerprint?.trim();
+  if (normalizedFingerprint) {
+    identityTokens.push(`fp:${normalizedFingerprint}`);
+  }
+
+  const identityKey = identityTokens.length > 0 ? identityTokens.join("|") : "run";
+  return `${identityKey}|${getRunPlayedAt(run) ?? 0}`;
 }
 
 function formatRunMemberName(member: MythicPlusRunMember, characterRealm: string) {
@@ -913,13 +992,31 @@ function getTertiaryStats(snapshot: Snapshot) {
 }
 
 function MythicPlusResultBadge({ run }: { run: MythicPlusRun }) {
+  const status = getMythicPlusRunStatus(run);
   const timedState = getMythicPlusRunTimedState(run);
+  const normalizedUpgradeCount =
+    run.upgradeCount !== undefined && run.upgradeCount !== null
+      ? Math.max(1, Math.min(3, run.upgradeCount))
+      : null;
 
+  if (status === "active") {
+    return (
+      <Badge className="rounded-md border-sky-400/35 bg-sky-500/16 px-1.5 py-0.5 text-[11px] font-semibold tracking-[0.08em] text-sky-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+        Active
+      </Badge>
+    );
+  }
+  if (status === "abandoned") {
+    return (
+      <Badge className="rounded-md border-rose-400/35 bg-rose-500/16 px-1.5 py-0.5 text-[11px] font-semibold tracking-[0.08em] text-rose-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+        Abandoned
+      </Badge>
+    );
+  }
   if (timedState === true) {
-    const upgradeCount = Math.max(1, Math.min(3, run.upgradeCount ?? 1));
     return (
       <Badge className="rounded-md border-emerald-400/40 bg-emerald-500/18 px-1.5 py-0.5 text-[11px] font-semibold tracking-[0.08em] text-emerald-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-        {`+${upgradeCount}`}
+        {normalizedUpgradeCount !== null ? `+${normalizedUpgradeCount}` : "Timed"}
       </Badge>
     );
   }
@@ -937,11 +1034,7 @@ function MythicPlusResultBadge({ run }: { run: MythicPlusRun }) {
       </Badge>
     );
   }
-  return (
-    <Badge className="rounded-md border-rose-400/35 bg-rose-500/16 px-1.5 py-0.5 text-[11px] font-semibold tracking-[0.08em] text-rose-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-      Failed
-    </Badge>
-  );
+  return null;
 }
 
 function MythicPlusSection({
@@ -964,7 +1057,8 @@ function MythicPlusSection({
   } = useHiddenPlayers();
   const [summaryCardHeight, setSummaryCardHeight] = useState<number | null>(null);
   const summaryCardRef = useRef<HTMLDivElement | null>(null);
-  const recentRunsResetKey = `${data?.runs.length ?? 0}:${data?.runs[0]?.fingerprint ?? ""}`;
+  const latestRunResetKey = data?.runs[0] ? getRecentRunRowKey(data.runs[0]) : "";
+  const recentRunsResetKey = `${data?.runs.length ?? 0}:${latestRunResetKey}`;
   const totalRunCount = data?.runs.length ?? 0;
   const hasMoreRecentRuns = visibleRecentRunCount < totalRunCount;
 
@@ -1048,7 +1142,7 @@ function MythicPlusSection({
                   <Flame size={14} className="text-muted-foreground" />
                   <h3 className="text-sm font-semibold">Current Season</h3>
                 </div>
-                <div className="grid gap-1.5 sm:grid-cols-2 xl:grid-cols-4">
+                <div className="grid gap-1.5 sm:grid-cols-2 xl:grid-cols-3">
                   <StatGrid
                     compact
                     label="Current Score"
@@ -1069,13 +1163,25 @@ function MythicPlusSection({
                   />
                   <StatGrid
                     compact
+                    label="Total Attempts"
+                    value={(currentSeason.totalAttempts ?? currentSeason.totalRuns).toLocaleString()}
+                  />
+                </div>
+                <div className="grid gap-1.5 sm:grid-cols-2 xl:grid-cols-3">
+                  <StatGrid
+                    compact
                     label="Timed Runs"
                     value={currentSeason.timedRuns.toLocaleString()}
                   />
                   <StatGrid
                     compact
-                    label="Total Runs"
-                    value={currentSeason.totalRuns.toLocaleString()}
+                    label="Completed"
+                    value={currentSeason.completedRuns.toLocaleString()}
+                  />
+                  <StatGrid
+                    compact
+                    label="Abandoned"
+                    value={(currentSeason.abandonedRuns ?? 0).toLocaleString()}
                   />
                 </div>
                 <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
@@ -1210,7 +1316,7 @@ function MythicPlusSection({
               </thead>
               <tbody className="divide-y divide-border/50">
                 {visibleRecentRuns.map((run) => (
-                  <tr key={run.fingerprint} className="transition-colors hover:bg-muted/15">
+                  <tr key={getRecentRunRowKey(run)} className="transition-colors hover:bg-muted/15">
                     <td className="px-3 py-2.5 text-muted-foreground align-top">
                       <RecentRunPlayedAt run={run} />
                     </td>
@@ -1386,18 +1492,34 @@ type MythicPlusRunMember = {
 };
 
 type MythicPlusRun = {
+  _id?: Id<"mythicPlusRuns">;
+  rowKey?: string;
   fingerprint: string;
+  attemptId?: string;
+  canonicalKey?: string;
   observedAt: number;
+  playedAt?: number;
+  sortTimestamp?: number;
   seasonID?: number;
   mapChallengeModeID?: number;
   mapName?: string;
   level?: number;
+  status?: "active" | "completed" | "abandoned";
   completed?: boolean;
   completedInTime?: boolean;
   durationMs?: number;
   runScore?: number;
   startDate?: number;
   completedAt?: number;
+  endedAt?: number;
+  abandonedAt?: number;
+  abandonReason?:
+    | "challenge_mode_reset"
+    | "left_instance"
+    | "leaver_timer"
+    | "history_incomplete"
+    | "stale_recovery"
+    | "unknown";
   thisWeek?: boolean;
   members?: MythicPlusRunMember[];
   upgradeCount?: number | null;
@@ -1406,7 +1528,10 @@ type MythicPlusRun = {
 
 type MythicPlusBucketSummary = {
   totalRuns: number;
+  totalAttempts?: number;
   completedRuns: number;
+  abandonedRuns?: number;
+  activeRuns?: number;
   timedRuns: number;
   timed2To9: number;
   timed10To11: number;
