@@ -2254,74 +2254,10 @@ function OwnedKeystoneMetric({ keystone }: { keystone?: Snapshot["ownedKeystone"
 
 // ── Snapshot history table ────────────────────────────────────────────────────
 
-function SnapshotHistoryTable({
-  snapshots,
-  paginated = false,
-}: {
-  snapshots: Snapshot[];
-  paginated?: boolean;
-}) {
-  const [visible, setVisible] = useState(paginated ? 5 : snapshots.length);
-
-  return (
-    <>
-      <div className="overflow-x-auto max-h-[360px] overflow-y-auto">
-        <table className="w-full text-xs">
-          <thead className="sticky top-0 bg-card z-10">
-            <tr className="border-b border-border/50">
-              <th className="text-left text-muted-foreground font-medium py-2 pr-4">Date</th>
-              <th className="text-right text-muted-foreground font-medium py-2 px-2">iLvl</th>
-              <th className="text-right text-muted-foreground font-medium py-2 px-2">M+</th>
-              <th className="text-right text-muted-foreground font-medium py-2 px-2">Gold</th>
-              <th className="text-left text-muted-foreground font-medium py-2 pl-2">Spec / Role</th>
-            </tr>
-          </thead>
-          <tbody>
-            {[...snapshots]
-              .reverse()
-              .slice(0, visible)
-              .map((s, i) => (
-                <tr
-                  key={i}
-                  className="border-b border-border/30 last:border-0 hover:bg-muted/20 transition-colors"
-                >
-                  <td className="py-2 pr-4 text-muted-foreground">{formatDate(s.takenAt)}</td>
-                  <td className="py-2 px-2 text-right tabular-nums">{s.itemLevel.toFixed(1)}</td>
-                  <td className="py-2 px-2 text-right tabular-nums">
-                    {s.mythicPlusScore.toLocaleString()}
-                  </td>
-                  <td className="py-2 px-2 text-right">
-                    <GoldDisplay value={s.gold} />
-                  </td>
-                  <td className="py-2 pl-2 text-muted-foreground">
-                    {s.spec} <span className="opacity-60">({s.role})</span>
-                  </td>
-                </tr>
-              ))}
-          </tbody>
-        </table>
-      </div>
-      {paginated && visible < snapshots.length && (
-        <div className="border-t pt-3 pb-3 px-6">
-          <Button
-            variant="outline"
-            size="sm"
-            className="w-full text-xs"
-            onClick={() => setVisible((v) => v + 5)}
-          >
-            Load more ({snapshots.length - visible} remaining)
-          </Button>
-        </div>
-      )}
-    </>
-  );
-}
-
 // ════════════════════════════════════════════════════════════════════════════
 // Layout A — Overview
 // Left sidebar: radar + current values (sticky)
 // Right: time picker + chart grid
-// Bottom: collapsible history
 // ════════════════════════════════════════════════════════════════════════════
 
 function OverviewLayout({
@@ -3052,59 +2988,6 @@ function RouteComponent() {
           characterRegion={character.region}
         />
       )}
-      <SnapshotHistorySection snapshots={snapshots} layoutMode={layoutMode} />
     </div>
-  );
-}
-
-function SnapshotHistorySection({
-  snapshots,
-  layoutMode,
-}: {
-  snapshots: Snapshot[];
-  layoutMode: LayoutMode;
-}) {
-  const [showHistory, setShowHistory] = useState(false);
-
-  if (snapshots.length <= 1) return null;
-
-  if (layoutMode === "timeline") {
-    return (
-      <Card>
-        <CardHeader className="border-b pb-3">
-          <CardTitle className="text-sm font-medium flex items-center gap-1.5">
-            <History size={14} className="text-muted-foreground" />
-            Snapshot History ({snapshots.length})
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="pt-0">
-          <SnapshotHistoryTable snapshots={snapshots} />
-        </CardContent>
-      </Card>
-    );
-  }
-
-  return (
-    <Card>
-      <CardHeader
-        className="border-b pb-3 cursor-pointer select-none"
-        onClick={() => setShowHistory((v) => !v)}
-      >
-        <CardTitle className="text-sm font-medium flex items-center justify-between">
-          <span className="flex items-center gap-1.5">
-            <History size={14} className="text-muted-foreground" />
-            Snapshot History ({snapshots.length})
-          </span>
-          <span className="text-muted-foreground text-xs font-normal">
-            {showHistory ? "Hide" : "Show"}
-          </span>
-        </CardTitle>
-      </CardHeader>
-      {showHistory && (
-        <CardContent className="pt-0">
-          <SnapshotHistoryTable snapshots={snapshots} paginated />
-        </CardContent>
-      )}
-    </Card>
   );
 }
