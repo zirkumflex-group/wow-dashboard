@@ -39,7 +39,7 @@ import {
   EyeOff,
   Zap,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   CartesianGrid,
@@ -1085,7 +1085,7 @@ function MythicPlusSection({
   }, [recentRunsResetKey]);
 
   if (data === undefined) {
-    return <div className="h-72 animate-pulse rounded-lg bg-muted" />;
+    return null;
   }
 
   if (!data || data.runs.length === 0) {
@@ -2735,6 +2735,10 @@ function RouteComponent() {
   const mythicPlus = useQuery(api.characters.getCharacterMythicPlus, {
     characterId: characterId as Id<"characters">,
   });
+  const snapshotsCacheRef = useRef(new Map<string, Exclude<typeof data, undefined>>());
+  const mythicPlusCacheRef = useRef(new Map<string, Exclude<typeof mythicPlus, undefined>>());
+  const resolvedData = data ?? snapshotsCacheRef.current.get(characterId);
+  const resolvedMythicPlus = mythicPlus ?? mythicPlusCacheRef.current.get(characterId);
 
   const [timeFrame, setTimeFrame] = useState<TimeFrame>("30d");
   const { pinnedCharacterIdSet, togglePinnedCharacter } = usePinnedCharacters();
@@ -2747,18 +2751,30 @@ function RouteComponent() {
   });
 
   useEffect(() => {
+    if (data !== undefined) {
+      snapshotsCacheRef.current.set(characterId, data);
+    }
+  }, [characterId, data]);
+
+  useEffect(() => {
+    if (mythicPlus !== undefined) {
+      mythicPlusCacheRef.current.set(characterId, mythicPlus);
+    }
+  }, [characterId, mythicPlus]);
+
+  useEffect(() => {
     const appTitle = "WoW Dashboard";
-    if (data === undefined) {
+    if (resolvedData === undefined) {
       document.title = `Character | ${appTitle}`;
       return;
     }
-    if (!data) {
+    if (!resolvedData) {
       document.title = `Character Not Found | ${appTitle}`;
       return;
     }
 
-    document.title = `${data.character.name} (${data.character.realm}) | ${appTitle}`;
-  }, [data]);
+    document.title = `${resolvedData.character.name} (${resolvedData.character.realm}) | ${appTitle}`;
+  }, [resolvedData]);
 
   function handleLayoutChange(mode: LayoutMode) {
     setLayoutMode(mode);
@@ -2769,16 +2785,20 @@ function RouteComponent() {
     }
   }
 
-  if (data === undefined) {
+  const resolvedSnapshots = resolvedData?.snapshots;
+  const timeFrameFiltered = useMemo(() => {
+    if (!resolvedSnapshots) return [] as Snapshot[];
+    return filterByTimeFrame(resolvedSnapshots, timeFrame);
+  }, [resolvedSnapshots, timeFrame]);
+  const chartSnapshots = useMemo(() => groupSnapshotsAuto(timeFrameFiltered), [timeFrameFiltered]);
+
+  if (resolvedData === undefined) {
     return (
-      <div className="w-full px-4 py-6 sm:px-6 lg:px-8 space-y-4">
-        <div className="h-40 animate-pulse rounded-lg bg-muted" />
-        <div className="h-56 animate-pulse rounded-lg bg-muted" />
-      </div>
+      <div className="w-full px-4 py-6 sm:px-6 lg:px-8" />
     );
   }
 
-  if (!data) {
+  if (!resolvedData) {
     return (
       <div className="container mx-auto max-w-3xl px-4 py-6">
         <p className="text-muted-foreground text-sm">Character not found.</p>
@@ -2786,14 +2806,12 @@ function RouteComponent() {
     );
   }
 
-  const { character, snapshots } = data;
+  const { character, snapshots } = resolvedData;
   const isPinnedToQuickAccess = pinnedCharacterIdSet.has(characterId);
-  const mythicPlusData = mythicPlus as MythicPlusData | null | undefined;
+  const mythicPlusData = resolvedMythicPlus as MythicPlusData | null | undefined;
 
   const latest = snapshots[snapshots.length - 1] ?? null;
   const firstSnapshot = snapshots[0] ?? null;
-  const timeFrameFiltered = filterByTimeFrame(snapshots, timeFrame);
-  const chartSnapshots = groupSnapshotsAuto(timeFrameFiltered);
   const lastMythicPlusRunAt = mythicPlusData?.summary.overall.lastRunAt ?? null;
 
   const layoutProps: LayoutProps = {
@@ -2983,7 +3001,7 @@ function RouteComponent() {
 
       {layoutMode !== "overview" && (
         <MythicPlusSection
-          data={mythicPlus as MythicPlusData | null | undefined}
+          data={mythicPlusData}
           characterRealm={character.realm}
           characterRegion={character.region}
         />
