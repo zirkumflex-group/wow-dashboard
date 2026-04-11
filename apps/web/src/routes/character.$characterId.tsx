@@ -1652,6 +1652,20 @@ type YScaleOptions = {
   tickCount?: number;
 };
 
+type SnapshotLineSeries = {
+  key: string;
+  color: string;
+};
+
+type LineEmphasisMode = "primary" | "equal";
+
+type EndpointDotProps = {
+  cx?: number;
+  cy?: number;
+  index?: number;
+  value?: number | string;
+};
+
 const ITEM_LEVEL_AUTO_SCALE: YScaleOptions = {
   minSpan: 4,
   minPadding: 0.5,
@@ -1746,6 +1760,28 @@ function getAdaptiveYDomain(
   return [domainMin, domainMax];
 }
 
+function getPrimaryLineKey(
+  lines: SnapshotLineSeries[],
+  latestDatum?: Record<string, number | undefined>,
+) {
+  if (lines.length <= 1) return lines[0]?.key;
+
+  return lines.reduce((primaryKey, line) => {
+    const lineValue = latestDatum?.[line.key];
+    const primaryValue = latestDatum?.[primaryKey];
+
+    if (typeof lineValue !== "number") {
+      return primaryKey;
+    }
+
+    if (typeof primaryValue !== "number" || lineValue > primaryValue) {
+      return line.key;
+    }
+
+    return primaryKey;
+  }, lines[0]?.key ?? "");
+}
+
 function SnapshotLineChart({
   data,
   lines,
@@ -1756,9 +1792,11 @@ function SnapshotLineChart({
   yDomainOverride,
   yScaleOptions,
   timeFrame,
+  lineEmphasis = "primary",
+  showLatestValue,
 }: {
-  data: Record<string, number>[];
-  lines: { key: string; color: string }[];
+  data: Record<string, number | undefined>[];
+  lines: SnapshotLineSeries[];
   config: ChartConfig;
   valueFormatter?: (v: number) => string;
   className?: string;
@@ -1766,6 +1804,8 @@ function SnapshotLineChart({
   yDomainOverride?: [number, number];
   yScaleOptions?: YScaleOptions;
   timeFrame?: TimeFrame;
+  lineEmphasis?: LineEmphasisMode;
+  showLatestValue?: boolean;
 }) {
   if (data.length < 2) {
     return (
@@ -1773,25 +1813,93 @@ function SnapshotLineChart({
     );
   }
 
-  const hideDots = data.length > 15;
   const xAxisInterval = data.length > 10 ? Math.ceil(data.length / 10) - 1 : 0;
+  const latestDatum = data[data.length - 1];
+  const hasPrimaryEmphasis = lineEmphasis === "primary" && lines.length > 1;
+  const primaryLineKey = hasPrimaryEmphasis ? getPrimaryLineKey(lines, latestDatum) : undefined;
+  const shouldShowLatestValue = showLatestValue ?? lines.length === 1;
 
   const allValues = data
     .flatMap((d) => lines.map((l) => d[l.key]))
-    .filter((v) => typeof v === "number" && !isNaN(v));
+    .filter((v): v is number => typeof v === "number" && !Number.isNaN(v));
   const yDomain: [number, number] =
     yDomainOverride ?? getAdaptiveYDomain(allValues, data.length, yScaleOptions);
 
+  const renderEndpointMarker =
+    ({
+      color,
+      variant,
+      showLabel,
+    }: {
+      color: string;
+      variant: "primary" | "secondary" | "equal";
+      showLabel: boolean;
+    }) =>
+    ({ cx, cy, index, value }: EndpointDotProps) => {
+      if (typeof cx !== "number" || typeof cy !== "number" || index !== data.length - 1) {
+        return null;
+      }
+
+      const numericValue =
+        typeof value === "number"
+          ? value
+          : typeof value === "string"
+            ? Number(value)
+            : Number.NaN;
+      const label =
+        showLabel && Number.isFinite(numericValue)
+          ? valueFormatter?.(numericValue) ?? numericValue.toLocaleString()
+          : null;
+      const showLabelBelow = cy < 28;
+      const markerOpacity = variant === "primary" ? 1 : variant === "equal" ? 0.9 : 0.65;
+      const markerRadius = variant === "primary" ? 4.5 : variant === "equal" ? 3.5 : 3;
+      const markerStrokeWidth = variant === "primary" ? 2.5 : 2;
+
+      return (
+        <g opacity={markerOpacity}>
+          <circle
+            cx={cx}
+            cy={cy}
+            r={markerRadius}
+            fill={color}
+            stroke="var(--card)"
+            strokeWidth={markerStrokeWidth}
+          />
+          {label ? (
+            <text
+              x={cx - 10}
+              y={showLabelBelow ? cy + 12 : cy - 10}
+              textAnchor="end"
+              dominantBaseline={showLabelBelow ? "hanging" : "auto"}
+              fill={color}
+              fontSize={11}
+              fontWeight={600}
+              letterSpacing="0.01em"
+              paintOrder="stroke"
+              stroke="var(--card)"
+              strokeWidth={4}
+            >
+              {label}
+            </text>
+          ) : null}
+        </g>
+      );
+    };
+
   return (
     <ChartContainer config={config} className={`w-full ${className ?? "h-[200px]"}`}>
-      <LineChart data={data} margin={{ top: 8, right: 8, left: 4, bottom: 8 }}>
-        <CartesianGrid vertical={false} strokeOpacity={0.15} />
+      <LineChart data={data} margin={{ top: 16, right: 12, left: 4, bottom: 8 }}>
+        <CartesianGrid vertical={false} stroke="var(--border)" strokeOpacity={0.14} />
         <XAxis
           dataKey="date"
           tickLine={false}
           axisLine={false}
           tickMargin={6}
-          tick={{ fontSize: 10 }}
+          tick={{
+            fontSize: 10,
+            fill: "var(--muted-foreground)",
+            fillOpacity: 0.7,
+          }}
           interval={xAxisInterval}
           tickFormatter={(ts: number) => xAxisTickFormatter(ts, timeFrame ?? "all")}
         />
@@ -1799,7 +1907,11 @@ function SnapshotLineChart({
           tickLine={false}
           axisLine={false}
           tickMargin={4}
-          tick={{ fontSize: 10 }}
+          tick={{
+            fontSize: 10,
+            fill: "var(--muted-foreground)",
+            fillOpacity: 0.7,
+          }}
           tickFormatter={valueFormatter}
           width={52}
           domain={yDomain}
@@ -1821,19 +1933,51 @@ function SnapshotLineChart({
             />
           }
         />
-        {showLegend && <ChartLegend content={<ChartLegendContent />} />}
-        {lines.map(({ key, color }) => (
-          <Line
-            key={key}
-            type="monotone"
-            dataKey={key}
-            stroke={color}
-            strokeWidth={2}
-            dot={hideDots ? false : { r: 3, fill: color, strokeWidth: 0 }}
-            activeDot={{ r: 5 }}
-            isAnimationActive={false}
+        {showLegend && (
+          <ChartLegend
+            content={<ChartLegendContent className="text-muted-foreground/85" />}
           />
-        ))}
+        )}
+        {lines.map(({ key, color }) => {
+          const isPrimaryLine = primaryLineKey === undefined || key === primaryLineKey;
+          const lineVariant = hasPrimaryEmphasis
+            ? isPrimaryLine
+              ? "primary"
+              : "secondary"
+            : "equal";
+
+          return (
+            <Line
+              key={key}
+              type="monotone"
+              dataKey={key}
+              stroke={color}
+              strokeWidth={lineVariant === "primary" ? 3.2 : lineVariant === "equal" ? 2.45 : 2}
+              strokeOpacity={lineVariant === "primary" ? 1 : lineVariant === "equal" ? 0.96 : 0.58}
+              strokeLinecap="round"
+              style={{
+                filter:
+                  lineVariant === "primary"
+                    ? `drop-shadow(0 0 3px ${color})`
+                    : lineVariant === "equal"
+                      ? `drop-shadow(0 0 2px ${color})`
+                      : `drop-shadow(0 0 1.5px ${color})`,
+              }}
+              dot={renderEndpointMarker({
+                color,
+                variant: lineVariant,
+                showLabel: shouldShowLatestValue && isPrimaryLine,
+              })}
+              activeDot={{
+                r: lineVariant === "primary" ? 5.5 : lineVariant === "equal" ? 5 : 4.5,
+                fill: color,
+                stroke: "var(--card)",
+                strokeWidth: 2,
+              }}
+              isAnimationActive={false}
+            />
+          );
+        })}
       </LineChart>
     </ChartContainer>
   );
@@ -2152,6 +2296,7 @@ function CurrenciesChartCard({
           lines={lines}
           config={currenciesConfig}
           showLegend
+          lineEmphasis="equal"
           yScaleOptions={CURRENCIES_SCALE}
           timeFrame={timeFrame}
         />
@@ -2481,6 +2626,7 @@ function FocusChart({
         config={currenciesConfig}
         className={h}
         showLegend
+        lineEmphasis="equal"
         yScaleOptions={CURRENCIES_SCALE}
         timeFrame={timeFrame}
       />
