@@ -285,6 +285,8 @@ local PENDING_RUN_MEMBER_MATCH_WINDOW = 5 * 60
 local PENDING_RUN_MEMBER_RETRY_DELAYS = { 5, 45, 120 }
 local ACTIVE_RUN_MEMBER_RETENTION = 4 * 60 * 60
 local ACTIVE_ATTEMPT_RECONCILE_GRACE = 8
+local ACTIVE_ATTEMPT_STALE_ACTIVE_RETRY_DELAY = 4
+local ACTIVE_ATTEMPT_STALE_ACTIVE_MAX_RETRIES = 6
 local RECENT_COMPLETION_EVENT_GRACE = 20
 local STALE_ATTEMPT_RECOVERY_SECONDS = 10 * 60
 local MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS = 4 * 60 * 60 * 1000
@@ -2103,7 +2105,10 @@ local function NormalizeLifecycleTimestamp(value)
         return nil
     end
     if normalized > 10000000000 then
-        return math.floor(normalized / 1000)
+        normalized = math.floor(normalized / 1000)
+    end
+    if normalized <= 0 then
+        return nil
     end
     return normalized
 end
@@ -3026,13 +3031,39 @@ local function ReconcileActiveAttemptLifecycle(reason, options)
         return false
     end
 
-    if IsChallengeModeAttemptActive() then
-        return false
-    end
-
     local completionAge = GetRecentCompletionEventAge(key)
     if completionAge ~= nil and completionAge <= RECENT_COMPLETION_EVENT_GRACE and options.ignoreRecentCompletion ~= true then
         return false
+    end
+
+    local challengeModeActive = IsChallengeModeAttemptActive()
+    if challengeModeActive then
+        if IsInsideMythicPlusDungeonInstance() then
+            return false
+        end
+
+        local retries = tonumber(options.activeSignalRetries) or 0
+        if retries < ACTIVE_ATTEMPT_STALE_ACTIVE_MAX_RETRIES then
+            local retryCount = retries + 1
+            AppendMythicPlusDebugEvent(key, "attempt_reconcile_active_retry", {
+                summary = "active signal retry " .. tostring(retryCount),
+                reason = reason,
+                retries = retryCount,
+            })
+            ScheduleActiveAttemptReconcile(reason or "reconcile_active_retry", ACTIVE_ATTEMPT_STALE_ACTIVE_RETRY_DELAY, {
+                force = true,
+                ignoreRecentCompletion = options.ignoreRecentCompletion,
+                reason = options.reason,
+                activeSignalRetries = retryCount,
+            })
+            return false
+        end
+
+        AppendMythicPlusDebugEvent(key, "attempt_reconcile_active_forced", {
+            summary = "forcing reconcile after stale active signal",
+            reason = reason,
+            retries = retries,
+        })
     end
 
     local activeRun = entry.mythicPlusRuns[activeIndex]
@@ -3954,7 +3985,16 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
 
     elseif event == "PLAYER_ENTERING_WORLD" then
         RefreshMinimapButton()
-        ReconcileActiveMythicPlusMemberCache("player_entering_world")
+        local enteringContext = GetCurrentActiveMythicPlusRunContext()
+        local activeCache = ReconcileActiveMythicPlusMemberCache("player_entering_world")
+        if enteringContext ~= nil then
+            UpsertSyntheticActiveAttempt("player_entering_world", {
+                mapChallengeModeID = enteringContext.mapChallengeModeID,
+                level = enteringContext.level,
+                members = type(activeCache) == "table" and activeCache.members or nil,
+                startDate = GetChallengeModeStartTimestamp(),
+            })
+        end
         ScheduleActiveAttemptReconcile("player_entering_world", ACTIVE_ATTEMPT_RECONCILE_GRACE)
         if not initialized then
             initialized = true
@@ -3977,7 +4017,16 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         end
 
     elseif event == "ZONE_CHANGED_NEW_AREA" then
-        ReconcileActiveMythicPlusMemberCache("zone_changed_new_area")
+        local zoneContext = GetCurrentActiveMythicPlusRunContext()
+        local activeCache = ReconcileActiveMythicPlusMemberCache("zone_changed_new_area")
+        if zoneContext ~= nil then
+            UpsertSyntheticActiveAttempt("zone_changed_new_area", {
+                mapChallengeModeID = zoneContext.mapChallengeModeID,
+                level = zoneContext.level,
+                members = type(activeCache) == "table" and activeCache.members or nil,
+                startDate = GetChallengeModeStartTimestamp(),
+            })
+        end
         ScheduleActiveAttemptReconcile("zone_changed_new_area", ACTIVE_ATTEMPT_RECONCILE_GRACE)
         if GetTime() - lastSnapshotAt > 60 then
             C_Timer.After(2, CollectSnapshot)
