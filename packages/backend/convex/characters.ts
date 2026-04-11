@@ -20,8 +20,10 @@ import { rateLimiter } from "./rateLimiter";
 
 type MythicPlusRunDoc = Doc<"mythicPlusRuns"> & { canonicalKey?: string };
 type SnapshotDoc = Doc<"snapshots">;
+type DbReaderCtx = { db: QueryCtx["db"] };
+type SnapshotSummary = NonNullable<Doc<"characters">["latestSnapshot"]>;
 
-function toSnapshotSummary(snapshot: SnapshotDoc | null) {
+function toSnapshotSummary(snapshot: SnapshotDoc | null): SnapshotSummary | null {
   if (!snapshot) return null;
 
   return {
@@ -34,11 +36,57 @@ function toSnapshotSummary(snapshot: SnapshotDoc | null) {
     playtimeSeconds: snapshot.playtimeSeconds,
     playtimeThisLevelSeconds: snapshot.playtimeThisLevelSeconds,
     mythicPlusScore: snapshot.mythicPlusScore,
-    ownedKeystone: snapshot.ownedKeystone,
+    ownedKeystone: snapshot.ownedKeystone ?? undefined,
   };
 }
 
-async function getPlayerForAuthUser(ctx: QueryCtx, authUserId: string) {
+function isSameKeystone(
+  current:
+    | {
+        level: number;
+        mapChallengeModeID?: number | undefined;
+        mapName?: string | undefined;
+      }
+    | undefined,
+  next:
+    | {
+        level: number;
+        mapChallengeModeID?: number | undefined;
+        mapName?: string | undefined;
+      }
+    | undefined,
+) {
+  if (!current && !next) return true;
+  if (!current || !next) return false;
+  return (
+    current.level === next.level &&
+    current.mapChallengeModeID === next.mapChallengeModeID &&
+    current.mapName === next.mapName
+  );
+}
+
+function isSameSnapshotSummary(current: SnapshotSummary | null, next: SnapshotSummary | null) {
+  if (!current && !next) return true;
+  if (!current || !next) return false;
+  return (
+    current.takenAt === next.takenAt &&
+    current.level === next.level &&
+    current.spec === next.spec &&
+    current.role === next.role &&
+    current.itemLevel === next.itemLevel &&
+    current.gold === next.gold &&
+    current.playtimeSeconds === next.playtimeSeconds &&
+    current.playtimeThisLevelSeconds === next.playtimeThisLevelSeconds &&
+    current.mythicPlusScore === next.mythicPlusScore &&
+    isSameKeystone(current.ownedKeystone, next.ownedKeystone)
+  );
+}
+
+function getCharacterStoredLatestSnapshot(character: Doc<"characters">): SnapshotSummary | null {
+  return character.latestSnapshot ?? null;
+}
+
+async function getPlayerForAuthUser(ctx: DbReaderCtx, authUserId: string) {
   return await ctx.db
     .query("players")
     .withIndex("by_user", (q) => q.eq("userId", authUserId))
@@ -46,7 +94,7 @@ async function getPlayerForAuthUser(ctx: QueryCtx, authUserId: string) {
 }
 
 async function getLatestSnapshotForCharacter(
-  ctx: QueryCtx,
+  ctx: DbReaderCtx,
   characterId: Doc<"characters">["_id"],
 ) {
   return await ctx.db
@@ -56,18 +104,30 @@ async function getLatestSnapshotForCharacter(
     .first();
 }
 
+async function getLatestSnapshotSummaryForCharacter(
+  ctx: DbReaderCtx,
+  character: Doc<"characters">,
+) {
+  const storedLatestSnapshot = getCharacterStoredLatestSnapshot(character);
+  if (storedLatestSnapshot) {
+    return storedLatestSnapshot;
+  }
+
+  return toSnapshotSummary(await getLatestSnapshotForCharacter(ctx, character._id));
+}
+
 async function getCharactersWithLatestSnapshots(
-  ctx: QueryCtx,
+  ctx: DbReaderCtx,
   characters: Doc<"characters">[],
 ) {
   if (characters.length === 0) {
-    return [] as { character: Doc<"characters">; snapshot: SnapshotDoc | null }[];
+    return [] as { character: Doc<"characters">; snapshot: SnapshotSummary | null }[];
   }
 
   return await Promise.all(
     characters.map(async (character) => ({
       character,
-      snapshot: await getLatestSnapshotForCharacter(ctx, character._id),
+      snapshot: await getLatestSnapshotSummaryForCharacter(ctx, character),
     })),
   );
 }
@@ -936,7 +996,7 @@ export const getPlayerCharacters = query({
     const withSnapshots = (await getCharactersWithLatestSnapshots(ctx, characters)).map(
       ({ character, snapshot }) => ({
         ...character,
-        snapshot: toSnapshotSummary(snapshot),
+        snapshot,
       }),
     );
 
@@ -1038,7 +1098,7 @@ export const getMyCharactersWithSnapshot = query({
 
     return (await getCharactersWithLatestSnapshots(ctx, characters)).map(({ character, snapshot }) => ({
       ...character,
-      snapshot: toSnapshotSummary(snapshot),
+      snapshot,
     }));
   },
 });
@@ -1078,5 +1138,40 @@ export const getCharactersWithLatestSnapshot = query({
           : null,
       }),
     );
+  },
+});
+
+export const backfillCharacterLatestSnapshots = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const authUser = await authComponent.safeGetAuthUser(ctx);
+    if (!authUser) return { totalCharacters: 0, updatedCharacters: 0 };
+
+    const player = await getPlayerForAuthUser(ctx, authUser._id as string);
+    if (!player) return { totalCharacters: 0, updatedCharacters: 0 };
+
+    const characters = await ctx.db
+      .query("characters")
+      .withIndex("by_player", (q) => q.eq("playerId", player._id))
+      .collect();
+
+    let updatedCharacters = 0;
+    for (const character of characters) {
+      const latestSnapshot = await getLatestSnapshotSummaryForCharacter(ctx, character);
+      if (!latestSnapshot) continue;
+
+      const currentLatestSnapshot = getCharacterStoredLatestSnapshot(character);
+      if (isSameSnapshotSummary(currentLatestSnapshot, latestSnapshot)) continue;
+
+      await ctx.db.patch(character._id, {
+        latestSnapshot,
+      });
+      updatedCharacters += 1;
+    }
+
+    return {
+      totalCharacters: characters.length,
+      updatedCharacters,
+    };
   },
 });

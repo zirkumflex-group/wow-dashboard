@@ -57,6 +57,7 @@ const snapshotValidator = v.object({
 });
 
 type SnapshotDoc = Doc<"snapshots">;
+type CharacterDoc = Doc<"characters">;
 type SnapshotFields = Pick<
   SnapshotDoc,
   | "takenAt"
@@ -72,6 +73,7 @@ type SnapshotFields = Pick<
   | "currencies"
   | "stats"
 >;
+type CharacterLatestSnapshot = NonNullable<CharacterDoc["latestSnapshot"]>;
 type MythicPlusRunDoc = Doc<"mythicPlusRuns"> & { canonicalKey?: string };
 type MythicPlusRunMembers = MythicPlusRunDoc["members"];
 type MythicPlusRunInput = Omit<MythicPlusRunDoc, "_id" | "_creationTime" | "characterId">;
@@ -222,6 +224,62 @@ function mergeSnapshotFields(existingSnapshot: SnapshotFields, incomingSnapshot:
 
 function snapshotFieldsEqual(a: SnapshotFields, b: SnapshotFields) {
   return JSON.stringify(toSnapshotFields(a)) === JSON.stringify(toSnapshotFields(b));
+}
+
+function toCharacterLatestSnapshot(snapshot: SnapshotFields): CharacterLatestSnapshot {
+  return {
+    takenAt: snapshot.takenAt,
+    level: snapshot.level,
+    spec: snapshot.spec,
+    role: snapshot.role,
+    itemLevel: snapshot.itemLevel,
+    gold: snapshot.gold,
+    playtimeSeconds: snapshot.playtimeSeconds,
+    playtimeThisLevelSeconds: snapshot.playtimeThisLevelSeconds,
+    mythicPlusScore: snapshot.mythicPlusScore,
+    ownedKeystone: snapshot.ownedKeystone,
+  };
+}
+
+function isSameCharacterLatestSnapshot(
+  currentSnapshot: CharacterLatestSnapshot | undefined,
+  nextSnapshot: CharacterLatestSnapshot | undefined,
+) {
+  if (!currentSnapshot && !nextSnapshot) return true;
+  if (!currentSnapshot || !nextSnapshot) return false;
+
+  const currentKeystone = currentSnapshot.ownedKeystone;
+  const nextKeystone = nextSnapshot.ownedKeystone;
+  const sameKeystone =
+    (!currentKeystone && !nextKeystone) ||
+    (!!currentKeystone &&
+      !!nextKeystone &&
+      currentKeystone.level === nextKeystone.level &&
+      currentKeystone.mapChallengeModeID === nextKeystone.mapChallengeModeID &&
+      currentKeystone.mapName === nextKeystone.mapName);
+
+  return (
+    currentSnapshot.takenAt === nextSnapshot.takenAt &&
+    currentSnapshot.level === nextSnapshot.level &&
+    currentSnapshot.spec === nextSnapshot.spec &&
+    currentSnapshot.role === nextSnapshot.role &&
+    currentSnapshot.itemLevel === nextSnapshot.itemLevel &&
+    currentSnapshot.gold === nextSnapshot.gold &&
+    currentSnapshot.playtimeSeconds === nextSnapshot.playtimeSeconds &&
+    currentSnapshot.playtimeThisLevelSeconds === nextSnapshot.playtimeThisLevelSeconds &&
+    currentSnapshot.mythicPlusScore === nextSnapshot.mythicPlusScore &&
+    sameKeystone
+  );
+}
+
+function shouldReplaceCharacterLatestSnapshot(
+  currentSnapshot: CharacterLatestSnapshot | undefined,
+  nextSnapshot: CharacterLatestSnapshot,
+) {
+  if (!currentSnapshot) return true;
+  if (nextSnapshot.takenAt > currentSnapshot.takenAt) return true;
+  if (nextSnapshot.takenAt < currentSnapshot.takenAt) return false;
+  return !isSameCharacterLatestSnapshot(currentSnapshot, nextSnapshot);
 }
 
 function pickDefinedValue<T>(preferredValue: T | undefined, fallbackValue: T | undefined): T | undefined {
@@ -605,6 +663,8 @@ export const ingestAddonData = mutation({
         characterId = existing._id;
       }
 
+      let nextCharacterLatestSnapshot = existing?.latestSnapshot;
+      let shouldPersistLatestSnapshot = false;
       for (const snap of charData.snapshots) {
         const normalizedSpec = normalizeSnapshotSpec(snap.spec);
         if (!normalizedSpec) {
@@ -646,20 +706,38 @@ export const ingestAddonData = mutation({
           )
           .first();
 
+        let latestSnapshotCandidate: CharacterLatestSnapshot;
         if (!existingSnap) {
           await ctx.db.insert("snapshots", {
             characterId,
             ...nextSnapshot,
           });
           newSnapshots++;
-          continue;
+          latestSnapshotCandidate = toCharacterLatestSnapshot(nextSnapshot);
+        } else {
+          const existingSnapshotFields = toSnapshotFields(existingSnap);
+          const mergedSnapshot = mergeSnapshotFields(existingSnapshotFields, nextSnapshot);
+          if (!snapshotFieldsEqual(existingSnapshotFields, mergedSnapshot)) {
+            await ctx.db.patch(existingSnap._id, mergedSnapshot);
+            latestSnapshotCandidate = toCharacterLatestSnapshot(mergedSnapshot);
+          } else {
+            latestSnapshotCandidate = toCharacterLatestSnapshot(existingSnapshotFields);
+          }
         }
 
-        const existingSnapshotFields = toSnapshotFields(existingSnap);
-        const mergedSnapshot = mergeSnapshotFields(existingSnapshotFields, nextSnapshot);
-        if (!snapshotFieldsEqual(existingSnapshotFields, mergedSnapshot)) {
-          await ctx.db.patch(existingSnap._id, mergedSnapshot);
+        if (
+          shouldReplaceCharacterLatestSnapshot(nextCharacterLatestSnapshot, latestSnapshotCandidate) &&
+          !isSameCharacterLatestSnapshot(nextCharacterLatestSnapshot, latestSnapshotCandidate)
+        ) {
+          nextCharacterLatestSnapshot = latestSnapshotCandidate;
+          shouldPersistLatestSnapshot = true;
         }
+      }
+
+      if (shouldPersistLatestSnapshot && nextCharacterLatestSnapshot) {
+        await ctx.db.patch(characterId, {
+          latestSnapshot: nextCharacterLatestSnapshot,
+        });
       }
 
       const existingCharacterRuns = await ctx.db
