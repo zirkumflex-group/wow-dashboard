@@ -142,24 +142,6 @@ function SortIcon({
   );
 }
 
-function MetricTile({
-  label,
-  value,
-  helper,
-}: {
-  label: string;
-  value: string;
-  helper?: string;
-}) {
-  return (
-    <div className="rounded-md border border-border/60 bg-muted/20 p-2">
-      <p className="text-[11px] text-muted-foreground">{label}</p>
-      <p className="mt-0.5 text-sm font-semibold leading-none">{value}</p>
-      {helper && <p className="mt-1 truncate text-[11px] text-muted-foreground">{helper}</p>}
-    </div>
-  );
-}
-
 type SortDir = "asc" | "desc";
 type CharacterSort = "mplus" | "ilvl" | "key" | "playtime";
 type PlayerSort = "mplus" | "playtime" | "gold";
@@ -198,11 +180,13 @@ function CharactersTab() {
 
   if (entries === undefined) {
     return (
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-        {Array.from({ length: 9 }).map((_, index) => (
-          <Skeleton key={index} className="h-52 w-full rounded-lg" />
-        ))}
-      </div>
+      <Card>
+        <CardContent className="space-y-2 py-3">
+          {Array.from({ length: 10 }).map((_, index) => (
+            <Skeleton key={index} className="h-12 w-full rounded-md" />
+          ))}
+        </CardContent>
+      </Card>
     );
   }
 
@@ -280,42 +264,12 @@ function CharactersTab() {
             className="h-8 w-24 text-sm"
           />
         </label>
+        <span className="text-xs text-muted-foreground">{filtered.length} / {entries.length} shown</span>
+        <span className="text-xs text-muted-foreground">Avg iLvl {averageIlvl.toFixed(1)}</span>
         <span className="text-xs text-muted-foreground">
-          {filtered.length} / {entries.length} shown
+          Avg M+ {Math.round(averageMythicPlus).toLocaleString()}
         </span>
-      </div>
-
-      <div className="flex flex-wrap items-center gap-2">
-        {([
-          { id: "mplus", label: "M+ Score" },
-          { id: "ilvl", label: "Item Level" },
-          { id: "key", label: "Keystone" },
-          { id: "playtime", label: "Playtime" },
-        ] as const).map((option) => (
-          <button
-            key={option.id}
-            type="button"
-            onClick={() => handleSort(option.id)}
-            className={`rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${
-              sort === option.id
-                ? "border-primary bg-primary/10 text-foreground"
-                : "border-border text-muted-foreground hover:border-primary/40 hover:text-foreground"
-            }`}
-          >
-            {option.label}
-            <SortIcon column={option.id} sort={sort} direction={dir} />
-          </button>
-        ))}
-      </div>
-
-      <div className="grid gap-3 sm:grid-cols-3">
-        <MetricTile label="Characters" value={filtered.length.toLocaleString()} />
-        <MetricTile label="Avg iLvl" value={averageIlvl.toFixed(1)} />
-        <MetricTile
-          label="Avg M+ Score"
-          value={Math.round(averageMythicPlus).toLocaleString()}
-          helper={`${keyedCharacters} with active keystone`}
-        />
+        <span className="text-xs text-muted-foreground">{keyedCharacters} with keystone</span>
       </div>
 
       {sorted.length === 0 ? (
@@ -325,69 +279,117 @@ function CharactersTab() {
           </CardContent>
         </Card>
       ) : (
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-          {sorted.map((entry, index) => {
-            const keystone = getKeystoneDisplay(entry.ownedKeystone);
-            const scoreColor = getRaiderIoScoreColor(entry.mythicPlusScore) ?? "#f8fafc";
+        <Card className="border-border/70 bg-card">
+          <CardContent className="p-0">
+            <Table>
+              <TableHeader>
+                <TableRow className="hover:bg-transparent">
+                  <TableHead className="w-14">#</TableHead>
+                  <TableHead>Character</TableHead>
+                  <TableHead
+                    className="cursor-pointer select-none text-right"
+                    onClick={() => handleSort("key")}
+                  >
+                    Key
+                    <SortIcon column="key" sort={sort} direction={dir} />
+                  </TableHead>
+                  <TableHead
+                    className="cursor-pointer select-none text-right"
+                    onClick={() => handleSort("mplus")}
+                  >
+                    M+ Score
+                    <SortIcon column="mplus" sort={sort} direction={dir} />
+                  </TableHead>
+                  <TableHead
+                    className="hidden cursor-pointer select-none text-right sm:table-cell"
+                    onClick={() => handleSort("ilvl")}
+                  >
+                    iLvl
+                    <SortIcon column="ilvl" sort={sort} direction={dir} />
+                  </TableHead>
+                  <TableHead
+                    className="hidden cursor-pointer select-none text-right md:table-cell"
+                    onClick={() => handleSort("playtime")}
+                  >
+                    Playtime
+                    <SortIcon column="playtime" sort={sort} direction={dir} />
+                  </TableHead>
+                  <TableHead className="hidden text-right lg:table-cell">Gold</TableHead>
+                  <TableHead className="hidden text-right xl:table-cell">Snapshot</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {sorted.map((entry, index) => {
+                  const keystone = getKeystoneDisplay(entry.ownedKeystone);
+                  const scoreColor = getRaiderIoScoreColor(entry.mythicPlusScore) ?? "#f8fafc";
 
-            return (
-              <Card
-                key={entry.characterId}
-                className="border-border/70 bg-card"
-              >
-                <CardContent className="space-y-4 p-4">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="flex items-start gap-3">
-                      <RankBadge rank={index} />
-                      <div>
-                        <Link
-                          to="/character/$characterId"
-                          params={{ characterId: entry.characterId }}
-                          className={`text-base font-semibold hover:underline ${classColor(entry.class)}`}
-                        >
-                          {entry.name}
-                        </Link>
-                        <p className="text-xs text-muted-foreground">
-                          {entry.spec} {entry.class} - Lvl {entry.level}
+                  return (
+                    <TableRow key={entry.characterId}>
+                      <TableCell className="w-14">
+                        <RankBadge rank={index} />
+                      </TableCell>
+                      <TableCell>
+                        <div className="space-y-0.5">
+                          <Link
+                            to="/character/$characterId"
+                            params={{ characterId: entry.characterId }}
+                            className={`font-semibold hover:underline ${classColor(entry.class)}`}
+                          >
+                            {entry.name}
+                          </Link>
+                          <p className="text-xs text-muted-foreground">
+                            {entry.spec} {entry.class} - Lvl {entry.level}
+                          </p>
+                          <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+                            <span>
+                              {entry.realm}-{entry.region.toUpperCase()}
+                            </span>
+                            <Badge
+                              variant="outline"
+                              className={
+                                entry.faction === "alliance"
+                                  ? "border-blue-500/40 bg-blue-500/10 text-blue-400 uppercase"
+                                  : "border-red-500/40 bg-red-500/10 text-red-400 uppercase"
+                              }
+                            >
+                              {entry.faction}
+                            </Badge>
+                          </div>
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <div className="leading-tight">
+                          <p className="font-semibold tabular-nums">{keystone.key}</p>
+                          <p className="text-[11px] text-muted-foreground">{keystone.dungeon}</p>
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <p className="font-semibold tabular-nums" style={{ color: scoreColor }}>
+                          {entry.mythicPlusScore.toLocaleString()}
                         </p>
-                        <p className="text-xs text-muted-foreground">
-                          {entry.realm}-{entry.region.toUpperCase()}
+                        <p className="text-[11px] text-muted-foreground sm:hidden">
+                          iLvl {entry.itemLevel.toFixed(1)}
                         </p>
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-[11px] text-muted-foreground">M+ Score</p>
-                      <p className="text-lg font-semibold tabular-nums" style={{ color: scoreColor }}>
-                        {entry.mythicPlusScore.toLocaleString()}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2">
-                    <MetricTile label="Item Level" value={entry.itemLevel.toFixed(1)} />
-                    <MetricTile label="Keystone" value={keystone.key} helper={keystone.dungeon} />
-                    <MetricTile label="Playtime" value={formatPlaytime(entry.playtimeSeconds)} />
-                    <MetricTile label="Gold" value={formatGold(entry.gold)} />
-                  </div>
-
-                  <div className="flex items-center justify-between text-xs text-muted-foreground">
-                    <Badge
-                      variant="outline"
-                      className={
-                        entry.faction === "alliance"
-                          ? "border-blue-500/40 bg-blue-500/10 text-blue-400 uppercase"
-                          : "border-red-500/40 bg-red-500/10 text-red-400 uppercase"
-                      }
-                    >
-                      {entry.faction}
-                    </Badge>
-                    <span>Snapshot {formatSnapshotDate(entry.takenAt)}</span>
-                  </div>
-                </CardContent>
-              </Card>
-            );
-          })}
-        </div>
+                      </TableCell>
+                      <TableCell className="hidden text-right tabular-nums sm:table-cell">
+                        {entry.itemLevel.toFixed(1)}
+                      </TableCell>
+                      <TableCell className="hidden text-right tabular-nums md:table-cell">
+                        {formatPlaytime(entry.playtimeSeconds)}
+                      </TableCell>
+                      <TableCell className="hidden text-right tabular-nums lg:table-cell">
+                        {formatGold(entry.gold)}
+                      </TableCell>
+                      <TableCell className="hidden text-right text-xs text-muted-foreground xl:table-cell">
+                        {formatSnapshotDate(entry.takenAt)}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
       )}
     </div>
   );
