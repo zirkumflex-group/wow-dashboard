@@ -518,21 +518,40 @@ async function collapseDuplicateMythicPlusRunsForCharacter(
     return 0;
   }
 
-  const clustersByCanonicalKey = new Map<string, {
+  const clusters: Array<{
     representative: MythicPlusRunDoc;
     mergedRun: MythicPlusRunInput;
     runIds: Array<MythicPlusRunDoc["_id"]>;
-  }>();
+  }> = [];
 
   for (const run of runs) {
-    const canonicalKey = getMythicPlusRunCanonicalKey(run);
-    if (!canonicalKey) {
-      continue;
+    const runAttemptId = getMythicPlusRunAttemptId(run);
+    const runCanonicalKey = getMythicPlusRunCanonicalKey(run);
+    let matchedClusterIndex = -1;
+
+    for (let index = 0; index < clusters.length; index += 1) {
+      const cluster = clusters[index]!;
+      const clusterAttemptId = getMythicPlusRunAttemptId(cluster.mergedRun);
+      const clusterCanonicalKey = getMythicPlusRunCanonicalKey(cluster.mergedRun);
+      const hasExactAttemptMatch =
+        runAttemptId !== null && clusterAttemptId !== null && runAttemptId === clusterAttemptId;
+      const hasExactCanonicalMatch =
+        runCanonicalKey !== null &&
+        clusterCanonicalKey !== null &&
+        runCanonicalKey === clusterCanonicalKey;
+      const hasCompatibilityMatch =
+        !hasExactAttemptMatch &&
+        !hasExactCanonicalMatch &&
+        canUseMythicPlusRunCompatibilityAliasMatch(cluster.mergedRun, run);
+
+      if (hasExactAttemptMatch || hasExactCanonicalMatch || hasCompatibilityMatch) {
+        matchedClusterIndex = index;
+        break;
+      }
     }
 
-    const existingCluster = clustersByCanonicalKey.get(canonicalKey);
-    if (!existingCluster) {
-      clustersByCanonicalKey.set(canonicalKey, {
+    if (matchedClusterIndex < 0) {
+      clusters.push({
         representative: run,
         mergedRun: mergeMythicPlusRunData(undefined, run),
         runIds: [run._id],
@@ -540,15 +559,16 @@ async function collapseDuplicateMythicPlusRunsForCharacter(
       continue;
     }
 
-    existingCluster.mergedRun = mergeMythicPlusRunData(existingCluster.mergedRun, run);
-    if (shouldReplaceMythicPlusRun(existingCluster.representative, run)) {
-      existingCluster.representative = run;
+    const matchedCluster = clusters[matchedClusterIndex]!;
+    matchedCluster.mergedRun = mergeMythicPlusRunData(matchedCluster.mergedRun, run);
+    if (shouldReplaceMythicPlusRun(matchedCluster.representative, run)) {
+      matchedCluster.representative = run;
     }
-    existingCluster.runIds.push(run._id);
+    matchedCluster.runIds.push(run._id);
   }
 
   let collapsedCount = 0;
-  for (const cluster of clustersByCanonicalKey.values()) {
+  for (const cluster of clusters) {
     if (cluster.runIds.length <= 1) {
       continue;
     }
@@ -568,6 +588,65 @@ async function collapseDuplicateMythicPlusRunsForCharacter(
 
   return collapsedCount;
 }
+
+export const dedupeMythicPlusRuns = mutation({
+  args: {
+    characterId: v.optional(v.id("characters")),
+  },
+  handler: async (ctx, { characterId }) => {
+    const authUser = await authComponent.safeGetAuthUser(ctx);
+    if (!authUser) {
+      return {
+        totalCharacters: 0,
+        charactersWithCollapsedRuns: 0,
+        collapsedRuns: 0,
+      };
+    }
+
+    const player = await ctx.db
+      .query("players")
+      .withIndex("by_user", (q) => q.eq("userId", authUser._id as string))
+      .first();
+    if (!player) {
+      return {
+        totalCharacters: 0,
+        charactersWithCollapsedRuns: 0,
+        collapsedRuns: 0,
+      };
+    }
+
+    const targetCharacters =
+      characterId === undefined
+        ? await ctx.db
+            .query("characters")
+            .withIndex("by_player", (q) => q.eq("playerId", player._id))
+            .collect()
+        : await (async () => {
+            const character = await ctx.db.get(characterId);
+            if (!character || character.playerId !== player._id) return [];
+            return [character];
+          })();
+
+    let collapsedRuns = 0;
+    let charactersWithCollapsedRuns = 0;
+    for (const character of targetCharacters) {
+      const collapsedForCharacter = await collapseDuplicateMythicPlusRunsForCharacter(
+        ctx,
+        character._id,
+      );
+      if (collapsedForCharacter > 0) {
+        charactersWithCollapsedRuns += 1;
+        collapsedRuns += collapsedForCharacter;
+      }
+    }
+
+    return {
+      totalCharacters: targetCharacters.length,
+      charactersWithCollapsedRuns,
+      collapsedRuns,
+    };
+  },
+});
 
 export const __testables = {
   deriveAttemptIdFromRun,

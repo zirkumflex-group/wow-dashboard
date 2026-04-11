@@ -7,6 +7,7 @@ import { internalMutation, mutation, query } from "./_generated/server";
 import { authComponent } from "./auth";
 import {
   buildCanonicalMythicPlusRunFingerprint,
+  canUseMythicPlusRunCompatibilityAliasMatch,
   getMythicPlusRunAttemptId,
   getMythicPlusRunCanonicalKey,
   getMythicPlusRunLifecycleStatus,
@@ -648,7 +649,11 @@ function dedupeMythicPlusRuns(runs: MythicPlusRunDoc[]) {
         runCanonicalKey !== null &&
         currentCanonicalKey !== null &&
         runCanonicalKey === currentCanonicalKey;
-      if (hasExactAttemptMatch || hasExactCanonicalMatch) {
+      const hasCompatibilityMatch =
+        !hasExactAttemptMatch &&
+        !hasExactCanonicalMatch &&
+        canUseMythicPlusRunCompatibilityAliasMatch(current, run);
+      if (hasExactAttemptMatch || hasExactCanonicalMatch || hasCompatibilityMatch) {
         matchIndex = index;
         break;
       }
