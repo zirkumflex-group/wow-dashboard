@@ -65,6 +65,26 @@ function writePinnedCharacterIds(pinnedCharacterIds: string[]) {
   window.dispatchEvent(new Event(PINNED_CHARACTERS_EVENT));
 }
 
+function moveArrayItem<T>(items: T[], fromIndex: number, toIndex: number) {
+  if (
+    fromIndex < 0 ||
+    toIndex < 0 ||
+    fromIndex >= items.length ||
+    toIndex >= items.length ||
+    fromIndex === toIndex
+  ) {
+    return items;
+  }
+
+  const nextItems = [...items];
+  const [movedItem] = nextItems.splice(fromIndex, 1);
+  if (movedItem === undefined) {
+    return items;
+  }
+  nextItems.splice(toIndex, 0, movedItem);
+  return nextItems;
+}
+
 function subscribeToPinnedCharacters(onStoreChange: () => void) {
   if (typeof window === "undefined") {
     return () => {};
@@ -105,9 +125,27 @@ export function usePinnedCharacters() {
     writePinnedCharacterIds(nextPinnedCharacterIds);
   }, []);
 
+  const movePinnedCharacter = useCallback(
+    (characterId: string, direction: "up" | "down") => {
+      const currentPinnedCharacterIds = readPinnedCharacterIds();
+      const currentIndex = currentPinnedCharacterIds.indexOf(characterId);
+      if (currentIndex < 0) return;
+
+      const targetIndex =
+        direction === "up"
+          ? Math.max(0, currentIndex - 1)
+          : Math.min(currentPinnedCharacterIds.length - 1, currentIndex + 1);
+      if (targetIndex === currentIndex) return;
+
+      writePinnedCharacterIds(moveArrayItem(currentPinnedCharacterIds, currentIndex, targetIndex));
+    },
+    [],
+  );
+
   return {
     pinnedCharacterIds,
     pinnedCharacterIdSet,
     togglePinnedCharacter,
+    movePinnedCharacter,
   };
 }

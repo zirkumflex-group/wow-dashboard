@@ -1163,20 +1163,20 @@ function MythicPlusSection({
                   />
                   <StatGrid
                     compact
-                    label="Total Attempts"
+                    label="Total Runs"
                     value={(currentSeason.totalAttempts ?? currentSeason.totalRuns).toLocaleString()}
                   />
                 </div>
                 <div className="grid gap-1.5 sm:grid-cols-2 xl:grid-cols-3">
                   <StatGrid
                     compact
-                    label="Timed Runs"
+                    label="Timed"
                     value={currentSeason.timedRuns.toLocaleString()}
                   />
                   <StatGrid
                     compact
-                    label="Completed"
-                    value={currentSeason.completedRuns.toLocaleString()}
+                    label="Depleted"
+                    value={Math.max(0, currentSeason.completedRuns - currentSeason.timedRuns).toLocaleString()}
                   />
                   <StatGrid
                     compact

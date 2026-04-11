@@ -9,6 +9,7 @@ import {
   SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
+  SidebarMenuAction,
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarMenuSkeleton,
@@ -26,11 +27,12 @@ import {
 } from "@wow-dashboard/ui/components/dropdown-menu";
 import { Authenticated } from "convex/react";
 import { useQuery } from "convex/react";
-import { ChevronUp, LayoutDashboard, Scale, Settings, Star, Trophy } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronUp, LayoutDashboard, Scale, Settings, Star, Trophy } from "lucide-react";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { useMemo } from "react";
 
 import { authClient } from "@/lib/auth-client";
+import { getClassTextColor } from "@/lib/class-colors";
 import { usePinnedCharacters } from "@/lib/pinned-characters";
 
 const navItems = [
@@ -97,7 +99,7 @@ function NavUser() {
 export function AppSidebar() {
   const router = useRouterState();
   const pathname = router.location.pathname;
-  const { pinnedCharacterIds } = usePinnedCharacters();
+  const { pinnedCharacterIds, movePinnedCharacter } = usePinnedCharacters();
   const characters = useQuery(
     api.characters.getCharactersWithLatestSnapshot,
     pinnedCharacterIds.length > 0
@@ -178,25 +180,55 @@ export function AppSidebar() {
                 </SidebarMenu>
               ) : (
                 <SidebarMenu>
-                  {quickAccessCharacters.map((character) => (
+                  {quickAccessCharacters.map((character, index) => (
                     <SidebarMenuItem key={character._id}>
                       <SidebarMenuButton
                         asChild
                         isActive={pathname === `/character/${character._id}`}
                         tooltip={`${character.name} — ${character.realm}`}
+                        className="h-9 border border-sidebar-border/50 bg-sidebar-accent/20 pr-14 hover:bg-sidebar-accent/35 data-[active=true]:border-sidebar-border data-[active=true]:bg-sidebar-accent/55"
                       >
                         <Link to="/character/$characterId" params={{ characterId: character._id }}>
-                          <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md border border-sidebar-border/60 bg-sidebar-accent/40 text-[10px] font-semibold uppercase">
+                          <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-sm border border-sidebar-border/70 bg-sidebar text-[10px] font-semibold uppercase">
                             {character.name[0] ?? "?"}
                           </div>
                           <div className="grid min-w-0 flex-1 text-left leading-tight">
-                            <span className="truncate font-medium">{character.name}</span>
+                            <span className={`truncate font-medium ${getClassTextColor(character.class)}`}>
+                              {character.name}
+                            </span>
                             <span className="truncate text-[11px] text-sidebar-foreground/60">
                               {character.realm}
+                              {character.snapshot ? ` · ${character.snapshot.itemLevel.toFixed(1)} iLvl` : ""}
                             </span>
                           </div>
                         </Link>
                       </SidebarMenuButton>
+                      <SidebarMenuAction
+                        showOnHover
+                        className="right-7"
+                        onClick={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          movePinnedCharacter(String(character._id), "up");
+                        }}
+                        disabled={index === 0}
+                        aria-label={`Move ${character.name} up`}
+                      >
+                        <ArrowUp />
+                      </SidebarMenuAction>
+                      <SidebarMenuAction
+                        showOnHover
+                        className="right-1"
+                        onClick={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          movePinnedCharacter(String(character._id), "down");
+                        }}
+                        disabled={index === quickAccessCharacters.length - 1}
+                        aria-label={`Move ${character.name} down`}
+                      >
+                        <ArrowDown />
+                      </SidebarMenuAction>
                     </SidebarMenuItem>
                   ))}
                 </SidebarMenu>
