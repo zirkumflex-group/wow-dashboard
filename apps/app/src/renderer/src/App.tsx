@@ -158,7 +158,7 @@ declare global {
         getLatestAddonRelease: () => Promise<{ url: string; checksumUrl: string | null; version: string }>;
         getAddonUpdateStatus: () => Promise<AddonUpdateState>;
         triggerAddonUpdateCheck: () => Promise<AddonUpdateCheckResult>;
-        watchAddonFile: () => Promise<void>;
+        watchAddonFile: () => Promise<boolean>;
         unwatchAddonFile: () => Promise<void>;
         onAddonFileChanged: (cb: () => void) => () => void;
         onAddonUpdateStaged: (cb: (version: string) => void) => () => void;
@@ -560,30 +560,56 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
       }),
     ];
 
-    void Promise.all([
+    void Promise.allSettled([
       window.electron.getVersion(),
+      window.electron.updates.getStatus(),
       window.electron.wow.getRetailPath(),
       window.electron.settings.getAppSettings(),
-      window.electron.updates.getStatus(),
       window.electron.wow.getAddonUpdateStatus(),
-    ])
-      .then(([version, retailPathValue, settings, hydratedAppUpdateState, hydratedAddonUpdateState]) => {
-        if (cancelled) return;
-        setAppVersion(version);
-        setRetailPath(retailPathValue);
-        setCloseBehavior(settings.closeBehavior);
-        setAutostart(settings.autostart);
-        setLaunchMinimized(settings.launchMinimized);
-        setLastSyncedAt(settings.lastSyncedAt);
-        lastSyncedAtRef.current = settings.lastSyncedAt;
-        setAppUpdateState(hydratedAppUpdateState);
-        setAppVersion(hydratedAppUpdateState.currentVersion || version);
-        applyAddonUpdateSnapshot(hydratedAddonUpdateState);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setAppActionError("Failed to load desktop update status.");
-      });
+    ]).then(([versionResult, appUpdateResult, retailPathResult, settingsResult, addonUpdateResult]) => {
+      if (cancelled) return;
+
+      if (versionResult.status === "fulfilled") {
+        setAppVersion(versionResult.value);
+      } else {
+        console.warn("[wow-dashboard] Failed to hydrate app version:", versionResult.reason);
+      }
+
+      if (appUpdateResult.status === "fulfilled") {
+        setAppUpdateState(appUpdateResult.value);
+        setAppVersion((currentVersion) => appUpdateResult.value.currentVersion || currentVersion);
+      } else {
+        console.warn(
+          "[wow-dashboard] Failed to hydrate desktop update state:",
+          appUpdateResult.reason,
+        );
+      }
+
+      if (retailPathResult.status === "fulfilled") {
+        setRetailPath(retailPathResult.value);
+      } else {
+        console.warn("[wow-dashboard] Failed to hydrate WoW retail path:", retailPathResult.reason);
+      }
+
+      if (settingsResult.status === "fulfilled") {
+        setCloseBehavior(settingsResult.value.closeBehavior);
+        setAutostart(settingsResult.value.autostart);
+        setLaunchMinimized(settingsResult.value.launchMinimized);
+        setLastSyncedAt(settingsResult.value.lastSyncedAt);
+        lastSyncedAtRef.current = settingsResult.value.lastSyncedAt;
+      } else {
+        console.warn("[wow-dashboard] Failed to hydrate app settings:", settingsResult.reason);
+      }
+
+      if (addonUpdateResult.status === "fulfilled") {
+        applyAddonUpdateSnapshot(addonUpdateResult.value);
+      } else {
+        console.warn(
+          "[wow-dashboard] Failed to hydrate addon update state:",
+          addonUpdateResult.reason,
+        );
+      }
+    });
 
     return () => {
       cancelled = true;
@@ -605,24 +631,33 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
 
     let cancelled = false;
 
-    void Promise.all([
-      window.electron.wow.watchAddonFile().then(() => true).catch(() => false),
+    void Promise.allSettled([
+      window.electron.wow.watchAddonFile(),
       window.electron.wow.checkAddonInstalled(),
       window.electron.wow.getInstalledAddonVersion(),
       window.electron.wow.getAddonUpdateStatus(),
-    ])
-      .then(([watching, installed, installedVersion, updateState]) => {
-        if (cancelled) return;
-        setWatchingFile(watching);
-        setAddonInstalled(installed);
-        setAddonVersion(installedVersion);
-        applyAddonUpdateSnapshot(updateState);
-        void refreshAddonFileState();
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setWatchingFile(false);
-      });
+    ]).then(([watchResult, installedResult, installedVersionResult, updateStateResult]) => {
+      if (cancelled) return;
+
+      setWatchingFile(watchResult.status === "fulfilled" ? watchResult.value : false);
+      if (watchResult.status === "rejected") {
+        console.warn("[wow-dashboard] Failed to start addon watcher:", watchResult.reason);
+      }
+
+      if (installedResult.status === "fulfilled") {
+        setAddonInstalled(installedResult.value);
+      }
+
+      if (installedVersionResult.status === "fulfilled") {
+        setAddonVersion(installedVersionResult.value);
+      }
+
+      if (updateStateResult.status === "fulfilled") {
+        applyAddonUpdateSnapshot(updateStateResult.value);
+      }
+
+      void refreshAddonFileState();
+    });
 
     return () => {
       cancelled = true;
@@ -674,22 +709,37 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
 
   async function handleCheckAppUpdate() {
     setAppActionError(null);
-    await window.electron.checkForUpdates();
+    try {
+      await window.electron.checkForUpdates();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setAppActionError(message);
+    }
   }
 
   async function handleInstallAppUpdate() {
     setAppActionError(null);
-    const result = await window.electron.installUpdate();
-    if (!result.ok && result.message) {
-      setAppActionError(result.message);
+    try {
+      const result = await window.electron.installUpdate();
+      if (!result.ok && result.message) {
+        setAppActionError(result.message);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setAppActionError(message);
     }
   }
 
   async function handleCheckAddonUpdate() {
     setAddonActionError(null);
-    const result = await window.electron.wow.triggerAddonUpdateCheck();
-    if (result.error) {
-      setAddonActionError(result.error);
+    try {
+      const result = await window.electron.wow.triggerAddonUpdateCheck();
+      if (result.error) {
+        setAddonActionError(result.error);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setAddonActionError(message);
     }
   }
 
@@ -806,13 +856,19 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
       ? isOutdated(addonVersion, latestAddonVersion)
       : false;
   const displayedAppVersion = appUpdateState.currentVersion || appVersion;
-  const appUpdateError = appActionError ?? appUpdateState.error;
-  const addonUpdateError = addonActionError ?? addonUpdateState.error;
+  const appUpdateError =
+    appActionError ?? (appUpdateState.status === "error" ? appUpdateState.error : null);
+  const addonUpdateError =
+    addonActionError ??
+    (addonUpdateState.status === "error" || addonUpdateState.status === "invalidRetailPath"
+      ? addonUpdateState.error
+      : null);
   const appCheckDisabled =
     appUpdateState.status === "checking" ||
     appUpdateState.status === "available" ||
     appUpdateState.status === "downloading" ||
     appUpdateState.status === "downloaded" ||
+    appUpdateState.status === "installing" ||
     appUpdateState.status === "unsupported";
   const appCheckButtonLabel =
     appUpdateState.status === "checking"
@@ -821,6 +877,8 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
         ? appUpdateState.progressPercent !== null
           ? `Downloading ${Math.round(appUpdateState.progressPercent)}%`
           : "Downloading…"
+        : appUpdateState.status === "installing"
+          ? "Installing…"
         : appUpdateState.status === "upToDate"
           ? "Up to date"
           : appUpdateState.status === "downloaded"
@@ -836,7 +894,6 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
     addonUpdateState.status === "checking" || addonUpdateState.status === "updating";
   const addonUpToDate =
     addonUpdateState.status === "upToDate" || addonUpdateState.status === "applied";
-  const installError = addonUpdateError;
 
   return (
     <div className="min-h-screen bg-gray-950 p-6 text-white">
@@ -870,6 +927,11 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
             >
               Install update &amp; restart
             </button>
+          </div>
+        )}
+        {appUpdateState.status === "installing" && (
+          <div className="rounded-lg border border-green-700 bg-green-950 px-4 py-3 text-sm text-green-300">
+            Installing the desktop update and restarting WoW Dashboard…
           </div>
         )}
         {(appUpdateState.status === "available" || appUpdateState.status === "downloading") &&
@@ -979,7 +1041,9 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
                       Auto-update applied: v{addonVersion}
                     </p>
                   )}
-                  {addonUpdateState.status === "error" && addonUpdateError && (
+                  {(addonUpdateState.status === "error" ||
+                    addonUpdateState.status === "invalidRetailPath") &&
+                    addonUpdateError && (
                     <p className="mt-0.5 text-xs text-red-400">{addonUpdateError}</p>
                   )}
                 </>
@@ -1014,7 +1078,11 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
               <span className="text-xs text-gray-500">Select WoW folder first</span>
             )}
           </div>
-          {installError && <p className="text-xs text-red-400">{installError}</p>}
+          {addonActionError &&
+            addonUpdateState.status !== "error" &&
+            addonUpdateState.status !== "invalidRetailPath" && (
+              <p className="text-xs text-red-400">{addonActionError}</p>
+            )}
         </div>
 
         {/* Upload / Data Sync */}

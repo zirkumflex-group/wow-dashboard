@@ -4,6 +4,7 @@ export type AppUpdateStatus =
   | "available"
   | "downloading"
   | "downloaded"
+  | "installing"
   | "upToDate"
   | "error"
   | "unsupported";
@@ -34,6 +35,7 @@ export type AddonUpdateStatus =
   | "applied"
   | "notInstalled"
   | "noRetailPath"
+  | "invalidRetailPath"
   | "error";
 
 export interface AddonUpdateState {
@@ -46,9 +48,22 @@ export interface AddonUpdateState {
 }
 
 export interface AddonUpdateCheckResult {
-  status: "upToDate" | "staged" | "applied" | "notInstalled" | "noRetailPath" | "error";
+  status:
+    | "upToDate"
+    | "staged"
+    | "applied"
+    | "notInstalled"
+    | "noRetailPath"
+    | "invalidRetailPath"
+    | "error";
   installedVersion: string | null;
   latestVersion: string | null;
   stagedVersion: string | null;
   error: string | null;
+}
+
+export interface AddonApplyStagedResult {
+  outcome: "applied" | "notReady" | "retryableError" | "fatalError";
+  error: string | null;
+  stagedVersion: string | null;
 }

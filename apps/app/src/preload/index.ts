@@ -47,7 +47,7 @@ contextBridge.exposeInMainWorld("electron", {
       ipcRenderer.invoke("wow:getAddonUpdateStatus") as Promise<AddonUpdateState>,
     triggerAddonUpdateCheck: () =>
       ipcRenderer.invoke("wow:triggerAddonUpdateCheck") as Promise<AddonUpdateCheckResult>,
-    watchAddonFile: () => ipcRenderer.invoke("wow:watchAddonFile") as Promise<void>,
+    watchAddonFile: () => ipcRenderer.invoke("wow:watchAddonFile") as Promise<boolean>,
     unwatchAddonFile: () => ipcRenderer.invoke("wow:unwatchAddonFile") as Promise<void>,
     onAddonFileChanged: (cb: () => void) => subscribeToChannel("wow:addonFileChanged", cb),
     onAddonUpdateStaged: (cb: (version: string) => void) =>
