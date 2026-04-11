@@ -269,21 +269,36 @@ function isUploadableSnapshot(snapshot: SnapshotData, sinceTs: number) {
 
 const MYTHIC_PLUS_UPLOAD_LOOKBACK_SECONDS = 2 * 60 * 60;
 
-function getMythicPlusRunLastMutationTimestamp(run: MythicPlusRunData) {
-  const newestLifecycleTimestamp = Math.max(
-    run.startDate ?? 0,
-    run.completedAt ?? 0,
-    run.endedAt ?? 0,
-    run.abandonedAt ?? 0,
-  );
-  return Math.max(newestLifecycleTimestamp, run.observedAt ?? 0);
+function normalizePositiveTimestampSeconds(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+  return value;
+}
+
+function getMythicPlusRunLastMutationAt(run: MythicPlusRunData): number {
+  const candidateTimestamps = [
+    run.startDate,
+    run.completedAt,
+    run.endedAt,
+    run.abandonedAt,
+    run.observedAt,
+  ];
+  let latestMutationAt = 0;
+  for (const candidate of candidateTimestamps) {
+    const normalized = normalizePositiveTimestampSeconds(candidate);
+    if (normalized !== null && normalized > latestMutationAt) {
+      latestMutationAt = normalized;
+    }
+  }
+  return latestMutationAt;
 }
 
 function isUploadableMythicPlusRun(run: MythicPlusRunData, sinceTs: number) {
   const nowTs = Math.floor(Date.now() / 1000);
   const effectiveSinceTs = Math.min(sinceTs, nowTs - MYTHIC_PLUS_UPLOAD_LOOKBACK_SECONDS);
-  const lastRelevantAt = getMythicPlusRunLastMutationTimestamp(run);
-  return lastRelevantAt > effectiveSinceTs;
+  const lastMutationAt = getMythicPlusRunLastMutationAt(run);
+  return lastMutationAt > effectiveSinceTs;
 }
 
 function getPendingUploadCounts(
