@@ -13,7 +13,7 @@ import {
 } from "@wow-dashboard/ui/components/chart";
 import { useQuery } from "convex/react";
 import { Scale } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
 import { getClassTextColor } from "../lib/class-colors";
 
@@ -331,6 +331,22 @@ function RouteComponent() {
   const selectedLabels = selectedCharacterIds
     .map((characterId) => scoreboardEntries.find((entry) => entry.characterId === characterId)?.name ?? characterId)
     .join(", ");
+
+  useEffect(() => {
+    const appTitle = "WoW Dashboard";
+    if (selectedCharacterIds.length === 0) {
+      document.title = `Compare | ${appTitle}`;
+      return;
+    }
+
+    const selectedNames = selectedCharacterIds.map(
+      (characterId) =>
+        scoreboardEntries.find((entry) => entry.characterId === characterId)?.name ?? characterId,
+    );
+    const compactLabel = selectedNames.slice(0, 2).join(" vs ");
+    const overflowLabel = selectedNames.length > 2 ? ` +${selectedNames.length - 2}` : "";
+    document.title = `${compactLabel}${overflowLabel} | Compare | ${appTitle}`;
+  }, [scoreboardEntries, selectedCharacterIds]);
 
   const isLoadingSnapshots = selectedCharacterIds.some(
     (_, index) => snapshotResults[index] === undefined,

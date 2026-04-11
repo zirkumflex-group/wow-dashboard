@@ -16,7 +16,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@wow-dashboard/ui/components/tabs";
 import { useQuery } from "convex/react";
 import { ArrowDown, ArrowUp, ArrowUpDown, Trophy, Users } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { getClassTextColor } from "../lib/class-colors";
 import { getMythicPlusDungeonMeta, getRaiderIoScoreColor } from "../lib/mythic-plus-static";
 
@@ -561,6 +561,14 @@ type Tab = "characters" | "players";
 
 function Scoreboard() {
   const [tab, setTab] = useState<Tab>("characters");
+
+  useEffect(() => {
+    const appTitle = "WoW Dashboard";
+    document.title =
+      tab === "players"
+        ? `Scoreboard - Players | ${appTitle}`
+        : `Scoreboard - Characters | ${appTitle}`;
+  }, [tab]);
 
   const subtitle =
     tab === "characters"

@@ -2810,6 +2810,20 @@ function RouteComponent() {
     }
   });
 
+  useEffect(() => {
+    const appTitle = "WoW Dashboard";
+    if (data === undefined) {
+      document.title = `Character | ${appTitle}`;
+      return;
+    }
+    if (!data) {
+      document.title = `Character Not Found | ${appTitle}`;
+      return;
+    }
+
+    document.title = `${data.character.name} (${data.character.realm}) | ${appTitle}`;
+  }, [data]);
+
   function handleLayoutChange(mode: LayoutMode) {
     setLayoutMode(mode);
     try {

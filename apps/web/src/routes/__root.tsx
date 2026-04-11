@@ -9,7 +9,7 @@ import {
   useRouteContext,
   useRouterState,
 } from "@tanstack/react-router";
-import { lazy } from "react";
+import { lazy, useEffect } from "react";
 import { createServerFn } from "@tanstack/react-start";
 
 const TanStackRouterDevtools = import.meta.env.PROD
@@ -28,6 +28,19 @@ import { AppSidebar } from "@/components/app-sidebar";
 import { ThemeProvider, THEME_SCRIPT } from "@/components/theme-provider";
 
 import appCss from "../index.css?url";
+
+const APP_TITLE = "WoW Dashboard";
+
+function getDefaultTitleForPath(pathname: string) {
+  if (pathname.startsWith("/dashboard")) return `Dashboard | ${APP_TITLE}`;
+  if (pathname.startsWith("/scoreboard")) return `Scoreboard | ${APP_TITLE}`;
+  if (pathname.startsWith("/compare")) return `Compare | ${APP_TITLE}`;
+  if (pathname.startsWith("/character/")) return `Character | ${APP_TITLE}`;
+  if (pathname.startsWith("/players/")) return `Player | ${APP_TITLE}`;
+  if (pathname.startsWith("/settings")) return `Settings | ${APP_TITLE}`;
+  if (pathname.startsWith("/auth")) return `Sign In | ${APP_TITLE}`;
+  return APP_TITLE;
+}
 
 const getAuth = createServerFn({ method: "GET" }).handler(async () => {
   return await getToken();
@@ -49,13 +62,34 @@ export const Route = createRootRouteWithContext<RouterAppContext>()({
         content: "width=device-width, initial-scale=1",
       },
       {
-        title: "WoW Dashboard",
+        name: "theme-color",
+        content: "#050505",
+      },
+      {
+        title: APP_TITLE,
       },
     ],
     links: [
       {
         rel: "stylesheet",
         href: appCss,
+      },
+      {
+        rel: "icon",
+        href: "/favicon.ico",
+        sizes: "any",
+      },
+      {
+        rel: "icon",
+        type: "image/png",
+        sizes: "32x32",
+        href: "/favicon-32x32.png",
+      },
+      {
+        rel: "icon",
+        type: "image/png",
+        sizes: "16x16",
+        href: "/favicon-16x16.png",
       },
     ],
   }),
@@ -77,6 +111,11 @@ function RootDocument() {
   const context = useRouteContext({ from: Route.id });
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const noLayout = pathname.startsWith("/auth/electron");
+
+  useEffect(() => {
+    document.title = getDefaultTitleForPath(pathname);
+  }, [pathname]);
+
   return (
     <ConvexBetterAuthProvider
       client={context.convexQueryClient.convexClient}

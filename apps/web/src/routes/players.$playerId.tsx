@@ -13,6 +13,7 @@ import {
 } from "@wow-dashboard/ui/components/table";
 import { useQuery } from "convex/react";
 import { ArrowLeft } from "lucide-react";
+import { useEffect } from "react";
 import { getClassTextColor } from "../lib/class-colors";
 import { getMythicPlusDungeonMeta } from "../lib/mythic-plus-static";
 
@@ -105,6 +106,21 @@ function RouteComponent() {
   const data = useQuery(api.characters.getPlayerCharacters, {
     playerId: playerId as Id<"players">,
   });
+
+  useEffect(() => {
+    const appTitle = "WoW Dashboard";
+    if (data === undefined) {
+      document.title = `Player | ${appTitle}`;
+      return;
+    }
+    if (!data) {
+      document.title = `Player Not Found | ${appTitle}`;
+      return;
+    }
+
+    const playerName = data.player.battleTag ? data.player.battleTag.split("#")[0] : "Player";
+    document.title = `${playerName} | ${appTitle}`;
+  }, [data]);
 
   if (data === undefined) {
     return (
