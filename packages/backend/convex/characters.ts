@@ -340,6 +340,37 @@ function buildMythicPlusSummary(runs: MythicPlusRunDoc[], currentScore: number |
 function buildRecentRuns(runs: MythicPlusRunDoc[]) {
   const bestPreviousScoreByDungeon = new Map<string, number>();
   const scoreIncreaseByRunId = new Map<string, number>();
+  const normalizeIdentityToken = (value: string | undefined): string | null => {
+    if (typeof value !== "string") {
+      return null;
+    }
+    const normalized = value.trim();
+    return normalized === "" ? null : normalized;
+  };
+  const getRecentRunRowKey = (run: MythicPlusRunDoc, playedAt: number): string => {
+    if (typeof run._id === "string" && run._id.trim() !== "") {
+      return run._id;
+    }
+
+    const identityTokens: string[] = [];
+    const attemptId = getMythicPlusRunAttemptId(run);
+    if (attemptId !== null) {
+      identityTokens.push(`aid:${attemptId}`);
+    }
+
+    const canonicalKey = getMythicPlusRunCanonicalKey(run);
+    if (canonicalKey !== null) {
+      identityTokens.push(`ck:${canonicalKey}`);
+    }
+
+    const fingerprint = normalizeIdentityToken(run.fingerprint);
+    if (fingerprint !== null) {
+      identityTokens.push(`fp:${fingerprint}`);
+    }
+
+    const identityComposite = identityTokens.length > 0 ? identityTokens.join("|") : "run";
+    return `${identityComposite}|${playedAt}`;
+  };
 
   for (let index = runs.length - 1; index >= 0; index -= 1) {
     const run = runs[index];
@@ -369,9 +400,13 @@ function buildRecentRuns(runs: MythicPlusRunDoc[]) {
 
   return runs.map((run) => {
     const status = getMythicPlusRunLifecycleStatus(run);
+    const sortTimestamp = getRunTimestamp(run);
     return {
       ...run,
       status,
+      playedAt: sortTimestamp,
+      sortTimestamp,
+      rowKey: getRecentRunRowKey(run, sortTimestamp),
       upgradeCount: getMythicPlusRunUpgradeCount(run),
       scoreIncrease: scoreIncreaseByRunId.get(run._id) ?? null,
     };
@@ -520,6 +555,8 @@ function dedupeMythicPlusRuns(runs: MythicPlusRunDoc[]) {
 
 export const __testables = {
   dedupeMythicPlusRuns,
+  buildRecentRuns,
+  buildMythicPlusSummary,
 };
 
 export const upsertFromBattleNet = internalMutation({

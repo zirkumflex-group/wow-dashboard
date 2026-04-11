@@ -536,79 +536,44 @@ function MythicPlusKeyPill({
   );
 }
 
-function getRunAttemptId(run: MythicPlusRun) {
+function getRunPlayedAt(run: MythicPlusRun) {
+  if (run.playedAt !== undefined) {
+    return run.playedAt;
+  }
+  if (run.sortTimestamp !== undefined) {
+    return run.sortTimestamp;
+  }
+
+  return run.observedAt;
+}
+
+function getRecentRunRowKey(run: MythicPlusRun) {
+  if (typeof run.rowKey === "string" && run.rowKey.trim() !== "") {
+    return run.rowKey;
+  }
+
+  if (typeof run._id === "string" && run._id.trim() !== "") {
+    return run._id;
+  }
+
+  const identityTokens: string[] = [];
   const explicitAttemptId = run.attemptId?.trim();
   if (explicitAttemptId) {
-    return explicitAttemptId;
+    identityTokens.push(`aid:${explicitAttemptId}`);
   }
 
-  if (typeof run.fingerprint === "string" && run.fingerprint.startsWith("attempt|")) {
-    return run.fingerprint;
+  const explicitCanonicalKey = run.canonicalKey?.trim();
+  if (explicitCanonicalKey) {
+    identityTokens.push(`ck:${explicitCanonicalKey}`);
   }
 
-  return undefined;
-}
-
-function hasStrongCompletedRunIdentitySignature(run: MythicPlusRun) {
-  return (
-    run.level !== undefined &&
-    (run.mapChallengeModeID !== undefined || (run.mapName && run.mapName.trim() !== "")) &&
-    getRunDurationMs(run) !== undefined &&
-    run.runScore !== undefined
-  );
-}
-
-function shouldApplyLegacyHistoryDstForwardShift(run: MythicPlusRun) {
-  if (getRunAttemptId(run) !== undefined) {
-    return false;
-  }
-  if (run.startDate !== undefined) {
-    return false;
-  }
-  if (!hasStrongCompletedRunIdentitySignature(run)) {
-    return false;
-  }
-  const primaryTimestamp = run.endedAt ?? run.abandonedAt ?? run.completedAt;
-  if (primaryTimestamp === undefined) {
-    return false;
+  const normalizedFingerprint = run.fingerprint?.trim();
+  if (normalizedFingerprint) {
+    identityTokens.push(`fp:${normalizedFingerprint}`);
   }
 
-  // Legacy history rows built from UTC-like date tuples were parsed with
-  // standard-time offset, ending up one hour low during DST months.
-  // Detect DST in the viewer's locale and apply a deterministic +1h only then.
-  const playedAtDate = new Date(primaryTimestamp * 1000);
-  const janOffset = new Date(playedAtDate.getFullYear(), 0, 1).getTimezoneOffset();
-  const julOffset = new Date(playedAtDate.getFullYear(), 6, 1).getTimezoneOffset();
-  const standardOffset = Math.max(janOffset, julOffset);
-  const isDstAtPlayedAt = playedAtDate.getTimezoneOffset() < standardOffset;
-  return isDstAtPlayedAt;
-}
-
-function getRunPlayedAt(run: MythicPlusRun) {
-  const primaryTimestamp = run.endedAt ?? run.abandonedAt ?? run.completedAt ?? run.startDate;
-  if (primaryTimestamp === undefined) {
-    return run.observedAt;
-  }
-
-  const observedAt = run.observedAt;
-  if (observedAt !== undefined) {
-    const driftSeconds = observedAt - primaryTimestamp;
-    const roundedHourDriftSeconds = Math.round(driftSeconds / 3600) * 3600;
-    const looksLikeLegacyUtcDrift =
-      roundedHourDriftSeconds >= 3600 &&
-      roundedHourDriftSeconds <= 3 * 3600 &&
-      Math.abs(driftSeconds - roundedHourDriftSeconds) <= 10 * 60;
-
-    if (looksLikeLegacyUtcDrift) {
-      return primaryTimestamp + roundedHourDriftSeconds;
-    }
-  }
-
-  if (shouldApplyLegacyHistoryDstForwardShift(run)) {
-    return primaryTimestamp + 60 * 60;
-  }
-
-  return primaryTimestamp;
+  const identityKey = identityTokens.length > 0 ? identityTokens.join("|") : "run";
+  return `${identityKey}|${getRunPlayedAt(run) ?? 0}`;
 }
 
 function formatRunMemberName(member: MythicPlusRunMember, characterRealm: string) {
@@ -1092,7 +1057,8 @@ function MythicPlusSection({
   } = useHiddenPlayers();
   const [summaryCardHeight, setSummaryCardHeight] = useState<number | null>(null);
   const summaryCardRef = useRef<HTMLDivElement | null>(null);
-  const recentRunsResetKey = `${data?.runs.length ?? 0}:${data?.runs[0]?.fingerprint ?? ""}`;
+  const latestRunResetKey = data?.runs[0] ? getRecentRunRowKey(data.runs[0]) : "";
+  const recentRunsResetKey = `${data?.runs.length ?? 0}:${latestRunResetKey}`;
   const totalRunCount = data?.runs.length ?? 0;
   const hasMoreRecentRuns = visibleRecentRunCount < totalRunCount;
 
@@ -1350,7 +1316,7 @@ function MythicPlusSection({
               </thead>
               <tbody className="divide-y divide-border/50">
                 {visibleRecentRuns.map((run) => (
-                  <tr key={run.fingerprint} className="transition-colors hover:bg-muted/15">
+                  <tr key={getRecentRunRowKey(run)} className="transition-colors hover:bg-muted/15">
                     <td className="px-3 py-2.5 text-muted-foreground align-top">
                       <RecentRunPlayedAt run={run} />
                     </td>
@@ -1526,9 +1492,14 @@ type MythicPlusRunMember = {
 };
 
 type MythicPlusRun = {
+  _id?: Id<"mythicPlusRuns">;
+  rowKey?: string;
   fingerprint: string;
   attemptId?: string;
+  canonicalKey?: string;
   observedAt: number;
+  playedAt?: number;
+  sortTimestamp?: number;
   seasonID?: number;
   mapChallengeModeID?: number;
   mapName?: string;

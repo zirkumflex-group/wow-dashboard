@@ -178,10 +178,6 @@ function findMatchingExistingRunByIdentity(
     if (!canUseMythicPlusRunCompatibilityAliasMatch(candidate, run)) {
       continue;
     }
-    const candidateCanonicalKey = getMythicPlusRunCanonicalKey(candidate);
-    if (canonicalKey && candidateCanonicalKey && canonicalKey !== candidateCanonicalKey) {
-      continue;
-    }
     if (candidate) {
       return candidate;
     }
