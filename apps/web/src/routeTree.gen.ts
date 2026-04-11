@@ -14,6 +14,7 @@ import { Route as ScoreboardRouteImport } from './routes/scoreboard'
 import { Route as DashboardRouteImport } from './routes/dashboard'
 import { Route as CompareRouteImport } from './routes/compare'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as PlayersPlayerIdRouteImport } from './routes/players.$playerId'
 import { Route as CharacterCharacterIdRouteImport } from './routes/character.$characterId'
 import { Route as AuthElectronLoginRouteImport } from './routes/auth/electron-login'
 import { Route as AuthElectronCallbackRouteImport } from './routes/auth/electron-callback'
@@ -42,6 +43,11 @@ const CompareRoute = CompareRouteImport.update({
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PlayersPlayerIdRoute = PlayersPlayerIdRouteImport.update({
+  id: '/players/$playerId',
+  path: '/players/$playerId',
   getParentRoute: () => rootRouteImport,
 } as any)
 const CharacterCharacterIdRoute = CharacterCharacterIdRouteImport.update({
@@ -74,6 +80,7 @@ export interface FileRoutesByFullPath {
   '/auth/electron-callback': typeof AuthElectronCallbackRoute
   '/auth/electron-login': typeof AuthElectronLoginRoute
   '/character/$characterId': typeof CharacterCharacterIdRoute
+  '/players/$playerId': typeof PlayersPlayerIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRoutesByTo {
@@ -85,6 +92,7 @@ export interface FileRoutesByTo {
   '/auth/electron-callback': typeof AuthElectronCallbackRoute
   '/auth/electron-login': typeof AuthElectronLoginRoute
   '/character/$characterId': typeof CharacterCharacterIdRoute
+  '/players/$playerId': typeof PlayersPlayerIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRoutesById {
@@ -97,6 +105,7 @@ export interface FileRoutesById {
   '/auth/electron-callback': typeof AuthElectronCallbackRoute
   '/auth/electron-login': typeof AuthElectronLoginRoute
   '/character/$characterId': typeof CharacterCharacterIdRoute
+  '/players/$playerId': typeof PlayersPlayerIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRouteTypes {
@@ -110,6 +119,7 @@ export interface FileRouteTypes {
     | '/auth/electron-callback'
     | '/auth/electron-login'
     | '/character/$characterId'
+    | '/players/$playerId'
     | '/api/auth/$'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -121,6 +131,7 @@ export interface FileRouteTypes {
     | '/auth/electron-callback'
     | '/auth/electron-login'
     | '/character/$characterId'
+    | '/players/$playerId'
     | '/api/auth/$'
   id:
     | '__root__'
@@ -132,6 +143,7 @@ export interface FileRouteTypes {
     | '/auth/electron-callback'
     | '/auth/electron-login'
     | '/character/$characterId'
+    | '/players/$playerId'
     | '/api/auth/$'
   fileRoutesById: FileRoutesById
 }
@@ -144,6 +156,7 @@ export interface RootRouteChildren {
   AuthElectronCallbackRoute: typeof AuthElectronCallbackRoute
   AuthElectronLoginRoute: typeof AuthElectronLoginRoute
   CharacterCharacterIdRoute: typeof CharacterCharacterIdRoute
+  PlayersPlayerIdRoute: typeof PlayersPlayerIdRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
 }
 
@@ -182,6 +195,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/players/$playerId': {
+      id: '/players/$playerId'
+      path: '/players/$playerId'
+      fullPath: '/players/$playerId'
+      preLoaderRoute: typeof PlayersPlayerIdRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/character/$characterId': {
@@ -224,6 +244,7 @@ const rootRouteChildren: RootRouteChildren = {
   AuthElectronCallbackRoute: AuthElectronCallbackRoute,
   AuthElectronLoginRoute: AuthElectronLoginRoute,
   CharacterCharacterIdRoute: CharacterCharacterIdRoute,
+  PlayersPlayerIdRoute: PlayersPlayerIdRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
 }
 export const routeTree = rootRouteImport

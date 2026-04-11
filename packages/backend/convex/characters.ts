@@ -728,6 +728,7 @@ export const getScoreboard = query({
 
         return {
           characterId: char._id,
+          playerId: char.playerId,
           name: char.name,
           realm: char.realm,
           region: char.region,
@@ -736,6 +737,10 @@ export const getScoreboard = query({
           faction: char.faction,
           mythicPlusScore: snapshot.mythicPlusScore,
           itemLevel: snapshot.itemLevel,
+          gold: snapshot.gold,
+          playtimeSeconds: snapshot.playtimeSeconds,
+          playtimeThisLevelSeconds: snapshot.playtimeThisLevelSeconds,
+          ownedKeystone: snapshot.ownedKeystone ?? null,
           spec: snapshot.spec,
           role: snapshot.role,
           level: snapshot.level,
@@ -760,7 +765,19 @@ export const getPlayerScoreboard = query({
 
     const playerMap = new Map<
       string,
-      { battleTag: string; totalPlaytimeSeconds: number; totalGold: number; characterCount: number }
+      {
+        playerId: Doc<"players">["_id"];
+        battleTag: string;
+        totalPlaytimeSeconds: number;
+        totalGold: number;
+        totalMythicPlusScore: number;
+        totalItemLevel: number;
+        characterCount: number;
+        bestKeystoneLevel: number | null;
+        bestKeystoneMapChallengeModeID: number | null;
+        bestKeystoneMapName: string | null;
+        latestSnapshotAt: number | null;
+      }
     >();
 
     const charSnapshots = await Promise.all(
@@ -787,20 +804,158 @@ export const getPlayerScoreboard = query({
       if (existing) {
         existing.totalPlaytimeSeconds += snapshot.playtimeSeconds;
         existing.totalGold += snapshot.gold;
+        existing.totalMythicPlusScore += snapshot.mythicPlusScore;
+        existing.totalItemLevel += snapshot.itemLevel;
         existing.characterCount += 1;
+        if (
+          snapshot.ownedKeystone &&
+          (existing.bestKeystoneLevel === null || snapshot.ownedKeystone.level > existing.bestKeystoneLevel)
+        ) {
+          existing.bestKeystoneLevel = snapshot.ownedKeystone.level;
+          existing.bestKeystoneMapChallengeModeID = snapshot.ownedKeystone.mapChallengeModeID ?? null;
+          existing.bestKeystoneMapName = snapshot.ownedKeystone.mapName ?? null;
+        }
+        if (existing.latestSnapshotAt === null || snapshot.takenAt > existing.latestSnapshotAt) {
+          existing.latestSnapshotAt = snapshot.takenAt;
+        }
       } else {
         playerMap.set(playerId, {
+          playerId: char.playerId,
           battleTag: playerBattleTagMap.get(playerId) ?? "",
           totalPlaytimeSeconds: snapshot.playtimeSeconds,
           totalGold: snapshot.gold,
+          totalMythicPlusScore: snapshot.mythicPlusScore,
+          totalItemLevel: snapshot.itemLevel,
           characterCount: 1,
+          bestKeystoneLevel: snapshot.ownedKeystone?.level ?? null,
+          bestKeystoneMapChallengeModeID: snapshot.ownedKeystone?.mapChallengeModeID ?? null,
+          bestKeystoneMapName: snapshot.ownedKeystone?.mapName ?? null,
+          latestSnapshotAt: snapshot.takenAt,
         });
       }
     }
 
-    return Array.from(playerMap.values()).sort(
-      (a, b) => b.totalPlaytimeSeconds - a.totalPlaytimeSeconds || b.totalGold - a.totalGold,
+    return Array.from(playerMap.values())
+      .map((player) => ({
+        playerId: player.playerId,
+        battleTag: player.battleTag,
+        totalPlaytimeSeconds: player.totalPlaytimeSeconds,
+        totalGold: player.totalGold,
+        totalMythicPlusScore: player.totalMythicPlusScore,
+        averageItemLevel: player.characterCount > 0 ? player.totalItemLevel / player.characterCount : 0,
+        characterCount: player.characterCount,
+        bestKeystoneLevel: player.bestKeystoneLevel,
+        bestKeystoneMapChallengeModeID: player.bestKeystoneMapChallengeModeID,
+        bestKeystoneMapName: player.bestKeystoneMapName,
+        latestSnapshotAt: player.latestSnapshotAt,
+      }))
+      .sort(
+        (a, b) =>
+          b.totalMythicPlusScore - a.totalMythicPlusScore ||
+          b.totalPlaytimeSeconds - a.totalPlaytimeSeconds ||
+          b.totalGold - a.totalGold,
+      );
+  },
+});
+
+export const getPlayerCharacters = query({
+  args: { playerId: v.id("players") },
+  handler: async (ctx, { playerId }) => {
+    const authUser = await authComponent.safeGetAuthUser(ctx);
+    if (!authUser) return null;
+
+    const player = await ctx.db.get(playerId);
+    if (!player) return null;
+
+    const characters = await ctx.db
+      .query("characters")
+      .withIndex("by_player", (q) => q.eq("playerId", playerId))
+      .collect();
+
+    const withSnapshots = await Promise.all(
+      characters.map(async (char) => {
+        const snapshot = await ctx.db
+          .query("snapshots")
+          .withIndex("by_character_and_time", (q) => q.eq("characterId", char._id))
+          .order("desc")
+          .first();
+        return { ...char, snapshot: snapshot ?? null };
+      }),
     );
+
+    const snappedCharacters = withSnapshots.flatMap((character) =>
+      character.snapshot ? [{ ...character, snapshot: character.snapshot }] : [],
+    );
+
+    let totalPlaytimeSeconds = 0;
+    let totalGold = 0;
+    let totalMythicPlusScore = 0;
+    let totalItemLevel = 0;
+    let bestKeystone:
+      | {
+          level: number;
+          mapChallengeModeID: number | null;
+          mapName: string | null;
+        }
+      | null = null;
+    let latestSnapshotAt: number | null = null;
+
+    for (const character of snappedCharacters) {
+      const snapshot = character.snapshot;
+      totalPlaytimeSeconds += snapshot.playtimeSeconds;
+      totalGold += snapshot.gold;
+      totalMythicPlusScore += snapshot.mythicPlusScore;
+      totalItemLevel += snapshot.itemLevel;
+
+      if (snapshot.ownedKeystone) {
+        if (bestKeystone === null || snapshot.ownedKeystone.level > bestKeystone.level) {
+          bestKeystone = {
+            level: snapshot.ownedKeystone.level,
+            mapChallengeModeID: snapshot.ownedKeystone.mapChallengeModeID ?? null,
+            mapName: snapshot.ownedKeystone.mapName ?? null,
+          };
+        }
+      }
+
+      if (latestSnapshotAt === null || snapshot.takenAt > latestSnapshotAt) {
+        latestSnapshotAt = snapshot.takenAt;
+      }
+    }
+
+    const sortedCharacters = [...withSnapshots].sort((a, b) => {
+      const snapshotA = a.snapshot;
+      const snapshotB = b.snapshot;
+      if (!snapshotA && !snapshotB) {
+        return a.name.localeCompare(b.name);
+      }
+      if (!snapshotA) return 1;
+      if (!snapshotB) return -1;
+
+      return (
+        snapshotB.mythicPlusScore - snapshotA.mythicPlusScore ||
+        snapshotB.itemLevel - snapshotA.itemLevel ||
+        (snapshotB.ownedKeystone?.level ?? -1) - (snapshotA.ownedKeystone?.level ?? -1) ||
+        a.name.localeCompare(b.name)
+      );
+    });
+
+    return {
+      player: {
+        playerId: player._id,
+        battleTag: player.battleTag,
+      },
+      summary: {
+        trackedCharacters: withSnapshots.length,
+        scannedCharacters: snappedCharacters.length,
+        totalPlaytimeSeconds,
+        totalGold,
+        totalMythicPlusScore,
+        averageItemLevel: snappedCharacters.length > 0 ? totalItemLevel / snappedCharacters.length : null,
+        bestKeystone,
+        latestSnapshotAt,
+      },
+      characters: sortedCharacters,
+    };
   },
 });
 
