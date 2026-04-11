@@ -109,22 +109,19 @@ function getKeystoneDisplay(
 }
 
 function RankBadge({ rank }: { rank: number }) {
-  const isTopThree = rank < 3;
   const tone =
     rank === 0
-      ? "border-amber-400/50 bg-amber-500/15 text-amber-300"
+      ? "text-zinc-100"
       : rank === 1
-        ? "border-slate-300/50 bg-slate-400/15 text-slate-200"
+        ? "text-zinc-200"
         : rank === 2
-          ? "border-orange-500/50 bg-orange-500/15 text-orange-300"
-          : "border-border bg-muted/40 text-muted-foreground";
+          ? "text-zinc-300"
+          : "text-muted-foreground";
 
   return (
-    <div
-      className={`flex h-8 w-8 items-center justify-center rounded-full border text-xs font-semibold tabular-nums ${tone} ${isTopThree ? "shadow-sm" : ""}`}
-    >
-      {rank + 1}
-    </div>
+    <span className={`inline-block text-2xl font-bold leading-none tabular-nums ${tone}`}>
+      {rank + 1}.
+    </span>
   );
 }
 
@@ -155,7 +152,7 @@ function MetricTile({
   helper?: string;
 }) {
   return (
-    <div className="rounded-md border border-zinc-800/80 bg-zinc-900/60 p-2">
+    <div className="rounded-md border border-border/60 bg-muted/20 p-2">
       <p className="text-[11px] text-muted-foreground">{label}</p>
       <p className="mt-0.5 text-sm font-semibold leading-none">{value}</p>
       {helper && <p className="mt-1 truncate text-[11px] text-muted-foreground">{helper}</p>}
@@ -336,7 +333,7 @@ function CharactersTab() {
             return (
               <Card
                 key={entry.characterId}
-                className="border-zinc-800/90 bg-gradient-to-b from-zinc-900/80 to-zinc-950/90 shadow-lg"
+                className="border-border/70 bg-card"
               >
                 <CardContent className="space-y-4 p-4">
                   <div className="flex items-start justify-between gap-3">
@@ -457,12 +454,12 @@ function PlayersTab() {
   });
 
   return (
-    <Card className="border-zinc-800/90 bg-gradient-to-b from-zinc-900/80 to-zinc-950/90 shadow-lg">
+    <Card className="border-border/70 bg-card">
       <CardContent className="p-0">
         <Table>
           <TableHeader>
             <TableRow className="hover:bg-transparent">
-              <TableHead className="w-10">#</TableHead>
+              <TableHead className="w-14">#</TableHead>
               <TableHead>Player</TableHead>
               <TableHead
                 className="cursor-pointer select-none text-right"
@@ -505,7 +502,7 @@ function PlayersTab() {
 
               return (
                 <TableRow key={entry.playerId}>
-                  <TableCell className="w-10">
+                  <TableCell className="w-14">
                     <RankBadge rank={index} />
                   </TableCell>
                   <TableCell>
@@ -569,10 +566,10 @@ function Scoreboard() {
       : "Player aggregates with click-through character rosters.";
 
   return (
-    <div className="w-full bg-[radial-gradient(circle_at_top,_rgba(245,158,11,0.12),_transparent_45%)] px-4 py-6 sm:px-6 lg:px-8">
+    <div className="w-full px-4 py-6 sm:px-6 lg:px-8">
       <div className="mb-6">
         <h1 className="flex items-center gap-2 text-3xl font-bold">
-          <Trophy className="h-7 w-7 text-amber-300" />
+          <Trophy className="h-7 w-7 text-zinc-300" />
           Scoreboard
         </h1>
         <p className="mt-1 text-sm text-muted-foreground">{subtitle}</p>
