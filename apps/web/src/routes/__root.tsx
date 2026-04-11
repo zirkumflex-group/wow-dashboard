@@ -30,6 +30,7 @@ import { ThemeProvider, THEME_SCRIPT } from "@/components/theme-provider";
 import appCss from "../index.css?url";
 
 const APP_TITLE = "WoW Dashboard";
+const AUTH_CACHE_TTL_MS = 60_000;
 
 function getDefaultTitleForPath(pathname: string) {
   if (pathname.startsWith("/dashboard")) return `Dashboard | ${APP_TITLE}`;
@@ -45,6 +46,28 @@ function getDefaultTitleForPath(pathname: string) {
 const getAuth = createServerFn({ method: "GET" }).handler(async () => {
   return await getToken();
 });
+
+let cachedAuthState: { token: string | null; fetchedAt: number } | null = null;
+
+async function getCachedAuthToken() {
+  if (typeof window === "undefined") {
+    return await getAuth();
+  }
+
+  if (
+    cachedAuthState &&
+    Date.now() - cachedAuthState.fetchedAt < AUTH_CACHE_TTL_MS
+  ) {
+    return cachedAuthState.token;
+  }
+
+  const token = await getAuth();
+  cachedAuthState = {
+    token: token ?? null,
+    fetchedAt: Date.now(),
+  };
+  return token;
+}
 
 export interface RouterAppContext {
   queryClient: QueryClient;
@@ -96,7 +119,7 @@ export const Route = createRootRouteWithContext<RouterAppContext>()({
 
   component: RootDocument,
   beforeLoad: async (ctx) => {
-    const token = await getAuth();
+    const token = await getCachedAuthToken();
     if (token) {
       ctx.context.convexQueryClient.serverHttpClient?.setAuth(token);
     }

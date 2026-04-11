@@ -2,6 +2,7 @@ import { v } from "convex/values";
 import type { Doc } from "./_generated/dataModel";
 
 import { components, internal } from "./_generated/api";
+import type { QueryCtx } from "./_generated/server";
 import { internalMutation, mutation, query } from "./_generated/server";
 import { authComponent } from "./auth";
 import {
@@ -19,6 +20,40 @@ import { rateLimiter } from "./rateLimiter";
 
 type MythicPlusRunDoc = Doc<"mythicPlusRuns"> & { canonicalKey?: string };
 type SnapshotDoc = Doc<"snapshots">;
+
+async function getPlayerForAuthUser(ctx: QueryCtx, authUserId: string) {
+  return await ctx.db
+    .query("players")
+    .withIndex("by_user", (q) => q.eq("userId", authUserId))
+    .first();
+}
+
+async function getLatestSnapshotForCharacter(
+  ctx: QueryCtx,
+  characterId: Doc<"characters">["_id"],
+) {
+  return await ctx.db
+    .query("snapshots")
+    .withIndex("by_character_and_time", (q) => q.eq("characterId", characterId))
+    .order("desc")
+    .first();
+}
+
+async function getCharactersWithLatestSnapshots(
+  ctx: QueryCtx,
+  characters: Doc<"characters">[],
+) {
+  if (characters.length === 0) {
+    return [] as { character: Doc<"characters">; snapshot: SnapshotDoc | null }[];
+  }
+
+  return await Promise.all(
+    characters.map(async (character) => ({
+      character,
+      snapshot: await getLatestSnapshotForCharacter(ctx, character._id),
+    })),
+  );
+}
 
 function getRunTimestamp(run: MythicPlusRunDoc): number {
   return getMythicPlusRunSortValue(run);
@@ -667,6 +702,8 @@ export const getCharacterSnapshots = query({
 
     const character = await ctx.db.get(characterId);
     if (!character) return null;
+    const player = await ctx.db.get(character.playerId);
+    if (!player || player.userId !== (authUser._id as string)) return null;
 
     const snapshots = await ctx.db
       .query("snapshots")
@@ -686,6 +723,8 @@ export const getCharacterMythicPlus = query({
 
     const character = await ctx.db.get(characterId);
     if (!character) return null;
+    const player = await ctx.db.get(character.playerId);
+    if (!player || player.userId !== (authUser._id as string)) return null;
 
     const [runs, latestSnapshot] = await Promise.all([
       ctx.db
@@ -715,39 +754,40 @@ export const getScoreboard = query({
     const authUser = await authComponent.safeGetAuthUser(ctx);
     if (!authUser) return null;
 
-    const characters = await ctx.db.query("characters").collect();
+    const player = await getPlayerForAuthUser(ctx, authUser._id as string);
+    if (!player) return [];
 
-    const withSnapshots = await Promise.all(
-      characters.map(async (char) => {
-        const snapshot = await ctx.db
-          .query("snapshots")
-          .withIndex("by_character_and_time", (q) => q.eq("characterId", char._id))
-          .order("desc")
-          .first();
-        if (!snapshot) return null;
+    const characters = await ctx.db
+      .query("characters")
+      .withIndex("by_player", (q) => q.eq("playerId", player._id))
+      .collect();
 
-        return {
-          characterId: char._id,
-          playerId: char.playerId,
-          name: char.name,
-          realm: char.realm,
-          region: char.region,
-          class: char.class,
-          race: char.race,
-          faction: char.faction,
-          mythicPlusScore: snapshot.mythicPlusScore,
-          itemLevel: snapshot.itemLevel,
-          gold: snapshot.gold,
-          playtimeSeconds: snapshot.playtimeSeconds,
-          playtimeThisLevelSeconds: snapshot.playtimeThisLevelSeconds,
-          ownedKeystone: snapshot.ownedKeystone ?? null,
-          spec: snapshot.spec,
-          role: snapshot.role,
-          level: snapshot.level,
-          takenAt: snapshot.takenAt,
-        };
-      }),
-    );
+    const withLatestSnapshots = await getCharactersWithLatestSnapshots(ctx, characters);
+
+    const withSnapshots = withLatestSnapshots.map(({ character, snapshot }) => {
+      if (!snapshot) return null;
+
+      return {
+        characterId: character._id,
+        playerId: character.playerId,
+        name: character.name,
+        realm: character.realm,
+        region: character.region,
+        class: character.class,
+        race: character.race,
+        faction: character.faction,
+        mythicPlusScore: snapshot.mythicPlusScore,
+        itemLevel: snapshot.itemLevel,
+        gold: snapshot.gold,
+        playtimeSeconds: snapshot.playtimeSeconds,
+        playtimeThisLevelSeconds: snapshot.playtimeThisLevelSeconds,
+        ownedKeystone: snapshot.ownedKeystone ?? null,
+        spec: snapshot.spec,
+        role: snapshot.role,
+        level: snapshot.level,
+        takenAt: snapshot.takenAt,
+      };
+    });
 
     return withSnapshots
       .filter((c): c is NonNullable<typeof c> => c !== null)
@@ -761,7 +801,13 @@ export const getPlayerScoreboard = query({
     const authUser = await authComponent.safeGetAuthUser(ctx);
     if (!authUser) return null;
 
-    const characters = await ctx.db.query("characters").collect();
+    const player = await getPlayerForAuthUser(ctx, authUser._id as string);
+    if (!player) return [];
+
+    const characters = await ctx.db
+      .query("characters")
+      .withIndex("by_player", (q) => q.eq("playerId", player._id))
+      .collect();
 
     const playerMap = new Map<
       string,
@@ -781,16 +827,7 @@ export const getPlayerScoreboard = query({
       }
     >();
 
-    const charSnapshots = await Promise.all(
-      characters.map(async (char) => {
-        const snapshot = await ctx.db
-          .query("snapshots")
-          .withIndex("by_character_and_time", (q) => q.eq("characterId", char._id))
-          .order("desc")
-          .first();
-        return { char, snapshot };
-      }),
-    );
+    const charSnapshots = await getCharactersWithLatestSnapshots(ctx, characters);
 
     const playerIds = [...new Set(characters.map((c) => c.playerId))];
     const playerRecords = await Promise.all(playerIds.map((id) => ctx.db.get(id)));
@@ -798,16 +835,16 @@ export const getPlayerScoreboard = query({
       playerIds.map((id, i) => [id.toString(), playerRecords[i]?.battleTag ?? ""]),
     );
 
-    for (const { char, snapshot } of charSnapshots) {
+    for (const { character, snapshot } of charSnapshots) {
       if (!snapshot) continue;
-      const playerId = char.playerId.toString();
+      const playerId = character.playerId.toString();
       const existing = playerMap.get(playerId);
       if (existing) {
         existing.totalPlaytimeSeconds += snapshot.playtimeSeconds;
         existing.totalGold += snapshot.gold;
         if (snapshot.mythicPlusScore > existing.highestMythicPlusScore) {
           existing.highestMythicPlusScore = snapshot.mythicPlusScore;
-          existing.highestMythicPlusCharacterName = char.name;
+          existing.highestMythicPlusCharacterName = character.name;
         }
         existing.totalItemLevel += snapshot.itemLevel;
         existing.characterCount += 1;
@@ -824,12 +861,12 @@ export const getPlayerScoreboard = query({
         }
       } else {
         playerMap.set(playerId, {
-          playerId: char.playerId,
+          playerId: character.playerId,
           battleTag: playerBattleTagMap.get(playerId) ?? "",
           totalPlaytimeSeconds: snapshot.playtimeSeconds,
           totalGold: snapshot.gold,
           highestMythicPlusScore: snapshot.mythicPlusScore,
-          highestMythicPlusCharacterName: char.name,
+          highestMythicPlusCharacterName: character.name,
           totalItemLevel: snapshot.itemLevel,
           characterCount: 1,
           bestKeystoneLevel: snapshot.ownedKeystone?.level ?? null,
@@ -872,20 +909,17 @@ export const getPlayerCharacters = query({
 
     const player = await ctx.db.get(playerId);
     if (!player) return null;
+    if (player.userId !== (authUser._id as string)) return null;
 
     const characters = await ctx.db
       .query("characters")
       .withIndex("by_player", (q) => q.eq("playerId", playerId))
       .collect();
 
-    const withSnapshots = await Promise.all(
-      characters.map(async (char) => {
-        const snapshot = await ctx.db
-          .query("snapshots")
-          .withIndex("by_character_and_time", (q) => q.eq("characterId", char._id))
-          .order("desc")
-          .first();
-        return { ...char, snapshot: snapshot ?? null };
+    const withSnapshots = (await getCharactersWithLatestSnapshots(ctx, characters)).map(
+      ({ character, snapshot }) => ({
+        ...character,
+        snapshot,
       }),
     );
 
@@ -976,10 +1010,7 @@ export const getMyCharactersWithSnapshot = query({
     const authUser = await authComponent.safeGetAuthUser(ctx);
     if (!authUser) return null;
 
-    const player = await ctx.db
-      .query("players")
-      .withIndex("by_user", (q) => q.eq("userId", authUser._id as string))
-      .first();
+    const player = await getPlayerForAuthUser(ctx, authUser._id as string);
 
     if (!player) return null;
 
@@ -988,16 +1019,10 @@ export const getMyCharactersWithSnapshot = query({
       .withIndex("by_player", (q) => q.eq("playerId", player._id))
       .collect();
 
-    return await Promise.all(
-      characters.map(async (char) => {
-        const snapshot = await ctx.db
-          .query("snapshots")
-          .withIndex("by_character_and_time", (q) => q.eq("characterId", char._id))
-          .order("desc")
-          .first();
-        return { ...char, snapshot: snapshot ?? null };
-      }),
-    );
+    return (await getCharactersWithLatestSnapshots(ctx, characters)).map(({ character, snapshot }) => ({
+      ...character,
+      snapshot,
+    }));
   },
 });
 
@@ -1009,23 +1034,28 @@ export const getCharactersWithLatestSnapshot = query({
     const authUser = await authComponent.safeGetAuthUser(ctx);
     if (!authUser) return null;
 
-    const uniqueCharacterIds = [...new Set(characterIds)];
+    const player = await getPlayerForAuthUser(ctx, authUser._id as string);
+    if (!player) return [];
 
-    return (
+    const uniqueCharacterIds = [...new Set(characterIds)];
+    if (uniqueCharacterIds.length === 0) return [];
+
+    const ownedCharacters = (
       await Promise.all(
         uniqueCharacterIds.map(async (characterId) => {
-          const char = await ctx.db.get(characterId);
-          if (!char) return null;
-
-          const snapshot = await ctx.db
-            .query("snapshots")
-            .withIndex("by_character_and_time", (q) => q.eq("characterId", char._id))
-            .order("desc")
-            .first();
-
-          return { ...char, snapshot: snapshot ?? null };
+          const character = await ctx.db.get(characterId);
+          if (!character) return null;
+          if (character.playerId !== player._id) return null;
+          return character;
         }),
       )
-    ).filter((char): char is NonNullable<typeof char> => char !== null);
+    ).filter((character): character is NonNullable<typeof character> => character !== null);
+
+    return (await getCharactersWithLatestSnapshots(ctx, ownedCharacters)).map(
+      ({ character, snapshot }) => ({
+        ...character,
+        snapshot,
+      }),
+    );
   },
 });
