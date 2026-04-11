@@ -1,6 +1,6 @@
 {
   "extends": "@wow-dashboard/config/tsconfig.base.json",
-  "include": ["src/renderer/src/**/*"],
+  "include": ["src/renderer/src/**/*", "src/shared/**/*"],
   "compilerOptions": {
     "composite": true,
     "lib": ["ESNext", "DOM", "DOM.Iterable"],

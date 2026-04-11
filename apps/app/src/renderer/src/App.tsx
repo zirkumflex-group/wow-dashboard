@@ -2,6 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ConvexReactClient, ConvexProviderWithAuth, useMutation, useQuery } from "convex/react";
 import { api } from "@wow-dashboard/backend/convex/_generated/api";
 import { env } from "@wow-dashboard/env/app";
+import type {
+  AddonUpdateCheckResult,
+  AddonUpdateState,
+  AppInstallUpdateResult,
+  AppUpdateState,
+} from "../../shared/update";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -98,6 +104,33 @@ interface PendingUploadCounts {
   mythicPlusRuns: number;
 }
 
+interface AppSettings {
+  closeBehavior: "tray" | "exit";
+  autostart: boolean;
+  launchMinimized: boolean;
+  lastSyncedAt: number;
+}
+
+const INITIAL_APP_UPDATE_STATE: AppUpdateState = {
+  status: "idle",
+  currentVersion: "",
+  availableVersion: null,
+  downloadedVersion: null,
+  progressPercent: null,
+  error: null,
+  lastCheckedAt: null,
+  isPackaged: false,
+};
+
+const INITIAL_ADDON_UPDATE_STATE: AddonUpdateState = {
+  status: "idle",
+  installedVersion: null,
+  latestVersion: null,
+  stagedVersion: null,
+  error: null,
+  lastCheckedAt: null,
+};
+
 // ---------------------------------------------------------------------------
 // Type augmentation for window.electron
 // ---------------------------------------------------------------------------
@@ -123,15 +156,17 @@ declare global {
         getInstalledAddonVersion: () => Promise<string | null>;
         installAddon: (downloadUrl: string, checksumUrl: string | null) => Promise<void>;
         getLatestAddonRelease: () => Promise<{ url: string; checksumUrl: string | null; version: string }>;
-        getAddonUpdateStatus: () => Promise<{ stagedVersion: string | null }>;
+        getAddonUpdateStatus: () => Promise<AddonUpdateState>;
+        triggerAddonUpdateCheck: () => Promise<AddonUpdateCheckResult>;
         watchAddonFile: () => Promise<void>;
         unwatchAddonFile: () => Promise<void>;
-        onAddonFileChanged: (cb: () => void) => void;
-        onAddonUpdateStaged: (cb: (version: string) => void) => void;
-        onAddonUpdateApplied: (cb: (version: string) => void) => void;
+        onAddonFileChanged: (cb: () => void) => () => void;
+        onAddonUpdateStaged: (cb: (version: string) => void) => () => void;
+        onAddonUpdateApplied: (cb: (version: string) => void) => () => void;
+        onAddonUpdateState: (cb: (state: AddonUpdateState) => void) => () => void;
       };
       settings: {
-        getAppSettings: () => Promise<{ closeBehavior: "tray" | "exit"; autostart: boolean; launchMinimized: boolean; lastSyncedAt: number }>;
+        getAppSettings: () => Promise<AppSettings>;
         setCloseBehavior: (value: "tray" | "exit") => Promise<void>;
         setAutostart: (value: boolean) => Promise<void>;
         setLaunchMinimized: (value: boolean) => Promise<void>;
@@ -139,12 +174,15 @@ declare global {
       };
       openExternal: (url: string) => Promise<void>;
       getVersion: () => Promise<string>;
-      installUpdate: () => Promise<void>;
+      getUpdateStatus: () => Promise<AppUpdateState>;
+      installUpdate: () => Promise<AppInstallUpdateResult>;
       checkForUpdates: () => Promise<void>;
       updates: {
-        onUpdateAvailable: (cb: (version: string) => void) => void;
-        onUpdateDownloaded: (cb: (version: string) => void) => void;
-        onUpdateNotAvailable: (cb: () => void) => void;
+        getStatus: () => Promise<AppUpdateState>;
+        onUpdateState: (cb: (state: AppUpdateState) => void) => () => void;
+        onUpdateAvailable: (cb: (version: string) => void) => () => void;
+        onUpdateDownloaded: (cb: (version: string) => void) => () => void;
+        onUpdateNotAvailable: (cb: () => void) => () => void;
       };
     };
   }
@@ -408,17 +446,12 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
   const [lastSyncedAt, setLastSyncedAt] = useState(0);
   const [addonInstalled, setAddonInstalled] = useState<boolean | null>(null);
   const [addonVersion, setAddonVersion] = useState<string | null>(null);
-  const [latestAddonVersion, setLatestAddonVersion] = useState<string | null>(null);
-  const [addonStagedVersion, setAddonStagedVersion] = useState<string | null>(null);
+  const [addonUpdateState, setAddonUpdateState] = useState<AddonUpdateState>(INITIAL_ADDON_UPDATE_STATE);
   const [installing, setInstalling] = useState(false);
-  const [installError, setInstallError] = useState<string | null>(null);
-  const [appUpdateAvailable, setAppUpdateAvailable] = useState<string | null>(null);
-  const [appUpdateDownloaded, setAppUpdateDownloaded] = useState<string | null>(null);
+  const [addonActionError, setAddonActionError] = useState<string | null>(null);
+  const [appUpdateState, setAppUpdateState] = useState<AppUpdateState>(INITIAL_APP_UPDATE_STATE);
   const [appVersion, setAppVersion] = useState<string | null>(null);
-  const [checkingAppUpdate, setCheckingAppUpdate] = useState(false);
-  const [appUpToDate, setAppUpToDate] = useState(false);
-  const [checkingAddonUpdate, setCheckingAddonUpdate] = useState(false);
-  const [addonUpToDate, setAddonUpToDate] = useState(false);
+  const [appActionError, setAppActionError] = useState<string | null>(null);
 
   // Upload / file status
   const [pendingUploadCounts, setPendingUploadCounts] = useState<PendingUploadCounts | null>(null);
@@ -434,10 +467,21 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
 
   const syncingRef = useRef(false);
   const lastSyncedAtRef = useRef(0);
-  const addonFileListenerTokenRef = useRef<symbol | null>(null);
   // Always points to the latest doUpload closure so stale-closure effects stay current.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const doUploadRef = useRef<() => Promise<void>>(null as any);
+  const applyAddonUpdateSnapshot = useCallback((state: AddonUpdateState) => {
+    setAddonUpdateState(state);
+    if (state.installedVersion) {
+      setAddonInstalled(true);
+      setAddonVersion(state.installedVersion);
+      return;
+    }
+    if (state.status === "notInstalled") {
+      setAddonInstalled(false);
+      setAddonVersion(null);
+    }
+  }, []);
   const applyAddonFileState = useCallback(
     (chars: CharacterData[], fileStats: AddonFileStats | null, sinceTs: number) => {
       setPendingUploadCounts(getPendingUploadCounts(chars, sinceTs));
@@ -471,38 +515,81 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
 
   // Load persisted settings on mount
   useEffect(() => {
-    window.electron.getVersion().then((v) => setAppVersion(v));
-    window.electron.wow.getRetailPath().then((p) => setRetailPath(p));
-    window.electron.settings.getAppSettings().then((s) => {
-      setCloseBehavior(s.closeBehavior);
-      setAutostart(s.autostart);
-      setLaunchMinimized(s.launchMinimized);
-      setLastSyncedAt(s.lastSyncedAt);
-      lastSyncedAtRef.current = s.lastSyncedAt;
-    });
-    window.electron.updates.onUpdateAvailable((v) => setAppUpdateAvailable(v));
-    window.electron.updates.onUpdateDownloaded((v) => {
-      setAppUpdateAvailable(v);
-      setAppUpdateDownloaded(v);
-    });
-    window.electron.updates.onUpdateNotAvailable(() => {
-      setCheckingAppUpdate(false);
-      setAppUpToDate(true);
-      setTimeout(() => setAppUpToDate(false), 3000);
-    });
-    window.electron.wow.getAddonUpdateStatus().then(({ stagedVersion }) => setAddonStagedVersion(stagedVersion));
-    window.electron.wow.onAddonUpdateStaged((version) => setAddonStagedVersion(version));
-    window.electron.wow.onAddonUpdateApplied((version) => {
-      setAddonStagedVersion(null);
-      setAddonInstalled(true);
-      setAddonVersion(version);
-      setLatestAddonVersion(version);
-    });
-    window.electron.wow
-      .getLatestAddonRelease()
-      .then(({ version }) => setLatestAddonVersion(version))
-      .catch(() => {});
-  }, []);
+    let cancelled = false;
+
+    const cleanupFns = [
+      window.electron.updates.onUpdateState((state) => {
+        if (cancelled) return;
+        setAppUpdateState(state);
+        setAppVersion(state.currentVersion || null);
+        if (state.status !== "error") {
+          setAppActionError(null);
+        }
+      }),
+      window.electron.wow.onAddonUpdateState((state) => {
+        if (cancelled) return;
+        applyAddonUpdateSnapshot(state);
+        if (state.status !== "error") {
+          setAddonActionError(null);
+        }
+      }),
+      window.electron.wow.onAddonUpdateStaged((version) => {
+        if (cancelled) return;
+        setAddonActionError(null);
+        setAddonUpdateState((current) => ({
+          ...current,
+          status: "staged",
+          latestVersion: current.latestVersion ?? version,
+          stagedVersion: version,
+          error: null,
+        }));
+      }),
+      window.electron.wow.onAddonUpdateApplied((version) => {
+        if (cancelled) return;
+        setAddonActionError(null);
+        setAddonInstalled(true);
+        setAddonVersion(version);
+        setAddonUpdateState((current) => ({
+          ...current,
+          status: "applied",
+          installedVersion: version,
+          latestVersion: version,
+          stagedVersion: null,
+          error: null,
+        }));
+      }),
+    ];
+
+    void Promise.all([
+      window.electron.getVersion(),
+      window.electron.wow.getRetailPath(),
+      window.electron.settings.getAppSettings(),
+      window.electron.updates.getStatus(),
+      window.electron.wow.getAddonUpdateStatus(),
+    ])
+      .then(([version, retailPathValue, settings, hydratedAppUpdateState, hydratedAddonUpdateState]) => {
+        if (cancelled) return;
+        setAppVersion(version);
+        setRetailPath(retailPathValue);
+        setCloseBehavior(settings.closeBehavior);
+        setAutostart(settings.autostart);
+        setLaunchMinimized(settings.launchMinimized);
+        setLastSyncedAt(settings.lastSyncedAt);
+        lastSyncedAtRef.current = settings.lastSyncedAt;
+        setAppUpdateState(hydratedAppUpdateState);
+        setAppVersion(hydratedAppUpdateState.currentVersion || version);
+        applyAddonUpdateSnapshot(hydratedAddonUpdateState);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setAppActionError("Failed to load desktop update status.");
+      });
+
+    return () => {
+      cancelled = true;
+      cleanupFns.forEach((cleanup) => cleanup());
+    };
+  }, [applyAddonUpdateSnapshot]);
 
   // Check addon and read file snapshot count whenever retailPath changes
   useEffect(() => {
@@ -515,27 +602,34 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
       setWatchingFile(false);
       return;
     }
+
     let cancelled = false;
-    window.electron.wow
-      .watchAddonFile()
-      .then(() => {
-        if (!cancelled) {
-          setWatchingFile(true);
-        }
+
+    void Promise.all([
+      window.electron.wow.watchAddonFile().then(() => true).catch(() => false),
+      window.electron.wow.checkAddonInstalled(),
+      window.electron.wow.getInstalledAddonVersion(),
+      window.electron.wow.getAddonUpdateStatus(),
+    ])
+      .then(([watching, installed, installedVersion, updateState]) => {
+        if (cancelled) return;
+        setWatchingFile(watching);
+        setAddonInstalled(installed);
+        setAddonVersion(installedVersion);
+        applyAddonUpdateSnapshot(updateState);
+        void refreshAddonFileState();
       })
       .catch(() => {
-        if (!cancelled) {
-          setWatchingFile(false);
-        }
+        if (cancelled) return;
+        setWatchingFile(false);
       });
-    window.electron.wow.checkAddonInstalled().then(setAddonInstalled);
-    window.electron.wow.getInstalledAddonVersion().then(setAddonVersion);
-    void refreshAddonFileState();
+
     return () => {
       cancelled = true;
       void window.electron.wow.unwatchAddonFile();
+      setWatchingFile(false);
     };
-  }, [refreshAddonFileState, retailPath]);
+  }, [applyAddonUpdateSnapshot, refreshAddonFileState, retailPath]);
 
   async function handleCloseBehaviorChange(value: boolean) {
     const behavior = value ? "tray" : "exit";
@@ -556,44 +650,46 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
   async function handleInstallAddon() {
     if (!retailPath) return;
     setInstalling(true);
-    setInstallError(null);
+    setAddonActionError(null);
     try {
       const { url, checksumUrl, version } = await window.electron.wow.getLatestAddonRelease();
       await window.electron.wow.installAddon(url, checksumUrl ?? null);
       setAddonInstalled(true);
       setAddonVersion(version);
-      setAddonStagedVersion(null);
+      setAddonUpdateState((current) => ({
+        ...current,
+        status: "applied",
+        installedVersion: version,
+        latestVersion: current.latestVersion ?? version,
+        stagedVersion: null,
+        error: null,
+      }));
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      setInstallError(msg);
+      setAddonActionError(msg);
     } finally {
       setInstalling(false);
     }
   }
 
   async function handleCheckAppUpdate() {
-    setCheckingAppUpdate(true);
-    setAppUpToDate(false);
+    setAppActionError(null);
     await window.electron.checkForUpdates();
-    // Result comes back via update events. Add a fallback timeout in case no event fires
-    // (e.g., in unpackaged dev builds where the updater is disabled).
-    setTimeout(() => setCheckingAppUpdate(false), 5000);
+  }
+
+  async function handleInstallAppUpdate() {
+    setAppActionError(null);
+    const result = await window.electron.installUpdate();
+    if (!result.ok && result.message) {
+      setAppActionError(result.message);
+    }
   }
 
   async function handleCheckAddonUpdate() {
-    setCheckingAddonUpdate(true);
-    setAddonUpToDate(false);
-    try {
-      const { version } = await window.electron.wow.getLatestAddonRelease();
-      setLatestAddonVersion(version);
-      if (addonVersion && !isOutdated(addonVersion, version)) {
-        setAddonUpToDate(true);
-        setTimeout(() => setAddonUpToDate(false), 3000);
-      }
-    } catch {
-      // silently ignore
-    } finally {
-      setCheckingAddonUpdate(false);
+    setAddonActionError(null);
+    const result = await window.electron.wow.triggerAddonUpdateCheck();
+    if (result.error) {
+      setAddonActionError(result.error);
     }
   }
 
@@ -604,6 +700,7 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
       setLastUploadResult(null);
       setUploadError(null);
       setUploadWarn(null);
+      setAddonActionError(null);
       setPendingUploadCounts(null);
       const installed = await window.electron.wow.checkAddonInstalled();
       setAddonInstalled(installed);
@@ -691,28 +788,55 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
 
   // Register file-change listener once on mount.
   useEffect(() => {
-    const listenerToken = Symbol("addon-file-listener");
-    addonFileListenerTokenRef.current = listenerToken;
-
-    window.electron.wow.onAddonFileChanged(() => {
-      if (addonFileListenerTokenRef.current !== listenerToken) {
-        return;
-      }
+    const unsubscribe = window.electron.wow.onAddonFileChanged(() => {
       void doUploadRef.current();
     });
 
     return () => {
-      if (addonFileListenerTokenRef.current === listenerToken) {
-        addonFileListenerTokenRef.current = null;
-      }
+      unsubscribe();
     };
   }, []);
 
   const retailPathValid = retailPath ? isValidRetailPath(retailPath) : true;
+  const latestAddonVersion = addonUpdateState.latestVersion;
+  const addonStagedVersion = addonUpdateState.stagedVersion;
+  const appUpdateReadyVersion = appUpdateState.downloadedVersion;
   const showAddonOutdated =
     addonInstalled && addonVersion && latestAddonVersion
       ? isOutdated(addonVersion, latestAddonVersion)
       : false;
+  const displayedAppVersion = appUpdateState.currentVersion || appVersion;
+  const appUpdateError = appActionError ?? appUpdateState.error;
+  const addonUpdateError = addonActionError ?? addonUpdateState.error;
+  const appCheckDisabled =
+    appUpdateState.status === "checking" ||
+    appUpdateState.status === "available" ||
+    appUpdateState.status === "downloading" ||
+    appUpdateState.status === "downloaded" ||
+    appUpdateState.status === "unsupported";
+  const appCheckButtonLabel =
+    appUpdateState.status === "checking"
+      ? "Checking…"
+      : appUpdateState.status === "downloading"
+        ? appUpdateState.progressPercent !== null
+          ? `Downloading ${Math.round(appUpdateState.progressPercent)}%`
+          : "Downloading…"
+        : appUpdateState.status === "upToDate"
+          ? "Up to date"
+          : appUpdateState.status === "downloaded"
+            ? "Update ready"
+            : appUpdateState.status === "unsupported"
+              ? "Updates unavailable in dev"
+              : "Check for Updates";
+  const addonCheckDisabled =
+    installing ||
+    addonUpdateState.status === "checking" ||
+    addonUpdateState.status === "updating";
+  const checkingAddonUpdate =
+    addonUpdateState.status === "checking" || addonUpdateState.status === "updating";
+  const addonUpToDate =
+    addonUpdateState.status === "upToDate" || addonUpdateState.status === "applied";
+  const installError = addonUpdateError;
 
   return (
     <div className="min-h-screen bg-gray-950 p-6 text-white">
@@ -734,20 +858,47 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
         </div>
 
         {/* App update banners */}
-        {appUpdateDownloaded && (
-          <div className="rounded-lg border border-green-700 bg-green-950 px-4 py-3 text-sm text-green-300">
-            App v{appUpdateDownloaded} is downloaded and will install automatically the next time
-            WoW Dashboard fully exits.
+        {appUpdateState.status === "downloaded" && appUpdateReadyVersion && (
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-green-700 bg-green-950 px-4 py-3 text-sm text-green-300">
+            <p>
+              App v{appUpdateReadyVersion} is ready to install. It will still install
+              automatically the next time WoW Dashboard fully exits.
+            </p>
+            <button
+              onClick={handleInstallAppUpdate}
+              className="shrink-0 rounded bg-green-400 px-3 py-1.5 text-sm font-medium text-green-950 hover:bg-green-300"
+            >
+              Install update &amp; restart
+            </button>
           </div>
         )}
-        {appUpdateAvailable && !appUpdateDownloaded && (
+        {(appUpdateState.status === "available" || appUpdateState.status === "downloading") &&
+          appUpdateState.availableVersion && (
           <div className="rounded-lg border border-blue-700 bg-blue-950 px-4 py-3 text-sm text-blue-300">
-            App update v{appUpdateAvailable} is downloading in the background.
+            App update v{appUpdateState.availableVersion} is downloading in the background
+            {appUpdateState.status === "downloading" && appUpdateState.progressPercent !== null
+              ? ` (${Math.round(appUpdateState.progressPercent)}%)`
+              : ""}
+          </div>
+        )}
+        {appUpdateError && (
+          <div className="rounded-lg border border-red-700 bg-red-950 px-4 py-3 text-sm text-red-300">
+            {appUpdateError}
+          </div>
+        )}
+        {appUpdateState.status === "unsupported" && (
+          <div className="rounded-lg border border-gray-800 bg-gray-900 px-4 py-3 text-sm text-gray-400">
+            Desktop app updates are unavailable in development builds.
           </div>
         )}
 
         {/* Addon update banner */}
-        {addonStagedVersion ? (
+        {addonUpdateState.status === "applied" && addonVersion ? (
+          <div className="rounded-lg border border-green-700 bg-green-950 px-4 py-3 text-sm text-green-300">
+            Addon v{addonVersion} was applied automatically in the background. No app restart is
+            required.
+          </div>
+        ) : addonStagedVersion ? (
           <div className="rounded-lg border border-yellow-700 bg-yellow-950 px-4 py-3 text-sm text-yellow-300">
             Addon v{addonStagedVersion} is downloaded and will install automatically in the
             background. No app restart is required.
@@ -807,10 +958,29 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
                       <span className="text-yellow-400">Not installed</span>
                     )}
                   </p>
-                  {addonStagedVersion && (
+                  {addonUpdateState.status === "checking" && (
+                    <p className="mt-0.5 text-xs text-blue-400">Checking for addon updates…</p>
+                  )}
+                  {addonUpdateState.status === "updating" && (
+                    <p className="mt-0.5 text-xs text-blue-400">
+                      Downloading and applying the latest addon update…
+                    </p>
+                  )}
+                  {addonUpdateState.status === "upToDate" && (
+                    <p className="mt-0.5 text-xs text-green-400">Addon is up to date.</p>
+                  )}
+                  {addonUpdateState.status === "staged" && addonStagedVersion && (
                     <p className="mt-0.5 text-xs text-yellow-400">
                       Auto-update staged for v{addonStagedVersion}
                     </p>
+                  )}
+                  {addonUpdateState.status === "applied" && addonVersion && (
+                    <p className="mt-0.5 text-xs text-green-400">
+                      Auto-update applied: v{addonVersion}
+                    </p>
+                  )}
+                  {addonUpdateState.status === "error" && addonUpdateError && (
+                    <p className="mt-0.5 text-xs text-red-400">{addonUpdateError}</p>
                   )}
                 </>
               )}
@@ -820,7 +990,7 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
                 {addonInstalled && (
                   <button
                     onClick={handleCheckAddonUpdate}
-                    disabled={checkingAddonUpdate || installing || !!addonStagedVersion}
+                    disabled={addonCheckDisabled}
                     className="rounded bg-gray-700 px-3 py-1.5 text-sm font-medium hover:bg-gray-600 disabled:opacity-50"
                   >
                     {addonStagedVersion
@@ -965,13 +1135,13 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
 
         {/* App version + update check */}
         <div className="flex items-center justify-center gap-3">
-          {appVersion && <p className="text-xs text-gray-600">v{appVersion}</p>}
+          {displayedAppVersion && <p className="text-xs text-gray-600">v{displayedAppVersion}</p>}
           <button
             onClick={handleCheckAppUpdate}
-            disabled={checkingAppUpdate || !!appUpdateAvailable || !!appUpdateDownloaded}
+            disabled={appCheckDisabled}
             className="text-xs text-gray-500 hover:text-gray-300 disabled:opacity-50"
           >
-            {checkingAppUpdate ? "Checking…" : appUpToDate ? "Up to date" : "Check for Updates"}
+            {appCheckButtonLabel}
           </button>
         </div>
       </div>

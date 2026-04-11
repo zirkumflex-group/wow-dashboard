@@ -18,10 +18,17 @@ import { join, resolve, sep } from "path";
 import * as crypto from "crypto";
 import * as os from "os";
 import * as unzipper from "unzipper";
+import type {
+  AddonUpdateCheckResult,
+  AddonUpdateState,
+  AppInstallUpdateResult,
+  AppUpdateState,
+} from "../shared/update";
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let isQuitting = false;
+let isInstallingAppUpdate = false;
 let mainWindowReady = false;
 let pendingWindowReveal = false;
 // Cache close behavior so the window close handler can be synchronous (event.preventDefault
@@ -36,6 +43,33 @@ let pendingLoginResolve: ((token: string) => void) | null = null;
 let pendingLoginReject: ((err: Error) => void) | null = null;
 let stagingAddonUpdate = false;
 let applyingStagedAddonUpdate = false;
+let appUpdateCheckInFlight: Promise<void> | null = null;
+let addonUpdateCheckInFlight: Promise<AddonUpdateCheckResult> | null = null;
+let appUpdaterListenersRegistered = false;
+
+const DEFAULT_APP_UPDATE_CHECK_INTERVAL_MINUTES = 60;
+const DEFAULT_ADDON_UPDATE_CHECK_INTERVAL_MINUTES = 60;
+const DEFAULT_ADDON_UPDATE_APPLY_INTERVAL_MINUTES = 1;
+
+const appUpdateState: AppUpdateState = {
+  status: app.isPackaged ? "idle" : "unsupported",
+  currentVersion: app.getVersion(),
+  availableVersion: null,
+  downloadedVersion: null,
+  progressPercent: null,
+  error: null,
+  lastCheckedAt: null,
+  isPackaged: app.isPackaged,
+};
+
+const addonUpdateState: AddonUpdateState = {
+  status: "idle",
+  installedVersion: null,
+  latestVersion: null,
+  stagedVersion: null,
+  error: null,
+  lastCheckedAt: null,
+};
 
 // ─── Token persistence via OS keychain (safeStorage) ──────────────────────────
 
@@ -139,54 +173,152 @@ async function loadTrayIcon(): Promise<Electron.NativeImage> {
   return nativeImage.createEmpty();
 }
 
+function getConfiguredAppUpdateCheckIntervalMs(): number {
+  return DEFAULT_APP_UPDATE_CHECK_INTERVAL_MINUTES * 60 * 1000;
+}
+
+function getConfiguredAddonUpdateCheckIntervalMs(): number {
+  return DEFAULT_ADDON_UPDATE_CHECK_INTERVAL_MINUTES * 60 * 1000;
+}
+
+function getConfiguredAddonStagedApplyIntervalMs(): number {
+  return DEFAULT_ADDON_UPDATE_APPLY_INTERVAL_MINUTES * 60 * 1000;
+}
+
+function broadcastToRenderers(channel: string, ...args: unknown[]): void {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (window.isDestroyed()) continue;
+    window.webContents.send(channel, ...args);
+  }
+}
+
+function getAppUpdateStateSnapshot(): AppUpdateState {
+  return { ...appUpdateState };
+}
+
+function updateAppUpdateState(patch: Partial<AppUpdateState>): AppUpdateState {
+  Object.assign(appUpdateState, patch, {
+    currentVersion: app.getVersion(),
+    isPackaged: app.isPackaged,
+  });
+  const snapshot = getAppUpdateStateSnapshot();
+  broadcastToRenderers("app:updateState", snapshot);
+  refreshTrayMenu();
+  return snapshot;
+}
+
+function getAddonUpdateStateSnapshot(): AddonUpdateState {
+  return { ...addonUpdateState };
+}
+
+function updateAddonUpdateState(patch: Partial<AddonUpdateState>): AddonUpdateState {
+  Object.assign(addonUpdateState, patch);
+  const snapshot = getAddonUpdateStateSnapshot();
+  broadcastToRenderers("wow:addonUpdateState", snapshot);
+  return snapshot;
+}
+
+function quitApplication(): void {
+  isQuitting = true;
+  app.quit();
+}
+
+function revealWindow(): void {
+  pendingWindowReveal = false;
+  mainWindow?.setSkipTaskbar(false);
+  mainWindow?.show();
+  mainWindow?.focus();
+}
+
+function showWindow(): void {
+  if (!mainWindow) {
+    pendingWindowReveal = true;
+    createWindow();
+    return;
+  }
+
+  if (!mainWindowReady) {
+    pendingWindowReveal = true;
+    return;
+  }
+
+  revealWindow();
+}
+
+function installDownloadedAppUpdate(): AppInstallUpdateResult {
+  if (!app.isPackaged) {
+    return {
+      ok: false,
+      status: "unsupported",
+      message: "Desktop app updates are unavailable in development builds.",
+    };
+  }
+
+  if (appUpdateState.status !== "downloaded" || !appUpdateState.downloadedVersion) {
+    return {
+      ok: false,
+      status: "notDownloaded",
+      message: "No downloaded desktop update is ready to install.",
+    };
+  }
+
+  isInstallingAppUpdate = true;
+  isQuitting = true;
+  setImmediate(() => {
+    autoUpdater.quitAndInstall(true, true);
+  });
+
+  return {
+    ok: true,
+    status: "installing",
+    message: null,
+  };
+}
+
+function buildTrayMenu(): Electron.Menu {
+  const template: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: "Show WoW Dashboard",
+      click: () => {
+        showWindow();
+      },
+    },
+  ];
+
+  if (appUpdateState.status === "downloaded" && appUpdateState.downloadedVersion) {
+    template.push({
+      label: "Install update and restart",
+      click: () => {
+        installDownloadedAppUpdate();
+      },
+    });
+  }
+
+  template.push(
+    { type: "separator" },
+    {
+      label: "Quit",
+      click: () => {
+        quitApplication();
+      },
+    },
+  );
+
+  return Menu.buildFromTemplate(template);
+}
+
+function refreshTrayMenu(): void {
+  if (!tray) return;
+  tray.setContextMenu(buildTrayMenu());
+}
+
 async function createTray(): Promise<void> {
   if (tray) return;
 
   const icon = await loadTrayIcon();
   tray = new Tray(icon);
-
-  const buildMenu = () =>
-    Menu.buildFromTemplate([
-      {
-        label: "Show WoW Dashboard",
-        click: () => {
-          showWindow();
-        },
-      },
-      { type: "separator" },
-      {
-        label: "Quit",
-        click: () => {
-          isQuitting = true;
-          app.quit();
-        },
-      },
-    ]);
-
   tray.setToolTip("WoW Dashboard");
-  tray.setContextMenu(buildMenu());
-
-  const revealWindow = () => {
-    pendingWindowReveal = false;
-    mainWindow?.setSkipTaskbar(false);
-    mainWindow?.show();
-    mainWindow?.focus();
-  };
-
-  const showWindow = () => {
-    if (!mainWindow) {
-      pendingWindowReveal = true;
-      createWindow();
-      return;
-    }
-
-    if (!mainWindowReady) {
-      pendingWindowReveal = true;
-      return;
-    }
-
-    revealWindow();
-  };
+  refreshTrayMenu();
 
   tray.on("click", showWindow);
   // Windows fires "double-click" on the tray icon; handle both.
@@ -2353,7 +2485,7 @@ function createWindow(): void {
   // Awaiting inside a close handler is too late — Electron processes the event before
   // the async callback resumes, so the window would be destroyed even with preventDefault.
   mainWindow.on("close", (event) => {
-    if (isQuitting) return;
+    if (isQuitting || isInstallingAppUpdate) return;
     if (closeBehaviorCache === "tray") {
       event.preventDefault();
       mainWindow?.setSkipTaskbar(true);
@@ -2499,9 +2631,58 @@ ipcMain.handle("auth:logout", async () => {
 });
 
 // WoW addon data
+function getStoredRetailPath(settings: Record<string, unknown>): string | null {
+  const retailPath = settings.retailPath;
+  return typeof retailPath === "string" && retailPath.length > 0 ? retailPath : null;
+}
+
+function isRetailFolderPath(retailPath: string): boolean {
+  const lastSegment =
+    retailPath
+      .replace(/[/\\]+$/, "")
+      .split(/[/\\]/)
+      .pop() ?? "";
+  return lastSegment.toLowerCase() === "_retail_";
+}
+
+async function resolveRetailPathFromSettings(): Promise<{
+  retailPath: string | null;
+  validatedRetailPath: string | null;
+  error: string | null;
+}> {
+  const settings = await getSettings();
+  const retailPath = getStoredRetailPath(settings);
+  if (!retailPath) {
+    return {
+      retailPath: null,
+      validatedRetailPath: null,
+      error: null,
+    };
+  }
+
+  if (!isRetailFolderPath(retailPath)) {
+    return {
+      retailPath,
+      validatedRetailPath: null,
+      error: "Configured WoW folder must point to the _retail_ directory.",
+    };
+  }
+
+  return {
+    retailPath,
+    validatedRetailPath: retailPath,
+    error: null,
+  };
+}
+
+async function getValidatedRetailPathFromSettings(): Promise<string | null> {
+  const { validatedRetailPath } = await resolveRetailPathFromSettings();
+  return validatedRetailPath;
+}
+
 ipcMain.handle("wow:getRetailPath", async () => {
   const settings = await getSettings();
-  return (settings.retailPath as string) ?? null;
+  return getStoredRetailPath(settings);
 });
 
 ipcMain.handle("wow:selectRetailFolder", async () => {
@@ -2514,6 +2695,15 @@ ipcMain.handle("wow:selectRetailFolder", async () => {
   if (result.canceled || result.filePaths.length === 0) return null;
   const folder = result.filePaths[0];
   const settings = await getSettings();
+  if (!folder || !isRetailFolderPath(folder)) {
+    await dialog.showMessageBox(mainWindow, {
+      type: "error",
+      title: "Invalid WoW folder",
+      message: "Please choose your World of Warcraft _retail_ folder.",
+      detail: "The selected path must end with _retail_.",
+    });
+    return getStoredRetailPath(settings);
+  }
   settings.retailPath = folder;
   await saveSettings(settings);
   void stageLatestAddonUpdate().catch((error) => {
@@ -2523,8 +2713,7 @@ ipcMain.handle("wow:selectRetailFolder", async () => {
 });
 
 ipcMain.handle("wow:readAddonData", async () => {
-  const settings = await getSettings();
-  const retailPath = settings.retailPath as string | undefined;
+  const retailPath = await getValidatedRetailPathFromSettings();
   if (!retailPath) return null;
   return findAndParseAddonData(retailPath);
 });
@@ -2542,8 +2731,7 @@ function stopAddonWatcher() {
 
 ipcMain.handle("wow:watchAddonFile", async () => {
   stopAddonWatcher();
-  const settings = await getSettings();
-  const retailPath = settings.retailPath as string | undefined;
+  const retailPath = await getValidatedRetailPathFromSettings();
   if (!retailPath) return;
   const watchPath = join(retailPath, "WTF", "Account");
   try {
@@ -2855,81 +3043,56 @@ async function downloadAndInstallAddonRelease(
   }
 }
 
-async function stageLatestAddonUpdate(): Promise<void> {
-  if (stagingAddonUpdate) return;
-  stagingAddonUpdate = true;
-  try {
-    const settings = await getSettings();
-    const retailPath = settings.retailPath as string | undefined;
-    if (!retailPath) return;
-
-    const installedVersion = await getInstalledAddonVersionForRetailPath(retailPath);
-    if (!installedVersion) return;
-
-    const latestRelease = await fetchLatestAddonRelease();
-    if (!isOutdatedVersion(installedVersion, latestRelease.version)) {
-      const staged = await readStagedAddonUpdate();
-      if (staged && !isOutdatedVersion(installedVersion, staged.version)) {
-        await clearStagedAddonUpdate();
-      }
-      return;
-    }
-
-    const staged = await readStagedAddonUpdate();
-    if (
-      staged &&
-      staged.version === latestRelease.version &&
-      staged.checksumUrl === latestRelease.checksumUrl &&
-      (await stagedAddonPayloadExists(staged.checksumUrl))
-    ) {
-      await applyStagedAddonUpdateIfReady();
-      return;
-    }
-
-    const checksumPath = latestRelease.checksumUrl ? getStagedAddonChecksumPath() : null;
-    await downloadAddonPackage(
-      latestRelease.url,
-      latestRelease.checksumUrl,
-      getStagedAddonZipPath(),
-      checksumPath,
-    );
-    await writeStagedAddonUpdate({
-      version: latestRelease.version,
-      checksumUrl: latestRelease.checksumUrl,
-      downloadedAt: Date.now(),
-    });
-    mainWindow?.webContents.send("wow:addonUpdateStaged", latestRelease.version);
-    await applyStagedAddonUpdateIfReady();
-  } finally {
-    stagingAddonUpdate = false;
+async function getUsableStagedAddonUpdate(): Promise<StagedAddonUpdate | null> {
+  const staged = await readStagedAddonUpdate();
+  if (!staged) return null;
+  if (await stagedAddonPayloadExists(staged.checksumUrl)) {
+    return staged;
   }
+  await clearStagedAddonUpdate();
+  updateAddonUpdateState({ stagedVersion: null });
+  return null;
 }
 
-async function applyStagedAddonUpdateIfReady(): Promise<void> {
-  if (applyingStagedAddonUpdate) return;
+async function applyStagedAddonUpdateIfReady(): Promise<boolean> {
+  if (applyingStagedAddonUpdate) return false;
   applyingStagedAddonUpdate = true;
   try {
-    const staged = await readStagedAddonUpdate();
-    if (!staged) return;
+    const staged = await getUsableStagedAddonUpdate();
+    if (!staged) {
+      return false;
+    }
 
-    const settings = await getSettings();
-    const retailPath = settings.retailPath as string | undefined;
-    if (!retailPath) return;
+    const retailPath = await getValidatedRetailPathFromSettings();
+    if (!retailPath) {
+      updateAddonUpdateState({
+        status: "noRetailPath",
+        stagedVersion: staged.version,
+      });
+      return false;
+    }
 
     const installedVersion = await getInstalledAddonVersionForRetailPath(retailPath);
     if (!installedVersion) {
       await clearStagedAddonUpdate();
-      return;
+      updateAddonUpdateState({
+        status: "notInstalled",
+        installedVersion: null,
+        stagedVersion: null,
+      });
+      return false;
     }
 
     if (!isOutdatedVersion(installedVersion, staged.version)) {
       await clearStagedAddonUpdate();
-      return;
-    }
-
-    if (!(await stagedAddonPayloadExists(staged.checksumUrl))) {
-      await clearStagedAddonUpdate();
-      return;
+      updateAddonUpdateState({
+        status: "upToDate",
+        installedVersion,
+        latestVersion: staged.version,
+        stagedVersion: null,
+        error: null,
+      });
+      return false;
     }
 
     try {
@@ -2939,54 +3102,409 @@ async function applyStagedAddonUpdateIfReady(): Promise<void> {
         staged.checksumUrl ? getStagedAddonChecksumPath() : null,
       );
       await clearStagedAddonUpdate();
-      mainWindow?.webContents.send("wow:addonUpdateApplied", staged.version);
+      broadcastToRenderers("wow:addonUpdateApplied", staged.version);
+      updateAddonUpdateState({
+        status: "applied",
+        installedVersion: staged.version,
+        latestVersion: staged.version,
+        stagedVersion: null,
+        error: null,
+      });
+      return true;
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
       console.warn("[wow-dashboard] Failed to apply staged addon update:", error);
-      if (error instanceof Error && error.message.includes("Checksum mismatch")) {
+      if (message.includes("Checksum mismatch")) {
         await clearStagedAddonUpdate();
       }
+      const remainingStaged = await getUsableStagedAddonUpdate();
+      updateAddonUpdateState({
+        status: "error",
+        installedVersion,
+        stagedVersion: remainingStaged?.version ?? null,
+        error: message,
+      });
+      return false;
     }
   } finally {
     applyingStagedAddonUpdate = false;
   }
 }
 
+async function stageLatestAddonUpdate(): Promise<AddonUpdateCheckResult> {
+  if (addonUpdateCheckInFlight) {
+    return addonUpdateCheckInFlight;
+  }
+
+  const updateCheckPromise: Promise<AddonUpdateCheckResult> = (async (): Promise<AddonUpdateCheckResult> => {
+    if (stagingAddonUpdate) {
+      return {
+        status: addonUpdateState.status === "applied" ? "applied" : "staged",
+        installedVersion: addonUpdateState.installedVersion,
+        latestVersion: addonUpdateState.latestVersion,
+        stagedVersion: addonUpdateState.stagedVersion,
+        error: addonUpdateState.error,
+      } satisfies AddonUpdateCheckResult;
+    }
+
+    stagingAddonUpdate = true;
+    const startedAt = Date.now();
+
+    try {
+      const stagedAtStart = await getUsableStagedAddonUpdate();
+      updateAddonUpdateState({
+        status: "checking",
+        stagedVersion: stagedAtStart?.version ?? null,
+        error: null,
+        lastCheckedAt: startedAt,
+      });
+
+      const { retailPath, validatedRetailPath, error: retailPathError } =
+        await resolveRetailPathFromSettings();
+
+      if (!validatedRetailPath) {
+        const status = retailPath ? "error" : "noRetailPath";
+        updateAddonUpdateState({
+          status,
+          installedVersion: null,
+          error: retailPathError,
+          lastCheckedAt: startedAt,
+        });
+        return {
+          status,
+          installedVersion: null,
+          latestVersion: addonUpdateState.latestVersion,
+          stagedVersion: stagedAtStart?.version ?? null,
+          error: retailPathError,
+        } satisfies AddonUpdateCheckResult;
+      }
+
+      const installedVersion = await getInstalledAddonVersionForRetailPath(validatedRetailPath);
+      updateAddonUpdateState({
+        installedVersion,
+        error: null,
+        lastCheckedAt: startedAt,
+      });
+
+      if (!installedVersion) {
+        await clearStagedAddonUpdate();
+        updateAddonUpdateState({
+          status: "notInstalled",
+          stagedVersion: null,
+          latestVersion: null,
+        });
+        return {
+          status: "notInstalled",
+          installedVersion: null,
+          latestVersion: null,
+          stagedVersion: null,
+          error: null,
+        };
+      }
+
+      const latestRelease = await fetchLatestAddonRelease();
+      updateAddonUpdateState({
+        latestVersion: latestRelease.version,
+        error: null,
+        lastCheckedAt: startedAt,
+      });
+
+      if (!isOutdatedVersion(installedVersion, latestRelease.version)) {
+        const staged = await getUsableStagedAddonUpdate();
+        if (staged && !isOutdatedVersion(installedVersion, staged.version)) {
+          await clearStagedAddonUpdate();
+        }
+        updateAddonUpdateState({
+          status: "upToDate",
+          installedVersion,
+          latestVersion: latestRelease.version,
+          stagedVersion: null,
+          error: null,
+        });
+        return {
+          status: "upToDate",
+          installedVersion,
+          latestVersion: latestRelease.version,
+          stagedVersion: null,
+          error: null,
+        };
+      }
+
+      updateAddonUpdateState({
+        status: "updating",
+        installedVersion,
+        latestVersion: latestRelease.version,
+        error: null,
+      });
+
+      const staged = await getUsableStagedAddonUpdate();
+      if (
+        staged &&
+        staged.version === latestRelease.version &&
+        staged.checksumUrl === latestRelease.checksumUrl
+      ) {
+        updateAddonUpdateState({
+          status: "staged",
+          stagedVersion: staged.version,
+          error: null,
+        });
+      } else {
+        const checksumPath = latestRelease.checksumUrl ? getStagedAddonChecksumPath() : null;
+        await downloadAddonPackage(
+          latestRelease.url,
+          latestRelease.checksumUrl,
+          getStagedAddonZipPath(),
+          checksumPath,
+        );
+        await writeStagedAddonUpdate({
+          version: latestRelease.version,
+          checksumUrl: latestRelease.checksumUrl,
+          downloadedAt: Date.now(),
+        });
+        broadcastToRenderers("wow:addonUpdateStaged", latestRelease.version);
+        updateAddonUpdateState({
+          status: "staged",
+          stagedVersion: latestRelease.version,
+          error: null,
+        });
+      }
+
+      const applied = await applyStagedAddonUpdateIfReady();
+      if (applied) {
+        return {
+          status: "applied",
+          installedVersion: latestRelease.version,
+          latestVersion: latestRelease.version,
+          stagedVersion: null,
+          error: null,
+        };
+      }
+
+      const remainingStaged = await getUsableStagedAddonUpdate();
+      if (remainingStaged) {
+        updateAddonUpdateState({
+          status: "staged",
+          stagedVersion: remainingStaged.version,
+          installedVersion,
+          latestVersion: latestRelease.version,
+          error: null,
+        });
+        return {
+          status: "staged",
+          installedVersion,
+          latestVersion: latestRelease.version,
+          stagedVersion: remainingStaged.version,
+          error: null,
+        };
+      }
+
+      const postInstallVersion = await getInstalledAddonVersionForRetailPath(validatedRetailPath);
+      const errorMessage = addonUpdateState.error ?? "Addon update could not be applied.";
+      updateAddonUpdateState({
+        status: "error",
+        installedVersion: postInstallVersion,
+        latestVersion: latestRelease.version,
+        stagedVersion: null,
+        error: errorMessage,
+      });
+      return {
+        status: "error",
+        installedVersion: postInstallVersion,
+        latestVersion: latestRelease.version,
+        stagedVersion: null,
+        error: errorMessage,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const staged = await getUsableStagedAddonUpdate();
+      updateAddonUpdateState({
+        status: "error",
+        stagedVersion: staged?.version ?? null,
+        error: message,
+        lastCheckedAt: startedAt,
+      });
+      return {
+        status: "error",
+        installedVersion: addonUpdateState.installedVersion,
+        latestVersion: addonUpdateState.latestVersion,
+        stagedVersion: staged?.version ?? null,
+        error: message,
+      };
+    } finally {
+      stagingAddonUpdate = false;
+    }
+  })().finally(() => {
+    addonUpdateCheckInFlight = null;
+  });
+
+  addonUpdateCheckInFlight = updateCheckPromise;
+  return updateCheckPromise;
+}
+
 ipcMain.handle("wow:checkAddonInstalled", async () => {
-  const settings = await getSettings();
-  const retailPath = settings.retailPath as string | undefined;
+  const retailPath = await getValidatedRetailPathFromSettings();
   if (!retailPath) return false;
   return isAddonInstalledForRetailPath(retailPath);
 });
 
 ipcMain.handle("wow:getInstalledAddonVersion", async () => {
-  const settings = await getSettings();
-  const retailPath = settings.retailPath as string | undefined;
+  const retailPath = await getValidatedRetailPathFromSettings();
   if (!retailPath) return null;
   return getInstalledAddonVersionForRetailPath(retailPath);
 });
 
 ipcMain.handle("wow:installAddon", async (_, downloadUrl: string, checksumUrl: string | null) => {
-  const settings = await getSettings();
-  const retailPath = settings.retailPath as string | undefined;
-  if (!retailPath) throw new Error("WoW retail path is not configured");
+  const { validatedRetailPath, error } = await resolveRetailPathFromSettings();
+  if (!validatedRetailPath) {
+    throw new Error(error ?? "WoW retail path is not configured");
+  }
 
-  await downloadAndInstallAddonRelease({ url: downloadUrl, checksumUrl, version: "" }, retailPath);
+  await downloadAndInstallAddonRelease(
+    { url: downloadUrl, checksumUrl, version: "" },
+    validatedRetailPath,
+  );
   await clearStagedAddonUpdate();
+  updateAddonUpdateState({
+    status: "applied",
+    installedVersion: await getInstalledAddonVersionForRetailPath(validatedRetailPath),
+    stagedVersion: null,
+    error: null,
+  });
 });
 
 ipcMain.handle("wow:getLatestAddonRelease", () => fetchLatestAddonRelease());
 
 ipcMain.handle("wow:getAddonUpdateStatus", async () => {
-  const staged = await readStagedAddonUpdate();
-  if (!staged) {
-    return { stagedVersion: null as string | null };
-  }
-  if (!(await stagedAddonPayloadExists(staged.checksumUrl))) {
-    await clearStagedAddonUpdate();
-    return { stagedVersion: null as string | null };
-  }
-  return { stagedVersion: staged.version };
+  const staged = await getUsableStagedAddonUpdate();
+  updateAddonUpdateState({
+    stagedVersion: staged?.version ?? null,
+  });
+  return {
+    ...getAddonUpdateStateSnapshot(),
+    stagedVersion: staged?.version ?? null,
+  };
 });
+
+ipcMain.handle("wow:triggerAddonUpdateCheck", async () => {
+  return stageLatestAddonUpdate();
+});
+
+function registerAppUpdaterListeners(): void {
+  if (appUpdaterListenersRegistered) return;
+  appUpdaterListenersRegistered = true;
+
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+
+  autoUpdater.on("checking-for-update", () => {
+    updateAppUpdateState({
+      status: "checking",
+      error: null,
+      progressPercent: null,
+      lastCheckedAt: Date.now(),
+    });
+  });
+
+  autoUpdater.on("update-available", (info: { version: string }) => {
+    updateAppUpdateState({
+      status: "available",
+      availableVersion: info.version,
+      downloadedVersion: null,
+      progressPercent: 0,
+      error: null,
+      lastCheckedAt: Date.now(),
+    });
+    broadcastToRenderers("app:updateAvailable", info.version);
+  });
+
+  autoUpdater.on("download-progress", (progress: { percent: number }) => {
+    updateAppUpdateState({
+      status: "downloading",
+      progressPercent: progress.percent,
+      error: null,
+    });
+  });
+
+  autoUpdater.on("update-downloaded", (info: { version: string }) => {
+    updateAppUpdateState({
+      status: "downloaded",
+      availableVersion: info.version,
+      downloadedVersion: info.version,
+      progressPercent: 100,
+      error: null,
+      lastCheckedAt: Date.now(),
+    });
+    broadcastToRenderers("app:updateDownloaded", info.version);
+  });
+
+  autoUpdater.on("update-not-available", () => {
+    updateAppUpdateState({
+      status: "upToDate",
+      availableVersion: null,
+      downloadedVersion: null,
+      progressPercent: null,
+      error: null,
+      lastCheckedAt: Date.now(),
+    });
+    broadcastToRenderers("app:updateNotAvailable");
+  });
+
+  autoUpdater.on("error", (error: Error) => {
+    updateAppUpdateState({
+      status: "error",
+      progressPercent: null,
+      error: error.message,
+      lastCheckedAt: Date.now(),
+    });
+  });
+}
+
+async function triggerAppUpdateCheck(): Promise<void> {
+  if (!app.isPackaged) {
+    updateAppUpdateState({
+      status: "unsupported",
+      availableVersion: null,
+      downloadedVersion: null,
+      progressPercent: null,
+      error: "Desktop app updates are unavailable in development builds.",
+      lastCheckedAt: Date.now(),
+    });
+    return;
+  }
+
+  registerAppUpdaterListeners();
+
+  if (appUpdateCheckInFlight) {
+    return appUpdateCheckInFlight;
+  }
+
+  if (
+    appUpdateState.status === "checking" ||
+    appUpdateState.status === "available" ||
+    appUpdateState.status === "downloading" ||
+    appUpdateState.status === "downloaded"
+  ) {
+    return;
+  }
+
+  appUpdateCheckInFlight = autoUpdater
+    .checkForUpdates()
+    .then(() => undefined)
+    .catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      updateAppUpdateState({
+        status: "error",
+        progressPercent: null,
+        error: message,
+        lastCheckedAt: Date.now(),
+      });
+    })
+    .finally(() => {
+      appUpdateCheckInFlight = null;
+    });
+
+  return appUpdateCheckInFlight;
+}
 
 // Shell
 ipcMain.handle("app:openExternal", (_, url: string) => {
@@ -3001,17 +3519,16 @@ ipcMain.handle("app:openExternal", (_, url: string) => {
   }
 });
 ipcMain.handle("app:getVersion", () => app.getVersion());
+ipcMain.handle("app:getUpdateStatus", () => getAppUpdateStateSnapshot());
 
 // Trigger a silent install and relaunch immediately if the user explicitly asks for it.
 ipcMain.handle("app:installUpdate", () => {
-  autoUpdater.quitAndInstall(true, true);
+  return installDownloadedAppUpdate();
 });
 
 // Manually trigger an update check — used by the "Check for Updates" button in the renderer.
 ipcMain.handle("app:checkForUpdates", () => {
-  if (app.isPackaged) {
-    autoUpdater.checkForUpdates().catch(() => {});
-  }
+  return triggerAppUpdateCheck();
 });
 
 // App settings
@@ -3104,6 +3621,44 @@ app.whenReady().then(async () => {
     }
   }
 
+  const [{ retailPath, validatedRetailPath, error: retailPathError }, stagedAddon] =
+    await Promise.all([resolveRetailPathFromSettings(), getUsableStagedAddonUpdate()]);
+  const installedAddonVersion = validatedRetailPath
+    ? await getInstalledAddonVersionForRetailPath(validatedRetailPath)
+    : null;
+  updateAddonUpdateState({
+    status: validatedRetailPath
+      ? installedAddonVersion
+        ? "idle"
+        : "notInstalled"
+      : retailPath
+        ? "error"
+        : "noRetailPath",
+    installedVersion: installedAddonVersion,
+    stagedVersion: stagedAddon?.version ?? null,
+    error: retailPathError,
+    lastCheckedAt: addonUpdateState.lastCheckedAt,
+  });
+
+  if (app.isPackaged) {
+    registerAppUpdaterListeners();
+    updateAppUpdateState({
+      status: "idle",
+      availableVersion: null,
+      downloadedVersion: null,
+      progressPercent: null,
+      error: null,
+    });
+  } else {
+    updateAppUpdateState({
+      status: "unsupported",
+      availableVersion: null,
+      downloadedVersion: null,
+      progressPercent: null,
+      error: "Desktop app updates are unavailable in development builds.",
+    });
+  }
+
   await applyStagedAddonUpdateIfReady().catch((error) => {
     console.warn("[wow-dashboard] Failed to apply staged addon update on launch:", error);
   });
@@ -3113,8 +3668,6 @@ app.whenReady().then(async () => {
     console.warn("[wow-dashboard] Failed to create tray:", error);
   });
 
-  const ADDON_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
-  const ADDON_UPDATE_APPLY_INTERVAL_MS = 60 * 1000; // 1 minute
   void stageLatestAddonUpdate().catch((error) => {
     console.warn("[wow-dashboard] Failed to stage addon update:", error);
   });
@@ -3122,39 +3675,24 @@ app.whenReady().then(async () => {
     void stageLatestAddonUpdate().catch((error) => {
       console.warn("[wow-dashboard] Failed to stage addon update:", error);
     });
-  }, ADDON_UPDATE_CHECK_INTERVAL_MS);
+  }, getConfiguredAddonUpdateCheckIntervalMs());
   setInterval(() => {
     void applyStagedAddonUpdateIfReady().catch((error) => {
       console.warn("[wow-dashboard] Failed to apply staged addon update:", error);
     });
-  }, ADDON_UPDATE_APPLY_INTERVAL_MS);
+  }, getConfiguredAddonStagedApplyIntervalMs());
 
-  // Check for app updates (only in packaged builds).
-  // Updates download in the background and install automatically on the next real app quit.
-  if (app.isPackaged) {
-    const CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
-    autoUpdater.autoDownload = true;
-    autoUpdater.autoInstallOnAppQuit = true;
-    autoUpdater.checkForUpdates().catch(() => {});
-    setInterval(() => autoUpdater.checkForUpdates().catch(() => {}), CHECK_INTERVAL_MS);
-    autoUpdater.on("update-available", (info) => {
-      mainWindow?.webContents.send("app:updateAvailable", info.version);
+  void triggerAppUpdateCheck().catch((error) => {
+    console.warn("[wow-dashboard] Failed to check for app updates:", error);
+  });
+  setInterval(() => {
+    void triggerAppUpdateCheck().catch((error) => {
+      console.warn("[wow-dashboard] Failed to check for app updates:", error);
     });
-    autoUpdater.on("update-downloaded", (info) => {
-      mainWindow?.webContents.send("app:updateDownloaded", info.version);
-    });
-    autoUpdater.on("update-not-available", () => {
-      mainWindow?.webContents.send("app:updateNotAvailable");
-    });
-  }
+  }, getConfiguredAppUpdateCheckIntervalMs());
 
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
-    } else {
-      mainWindow?.show();
-      mainWindow?.focus();
-    }
+    showWindow();
   });
 });
 
