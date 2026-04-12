@@ -63,7 +63,14 @@ import {
   YAxis,
 } from "recharts";
 import { toast } from "sonner";
-import { TRADE_SLOT_OPTIONS, type TradeSlotKey } from "../lib/trade-slots";
+import {
+  getTradeSlotExportLabels,
+  getTradeSlotEditorCount,
+  TRADE_SLOT_EDITOR_OPTIONS,
+  normalizeTradeSlotKeys,
+  toggleTradeSlotGroup,
+  type TradeSlotKey,
+} from "../lib/trade-slots";
 
 export const Route = createFileRoute("/character/$characterId")({
   component: RouteComponent,
@@ -2936,9 +2943,8 @@ function RouteComponent() {
   }, [characterId, resolvedData?.owner?.discordUserId]);
 
   useEffect(() => {
-    const currentSlots = new Set((resolvedData?.character.nonTradeableSlots ?? []) as TradeSlotKey[]);
     setNonTradeableSlotsDraft(
-      TRADE_SLOT_OPTIONS.flatMap((slot) => (currentSlots.has(slot.key) ? [slot.key] : [])),
+      normalizeTradeSlotKeys((resolvedData?.character.nonTradeableSlots ?? []) as TradeSlotKey[]),
     );
   }, [characterId, resolvedData?.character.nonTradeableSlots]);
 
@@ -3050,17 +3056,8 @@ function RouteComponent() {
     }
   }
 
-  function toggleNonTradeableSlot(slotKey: TradeSlotKey) {
-    setNonTradeableSlotsDraft((currentSlots) => {
-      const nextSlotSet = new Set(currentSlots);
-      if (nextSlotSet.has(slotKey)) {
-        nextSlotSet.delete(slotKey);
-      } else {
-        nextSlotSet.add(slotKey);
-      }
-
-      return TRADE_SLOT_OPTIONS.flatMap((slot) => (nextSlotSet.has(slot.key) ? [slot.key] : []));
-    });
+  function toggleNonTradeableSlot(slotKeys: readonly TradeSlotKey[]) {
+    setNonTradeableSlotsDraft((currentSlots) => toggleTradeSlotGroup(currentSlots, slotKeys));
   }
 
   async function handleTradeSlotSave() {
@@ -3216,7 +3213,7 @@ function RouteComponent() {
                       className="border-border/60 bg-card text-muted-foreground hover:text-foreground"
                     >
                       Trade Locks
-                      {nonTradeableSlots.length > 0 ? ` ${nonTradeableSlots.length}` : ""}
+                      {nonTradeableSlots.length > 0 ? ` ${getTradeSlotEditorCount(nonTradeableSlots)}` : ""}
                     </Button>
                   </SheetTrigger>
                   <SheetContent className="w-full sm:max-w-lg">
@@ -3229,14 +3226,14 @@ function RouteComponent() {
                     </SheetHeader>
                     <div className="mt-6 space-y-5">
                       <div className="grid gap-3 sm:grid-cols-2">
-                        {TRADE_SLOT_OPTIONS.map((slot) => (
+                        {TRADE_SLOT_EDITOR_OPTIONS.map((slot) => (
                           <label
                             key={slot.key}
                             className="flex cursor-pointer items-start gap-3 rounded-lg border border-border/60 bg-card/50 p-3"
                           >
                             <Checkbox
-                              checked={nonTradeableSlotsDraft.includes(slot.key)}
-                              onCheckedChange={() => toggleNonTradeableSlot(slot.key)}
+                              checked={slot.slotKeys.every((slotKey) => nonTradeableSlotsDraft.includes(slotKey))}
+                              onCheckedChange={() => toggleNonTradeableSlot(slot.slotKeys)}
                             />
                             <div>
                               <p className="text-sm font-medium text-foreground">{slot.label}</p>
@@ -3245,6 +3242,15 @@ function RouteComponent() {
                           </label>
                         ))}
                       </div>
+                      {nonTradeableSlotsDraft.length === 0 ? (
+                        <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-200">
+                          No locked slots. This character is marked as able to trade all tracked slots.
+                        </div>
+                      ) : (
+                        <div className="rounded-xl border border-orange-500/30 bg-orange-500/10 p-3 text-sm text-orange-200">
+                          Locked slots: {getTradeSlotExportLabels(nonTradeableSlotsDraft).join(", ")}
+                        </div>
+                      )}
                       <div className="flex flex-wrap gap-2">
                         <Button
                           type="button"

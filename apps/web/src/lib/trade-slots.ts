@@ -19,6 +19,27 @@ export const TRADE_SLOT_OPTIONS = [
 
 export type TradeSlotKey = (typeof TRADE_SLOT_OPTIONS)[number]["key"];
 
+export const TRADE_SLOT_EDITOR_OPTIONS = [
+  { key: "head", label: "Head", slotKeys: ["head"] },
+  { key: "shoulders", label: "Shoulders", slotKeys: ["shoulders"] },
+  { key: "chest", label: "Chest", slotKeys: ["chest"] },
+  { key: "wrist", label: "Wrist", slotKeys: ["wrist"] },
+  { key: "hands", label: "Hands", slotKeys: ["hands"] },
+  { key: "waist", label: "Waist", slotKeys: ["waist"] },
+  { key: "legs", label: "Legs", slotKeys: ["legs"] },
+  { key: "feet", label: "Feet", slotKeys: ["feet"] },
+  { key: "neck", label: "Neck", slotKeys: ["neck"] },
+  { key: "back", label: "Back", slotKeys: ["back"] },
+  { key: "finger", label: "Finger", slotKeys: ["finger1", "finger2"] },
+  { key: "trinket", label: "Trinket", slotKeys: ["trinket1", "trinket2"] },
+  { key: "mainHand", label: "Main Hand", slotKeys: ["mainHand"] },
+  { key: "offHand", label: "Off Hand", slotKeys: ["offHand"] },
+] as const satisfies ReadonlyArray<{
+  key: string;
+  label: string;
+  slotKeys: readonly TradeSlotKey[];
+}>;
+
 export const TRADE_SLOT_LABELS: Record<TradeSlotKey, string> = Object.fromEntries(
   TRADE_SLOT_OPTIONS.map((slot) => [slot.key, slot.label]),
 ) as Record<TradeSlotKey, string>;
@@ -54,4 +75,48 @@ export function getTradeSlotExportLabels(slotKeys: TradeSlotKey[]) {
     uniqueLabels.delete(exportLabel);
     return [exportLabel];
   });
+}
+
+export function normalizeTradeSlotKeys(slotKeys: readonly TradeSlotKey[]) {
+  const uniqueSlotKeys = new Set(slotKeys);
+  const hasFingerSlot = uniqueSlotKeys.has("finger1") || uniqueSlotKeys.has("finger2");
+  const hasTrinketSlot = uniqueSlotKeys.has("trinket1") || uniqueSlotKeys.has("trinket2");
+
+  if (hasFingerSlot) {
+    uniqueSlotKeys.add("finger1");
+    uniqueSlotKeys.add("finger2");
+  }
+
+  if (hasTrinketSlot) {
+    uniqueSlotKeys.add("trinket1");
+    uniqueSlotKeys.add("trinket2");
+  }
+
+  return TRADE_SLOT_OPTIONS.flatMap((slot) => (uniqueSlotKeys.has(slot.key) ? [slot.key] : []));
+}
+
+export function toggleTradeSlotGroup(
+  currentSlotKeys: readonly TradeSlotKey[],
+  targetSlotKeys: readonly TradeSlotKey[],
+) {
+  const nextSlotKeys = new Set(normalizeTradeSlotKeys(currentSlotKeys));
+  const hasAllTargetSlots = targetSlotKeys.every((slotKey) => nextSlotKeys.has(slotKey));
+
+  for (const slotKey of targetSlotKeys) {
+    if (hasAllTargetSlots) {
+      nextSlotKeys.delete(slotKey);
+    } else {
+      nextSlotKeys.add(slotKey);
+    }
+  }
+
+  return normalizeTradeSlotKeys(Array.from(nextSlotKeys));
+}
+
+export function getTradeSlotEditorCount(slotKeys: readonly TradeSlotKey[]) {
+  const normalizedSlotKeys = new Set(normalizeTradeSlotKeys(slotKeys));
+
+  return TRADE_SLOT_EDITOR_OPTIONS.filter((slot) =>
+    slot.slotKeys.every((slotKey) => normalizedSlotKeys.has(slotKey)),
+  ).length;
 }

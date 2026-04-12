@@ -1,5 +1,6 @@
 import { createFileRoute, redirect } from "@tanstack/react-router";
 import { api } from "@wow-dashboard/backend/convex/_generated/api";
+import type { Id } from "@wow-dashboard/backend/convex/_generated/dataModel";
 import { Badge } from "@wow-dashboard/ui/components/badge";
 import { Button } from "@wow-dashboard/ui/components/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@wow-dashboard/ui/components/card";
@@ -14,7 +15,7 @@ import {
   SheetTrigger,
 } from "@wow-dashboard/ui/components/sheet";
 import { Skeleton } from "@wow-dashboard/ui/components/skeleton";
-import { useQuery } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
 import { Check, Copy, Users, Zap } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -22,8 +23,11 @@ import { toast } from "sonner";
 import { getClassTextColor } from "../lib/class-colors";
 import { getMythicPlusDungeonMeta } from "../lib/mythic-plus-static";
 import {
-  TRADE_SLOT_LABELS,
+  TRADE_SLOT_EDITOR_OPTIONS,
+  getTradeSlotEditorCount,
   getTradeSlotExportLabels,
+  normalizeTradeSlotKeys,
+  toggleTradeSlotGroup,
   type TradeSlotKey,
 } from "../lib/trade-slots";
 
@@ -78,11 +82,11 @@ function getExportClassLabel(className: string) {
 
 function formatExportScore(score: number) {
   if (score >= 1000) {
-    const compactScore = Math.round(score / 100) / 10;
+    const compactScore = Math.floor(score / 100) / 10;
     return `${Number.isInteger(compactScore) ? compactScore.toFixed(0) : compactScore.toFixed(1)}k`;
   }
 
-  return Math.round(score).toString();
+  return Math.floor(score).toString();
 }
 
 const EXPORT_SPEC_LABELS: Record<string, string> = {
@@ -298,27 +302,41 @@ function RouteComponent() {
   const boosterCharacters = useQuery(
     (api as any).characters.getBoosterCharactersForExport,
   ) as BoosterCharacter[] | null | undefined;
+  const setCharacterNonTradeableSlots = useMutation(
+    (api as any).characters.setCharacterNonTradeableSlots,
+  );
   const [selectedCharacterIds, setSelectedCharacterIds] = useState<string[]>([]);
+  const [tradeLockDrafts, setTradeLockDrafts] = useState<Record<string, TradeSlotKey[]>>({});
+  const [savingTradeLockCharacterIds, setSavingTradeLockCharacterIds] = useState<string[]>([]);
   const [customHeadline, setCustomHeadline] = useState("");
   const [includeIcons, setIncludeIcons] = useState(false);
   const [includeItemLevel, setIncludeItemLevel] = useState(true);
   const [includeKey, setIncludeKey] = useState(true);
   const [includeTradeLocks, setIncludeTradeLocks] = useState(true);
   const [includeDiscordId, setIncludeDiscordId] = useState(true);
+  const [hasAdjustedDiscordIdToggle, setHasAdjustedDiscordIdToggle] = useState(false);
 
   useEffect(() => {
     if (!boosterCharacters) {
       return;
     }
 
-    const validCharacterIds = new Set(
+    const selectableCharacterIds = new Set(
       boosterCharacters
         .filter((character) => character.snapshot)
         .map((character) => String(character._id)),
     );
+    const boosterCharacterIds = new Set(
+      boosterCharacters.map((character) => String(character._id)),
+    );
 
     setSelectedCharacterIds((currentCharacterIds) =>
-      currentCharacterIds.filter((characterId) => validCharacterIds.has(characterId)),
+      currentCharacterIds.filter((characterId) => selectableCharacterIds.has(characterId)),
+    );
+    setTradeLockDrafts((currentDrafts) =>
+      Object.fromEntries(
+        Object.entries(currentDrafts).filter(([characterId]) => boosterCharacterIds.has(characterId)),
+      ),
     );
   }, [boosterCharacters]);
 
@@ -341,6 +359,14 @@ function RouteComponent() {
     () => selectedCharacters.filter((character) => !character.ownerDiscordUserId),
     [selectedCharacters],
   );
+
+  useEffect(() => {
+    if (hasAdjustedDiscordIdToggle) {
+      return;
+    }
+
+    setIncludeDiscordId(selectedCharacters.length !== 1);
+  }, [hasAdjustedDiscordIdToggle, selectedCharacters.length]);
 
   const exportHeadline = customHeadline.trim() || getDefaultExportHeadline(selectedCharacters.length);
   const exportText = useMemo(() => {
@@ -384,6 +410,60 @@ function RouteComponent() {
 
   function handleClearSelection() {
     setSelectedCharacterIds([]);
+  }
+
+  function getTradeLockDraft(character: BoosterCharacter) {
+    return normalizeTradeSlotKeys(
+      tradeLockDrafts[String(character._id)] ?? character.nonTradeableSlots,
+    );
+  }
+
+  function toggleTradeLockSlot(character: BoosterCharacter, slotKeys: readonly TradeSlotKey[]) {
+    const characterId = String(character._id);
+    setTradeLockDrafts((currentDrafts) => {
+      return {
+        ...currentDrafts,
+        [characterId]: toggleTradeSlotGroup(
+          currentDrafts[characterId] ?? character.nonTradeableSlots,
+          slotKeys,
+        ),
+      };
+    });
+  }
+
+  function clearTradeLockDraft(character: BoosterCharacter) {
+    setTradeLockDrafts((currentDrafts) => ({
+      ...currentDrafts,
+      [String(character._id)]: [],
+    }));
+  }
+
+  async function handleTradeLockSave(character: BoosterCharacter) {
+    const characterId = String(character._id);
+    const draftSlots = getTradeLockDraft(character);
+    const hasTradeLockChanges =
+      JSON.stringify(draftSlots) !== JSON.stringify(character.nonTradeableSlots);
+
+    if (savingTradeLockCharacterIds.includes(characterId) || !hasTradeLockChanges) {
+      return;
+    }
+
+    setSavingTradeLockCharacterIds((currentCharacterIds) => [...currentCharacterIds, characterId]);
+    try {
+      await setCharacterNonTradeableSlots({
+        characterId: character._id as Id<"characters">,
+        nonTradeableSlots: draftSlots,
+      });
+      toast.success(
+        draftSlots.length === 0 ? "All slots marked tradeable." : "Trade-lock slots saved.",
+      );
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not save trade-lock slots.");
+    } finally {
+      setSavingTradeLockCharacterIds((currentCharacterIds) =>
+        currentCharacterIds.filter((currentCharacterId) => currentCharacterId !== characterId),
+      );
+    }
   }
 
   async function handleCopyExport() {
@@ -506,7 +586,10 @@ function RouteComponent() {
                 <label className="flex items-center gap-2 rounded-md border border-border/60 px-2.5 py-1.5 text-xs text-muted-foreground">
                   <Checkbox
                     checked={includeDiscordId}
-                    onCheckedChange={(value) => setIncludeDiscordId(!!value)}
+                    onCheckedChange={(value) => {
+                      setHasAdjustedDiscordIdToggle(true);
+                      setIncludeDiscordId(!!value);
+                    }}
                   />
                   <span>Discord ID</span>
                 </label>
@@ -546,6 +629,10 @@ function RouteComponent() {
                 const characterId = String(character._id);
                 const isSelected = selectedCharacterIdSet.has(characterId);
                 const isSelectable = character.snapshot !== null;
+                const tradeLockDraft = getTradeLockDraft(character);
+                const hasTradeLockChanges =
+                  JSON.stringify(tradeLockDraft) !== JSON.stringify(character.nonTradeableSlots);
+                const isSavingTradeLocks = savingTradeLockCharacterIds.includes(characterId);
 
                 return (
                   <div
@@ -636,50 +723,79 @@ function RouteComponent() {
                               {character.ownerDiscordUserId ? "Discord linked" : "No Discord ID"}
                             </Badge>
                           )}
-                          {includeTradeLocks && (
-                            <Sheet>
-                              <SheetTrigger asChild>
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="outline"
-                                  className="h-7 border-border/60 bg-background/80 px-2 text-xs"
-                                  onClick={(event) => {
-                                    event.preventDefault();
-                                    event.stopPropagation();
-                                  }}
-                                >
-                                  Trade Locks {character.nonTradeableSlots.length}
-                                </Button>
-                              </SheetTrigger>
-                              <SheetContent className="w-full sm:max-w-md">
-                                <SheetHeader>
-                                  <SheetTitle>{character.name} Trade Locks</SheetTitle>
-                                  <SheetDescription>
-                                    Slots marked here are treated as not tradeable for this character.
-                                  </SheetDescription>
-                                </SheetHeader>
-                                <div className="mt-6 space-y-3">
-                                  {character.nonTradeableSlots.length === 0 ? (
-                                    <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-200">
-                                      No locked slots. This character is marked as able to trade all tracked slots.
-                                    </div>
-                                  ) : (
-                                    <div className="grid gap-2 sm:grid-cols-2">
-                                      {character.nonTradeableSlots.map((slotKey) => (
-                                        <div
-                                          key={slotKey}
-                                          className="rounded-lg border border-border/60 bg-card/50 px-3 py-2 text-sm text-foreground"
-                                        >
-                                          {TRADE_SLOT_LABELS[slotKey]}
-                                        </div>
-                                      ))}
-                                    </div>
-                                  )}
+                          <Sheet>
+                            <SheetTrigger asChild>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                className="h-7 border-border/60 bg-background/80 px-2 text-xs"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                }}
+                                onKeyDown={(event) => {
+                                  event.stopPropagation();
+                                }}
+                              >
+                                Trade Locks {getTradeSlotEditorCount(character.nonTradeableSlots)}
+                              </Button>
+                            </SheetTrigger>
+                            <SheetContent className="w-full sm:max-w-lg">
+                              <SheetHeader>
+                                <SheetTitle>{character.name} Trade Locks</SheetTitle>
+                                <SheetDescription>
+                                  Mark the slots this character cannot trade. Changes are stored globally.
+                                </SheetDescription>
+                              </SheetHeader>
+                              <div className="mt-6 space-y-5">
+                                <div className="grid gap-3 sm:grid-cols-2">
+                                  {TRADE_SLOT_EDITOR_OPTIONS.map((slot) => (
+                                    <label
+                                      key={slot.key}
+                                      className="flex cursor-pointer items-start gap-3 rounded-lg border border-border/60 bg-card/50 p-3"
+                                    >
+                                      <Checkbox
+                                        checked={slot.slotKeys.every((slotKey) => tradeLockDraft.includes(slotKey))}
+                                        onCheckedChange={() => toggleTradeLockSlot(character, slot.slotKeys)}
+                                      />
+                                      <div>
+                                        <p className="text-sm font-medium text-foreground">{slot.label}</p>
+                                        <p className="text-xs text-muted-foreground">
+                                          Drop in this slot stays bound.
+                                        </p>
+                                      </div>
+                                    </label>
+                                  ))}
                                 </div>
-                              </SheetContent>
-                            </Sheet>
-                          )}
+                                {tradeLockDraft.length === 0 ? (
+                                  <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-200">
+                                    No locked slots. This character is marked as able to trade all tracked slots.
+                                  </div>
+                                ) : (
+                                  <div className="rounded-xl border border-orange-500/30 bg-orange-500/10 p-3 text-sm text-orange-200">
+                                    Locked slots: {getTradeSlotExportLabels(tradeLockDraft).join(", ")}
+                                  </div>
+                                )}
+                                <div className="flex flex-wrap gap-2">
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    onClick={() => clearTradeLockDraft(character)}
+                                    disabled={tradeLockDraft.length === 0}
+                                  >
+                                    Clear All
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    onClick={() => void handleTradeLockSave(character)}
+                                    disabled={!hasTradeLockChanges || isSavingTradeLocks}
+                                  >
+                                    {isSavingTradeLocks ? "Saving..." : "Save Slots"}
+                                  </Button>
+                                </div>
+                              </div>
+                            </SheetContent>
+                          </Sheet>
                         </div>
                       </div>
                     </div>
