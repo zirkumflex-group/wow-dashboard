@@ -3,6 +3,7 @@ import { api } from "@wow-dashboard/backend/convex/_generated/api";
 import { Badge } from "@wow-dashboard/ui/components/badge";
 import { Button } from "@wow-dashboard/ui/components/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@wow-dashboard/ui/components/card";
+import { Checkbox } from "@wow-dashboard/ui/components/checkbox";
 import { Input } from "@wow-dashboard/ui/components/input";
 import {
   Sheet,
@@ -77,6 +78,10 @@ function buildExportLine(character: {
       mapName?: string;
     } | null;
   };
+}, options: {
+  includeKey: boolean;
+  includeTradeLocks: boolean;
+  includeDiscordId: boolean;
 }) {
   const discordMention = character.ownerDiscordUserId
     ? `<@${character.ownerDiscordUserId}>`
@@ -85,16 +90,27 @@ function buildExportLine(character: {
     getExportRoleLabel(character.snapshot.role),
     getExportClassLabel(character.class),
     formatExportScore(character.snapshot.mythicPlusScore),
-    "|",
-    getEquippedKeystoneExportLabel(character.snapshot.ownedKeystone),
   ];
-  const tradeLockLabels = getTradeSlotExportLabels(character.nonTradeableSlots);
+  const detailSegments: string[] = [];
 
-  if (tradeLockLabels.length > 0) {
-    exportSegments.push("|", `can't trade: ${tradeLockLabels.join(", ")}`);
+  if (options.includeKey) {
+    detailSegments.push(getEquippedKeystoneExportLabel(character.snapshot.ownedKeystone));
   }
 
-  exportSegments.push(discordMention);
+  if (options.includeTradeLocks) {
+    const tradeLockLabels = getTradeSlotExportLabels(character.nonTradeableSlots);
+    if (tradeLockLabels.length > 0) {
+      detailSegments.push(`can't trade: ${tradeLockLabels.join(", ")}`);
+    }
+  }
+
+  for (const detailSegment of detailSegments) {
+    exportSegments.push("|", detailSegment);
+  }
+
+  if (options.includeDiscordId) {
+    exportSegments.push(discordMention);
+  }
 
   return exportSegments.join(" ");
 }
@@ -186,6 +202,9 @@ function RouteComponent() {
   ) as BoosterCharacter[] | null | undefined;
   const [selectedCharacterIds, setSelectedCharacterIds] = useState<string[]>([]);
   const [customHeadline, setCustomHeadline] = useState("");
+  const [includeKey, setIncludeKey] = useState(true);
+  const [includeTradeLocks, setIncludeTradeLocks] = useState(true);
+  const [includeDiscordId, setIncludeDiscordId] = useState(true);
 
   useEffect(() => {
     if (!boosterCharacters) {
@@ -229,10 +248,17 @@ function RouteComponent() {
       return "";
     }
 
-    return [exportHeadline, ...selectedCharacters.map((character) => buildExportLine(character))].join(
-      "\r\n",
-    );
-  }, [exportHeadline, selectedCharacters]);
+    return [
+      exportHeadline,
+      ...selectedCharacters.map((character) =>
+        buildExportLine(character, {
+          includeKey,
+          includeTradeLocks,
+          includeDiscordId,
+        }),
+      ),
+    ].join("\r\n");
+  }, [exportHeadline, includeDiscordId, includeKey, includeTradeLocks, selectedCharacters]);
 
   function toggleCharacterSelection(characterId: string) {
     setSelectedCharacterIds((currentCharacterIds) =>
@@ -255,7 +281,7 @@ function RouteComponent() {
       return;
     }
 
-    if (missingDiscordCharacters.length > 0) {
+    if (includeDiscordId && missingDiscordCharacters.length > 0) {
       toast.error("Every selected booster needs a Discord ID before copying.");
       return;
     }
@@ -342,6 +368,24 @@ function RouteComponent() {
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
+                <label className="flex items-center gap-2 rounded-md border border-border/60 px-2.5 py-1.5 text-xs text-muted-foreground">
+                  <Checkbox checked={includeKey} onCheckedChange={(value) => setIncludeKey(!!value)} />
+                  <span>Key</span>
+                </label>
+                <label className="flex items-center gap-2 rounded-md border border-border/60 px-2.5 py-1.5 text-xs text-muted-foreground">
+                  <Checkbox
+                    checked={includeTradeLocks}
+                    onCheckedChange={(value) => setIncludeTradeLocks(!!value)}
+                  />
+                  <span>Trade Lock</span>
+                </label>
+                <label className="flex items-center gap-2 rounded-md border border-border/60 px-2.5 py-1.5 text-xs text-muted-foreground">
+                  <Checkbox
+                    checked={includeDiscordId}
+                    onCheckedChange={(value) => setIncludeDiscordId(!!value)}
+                  />
+                  <span>Discord ID</span>
+                </label>
                 <Button
                   type="button"
                   size="sm"
@@ -443,67 +487,73 @@ function RouteComponent() {
                               <Badge variant="outline" className="border-border/60 bg-background/80">
                                 iLvl {character.snapshot.itemLevel.toFixed(1)}
                               </Badge>
-                              <Badge variant="outline" className="border-border/60 bg-background/80">
-                                {getEquippedKeystoneLabel(character.snapshot.ownedKeystone)}
-                              </Badge>
+                              {includeKey && (
+                                <Badge variant="outline" className="border-border/60 bg-background/80">
+                                  {getEquippedKeystoneLabel(character.snapshot.ownedKeystone)}
+                                </Badge>
+                              )}
                             </>
                           ) : (
                             <Badge variant="outline" className="border-orange-500/40 bg-orange-500/10 text-orange-300">
                               Missing snapshot
                             </Badge>
                           )}
-                          <Badge
-                            variant="outline"
-                            className={
-                              character.ownerDiscordUserId
-                                ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
-                                : "border-orange-500/40 bg-orange-500/10 text-orange-300"
-                            }
-                          >
-                            {character.ownerDiscordUserId ? "Discord linked" : "No Discord ID"}
-                          </Badge>
-                          <Sheet>
-                            <SheetTrigger asChild>
-                              <Button
-                                type="button"
-                                size="sm"
-                                variant="outline"
-                                className="h-7 border-border/60 bg-background/80 px-2 text-xs"
-                                onClick={(event) => {
-                                  event.preventDefault();
-                                  event.stopPropagation();
-                                }}
-                              >
-                                Trade Locks {character.nonTradeableSlots.length}
-                              </Button>
-                            </SheetTrigger>
-                            <SheetContent className="w-full sm:max-w-md">
-                              <SheetHeader>
-                                <SheetTitle>{character.name} Trade Locks</SheetTitle>
-                                <SheetDescription>
-                                  Slots marked here are treated as not tradeable for this character.
-                                </SheetDescription>
-                              </SheetHeader>
-                              <div className="mt-6 space-y-3">
-                                {character.nonTradeableSlots.length === 0 ? (
-                                  <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-200">
-                                    No locked slots. This character is marked as able to trade all tracked slots.
-                                  </div>
-                                ) : (
-                                  <div className="grid gap-2 sm:grid-cols-2">
-                                    {character.nonTradeableSlots.map((slotKey) => (
-                                      <div
-                                        key={slotKey}
-                                        className="rounded-lg border border-border/60 bg-card/50 px-3 py-2 text-sm text-foreground"
-                                      >
-                                        {TRADE_SLOT_LABELS[slotKey]}
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
-                              </div>
-                            </SheetContent>
-                          </Sheet>
+                          {includeDiscordId && (
+                            <Badge
+                              variant="outline"
+                              className={
+                                character.ownerDiscordUserId
+                                  ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
+                                  : "border-orange-500/40 bg-orange-500/10 text-orange-300"
+                              }
+                            >
+                              {character.ownerDiscordUserId ? "Discord linked" : "No Discord ID"}
+                            </Badge>
+                          )}
+                          {includeTradeLocks && (
+                            <Sheet>
+                              <SheetTrigger asChild>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-7 border-border/60 bg-background/80 px-2 text-xs"
+                                  onClick={(event) => {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                  }}
+                                >
+                                  Trade Locks {character.nonTradeableSlots.length}
+                                </Button>
+                              </SheetTrigger>
+                              <SheetContent className="w-full sm:max-w-md">
+                                <SheetHeader>
+                                  <SheetTitle>{character.name} Trade Locks</SheetTitle>
+                                  <SheetDescription>
+                                    Slots marked here are treated as not tradeable for this character.
+                                  </SheetDescription>
+                                </SheetHeader>
+                                <div className="mt-6 space-y-3">
+                                  {character.nonTradeableSlots.length === 0 ? (
+                                    <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-200">
+                                      No locked slots. This character is marked as able to trade all tracked slots.
+                                    </div>
+                                  ) : (
+                                    <div className="grid gap-2 sm:grid-cols-2">
+                                      {character.nonTradeableSlots.map((slotKey) => (
+                                        <div
+                                          key={slotKey}
+                                          className="rounded-lg border border-border/60 bg-card/50 px-3 py-2 text-sm text-foreground"
+                                        >
+                                          {TRADE_SLOT_LABELS[slotKey]}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              </SheetContent>
+                            </Sheet>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -555,7 +605,7 @@ function RouteComponent() {
               />
             </div>
 
-            {missingDiscordCharacters.length > 0 && (
+            {includeDiscordId && missingDiscordCharacters.length > 0 && (
               <div className="rounded-xl border border-orange-500/40 bg-orange-500/10 p-3 text-sm text-orange-200">
                 {missingDiscordCharacters.length} selected character
                 {missingDiscordCharacters.length === 1 ? "" : "s"} still need an owner Discord ID.
@@ -565,7 +615,7 @@ function RouteComponent() {
             <Button
               type="button"
               onClick={handleCopyExport}
-              disabled={!exportText || missingDiscordCharacters.length > 0}
+              disabled={!exportText || (includeDiscordId && missingDiscordCharacters.length > 0)}
               className="w-full gap-2"
             >
               <Copy className="h-4 w-4" />
