@@ -18,11 +18,13 @@ import {
   shouldReplaceMythicPlusRun,
 } from "./mythicPlus";
 import { rateLimiter } from "./rateLimiter";
+import { nonTradeableSlotValidator } from "./schemas/characters";
 
 type MythicPlusRunDoc = Doc<"mythicPlusRuns"> & { canonicalKey?: string };
 type SnapshotDoc = Doc<"snapshots">;
 type DbReaderCtx = { db: QueryCtx["db"] };
 type SnapshotSummary = NonNullable<Doc<"characters">["latestSnapshot"]>;
+type CharacterNonTradeableSlot = NonNullable<Doc<"characters">["nonTradeableSlots"]>[number];
 
 function toSnapshotSummary(snapshot: SnapshotDoc | null): SnapshotSummary | null {
   if (!snapshot) return null;
@@ -92,6 +94,17 @@ async function getPlayerForAuthUser(ctx: DbReaderCtx, authUserId: string) {
     .query("players")
     .withIndex("by_user", (q) => q.eq("userId", authUserId))
     .first();
+}
+
+function getRoleSortRank(role: SnapshotSummary["role"] | null | undefined) {
+  if (role === "tank") return 0;
+  if (role === "dps") return 1;
+  return 2;
+}
+
+function normalizeNonTradeableSlots(nonTradeableSlots: CharacterNonTradeableSlot[]) {
+  const uniqueSlots = new Set(nonTradeableSlots);
+  return Array.from(uniqueSlots);
 }
 
 async function getLatestSnapshotForCharacter(
@@ -785,13 +798,26 @@ export const getCharacterSnapshots = query({
     const character = await ctx.db.get(characterId);
     if (!character) return null;
 
-    const snapshots = await ctx.db
-      .query("snapshots")
-      .withIndex("by_character_and_time", (q) => q.eq("characterId", characterId))
-      .order("asc")
-      .collect();
+    const [owner, snapshots] = await Promise.all([
+      ctx.db.get(character.playerId),
+      ctx.db
+        .query("snapshots")
+        .withIndex("by_character_and_time", (q) => q.eq("characterId", characterId))
+        .order("asc")
+        .collect(),
+    ]);
 
-    return { character, snapshots: dedupeSnapshotsByTakenAt(snapshots) };
+    return {
+      character,
+      owner: owner
+        ? {
+            playerId: owner._id,
+            battleTag: owner.battleTag,
+            discordUserId: owner.discordUserId ?? null,
+          }
+        : null,
+      snapshots: dedupeSnapshotsByTakenAt(snapshots),
+    };
   },
 });
 
@@ -1091,6 +1117,62 @@ export const getMyCharactersWithSnapshot = query({
   },
 });
 
+export const setCharacterBoosterStatus = mutation({
+  args: {
+    characterId: v.id("characters"),
+    isBooster: v.boolean(),
+  },
+  handler: async (ctx, { characterId, isBooster }) => {
+    const authUser = await authComponent.safeGetAuthUser(ctx);
+    if (!authUser) {
+      throw new Error("Unauthorized");
+    }
+
+    const character = await ctx.db.get(characterId);
+    if (!character) {
+      throw new Error("Character not found.");
+    }
+
+    await ctx.db.patch(characterId, {
+      isBooster,
+    });
+
+    return {
+      characterId,
+      isBooster,
+    };
+  },
+});
+
+export const setCharacterNonTradeableSlots = mutation({
+  args: {
+    characterId: v.id("characters"),
+    nonTradeableSlots: v.array(nonTradeableSlotValidator),
+  },
+  handler: async (ctx, { characterId, nonTradeableSlots }) => {
+    const authUser = await authComponent.safeGetAuthUser(ctx);
+    if (!authUser) {
+      throw new Error("Unauthorized");
+    }
+
+    const character = await ctx.db.get(characterId);
+    if (!character) {
+      throw new Error("Character not found.");
+    }
+
+    const normalizedSlots = normalizeNonTradeableSlots(nonTradeableSlots);
+
+    await ctx.db.patch(characterId, {
+      nonTradeableSlots: normalizedSlots.length > 0 ? normalizedSlots : undefined,
+    });
+
+    return {
+      characterId,
+      nonTradeableSlots: normalizedSlots,
+    };
+  },
+});
+
 export const getCharactersWithLatestSnapshot = query({
   args: {
     characterIds: v.array(v.id("characters")),
@@ -1122,6 +1204,68 @@ export const getCharactersWithLatestSnapshot = query({
           : null,
       }),
     );
+  },
+});
+
+export const getBoosterCharactersForExport = query({
+  args: {},
+  handler: async (ctx) => {
+    const authUser = await authComponent.safeGetAuthUser(ctx);
+    if (!authUser) return null;
+
+    const boosterCharacters = await ctx.db
+      .query("characters")
+      .withIndex("by_booster", (q) => q.eq("isBooster", true))
+      .collect();
+
+    const withSnapshots = await getCharactersWithLatestSnapshots(ctx, boosterCharacters);
+    const uniquePlayerIds = Array.from(
+      new Map(boosterCharacters.map((character) => [String(character.playerId), character.playerId])).values(),
+    );
+    const owners = await Promise.all(uniquePlayerIds.map((playerId) => ctx.db.get(playerId)));
+    const ownerById = new Map(
+      uniquePlayerIds.map((playerId, index) => [String(playerId), owners[index] ?? null]),
+    );
+
+    return withSnapshots
+      .map(({ character, snapshot }) => {
+        const owner = ownerById.get(String(character.playerId));
+
+        return {
+          _id: character._id,
+          playerId: character.playerId,
+          name: character.name,
+          realm: character.realm,
+          region: character.region,
+          class: character.class,
+          faction: character.faction,
+          isBooster: character.isBooster ?? false,
+          nonTradeableSlots: character.nonTradeableSlots ?? [],
+          ownerBattleTag: owner?.battleTag ?? null,
+          ownerDiscordUserId: owner?.discordUserId ?? null,
+          snapshot: snapshot
+            ? {
+                role: snapshot.role,
+                mythicPlusScore: snapshot.mythicPlusScore,
+                itemLevel: snapshot.itemLevel,
+                takenAt: snapshot.takenAt,
+                ownedKeystone: snapshot.ownedKeystone ?? null,
+              }
+            : null,
+        };
+      })
+      .sort((a, b) => {
+        if (a.snapshot && !b.snapshot) return -1;
+        if (!a.snapshot && b.snapshot) return 1;
+
+        const roleDiff = getRoleSortRank(a.snapshot?.role) - getRoleSortRank(b.snapshot?.role);
+        if (roleDiff !== 0) return roleDiff;
+
+        const scoreDiff = (b.snapshot?.mythicPlusScore ?? -1) - (a.snapshot?.mythicPlusScore ?? -1);
+        if (scoreDiff !== 0) return scoreDiff;
+
+        return a.name.localeCompare(b.name);
+      });
   },
 });
 

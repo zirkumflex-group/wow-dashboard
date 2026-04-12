@@ -35,6 +35,7 @@ const AUTH_CACHE_TTL_MS = 60_000;
 function getDefaultTitleForPath(pathname: string) {
   if (pathname.startsWith("/dashboard")) return `Dashboard | ${APP_TITLE}`;
   if (pathname.startsWith("/scoreboard")) return `Scoreboard | ${APP_TITLE}`;
+  if (pathname.startsWith("/copy-helper")) return `Copy Helper | ${APP_TITLE}`;
   if (pathname.startsWith("/compare")) return `Compare | ${APP_TITLE}`;
   if (pathname.startsWith("/character/")) return `Character | ${APP_TITLE}`;
   if (pathname.startsWith("/players/")) return `Player | ${APP_TITLE}`;

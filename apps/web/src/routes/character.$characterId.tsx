@@ -20,7 +20,17 @@ import {
   ChartTooltipContent,
   type ChartConfig,
 } from "@wow-dashboard/ui/components/chart";
-import { useQuery } from "convex/react";
+import { Checkbox } from "@wow-dashboard/ui/components/checkbox";
+import { Input } from "@wow-dashboard/ui/components/input";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from "@wow-dashboard/ui/components/sheet";
+import { useMutation, useQuery } from "convex/react";
 import {
   Clock,
   Coins,
@@ -52,6 +62,8 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { toast } from "sonner";
+import { TRADE_SLOT_OPTIONS, type TradeSlotKey } from "../lib/trade-slots";
 
 export const Route = createFileRoute("/character/$characterId")({
   component: RouteComponent,
@@ -2881,6 +2893,11 @@ function RouteComponent() {
   const mythicPlus = useQuery(api.characters.getCharacterMythicPlus, {
     characterId: characterId as Id<"characters">,
   });
+  const setCharacterBoosterStatus = useMutation((api as any).characters.setCharacterBoosterStatus);
+  const setCharacterNonTradeableSlots = useMutation(
+    (api as any).characters.setCharacterNonTradeableSlots,
+  );
+  const setPlayerDiscordUserId = useMutation((api as any).players.setPlayerDiscordUserId);
   const snapshotsCacheRef = useRef(new Map<string, Exclude<typeof data, undefined>>());
   const mythicPlusCacheRef = useRef(new Map<string, Exclude<typeof mythicPlus, undefined>>());
   const resolvedData = data ?? snapshotsCacheRef.current.get(characterId);
@@ -2888,6 +2905,12 @@ function RouteComponent() {
 
   const [timeFrame, setTimeFrame] = useState<TimeFrame>("30d");
   const { pinnedCharacterIdSet, togglePinnedCharacter } = usePinnedCharacters();
+  const [discordUserIdInput, setDiscordUserIdInput] = useState("");
+  const [nonTradeableSlotsDraft, setNonTradeableSlotsDraft] = useState<TradeSlotKey[]>([]);
+  const [isSavingDiscordUserId, setIsSavingDiscordUserId] = useState(false);
+  const [isUpdatingBooster, setIsUpdatingBooster] = useState(false);
+  const [isSavingTradeSlots, setIsSavingTradeSlots] = useState(false);
+  const [isDiscordSheetOpen, setIsDiscordSheetOpen] = useState(false);
   const [layoutMode, setLayoutMode] = useState<LayoutMode>(() => {
     try {
       return (localStorage.getItem("wow-char-layout") as LayoutMode) ?? "overview";
@@ -2907,6 +2930,17 @@ function RouteComponent() {
       mythicPlusCacheRef.current.set(characterId, mythicPlus);
     }
   }, [characterId, mythicPlus]);
+
+  useEffect(() => {
+    setDiscordUserIdInput(resolvedData?.owner?.discordUserId ?? "");
+  }, [characterId, resolvedData?.owner?.discordUserId]);
+
+  useEffect(() => {
+    const currentSlots = new Set((resolvedData?.character.nonTradeableSlots ?? []) as TradeSlotKey[]);
+    setNonTradeableSlotsDraft(
+      TRADE_SLOT_OPTIONS.flatMap((slot) => (currentSlots.has(slot.key) ? [slot.key] : [])),
+    );
+  }, [characterId, resolvedData?.character.nonTradeableSlots]);
 
   useEffect(() => {
     const appTitle = "WoW Dashboard";
@@ -2953,8 +2987,15 @@ function RouteComponent() {
   }
 
   const { character, snapshots } = resolvedData;
+  const owner = resolvedData.owner;
   const isPinnedToQuickAccess = pinnedCharacterIdSet.has(characterId);
+  const isBoosterCharacter = character.isBooster === true;
+  const nonTradeableSlots = (character.nonTradeableSlots ?? []) as TradeSlotKey[];
   const mythicPlusData = resolvedMythicPlus as MythicPlusData | null | undefined;
+  const normalizedDiscordUserIdInput = discordUserIdInput.trim();
+  const hasDiscordUserIdChanges = normalizedDiscordUserIdInput !== (owner?.discordUserId ?? "");
+  const hasTradeSlotChanges =
+    JSON.stringify(nonTradeableSlotsDraft) !== JSON.stringify(nonTradeableSlots);
 
   const latest = snapshots[snapshots.length - 1] ?? null;
   const firstSnapshot = snapshots[0] ?? null;
@@ -2970,6 +3011,80 @@ function RouteComponent() {
     timeFrame,
     setTimeFrame,
   };
+
+  async function handleBoosterToggle() {
+    if (isUpdatingBooster) {
+      return;
+    }
+
+    setIsUpdatingBooster(true);
+    try {
+      await setCharacterBoosterStatus({
+        characterId: characterId as Id<"characters">,
+        isBooster: !isBoosterCharacter,
+      });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not update booster flag.");
+    } finally {
+      setIsUpdatingBooster(false);
+    }
+  }
+
+  async function handleDiscordUserIdSave() {
+    if (!owner || isSavingDiscordUserId || !hasDiscordUserIdChanges) {
+      return;
+    }
+
+    setIsSavingDiscordUserId(true);
+    try {
+      await setPlayerDiscordUserId({
+        playerId: owner.playerId,
+        discordUserId: normalizedDiscordUserIdInput === "" ? null : normalizedDiscordUserIdInput,
+      });
+      setIsDiscordSheetOpen(false);
+      toast.success(normalizedDiscordUserIdInput === "" ? "Discord ID cleared." : "Discord ID saved.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not save Discord ID.");
+    } finally {
+      setIsSavingDiscordUserId(false);
+    }
+  }
+
+  function toggleNonTradeableSlot(slotKey: TradeSlotKey) {
+    setNonTradeableSlotsDraft((currentSlots) => {
+      const nextSlotSet = new Set(currentSlots);
+      if (nextSlotSet.has(slotKey)) {
+        nextSlotSet.delete(slotKey);
+      } else {
+        nextSlotSet.add(slotKey);
+      }
+
+      return TRADE_SLOT_OPTIONS.flatMap((slot) => (nextSlotSet.has(slot.key) ? [slot.key] : []));
+    });
+  }
+
+  async function handleTradeSlotSave() {
+    if (isSavingTradeSlots || !hasTradeSlotChanges) {
+      return;
+    }
+
+    setIsSavingTradeSlots(true);
+    try {
+      await setCharacterNonTradeableSlots({
+        characterId: characterId as Id<"characters">,
+        nonTradeableSlots: nonTradeableSlotsDraft,
+      });
+      toast.success(
+        nonTradeableSlotsDraft.length === 0
+          ? "All slots marked tradeable."
+          : "Trade-lock slots saved.",
+      );
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not save trade-lock slots.");
+    } finally {
+      setIsSavingTradeSlots(false);
+    }
+  }
 
   return (
     <div className="w-full px-4 py-6 sm:px-6 lg:px-8 space-y-4">
@@ -3018,35 +3133,150 @@ function RouteComponent() {
                 />
               </div>
             </div>
-            <div className="flex flex-wrap items-center gap-2 self-start xl:justify-end">
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={() => togglePinnedCharacter(characterId)}
-                className={
-                  isPinnedToQuickAccess
-                    ? "border-yellow-400/40 bg-yellow-400/10 text-yellow-300 hover:bg-yellow-400/15 hover:text-yellow-200"
-                    : "border-border/60 bg-card text-muted-foreground hover:text-foreground"
-                }
-              >
-                <Star
-                  size={14}
-                  className={isPinnedToQuickAccess ? "fill-current text-yellow-400" : ""}
-                />
-                {isPinnedToQuickAccess ? "Pinned" : "Pin"}
-              </Button>
-              <LayoutSwitcher value={layoutMode} onChange={handleLayoutChange} />
-              <Badge
-                variant="outline"
-                className={
-                  character.faction === "alliance"
-                    ? "border-blue-500/40 bg-blue-500/10 text-blue-400 uppercase tracking-wider"
-                    : "border-red-500/40 bg-red-500/10 text-red-400 uppercase tracking-wider"
-                }
-              >
-                {character.faction}
-              </Badge>
+            <div className="flex w-full max-w-md flex-col gap-3 self-start xl:items-end">
+              <div className="flex flex-wrap items-center gap-2 xl:justify-end">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => togglePinnedCharacter(characterId)}
+                  className={
+                    isPinnedToQuickAccess
+                      ? "border-yellow-400/40 bg-yellow-400/10 text-yellow-300 hover:bg-yellow-400/15 hover:text-yellow-200"
+                      : "border-border/60 bg-card text-muted-foreground hover:text-foreground"
+                  }
+                >
+                  <Star
+                    size={14}
+                    className={isPinnedToQuickAccess ? "fill-current text-yellow-400" : ""}
+                  />
+                  {isPinnedToQuickAccess ? "Pinned" : "Pin"}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={handleBoosterToggle}
+                  disabled={isUpdatingBooster}
+                  className={
+                    isBoosterCharacter
+                      ? "border-emerald-400/40 bg-emerald-400/10 text-emerald-300 hover:bg-emerald-400/15 hover:text-emerald-200"
+                      : "border-border/60 bg-card text-muted-foreground hover:text-foreground"
+                  }
+                >
+                  <Zap size={14} className={isBoosterCharacter ? "text-emerald-300" : ""} />
+                  {isBoosterCharacter ? "Booster" : "Set Booster"}
+                </Button>
+                {owner && !owner.discordUserId && (
+                  <Sheet open={isDiscordSheetOpen} onOpenChange={setIsDiscordSheetOpen}>
+                    <SheetTrigger asChild>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="border-orange-500/40 bg-orange-500/10 text-orange-200 hover:bg-orange-500/15 hover:text-orange-100"
+                      >
+                        Set Discord ID
+                      </Button>
+                    </SheetTrigger>
+                    <SheetContent className="w-full sm:max-w-md">
+                      <SheetHeader>
+                        <SheetTitle>Owner Discord ID</SheetTitle>
+                        <SheetDescription>
+                          Shared across all characters for {owner.battleTag || character.name}.
+                        </SheetDescription>
+                      </SheetHeader>
+                      <div className="mt-6 space-y-3">
+                        <Input
+                          value={discordUserIdInput}
+                          onChange={(event) => setDiscordUserIdInput(event.target.value)}
+                          placeholder="Discord user ID or <@mention>"
+                          className="h-9"
+                        />
+                        <p className="text-xs text-muted-foreground">
+                          Stored globally on the account owner and used by Copy Helper exports.
+                        </p>
+                        <Button
+                          type="button"
+                          onClick={handleDiscordUserIdSave}
+                          disabled={!hasDiscordUserIdChanges || isSavingDiscordUserId}
+                        >
+                          {isSavingDiscordUserId ? "Saving..." : "Save Discord ID"}
+                        </Button>
+                      </div>
+                    </SheetContent>
+                  </Sheet>
+                )}
+                <Sheet>
+                  <SheetTrigger asChild>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="border-border/60 bg-card text-muted-foreground hover:text-foreground"
+                    >
+                      Trade Locks
+                      {nonTradeableSlots.length > 0 ? ` ${nonTradeableSlots.length}` : ""}
+                    </Button>
+                  </SheetTrigger>
+                  <SheetContent className="w-full sm:max-w-lg">
+                    <SheetHeader>
+                      <SheetTitle>Non-Tradeable Slots</SheetTitle>
+                      <SheetDescription>
+                        Mark the slots this character cannot trade. This is stored globally per
+                        character and shown in Copy Helper.
+                      </SheetDescription>
+                    </SheetHeader>
+                    <div className="mt-6 space-y-5">
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        {TRADE_SLOT_OPTIONS.map((slot) => (
+                          <label
+                            key={slot.key}
+                            className="flex cursor-pointer items-start gap-3 rounded-lg border border-border/60 bg-card/50 p-3"
+                          >
+                            <Checkbox
+                              checked={nonTradeableSlotsDraft.includes(slot.key)}
+                              onCheckedChange={() => toggleNonTradeableSlot(slot.key)}
+                            />
+                            <div>
+                              <p className="text-sm font-medium text-foreground">{slot.label}</p>
+                              <p className="text-xs text-muted-foreground">Drop in this slot stays bound.</p>
+                            </div>
+                          </label>
+                        ))}
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => setNonTradeableSlotsDraft([])}
+                          disabled={nonTradeableSlotsDraft.length === 0}
+                        >
+                          Clear All
+                        </Button>
+                        <Button
+                          type="button"
+                          onClick={handleTradeSlotSave}
+                          disabled={!hasTradeSlotChanges || isSavingTradeSlots}
+                        >
+                          {isSavingTradeSlots ? "Saving..." : "Save Slots"}
+                        </Button>
+                      </div>
+                    </div>
+                  </SheetContent>
+                </Sheet>
+                <LayoutSwitcher value={layoutMode} onChange={handleLayoutChange} />
+                <Badge
+                  variant="outline"
+                  className={
+                    character.faction === "alliance"
+                      ? "border-blue-500/40 bg-blue-500/10 text-blue-400 uppercase tracking-wider"
+                      : "border-red-500/40 bg-red-500/10 text-red-400 uppercase tracking-wider"
+                  }
+                >
+                  {character.faction}
+                </Badge>
+              </div>
             </div>
           </div>
         </CardHeader>

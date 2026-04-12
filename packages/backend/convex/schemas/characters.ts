@@ -2,6 +2,25 @@ import { defineTable } from "convex/server";
 import { v } from "convex/values";
 import { ownedKeystoneValidator, specValidator } from "./snapshots";
 
+export const nonTradeableSlotValidator = v.union(
+  v.literal("head"),
+  v.literal("shoulders"),
+  v.literal("chest"),
+  v.literal("wrist"),
+  v.literal("hands"),
+  v.literal("waist"),
+  v.literal("legs"),
+  v.literal("feet"),
+  v.literal("neck"),
+  v.literal("back"),
+  v.literal("finger1"),
+  v.literal("finger2"),
+  v.literal("trinket1"),
+  v.literal("trinket2"),
+  v.literal("mainHand"),
+  v.literal("offHand"),
+);
+
 const latestSnapshotSummaryValidator = v.object({
   takenAt: v.number(),
   level: v.number(),
@@ -23,7 +42,10 @@ export const charactersTable = defineTable({
   class: v.string(),
   race: v.string(),
   faction: v.union(v.literal("alliance"), v.literal("horde")),
+  isBooster: v.optional(v.boolean()),
+  nonTradeableSlots: v.optional(v.array(nonTradeableSlotValidator)),
   latestSnapshot: v.optional(latestSnapshotSummaryValidator),
 })
   .index("by_player", ["playerId"])
-  .index("by_player_and_realm", ["playerId", "realm"]);
+  .index("by_player_and_realm", ["playerId", "realm"])
+  .index("by_booster", ["isBooster"]);

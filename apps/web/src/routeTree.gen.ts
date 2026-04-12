@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as ScoreboardRouteImport } from './routes/scoreboard'
 import { Route as DashboardRouteImport } from './routes/dashboard'
+import { Route as CopyHelperRouteImport } from './routes/copy-helper'
 import { Route as CompareRouteImport } from './routes/compare'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as PlayersPlayerIdRouteImport } from './routes/players.$playerId'
@@ -33,6 +34,11 @@ const ScoreboardRoute = ScoreboardRouteImport.update({
 const DashboardRoute = DashboardRouteImport.update({
   id: '/dashboard',
   path: '/dashboard',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CopyHelperRoute = CopyHelperRouteImport.update({
+  id: '/copy-helper',
+  path: '/copy-helper',
   getParentRoute: () => rootRouteImport,
 } as any)
 const CompareRoute = CompareRouteImport.update({
@@ -74,6 +80,7 @@ const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/compare': typeof CompareRoute
+  '/copy-helper': typeof CopyHelperRoute
   '/dashboard': typeof DashboardRoute
   '/scoreboard': typeof ScoreboardRoute
   '/settings': typeof SettingsRoute
@@ -86,6 +93,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/compare': typeof CompareRoute
+  '/copy-helper': typeof CopyHelperRoute
   '/dashboard': typeof DashboardRoute
   '/scoreboard': typeof ScoreboardRoute
   '/settings': typeof SettingsRoute
@@ -99,6 +107,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/compare': typeof CompareRoute
+  '/copy-helper': typeof CopyHelperRoute
   '/dashboard': typeof DashboardRoute
   '/scoreboard': typeof ScoreboardRoute
   '/settings': typeof SettingsRoute
@@ -113,6 +122,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/compare'
+    | '/copy-helper'
     | '/dashboard'
     | '/scoreboard'
     | '/settings'
@@ -125,6 +135,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/compare'
+    | '/copy-helper'
     | '/dashboard'
     | '/scoreboard'
     | '/settings'
@@ -137,6 +148,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/compare'
+    | '/copy-helper'
     | '/dashboard'
     | '/scoreboard'
     | '/settings'
@@ -150,6 +162,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   CompareRoute: typeof CompareRoute
+  CopyHelperRoute: typeof CopyHelperRoute
   DashboardRoute: typeof DashboardRoute
   ScoreboardRoute: typeof ScoreboardRoute
   SettingsRoute: typeof SettingsRoute
@@ -181,6 +194,13 @@ declare module '@tanstack/react-router' {
       path: '/dashboard'
       fullPath: '/dashboard'
       preLoaderRoute: typeof DashboardRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/copy-helper': {
+      id: '/copy-helper'
+      path: '/copy-helper'
+      fullPath: '/copy-helper'
+      preLoaderRoute: typeof CopyHelperRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/compare': {
@@ -238,6 +258,7 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   CompareRoute: CompareRoute,
+  CopyHelperRoute: CopyHelperRoute,
   DashboardRoute: DashboardRoute,
   ScoreboardRoute: ScoreboardRoute,
   SettingsRoute: SettingsRoute,

@@ -27,7 +27,7 @@ import {
 } from "@wow-dashboard/ui/components/dropdown-menu";
 import { Authenticated } from "convex/react";
 import { useQuery } from "convex/react";
-import { ArrowDown, ArrowUp, ChevronUp, LayoutDashboard, Scale, Settings, Star, Trophy } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronUp, Copy, LayoutDashboard, Scale, Settings, Star, Trophy } from "lucide-react";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { useMemo } from "react";
 
@@ -38,6 +38,7 @@ import { usePinnedCharacters } from "@/lib/pinned-characters";
 const navItems = [
   { to: "/dashboard" as const, label: "Dashboard", icon: LayoutDashboard },
   { to: "/scoreboard" as const, label: "Scoreboard", icon: Trophy },
+  { to: "/copy-helper" as const, label: "Copy Helper", icon: Copy },
   { to: "/compare" as const, label: "Compare", icon: Scale },
 ];
 
