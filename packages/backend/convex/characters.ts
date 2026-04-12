@@ -464,6 +464,29 @@ function buildMythicPlusSummary(runs: MythicPlusRunDoc[], currentScore: number |
   };
 }
 
+type RecentRunRow = MythicPlusRunDoc & {
+  status: ReturnType<typeof getMythicPlusRunLifecycleStatus>;
+  playedAt: number;
+  sortTimestamp: number;
+  rowKey: string;
+  upgradeCount: number | null;
+  scoreIncrease: number | null;
+};
+
+function getRunMemberIdentityFingerprint(run: MythicPlusRunDoc) {
+  return (run.members ?? [])
+    .map((member) =>
+      [
+        member.name.trim().toLowerCase(),
+        member.realm?.trim().toLowerCase() ?? "",
+        member.role ?? "",
+        member.classTag?.trim().toLowerCase() ?? "",
+      ].join("|"),
+    )
+    .sort()
+    .join(",");
+}
+
 function buildRecentRuns(runs: MythicPlusRunDoc[]) {
   const bestPreviousScoreByDungeon = new Map<string, number>();
   const scoreIncreaseByRunId = new Map<string, number>();
@@ -525,7 +548,7 @@ function buildRecentRuns(runs: MythicPlusRunDoc[]) {
     );
   }
 
-  return runs.map((run) => {
+  const projectedRuns: RecentRunRow[] = runs.map((run) => {
     const status = getMythicPlusRunLifecycleStatus(run);
     const sortTimestamp = getRunTimestamp(run);
     return {
@@ -538,6 +561,55 @@ function buildRecentRuns(runs: MythicPlusRunDoc[]) {
       scoreIncrease: scoreIncreaseByRunId.get(run._id) ?? null,
     };
   });
+
+  const collapseIndexByKey = new Map<string, number>();
+  const collapsedRuns: RecentRunRow[] = [];
+  const getLegacyCollapseKey = (run: RecentRunRow) => {
+    if (!isCompletedRun(run) || run.level === undefined || run.durationMs === undefined) {
+      return null;
+    }
+
+    const mapToken =
+      run.mapChallengeModeID !== undefined
+        ? String(run.mapChallengeModeID)
+        : getMapLabel(run).trim().toLowerCase();
+    const timedToken = String(getMythicPlusRunTimedState(run) ?? "unknown");
+    const partyFingerprint = getRunMemberIdentityFingerprint(run);
+    return `${run.playedAt}|${mapToken}|${run.level}|${run.durationMs}|${timedToken}|${partyFingerprint}`;
+  };
+
+  for (const run of projectedRuns) {
+    const collapseKey = getLegacyCollapseKey(run);
+    if (!collapseKey) {
+      collapsedRuns.push(run);
+      continue;
+    }
+
+    const existingIndex = collapseIndexByKey.get(collapseKey);
+    if (existingIndex === undefined) {
+      collapseIndexByKey.set(collapseKey, collapsedRuns.length);
+      collapsedRuns.push(run);
+      continue;
+    }
+
+    const currentRun = collapsedRuns[existingIndex]!;
+    const candidatePreferred = shouldReplaceMythicPlusRun(currentRun, run);
+    const preferredRun = candidatePreferred ? run : currentRun;
+    const fallbackRun = candidatePreferred ? currentRun : run;
+
+    collapsedRuns[existingIndex] = {
+      ...fallbackRun,
+      ...preferredRun,
+      members: mergeMythicPlusRunMembers(currentRun.members, run.members),
+      rowKey: preferredRun.rowKey,
+      playedAt: preferredRun.playedAt,
+      sortTimestamp: preferredRun.sortTimestamp,
+      upgradeCount: preferredRun.upgradeCount ?? fallbackRun.upgradeCount,
+      scoreIncrease: preferredRun.scoreIncrease ?? fallbackRun.scoreIncrease,
+    };
+  }
+
+  return collapsedRuns;
 }
 
 function dedupeMythicPlusRuns(runs: MythicPlusRunDoc[]) {

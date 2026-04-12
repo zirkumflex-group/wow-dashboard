@@ -306,6 +306,68 @@ describe("Mythic+ identity contract", () => {
     assertRecentRunsSortAndDisplayAlignment(recentRuns);
   });
 
+  it("recent runs collapse legacy display-identical rows even when canonical keys disagree", () => {
+    const scorelessLegacyRow = makeRun({
+      fingerprint: "legacy-display-scoreless",
+      canonicalKey: "aid|attempt|17|559|10|0",
+      attemptId: "attempt|17|559|10|0",
+      seasonID: 17,
+      mapChallengeModeID: 559,
+      mapName: "Nexus-Point Xenas",
+      level: 10,
+      startDate: 0,
+      completedAt: 1_775_900_680,
+      endedAt: 1_775_900_680,
+      durationMs: 968_000,
+      completed: true,
+      completedInTime: true,
+      status: "completed",
+      observedAt: 1_775_900_681,
+      members: [
+        { name: "Qujin", realm: "BurningLegion", role: "tank", classTag: "PALADIN" },
+        { name: "Francisfekir", role: "dps", classTag: "MONK" },
+        { name: "Orhar", realm: "BurningLegion", role: "dps", classTag: "DEATHKNIGHT" },
+        { name: "Ceva", realm: "Aegwynn", role: "dps", classTag: "DEMONHUNTER" },
+        { name: "Halopatryk", realm: "BurningLegion", role: "healer", classTag: "EVOKER" },
+      ],
+    });
+    const scoredHistoryRow = makeRun({
+      fingerprint: "legacy-display-scored",
+      canonicalKey: "run|17|559|10|1775900680",
+      seasonID: 17,
+      mapChallengeModeID: 559,
+      mapName: "Nexus-Point Xenas",
+      level: 10,
+      completedAt: 1_775_900_680,
+      endedAt: 1_775_900_680,
+      durationMs: 968_000,
+      runScore: 335,
+      completed: true,
+      completedInTime: true,
+      status: "completed",
+      observedAt: 1_775_900_900,
+      members: [
+        { name: "Qujin", realm: "BurningLegion", role: "tank", classTag: "PALADIN" },
+        { name: "Francisfekir", role: "dps", classTag: "MONK" },
+        { name: "Orhar", realm: "BurningLegion", role: "dps", classTag: "DEATHKNIGHT" },
+        { name: "Ceva", realm: "Aegwynn", role: "dps", classTag: "DEMONHUNTER" },
+        { name: "Halopatryk", realm: "BurningLegion", role: "healer", classTag: "EVOKER" },
+      ],
+    });
+
+    const deduped = characterTestables.dedupeMythicPlusRuns([
+      scorelessLegacyRow,
+      scoredHistoryRow,
+    ] as any) as TestRun[];
+    const recentRuns = characterTestables.buildRecentRuns(deduped as any) as ProjectedRun[];
+
+    assert.equal(deduped.length, 2);
+    assert.equal(recentRuns.length, 1);
+    assert.equal(recentRuns[0]?.runScore, 335);
+    assert.equal(recentRuns[0]?.members?.length, 5);
+    assertRecentRunsSortAndDisplayAlignment(recentRuns);
+  });
+
   it("stale recovery matches existing active attempts and transitions lifecycle to abandoned", () => {
     const lookups = makeLookups();
     const active = makeRun({
