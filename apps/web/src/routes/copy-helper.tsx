@@ -85,13 +85,70 @@ function formatExportScore(score: number) {
   return Math.round(score).toString();
 }
 
+const EXPORT_SPEC_LABELS: Record<string, string> = {
+  blood: "Blood",
+  frost: "Frost",
+  unholy: "Unholy",
+  havoc: "Havoc",
+  vengeance: "Veng",
+  devourer: "Devo",
+  balance: "Boomy",
+  feral: "Feral",
+  guardian: "Bear",
+  restoration: "Resto",
+  augmentation: "Aug",
+  devastation: "Deva",
+  preservation: "Pres",
+  beastmastery: "BM",
+  marksmanship: "MM",
+  survival: "Surv",
+  arcane: "Arc",
+  fire: "Fire",
+  brewmaster: "Brew",
+  mistweaver: "MW",
+  windwalker: "WW",
+  holy: "Holy",
+  protection: "Prot",
+  retribution: "Ret",
+  discipline: "Disc",
+  shadow: "Shadow",
+  assassination: "Assa",
+  outlaw: "Outlaw",
+  subtlety: "Sub",
+  elemental: "Ele",
+  enhancement: "Enh",
+  affliction: "Aff",
+  demonology: "Demo",
+  destruction: "Destro",
+  arms: "Arms",
+  fury: "Fury",
+};
+
+function getExportSpecLabel(specName: string) {
+  const normalizedSpecToken = specName.trim().toLowerCase().replace(/[\s_-]/g, "");
+  return EXPORT_SPEC_LABELS[normalizedSpecToken] ?? specName.trim();
+}
+
+function getExportRoleIcon(role: string) {
+  if (role === "tank") return ":Tank:";
+  if (role === "healer") return ":Heal:";
+  return ":DPS:";
+}
+
+function getExportClassIcon(className: string) {
+  const normalizedClassToken = className.trim().toLowerCase().replace(/[\s_-]/g, "");
+  return `:${normalizedClassToken}:`;
+}
+
 function buildExportLine(character: {
   class: string;
   nonTradeableSlots: TradeSlotKey[];
   ownerDiscordUserId: string | null;
   snapshot: {
+    spec: string;
     role: string;
     mythicPlusScore: number;
+    itemLevel: number;
     ownedKeystone: {
       level: number;
       mapChallengeModeID?: number;
@@ -99,6 +156,8 @@ function buildExportLine(character: {
     } | null;
   };
 }, options: {
+  includeIcons: boolean;
+  includeItemLevel: boolean;
   includeKey: boolean;
   includeTradeLocks: boolean;
   includeDiscordId: boolean;
@@ -106,15 +165,32 @@ function buildExportLine(character: {
   const discordMention = character.ownerDiscordUserId
     ? `<@${character.ownerDiscordUserId}>`
     : "[missing-discord-id]";
-  const exportSegments = [
-    getExportRoleLabel(character.snapshot.role),
-    getExportClassLabel(character.class),
-    formatExportScore(character.snapshot.mythicPlusScore),
-  ];
+  const exportSegments = options.includeIcons
+    ? [
+        getExportRoleIcon(character.snapshot.role),
+        getExportClassIcon(character.class),
+        `${getExportSpecLabel(character.snapshot.spec)} ${getExportClassLabel(character.class)}`,
+      ]
+    : [
+        getExportRoleLabel(character.snapshot.role),
+        getExportClassLabel(character.class),
+      ];
   const detailSegments: string[] = [];
 
+  detailSegments.push(
+    options.includeIcons
+      ? `${formatExportScore(character.snapshot.mythicPlusScore)} :Raiderio:`
+      : formatExportScore(character.snapshot.mythicPlusScore),
+  );
+
+  if (options.includeItemLevel) {
+    detailSegments.push(String(Math.round(character.snapshot.itemLevel)));
+  }
+
   if (options.includeKey) {
-    detailSegments.push(getEquippedKeystoneExportLabel(character.snapshot.ownedKeystone));
+    detailSegments.push(
+      getEquippedKeystoneExportLabel(character.snapshot.ownedKeystone, options.includeIcons),
+    );
   }
 
   if (options.includeTradeLocks) {
@@ -148,6 +224,7 @@ type BoosterCharacter = {
   ownerBattleTag: string | null;
   ownerDiscordUserId: string | null;
   snapshot: {
+    spec: string;
     role: "tank" | "healer" | "dps";
     mythicPlusScore: number;
     itemLevel: number;
@@ -200,9 +277,10 @@ function getEquippedKeystoneExportLabel(
         mapName?: string;
       }
     | null,
+  includeIcons: boolean,
 ) {
   if (!keystone) {
-    return "No key";
+    return includeIcons ? "no :Keystone:" : "No key";
   }
 
   const dungeonMeta = getMythicPlusDungeonMeta(keystone.mapChallengeModeID, keystone.mapName);
@@ -213,7 +291,7 @@ function getEquippedKeystoneExportLabel(
       ? `Dungeon ${keystone.mapChallengeModeID}`
       : "Unknown");
 
-  return `${dungeonLabel} +${keystone.level}`;
+  return includeIcons ? `${dungeonLabel} +${keystone.level} :Keystone:` : `${dungeonLabel} +${keystone.level}`;
 }
 
 function RouteComponent() {
@@ -222,6 +300,8 @@ function RouteComponent() {
   ) as BoosterCharacter[] | null | undefined;
   const [selectedCharacterIds, setSelectedCharacterIds] = useState<string[]>([]);
   const [customHeadline, setCustomHeadline] = useState("");
+  const [includeIcons, setIncludeIcons] = useState(false);
+  const [includeItemLevel, setIncludeItemLevel] = useState(true);
   const [includeKey, setIncludeKey] = useState(true);
   const [includeTradeLocks, setIncludeTradeLocks] = useState(true);
   const [includeDiscordId, setIncludeDiscordId] = useState(true);
@@ -272,13 +352,23 @@ function RouteComponent() {
       exportHeadline,
       ...selectedCharacters.map((character) =>
         buildExportLine(character, {
+          includeIcons,
+          includeItemLevel,
           includeKey,
           includeTradeLocks,
           includeDiscordId,
         }),
       ),
     ].join("\r\n");
-  }, [exportHeadline, includeDiscordId, includeKey, includeTradeLocks, selectedCharacters]);
+  }, [
+    exportHeadline,
+    includeDiscordId,
+    includeIcons,
+    includeItemLevel,
+    includeKey,
+    includeTradeLocks,
+    selectedCharacters,
+  ]);
 
   function toggleCharacterSelection(characterId: string) {
     setSelectedCharacterIds((currentCharacterIds) =>
@@ -388,6 +478,20 @@ function RouteComponent() {
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
+                <label className="flex items-center gap-2 rounded-md border border-border/60 px-2.5 py-1.5 text-xs text-muted-foreground">
+                  <Checkbox
+                    checked={includeIcons}
+                    onCheckedChange={(value) => setIncludeIcons(!!value)}
+                  />
+                  <span>Icons</span>
+                </label>
+                <label className="flex items-center gap-2 rounded-md border border-border/60 px-2.5 py-1.5 text-xs text-muted-foreground">
+                  <Checkbox
+                    checked={includeItemLevel}
+                    onCheckedChange={(value) => setIncludeItemLevel(!!value)}
+                  />
+                  <span>iLvl</span>
+                </label>
                 <label className="flex items-center gap-2 rounded-md border border-border/60 px-2.5 py-1.5 text-xs text-muted-foreground">
                   <Checkbox checked={includeKey} onCheckedChange={(value) => setIncludeKey(!!value)} />
                   <span>Key</span>
@@ -504,9 +608,11 @@ function RouteComponent() {
                               <Badge variant="outline" className="border-border/60 bg-background/80">
                                 Score {formatExportScore(character.snapshot.mythicPlusScore)}
                               </Badge>
-                              <Badge variant="outline" className="border-border/60 bg-background/80">
-                                iLvl {character.snapshot.itemLevel.toFixed(1)}
-                              </Badge>
+                              {includeItemLevel && (
+                                <Badge variant="outline" className="border-border/60 bg-background/80">
+                                  iLvl {character.snapshot.itemLevel.toFixed(1)}
+                                </Badge>
+                              )}
                               {includeKey && (
                                 <Badge variant="outline" className="border-border/60 bg-background/80">
                                   {getEquippedKeystoneLabel(character.snapshot.ownedKeystone)}
@@ -591,7 +697,7 @@ function RouteComponent() {
               Export Preview
             </CardTitle>
             <p className="text-sm text-muted-foreground">
-              Uses the format Role Class M+ Score Discord ID.
+              Uses the selected format for role, class, score, item level, key, trade locks, and Discord ID.
             </p>
           </CardHeader>
           <CardContent className="space-y-4 p-6">
@@ -620,7 +726,8 @@ function RouteComponent() {
               <textarea
                 value={exportText}
                 readOnly
-                className="min-h-64 w-full rounded-xl border border-border/70 bg-background/70 p-3 font-mono text-sm leading-6 text-foreground outline-none"
+                wrap="off"
+                className="scrollbar-hidden min-h-64 w-full overflow-x-auto rounded-xl border border-border/70 bg-background/70 p-3 font-mono text-sm leading-6 text-foreground outline-none"
                 placeholder="Select booster characters to generate an export string."
               />
             </div>

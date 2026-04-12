@@ -1245,6 +1245,7 @@ export const getBoosterCharactersForExport = query({
           ownerDiscordUserId: owner?.discordUserId ?? null,
           snapshot: snapshot
             ? {
+                spec: snapshot.spec,
                 role: snapshot.role,
                 mythicPlusScore: snapshot.mythicPlusScore,
                 itemLevel: snapshot.itemLevel,
