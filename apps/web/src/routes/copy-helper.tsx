@@ -47,13 +47,33 @@ function getExportRoleLabel(role: string) {
   return "DD";
 }
 
+const EXPORT_CLASS_LABELS: Record<string, string> = {
+  warrior: "Warrior",
+  warr: "Warrior",
+  paladin: "Pala",
+  pala: "Pala",
+  hunter: "Hunter",
+  hunt: "Hunter",
+  rogue: "Rogue",
+  priest: "Priest",
+  deathknight: "DK",
+  dk: "DK",
+  shaman: "Sham",
+  sham: "Sham",
+  mage: "Mage",
+  warlock: "Lock",
+  lock: "Lock",
+  monk: "Monk",
+  druid: "Druid",
+  demonhunter: "DH",
+  dh: "DH",
+  evoker: "Evoker",
+};
+
 function getExportClassLabel(className: string) {
   const normalizedClassName = className.trim().toLowerCase();
-
-  if (normalizedClassName === "death knight") return "DK";
-  if (normalizedClassName === "demon hunter") return "DH";
-
-  return className.trim();
+  const normalizedClassToken = normalizedClassName.replace(/[\s_-]/g, "");
+  return EXPORT_CLASS_LABELS[normalizedClassToken] ?? className.trim();
 }
 
 function formatExportScore(score: number) {
