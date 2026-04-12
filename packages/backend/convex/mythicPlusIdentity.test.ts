@@ -296,13 +296,14 @@ describe("Mythic+ identity contract", () => {
       observedAt: 1_775_871_880,
     });
 
-    const deduped = characterTestables.dedupeMythicPlusRuns(
-      [scorelessCompletion as any, scoredHistory as any],
-    ) as TestRun[];
+    const { deduped, recentRuns } = projectRuns([scorelessCompletion, scoredHistory]);
 
     assert.equal(deduped.length, 1);
     assert.equal(deduped[0]?.runScore, 413);
     assert.equal(deduped[0]?.members?.length, 2);
+    assert.equal(recentRuns.length, 1);
+    assert.equal(recentRuns[0]?.runScore, 413);
+    assertRecentRunsSortAndDisplayAlignment(recentRuns);
   });
 
   it("stale recovery matches existing active attempts and transitions lifecycle to abandoned", () => {

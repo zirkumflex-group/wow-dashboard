@@ -9,6 +9,7 @@ import {
   buildCanonicalMythicPlusRunFingerprint,
   canUseMythicPlusRunCompatibilityAliasMatch,
   getMythicPlusRunAttemptId,
+  getMythicPlusRunCompatibilityLookupAliases,
   getMythicPlusRunCanonicalKey,
   getMythicPlusRunLifecycleStatus,
   mergeMythicPlusRunMembers,
@@ -543,9 +544,97 @@ function dedupeMythicPlusRuns(runs: MythicPlusRunDoc[]) {
   const dedupedRuns: MythicPlusRunDoc[] = [];
   const LEGACY_DST_SHIFT_SECONDS = 60 * 60;
   const LEGACY_DST_SHIFT_TOLERANCE_SECONDS = 2 * 60;
+  const runLookups = {
+    byAttemptId: new Map<string, number>(),
+    byCanonicalKey: new Map<string, number>(),
+    byCompatibilityAlias: new Map<string, number>(),
+  };
 
   const pickDefinedValue = <T>(preferredValue: T | undefined, fallbackValue: T | undefined) =>
     preferredValue !== undefined ? preferredValue : fallbackValue;
+
+  const setPreferredRunLookup = (
+    map: Map<string, number>,
+    key: string | undefined | null,
+    runIndex: number,
+  ) => {
+    if (!key) {
+      return;
+    }
+
+    const currentIndex = map.get(key);
+    if (
+      currentIndex === undefined ||
+      shouldReplaceMythicPlusRun(dedupedRuns[currentIndex], dedupedRuns[runIndex]!)
+    ) {
+      map.set(key, runIndex);
+    }
+  };
+
+  const registerRunLookups = (
+    run: MythicPlusRunDoc,
+    runIndex: number,
+    aliases: Array<string | undefined | null> = [],
+  ) => {
+    setPreferredRunLookup(runLookups.byAttemptId, getMythicPlusRunAttemptId(run), runIndex);
+    setPreferredRunLookup(runLookups.byCanonicalKey, getMythicPlusRunCanonicalKey(run), runIndex);
+
+    const compatibilityAliases = new Set<string>();
+    for (const alias of getMythicPlusRunCompatibilityLookupAliases(run)) {
+      compatibilityAliases.add(alias);
+    }
+    for (const alias of aliases) {
+      if (alias) {
+        compatibilityAliases.add(alias);
+      }
+    }
+
+    for (const alias of compatibilityAliases) {
+      setPreferredRunLookup(runLookups.byCompatibilityAlias, alias, runIndex);
+    }
+  };
+
+  const findMatchingRunIndex = (run: MythicPlusRunDoc) => {
+    const attemptId = getMythicPlusRunAttemptId(run);
+    if (attemptId) {
+      const attemptMatchIndex = runLookups.byAttemptId.get(attemptId);
+      if (attemptMatchIndex !== undefined) {
+        return attemptMatchIndex;
+      }
+    }
+
+    const canonicalKey = getMythicPlusRunCanonicalKey(run);
+    if (canonicalKey) {
+      const canonicalMatchIndex = runLookups.byCanonicalKey.get(canonicalKey);
+      if (canonicalMatchIndex !== undefined) {
+        return canonicalMatchIndex;
+      }
+    }
+
+    for (const compatibilityAlias of getMythicPlusRunCompatibilityLookupAliases(run)) {
+      const candidateIndex = runLookups.byCompatibilityAlias.get(compatibilityAlias);
+      if (candidateIndex === undefined) {
+        continue;
+      }
+
+      const candidate = dedupedRuns[candidateIndex];
+      if (!candidate) {
+        continue;
+      }
+      if (!canUseMythicPlusRunCompatibilityAliasMatch(candidate, run)) {
+        continue;
+      }
+
+      const candidateCanonicalKey = getMythicPlusRunCanonicalKey(candidate);
+      if (canonicalKey && candidateCanonicalKey && canonicalKey !== candidateCanonicalKey) {
+        continue;
+      }
+
+      return candidateIndex;
+    }
+
+    return -1;
+  };
 
   const mergeLifecycleTimestamp = (
     preferredValue: number | undefined,
@@ -648,36 +737,28 @@ function dedupeMythicPlusRuns(runs: MythicPlusRunDoc[]) {
   };
 
   for (const run of runs) {
-    const runAttemptId = getMythicPlusRunAttemptId(run);
-    const runCanonicalKey = getMythicPlusRunCanonicalKey(run);
-    let matchIndex = -1;
-
-    for (let index = 0; index < dedupedRuns.length; index += 1) {
-      const current = dedupedRuns[index]!;
-      const currentAttemptId = getMythicPlusRunAttemptId(current);
-      const currentCanonicalKey = getMythicPlusRunCanonicalKey(current);
-      const hasExactAttemptMatch =
-        runAttemptId !== null && currentAttemptId !== null && runAttemptId === currentAttemptId;
-      const hasExactCanonicalMatch =
-        runCanonicalKey !== null &&
-        currentCanonicalKey !== null &&
-        runCanonicalKey === currentCanonicalKey;
-      const hasCompatibilityMatch =
-        !hasExactAttemptMatch &&
-        !hasExactCanonicalMatch &&
-        canUseMythicPlusRunCompatibilityAliasMatch(current, run);
-      if (hasExactAttemptMatch || hasExactCanonicalMatch || hasCompatibilityMatch) {
-        matchIndex = index;
-        break;
-      }
-    }
+    const matchIndex = findMatchingRunIndex(run);
 
     if (matchIndex < 0) {
       dedupedRuns.push(run);
+      registerRunLookups(run, dedupedRuns.length - 1);
       continue;
     }
 
-    dedupedRuns[matchIndex] = mergeDuplicateRuns(dedupedRuns[matchIndex]!, run);
+    const currentRun = dedupedRuns[matchIndex]!;
+    const mergedRun = mergeDuplicateRuns(currentRun, run);
+    dedupedRuns[matchIndex] = mergedRun;
+    registerRunLookups(mergedRun, matchIndex, [
+      currentRun.fingerprint,
+      getMythicPlusRunAttemptId(currentRun),
+      getMythicPlusRunCanonicalKey(currentRun),
+      run.fingerprint,
+      getMythicPlusRunAttemptId(run),
+      getMythicPlusRunCanonicalKey(run),
+      mergedRun.fingerprint,
+      getMythicPlusRunAttemptId(mergedRun),
+      getMythicPlusRunCanonicalKey(mergedRun),
+    ]);
   }
 
   return dedupedRuns.sort((a, b) => {
