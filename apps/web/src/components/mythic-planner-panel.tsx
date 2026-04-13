@@ -384,9 +384,14 @@ export function MythicPlannerPanel({
   const [storedSettings, setStoredSettings] = useState<StoredPlannerSettings>(() =>
     readStoredSettings(characterId, currentScore),
   );
+  const [maxLevelInput, setMaxLevelInput] = useState<string>(() =>
+    String(readStoredSettings(characterId, currentScore).maxLevel),
+  );
 
   useEffect(() => {
-    setStoredSettings(readStoredSettings(characterId, currentScore));
+    const nextStoredSettings = readStoredSettings(characterId, currentScore);
+    setStoredSettings(nextStoredSettings);
+    setMaxLevelInput(String(nextStoredSettings.maxLevel));
   }, [characterId, currentScore]);
 
   useEffect(() => {
@@ -419,6 +424,20 @@ export function MythicPlannerPanel({
 
   const targetValue =
     storedSettings.targetScore === null ? "" : String(Math.round(storedSettings.targetScore));
+
+  function commitMaxLevelInput(rawValue: string) {
+    if (rawValue.trim() === "" || !Number.isFinite(Number(rawValue))) {
+      setMaxLevelInput(String(storedSettings.maxLevel));
+      return;
+    }
+
+    const normalizedValue = Math.min(30, Math.max(2, Math.floor(Number(rawValue))));
+    setStoredSettings((current) => ({
+      ...current,
+      maxLevel: normalizedValue,
+    }));
+    setMaxLevelInput(String(normalizedValue));
+  }
 
   return (
     <>
@@ -493,16 +512,13 @@ export function MythicPlannerPanel({
                   min={2}
                   max={30}
                   step={1}
-                  value={String(storedSettings.maxLevel)}
-                  onChange={(event) => {
-                    const nextValue = Number(event.target.value);
-                    setStoredSettings((current) => ({
-                      ...current,
-                      maxLevel:
-                        Number.isFinite(nextValue) && event.target.value.trim() !== ""
-                          ? Math.min(30, Math.max(2, nextValue))
-                          : current.maxLevel,
-                    }));
+                  value={maxLevelInput}
+                  onChange={(event) => setMaxLevelInput(event.target.value)}
+                  onBlur={(event) => commitMaxLevelInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      commitMaxLevelInput((event.target as HTMLInputElement).value);
+                    }
                   }}
                   className="h-9"
                 />
