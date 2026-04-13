@@ -201,11 +201,17 @@ function buildExportLine(character: {
     const tradeLockLabels = getTradeSlotExportLabels(character.nonTradeableSlots);
     if (tradeLockLabels.length > 0) {
       detailSegments.push(`can't trade: ${tradeLockLabels.join(", ")}`);
+    } else {
+      detailSegments.push("can trade all");
     }
   }
 
-  for (const detailSegment of detailSegments) {
-    exportSegments.push("|", detailSegment);
+  if (options.includeIcons) {
+    for (const detailSegment of detailSegments) {
+      exportSegments.push("|", detailSegment);
+    }
+  } else {
+    exportSegments.push(...detailSegments);
   }
 
   if (options.includeDiscordId) {
