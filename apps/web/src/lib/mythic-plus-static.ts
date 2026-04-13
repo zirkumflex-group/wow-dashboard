@@ -13,7 +13,7 @@ export type MythicPlusDungeonMeta = {
   timerMs: number;
 };
 
-const CURRENT_SEASON_DUNGEONS: MythicPlusDungeonMeta[] = [
+export const CURRENT_SEASON_DUNGEONS: MythicPlusDungeonMeta[] = [
   {
     mapChallengeModeID: 402,
     name: "Algeth'ar Academy",

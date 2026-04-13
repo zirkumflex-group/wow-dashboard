@@ -9,6 +9,7 @@ import {
 import { getClassTextColor } from "../lib/class-colors";
 import { usePinnedCharacters } from "../lib/pinned-characters";
 import { formatPlaytime, PlaytimeBreakdown } from "../components/playtime-breakdown";
+import { MythicPlannerPanel } from "../components/mythic-planner-panel";
 import { Badge } from "@wow-dashboard/ui/components/badge";
 import { Button } from "@wow-dashboard/ui/components/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@wow-dashboard/ui/components/card";
@@ -32,6 +33,7 @@ import {
 } from "@wow-dashboard/ui/components/sheet";
 import { useMutation, useQuery } from "convex/react";
 import {
+  Calculator,
   Clock,
   Coins,
   Columns,
@@ -1060,10 +1062,12 @@ function MythicPlusSection({
   data,
   characterRealm,
   characterRegion,
+  onOpenPlanner,
 }: {
   data: MythicPlusData | null | undefined;
   characterRealm: string;
   characterRegion: string;
+  onOpenPlanner?: () => void;
 }) {
   const [visibleRecentRunCount, setVisibleRecentRunCount] = useState(INITIAL_RECENT_RUN_COUNT);
   const {
@@ -1111,10 +1115,18 @@ function MythicPlusSection({
     return (
       <Card>
         <CardHeader className="border-b pb-3">
-          <CardTitle className="flex items-center gap-2 text-lg">
-            <History size={16} className="text-muted-foreground" />
-            Mythic+ History
-          </CardTitle>
+          <div className="flex items-center justify-between gap-3">
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <History size={16} className="text-muted-foreground" />
+              Mythic+ History
+            </CardTitle>
+            {onOpenPlanner && (
+              <Button type="button" size="sm" variant="outline" onClick={onOpenPlanner}>
+                <Calculator size={14} />
+                Planner
+              </Button>
+            )}
+          </div>
         </CardHeader>
         <CardContent className="pt-4">
           <p className="text-sm text-muted-foreground">
@@ -1149,9 +1161,17 @@ function MythicPlusSection({
                 <History size={16} className="text-muted-foreground" />
                 Mythic+ Summary
               </CardTitle>
-              {formatSeasonLabel(summary.latestSeasonID) && (
-                <Badge variant="outline">{formatSeasonLabel(summary.latestSeasonID)}</Badge>
-              )}
+              <div className="flex flex-wrap items-center gap-2">
+                {formatSeasonLabel(summary.latestSeasonID) && (
+                  <Badge variant="outline">{formatSeasonLabel(summary.latestSeasonID)}</Badge>
+                )}
+                {onOpenPlanner && (
+                  <Button type="button" size="sm" variant="outline" onClick={onOpenPlanner}>
+                    <Calculator size={14} />
+                    Planner
+                  </Button>
+                )}
+              </div>
             </div>
           </CardHeader>
           <CardContent className="space-y-4 pt-4">
@@ -1499,6 +1519,7 @@ type LayoutProps = {
   mythicPlus?: MythicPlusData | null;
   characterRealm: string;
   characterRegion: string;
+  onOpenPlanner?: () => void;
   timeFrame: TimeFrame;
   setTimeFrame: (f: TimeFrame) => void;
 };
@@ -2430,6 +2451,7 @@ function OverviewLayout({
   mythicPlus,
   characterRealm,
   characterRegion,
+  onOpenPlanner,
   timeFrame,
   setTimeFrame,
 }: LayoutProps) {
@@ -2471,6 +2493,7 @@ function OverviewLayout({
             data={mythicPlus}
             characterRealm={characterRealm}
             characterRegion={characterRegion}
+            onOpenPlanner={onOpenPlanner}
           />
         </div>
       </div>
@@ -2918,6 +2941,7 @@ function RouteComponent() {
   const [isUpdatingBooster, setIsUpdatingBooster] = useState(false);
   const [isSavingTradeSlots, setIsSavingTradeSlots] = useState(false);
   const [isDiscordSheetOpen, setIsDiscordSheetOpen] = useState(false);
+  const [isPlannerOpen, setIsPlannerOpen] = useState(false);
   const [layoutMode, setLayoutMode] = useState<LayoutMode>(() => {
     try {
       return (localStorage.getItem("wow-char-layout") as LayoutMode) ?? "overview";
@@ -3014,6 +3038,7 @@ function RouteComponent() {
     mythicPlus: mythicPlusData,
     characterRealm: character.realm,
     characterRegion: character.region,
+    onOpenPlanner: () => setIsPlannerOpen(true),
     timeFrame,
     setTimeFrame,
   };
@@ -3132,6 +3157,26 @@ function RouteComponent() {
             </div>
             <div className="flex w-full max-w-md flex-col gap-3 self-start xl:items-end">
               <div className="flex flex-wrap items-center gap-2 xl:justify-end">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setIsPlannerOpen(true)}
+                  className="border-border/60 bg-card text-muted-foreground hover:text-foreground"
+                >
+                  <Calculator size={14} />
+                  Planner
+                </Button>
+                <Sheet open={isPlannerOpen} onOpenChange={setIsPlannerOpen}>
+                  <SheetContent className="w-full overflow-y-auto sm:max-w-3xl">
+                    <MythicPlannerPanel
+                      characterId={characterId}
+                      characterName={character.name}
+                      currentScore={mythicPlusData?.summary.currentScore ?? latest?.mythicPlusScore ?? null}
+                      dungeons={mythicPlusData?.summary.currentSeasonDungeons ?? []}
+                    />
+                  </SheetContent>
+                </Sheet>
                 <Button
                   type="button"
                   size="sm"
@@ -3386,6 +3431,7 @@ function RouteComponent() {
           data={mythicPlusData}
           characterRealm={character.realm}
           characterRegion={character.region}
+          onOpenPlanner={() => setIsPlannerOpen(true)}
         />
       )}
     </div>
