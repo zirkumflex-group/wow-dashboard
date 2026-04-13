@@ -27,7 +27,7 @@ export type MythicPlannerRunSuggestion = {
 };
 
 export type MythicPlannerPlanOption = {
-  id: "fastest" | "balanced" | "easiest";
+  id: "fastest" | "easiest";
   label: string;
   description: string;
   reachable: boolean;
@@ -48,7 +48,6 @@ export type MythicPlannerResult = {
   maxLevel: number;
   reachable: boolean;
   options: MythicPlannerPlanOption[];
-  notes: string[];
 };
 
 type MythicPlannerStrategy = MythicPlannerPlanOption["id"];
@@ -169,16 +168,6 @@ function compareCandidate(
 
     const levelComparison = compareNumbers(candidate.level, current.level);
     if (levelComparison !== 0) return levelComparison > 0;
-
-    return candidate.projectedScore > current.projectedScore;
-  }
-
-  if (strategy === "balanced") {
-    const levelComparison = compareNumbers(candidate.level, current.level);
-    if (levelComparison !== 0) return levelComparison < 0;
-
-    const durationComparison = compareNumbers(candidate.requiredDurationMs, current.requiredDurationMs);
-    if (durationComparison !== 0) return durationComparison < 0;
 
     return candidate.projectedScore > current.projectedScore;
   }
@@ -315,22 +304,6 @@ function comparePlanState(
     return candidate.totalLevel > current.totalLevel;
   }
 
-  if (strategy === "balanced") {
-    const runCountComparison = compareNumbers(candidate.runs.length, current.runs.length);
-    if (runCountComparison !== 0) return runCountComparison < 0;
-
-    const depletedComparison = compareNumbers(candidate.depletedRuns, current.depletedRuns);
-    if (depletedComparison !== 0) return depletedComparison < 0;
-
-    const totalLevelComparison = compareNumbers(candidate.totalLevel, current.totalLevel);
-    if (totalLevelComparison !== 0) return totalLevelComparison < 0;
-
-    const durationComparison = compareNumbers(candidate.totalDurationMs, current.totalDurationMs);
-    if (durationComparison !== 0) return durationComparison < 0;
-
-    return candidate.highestLevel < current.highestLevel;
-  }
-
   const highestLevelComparison = compareNumbers(candidate.highestLevel, current.highestLevel);
   if (highestLevelComparison !== 0) return highestLevelComparison < 0;
 
@@ -391,13 +364,11 @@ function buildPlanForStrategy(
 
   const descriptions: Record<MythicPlannerStrategy, string> = {
     fastest: "Higher keys and fewer runs to close the gap quickly.",
-    balanced: "Keeps key levels reasonable without bloating the route.",
     easiest: "Prioritizes lower keys, even if the route takes longer.",
   };
 
   const labels: Record<MythicPlannerStrategy, string> = {
     fastest: "Fastest",
-    balanced: "Balanced",
     easiest: "Easiest",
   };
 
@@ -417,28 +388,9 @@ function buildPlanForStrategy(
       if (strategy === "fastest") {
         return b.gain - a.gain || b.level - a.level || a.requiredDurationMs - b.requiredDurationMs;
       }
-      if (strategy === "balanced") {
-        return a.level - b.level || b.gain - a.gain || a.requiredDurationMs - b.requiredDurationMs;
-      }
       return a.level - b.level || a.requiredDurationMs - b.requiredDurationMs || b.gain - a.gain;
     }),
   };
-}
-
-function dedupePlanOptions(options: MythicPlannerPlanOption[]) {
-  const unique = new Map<string, MythicPlannerPlanOption>();
-
-  for (const option of options) {
-    const signature = option.runs
-      .map((run) => `${run.dungeonKey}:${run.level}:${run.runState}:${Math.round(run.projectedScore * 10)}`)
-      .join(",");
-
-    if (!unique.has(signature)) {
-      unique.set(signature, option);
-    }
-  }
-
-  return Array.from(unique.values());
 }
 
 export function buildMythicPlannerResult(
@@ -450,10 +402,6 @@ export function buildMythicPlannerResult(
   const targetScore = settings.targetScore;
   const scoreGap = targetScore === null ? 0 : Math.max(0, targetScore - currentScore);
   const maxLevel = clamp(Math.floor(settings.maxLevel || 0), MIN_KEY_LEVEL, MAX_KEY_LEVEL);
-  const notes = [
-    "This first pass estimates gains from stored seasonal dungeon bests instead of affix-split Raider.IO data.",
-    "Levels above 20 extend the provided score table by +15 base score per level.",
-  ];
 
   if (targetScore === null || !Number.isFinite(targetScore)) {
     return {
@@ -463,7 +411,6 @@ export function buildMythicPlannerResult(
       maxLevel,
       reachable: false,
       options: [],
-      notes,
     };
   }
 
@@ -479,18 +426,15 @@ export function buildMythicPlannerResult(
       maxLevel,
       reachable: targetScore <= currentScore,
       options: [],
-      notes,
     };
   }
 
   const gapUnits = Math.ceil(scoreGap * SCORE_UNIT);
-  const options = dedupePlanOptions(
-    (["fastest", "balanced", "easiest"] as const)
-      .map((strategy) =>
-        buildPlanForStrategy(strategy, currentScore, eligibleDungeons, gapUnits, maxLevel),
-      )
-      .filter((option): option is MythicPlannerPlanOption => option !== null),
-  );
+  const options = (["fastest", "easiest"] as const)
+    .map((strategy) =>
+      buildPlanForStrategy(strategy, currentScore, eligibleDungeons, gapUnits, maxLevel),
+    )
+    .filter((option): option is MythicPlannerPlanOption => option !== null);
 
   return {
     currentScore,
@@ -499,6 +443,5 @@ export function buildMythicPlannerResult(
     maxLevel,
     reachable: options.some((option) => option.reachable),
     options,
-    notes,
   };
 }
