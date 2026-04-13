@@ -11,7 +11,6 @@ import {
 } from "@wow-dashboard/ui/components/card";
 import { Input } from "@wow-dashboard/ui/components/input";
 import { Label } from "@wow-dashboard/ui/components/label";
-import { SheetDescription, SheetHeader, SheetTitle } from "@wow-dashboard/ui/components/sheet";
 import { CURRENT_SEASON_DUNGEONS, getMythicPlusDungeonMeta } from "../lib/mythic-plus-static";
 import {
   buildMythicPlannerResult,
@@ -327,16 +326,16 @@ export function MythicPlannerPanel({
 
   return (
     <>
-      <SheetHeader>
-        <SheetTitle className="flex items-center gap-2">
+      <div className="space-y-1">
+        <div className="flex items-center gap-2">
           <Calculator size={18} className="text-muted-foreground" />
-          Mythic Planner
-        </SheetTitle>
-        <SheetDescription>
+          <h3 className="text-lg font-semibold text-foreground">Mythic Planner</h3>
+        </div>
+        <p className="text-sm text-muted-foreground">
           Plan a target score push for {characterName} using the current season dungeon pool already
           tracked on this page.
-        </SheetDescription>
-      </SheetHeader>
+        </p>
+      </div>
 
       <div className="mt-6 space-y-6">
         <Card className="border-border/70">

@@ -33,7 +33,6 @@ import {
 } from "@wow-dashboard/ui/components/sheet";
 import { useMutation, useQuery } from "convex/react";
 import {
-  Calculator,
   Clock,
   Coins,
   Columns,
@@ -1060,14 +1059,18 @@ function MythicPlusResultBadge({ run }: { run: MythicPlusRun }) {
 
 function MythicPlusSection({
   data,
+  characterId,
+  characterName,
   characterRealm,
   characterRegion,
-  onOpenPlanner,
+  currentScore,
 }: {
   data: MythicPlusData | null | undefined;
+  characterId: string;
+  characterName: string;
   characterRealm: string;
   characterRegion: string;
-  onOpenPlanner?: () => void;
+  currentScore: number | null;
 }) {
   const [visibleRecentRunCount, setVisibleRecentRunCount] = useState(INITIAL_RECENT_RUN_COUNT);
   const {
@@ -1111,22 +1114,14 @@ function MythicPlusSection({
     return null;
   }
 
-  if (!data || data.runs.length === 0) {
+  if (!data) {
     return (
       <Card>
         <CardHeader className="border-b pb-3">
-          <div className="flex items-center justify-between gap-3">
-            <CardTitle className="flex items-center gap-2 text-lg">
-              <History size={16} className="text-muted-foreground" />
-              Mythic+ History
-            </CardTitle>
-            {onOpenPlanner && (
-              <Button type="button" size="sm" variant="outline" onClick={onOpenPlanner}>
-                <Calculator size={14} />
-                Planner
-              </Button>
-            )}
-          </div>
+          <CardTitle className="flex items-center gap-2 text-lg">
+            <History size={16} className="text-muted-foreground" />
+            Mythic+ History
+          </CardTitle>
         </CardHeader>
         <CardContent className="pt-4">
           <p className="text-sm text-muted-foreground">
@@ -1138,6 +1133,33 @@ function MythicPlusSection({
   }
 
   const { summary, runs } = data;
+  if (runs.length === 0) {
+    return (
+      <div className="space-y-4">
+        <Card>
+          <CardHeader className="border-b pb-3">
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <History size={16} className="text-muted-foreground" />
+              Mythic+ History
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="pt-4">
+            <p className="text-sm text-muted-foreground">
+              No Mythic+ run history uploaded for this character yet.
+            </p>
+          </CardContent>
+        </Card>
+
+        <MythicPlannerPanel
+          characterId={characterId}
+          characterName={characterName}
+          currentScore={currentScore}
+          dungeons={summary.currentSeasonDungeons}
+        />
+      </div>
+    );
+  }
+
   const currentSeason = summary.currentSeason;
   const visibleRecentRuns = runs.slice(0, visibleRecentRunCount);
   const nextRecentRunCount = Math.min(
@@ -1152,265 +1174,259 @@ function MythicPlusSection({
   }
 
   return (
-    <div className="grid items-start gap-4 xl:grid-cols-[1.1fr_0.9fr]">
-      <div ref={summaryCardRef}>
-        <Card>
-          <CardHeader className="border-b pb-3">
-            <div className="flex items-center justify-between gap-3">
-              <CardTitle className="flex items-center gap-2 text-lg">
-                <History size={16} className="text-muted-foreground" />
-                Mythic+ Summary
-              </CardTitle>
-              <div className="flex flex-wrap items-center gap-2">
+    <div className="space-y-4">
+      <div className="grid items-start gap-4 xl:grid-cols-[1.1fr_0.9fr]">
+        <div ref={summaryCardRef}>
+          <Card>
+            <CardHeader className="border-b pb-3">
+              <div className="flex items-center justify-between gap-3">
+                <CardTitle className="flex items-center gap-2 text-lg">
+                  <History size={16} className="text-muted-foreground" />
+                  Mythic+ Summary
+                </CardTitle>
                 {formatSeasonLabel(summary.latestSeasonID) && (
                   <Badge variant="outline">{formatSeasonLabel(summary.latestSeasonID)}</Badge>
                 )}
-                {onOpenPlanner && (
-                  <Button type="button" size="sm" variant="outline" onClick={onOpenPlanner}>
-                    <Calculator size={14} />
-                    Planner
-                  </Button>
-                )}
               </div>
+            </CardHeader>
+            <CardContent className="space-y-4 pt-4">
+              {currentSeason && (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <Flame size={14} className="text-muted-foreground" />
+                    <h3 className="text-sm font-semibold">Current Season</h3>
+                  </div>
+                  <div className="grid gap-1.5 sm:grid-cols-2 xl:grid-cols-3">
+                    <StatGrid
+                      compact
+                      label="Current Score"
+                      value={
+                        <RaiderIoScoreText score={summary.currentScore} className="tabular-nums" />
+                      }
+                    />
+                    <StatGrid
+                      compact
+                      label="Best Timed"
+                      value={
+                        <MythicPlusKeyPill
+                          level={currentSeason.bestTimedLevel}
+                          upgradeCount={currentSeason.bestTimedUpgradeCount}
+                          compact
+                        />
+                      }
+                    />
+                    <StatGrid
+                      compact
+                      label="Total Runs"
+                      value={(currentSeason.totalAttempts ?? currentSeason.totalRuns).toLocaleString()}
+                    />
+                  </div>
+                  <div className="grid gap-1.5 sm:grid-cols-2 xl:grid-cols-3">
+                    <StatGrid compact label="Timed" value={currentSeason.timedRuns.toLocaleString()} />
+                    <StatGrid
+                      compact
+                      label="Depleted"
+                      value={Math.max(
+                        0,
+                        currentSeason.completedRuns - currentSeason.timedRuns,
+                      ).toLocaleString()}
+                    />
+                    <StatGrid
+                      compact
+                      label="Abandoned"
+                      value={(currentSeason.abandonedRuns ?? 0).toLocaleString()}
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+                    <StatGrid compact label="2+ Timed" value={currentSeason.timed2To9.toLocaleString()} />
+                    <StatGrid
+                      compact
+                      label="10+ Timed"
+                      value={currentSeason.timed10To11.toLocaleString()}
+                    />
+                    <StatGrid
+                      compact
+                      label="12+ Timed"
+                      value={currentSeason.timed12To13.toLocaleString()}
+                    />
+                    <StatGrid compact label="14+ Timed" value={currentSeason.timed14Plus.toLocaleString()} />
+                  </div>
+                </div>
+              )}
+
+              {summary.currentSeasonDungeons.length > 0 && (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <Sword size={14} className="text-muted-foreground" />
+                      <h3 className="text-sm font-semibold">Dungeon Bests</h3>
+                    </div>
+                    {summary.currentScore !== null && (
+                      <div className="text-xs text-muted-foreground">
+                        Score{" "}
+                        <RaiderIoScoreText
+                          score={summary.currentScore}
+                          className="font-semibold tabular-nums"
+                        />
+                      </div>
+                    )}
+                  </div>
+                  <div className="overflow-x-auto rounded-md border">
+                    <table className="w-full min-w-[560px] text-sm leading-tight">
+                      <thead className="bg-muted/40 text-muted-foreground">
+                        <tr>
+                          <th className="px-3 py-2 text-left font-medium">Dungeon</th>
+                          <th className="px-3 py-2 text-right font-medium">Timed</th>
+                          <th className="px-3 py-2 text-right font-medium">Level</th>
+                          <th className="px-3 py-2 text-right font-medium">Score</th>
+                          <th className="px-3 py-2 text-right font-medium">Time</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border/70">
+                        {summary.currentSeasonDungeons.map((dungeon) => (
+                          <tr
+                            key={`${dungeon.mapChallengeModeID ?? "map"}-${dungeon.mapName}`}
+                            className="bg-background/20 transition-colors hover:bg-muted/20"
+                          >
+                            <td className="px-3 py-2.5">
+                              <div className="flex items-center gap-2.5">
+                                <DungeonIcon
+                                  mapChallengeModeID={dungeon.mapChallengeModeID}
+                                  mapName={dungeon.mapName}
+                                />
+                                <div className="font-medium text-foreground">{dungeon.mapName}</div>
+                              </div>
+                            </td>
+                            <td className="px-3 py-2.5 text-right tabular-nums text-muted-foreground">
+                              {dungeon.timedRuns}
+                            </td>
+                            <td className="px-3 py-2.5 text-right">
+                              <MythicPlusKeyPill
+                                level={dungeon.bestTimedLevel}
+                                upgradeCount={dungeon.bestTimedUpgradeCount}
+                                compact
+                              />
+                            </td>
+                            <td className="px-3 py-2.5 text-right tabular-nums">
+                              <RaiderIoScoreText
+                                score={dungeon.bestTimedScore}
+                                className="tabular-nums"
+                              />
+                            </td>
+                            <td className="px-3 py-2.5 text-right tabular-nums">
+                              {formatRunDuration(dungeon.bestTimedDurationMs)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+
+        <Card
+          className="flex flex-col"
+          style={summaryCardHeight === null ? undefined : { height: `${summaryCardHeight}px` }}
+        >
+          <CardHeader className="border-b pb-3">
+            <div className="flex items-center justify-between gap-3">
+              <CardTitle className="flex items-center gap-2 text-lg">
+                <Clock size={16} className="text-muted-foreground" />
+                Recent Runs
+              </CardTitle>
+              <HiddenPlayersControl
+                hiddenKeys={hiddenPlayerKeys}
+                hideAllNames={hideAllNames}
+                onToggleHideAllNames={toggleHideAllNames}
+                onUnhide={unhidePlayer}
+                onUnhideAll={unhideAllPlayers}
+              />
             </div>
           </CardHeader>
-          <CardContent className="space-y-4 pt-4">
-            {currentSeason && (
-              <div className="space-y-3">
-                <div className="flex items-center gap-2">
-                  <Flame size={14} className="text-muted-foreground" />
-                  <h3 className="text-sm font-semibold">Current Season</h3>
-                </div>
-                <div className="grid gap-1.5 sm:grid-cols-2 xl:grid-cols-3">
-                  <StatGrid
-                    compact
-                    label="Current Score"
-                    value={
-                      <RaiderIoScoreText score={summary.currentScore} className="tabular-nums" />
-                    }
-                  />
-                  <StatGrid
-                    compact
-                    label="Best Timed"
-                    value={
-                      <MythicPlusKeyPill
-                        level={currentSeason.bestTimedLevel}
-                        upgradeCount={currentSeason.bestTimedUpgradeCount}
-                        compact
-                      />
-                    }
-                  />
-                  <StatGrid
-                    compact
-                    label="Total Runs"
-                    value={(currentSeason.totalAttempts ?? currentSeason.totalRuns).toLocaleString()}
-                  />
-                </div>
-                <div className="grid gap-1.5 sm:grid-cols-2 xl:grid-cols-3">
-                  <StatGrid
-                    compact
-                    label="Timed"
-                    value={currentSeason.timedRuns.toLocaleString()}
-                  />
-                  <StatGrid
-                    compact
-                    label="Depleted"
-                    value={Math.max(0, currentSeason.completedRuns - currentSeason.timedRuns).toLocaleString()}
-                  />
-                  <StatGrid
-                    compact
-                    label="Abandoned"
-                    value={(currentSeason.abandonedRuns ?? 0).toLocaleString()}
-                  />
-                </div>
-                <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
-                  <StatGrid
-                    compact
-                    label="2+ Timed"
-                    value={currentSeason.timed2To9.toLocaleString()}
-                  />
-                  <StatGrid
-                    compact
-                    label="10+ Timed"
-                    value={currentSeason.timed10To11.toLocaleString()}
-                  />
-                  <StatGrid
-                    compact
-                    label="12+ Timed"
-                    value={currentSeason.timed12To13.toLocaleString()}
-                  />
-                  <StatGrid
-                    compact
-                    label="14+ Timed"
-                    value={currentSeason.timed14Plus.toLocaleString()}
-                  />
-                </div>
-              </div>
-            )}
-
-            {summary.currentSeasonDungeons.length > 0 && (
-              <div className="space-y-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2">
-                    <Sword size={14} className="text-muted-foreground" />
-                    <h3 className="text-sm font-semibold">Dungeon Bests</h3>
-                  </div>
-                  {summary.currentScore !== null && (
-                    <div className="text-xs text-muted-foreground">
-                      Score{" "}
-                      <RaiderIoScoreText
-                        score={summary.currentScore}
-                        className="font-semibold tabular-nums"
-                      />
-                    </div>
+          <CardContent className="flex min-h-0 flex-1 flex-col pt-4">
+            <div className="dark-scrollbar min-h-0 flex-1 overflow-auto rounded-md border border-border/60">
+              <table className="w-full min-w-[760px] text-sm">
+                <thead className="bg-muted/30 text-[11px] uppercase tracking-wider text-muted-foreground">
+                  <tr>
+                    <th className="px-3 py-2 text-left font-medium">Played</th>
+                    <th className="px-3 py-2 text-left font-medium">Dungeon</th>
+                    <th className="px-3 py-2 text-right font-medium">Key</th>
+                    <th className="px-3 py-2 text-left font-medium">Result</th>
+                    <th className="px-3 py-2 text-right font-medium">Score</th>
+                    <th className="w-[7rem] whitespace-nowrap px-3 py-2 text-right font-medium">Time</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border/50">
+                  {visibleRecentRuns.map((run) => (
+                    <tr key={getRecentRunRowKey(run)} className="transition-colors hover:bg-muted/15">
+                      <td className="px-3 py-2.5 text-muted-foreground align-top">
+                        <RecentRunPlayedAt run={run} />
+                      </td>
+                      <td className="px-3 py-2.5 align-top">
+                        <div className="flex items-center gap-2">
+                          <DungeonIcon
+                            mapChallengeModeID={run.mapChallengeModeID}
+                            mapName={run.mapName}
+                          />
+                          <div className="font-medium leading-tight text-foreground">
+                            {getRunLabel(run)}
+                          </div>
+                        </div>
+                        <RecentRunPartyMembers
+                          run={run}
+                          characterRealm={characterRealm}
+                          characterRegion={characterRegion}
+                          hiddenKeys={hiddenPlayerKeys}
+                          hideAllNames={hideAllNames}
+                          onHide={hidePlayer}
+                        />
+                      </td>
+                      <td className="px-3 py-2.5 align-top text-right">
+                        <RecentRunKeyCell run={run} />
+                      </td>
+                      <td className="px-3 py-2.5 align-top">
+                        <MythicPlusResultBadge run={run} />
+                      </td>
+                      <td className="px-3 py-2.5 align-top text-right">
+                        <div className="flex items-center justify-end gap-1.5 tabular-nums">
+                          <span>{formatRunScore(run.runScore)}</span>
+                          {formatRunScoreIncrease(run.scoreIncrease) && (
+                            <span className="text-xs font-medium text-emerald-300">
+                              (+{formatRunScoreIncrease(run.scoreIncrease)})
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="w-[7rem] whitespace-nowrap px-3 py-2.5 align-top text-right tabular-nums text-muted-foreground">
+                        {formatRunTimeComparison(run)}
+                      </td>
+                    </tr>
+                  ))}
+                  {hasMoreRecentRuns && (
+                    <tr className="bg-muted/10">
+                      <td colSpan={6} className="px-3 py-3 text-center">
+                        <Button size="sm" variant="outline" onClick={loadMoreRecentRuns}>
+                          Load {nextRecentRunCount} More
+                        </Button>
+                      </td>
+                    </tr>
                   )}
-                </div>
-                <div className="overflow-x-auto rounded-md border">
-                  <table className="w-full min-w-[560px] text-sm leading-tight">
-                    <thead className="bg-muted/40 text-muted-foreground">
-                      <tr>
-                        <th className="px-3 py-2 text-left font-medium">Dungeon</th>
-                        <th className="px-3 py-2 text-right font-medium">Timed</th>
-                        <th className="px-3 py-2 text-right font-medium">Level</th>
-                        <th className="px-3 py-2 text-right font-medium">Score</th>
-                        <th className="px-3 py-2 text-right font-medium">Time</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border/70">
-                      {summary.currentSeasonDungeons.map((dungeon) => (
-                        <tr
-                          key={`${dungeon.mapChallengeModeID ?? "map"}-${dungeon.mapName}`}
-                          className="bg-background/20 transition-colors hover:bg-muted/20"
-                        >
-                          <td className="px-3 py-2.5">
-                            <div className="flex items-center gap-2.5">
-                              <DungeonIcon
-                                mapChallengeModeID={dungeon.mapChallengeModeID}
-                                mapName={dungeon.mapName}
-                              />
-                              <div className="font-medium text-foreground">{dungeon.mapName}</div>
-                            </div>
-                          </td>
-                          <td className="px-3 py-2.5 text-right tabular-nums text-muted-foreground">
-                            {dungeon.timedRuns}
-                          </td>
-                          <td className="px-3 py-2.5 text-right">
-                            <MythicPlusKeyPill
-                              level={dungeon.bestTimedLevel}
-                              upgradeCount={dungeon.bestTimedUpgradeCount}
-                              compact
-                            />
-                          </td>
-                          <td className="px-3 py-2.5 text-right tabular-nums">
-                            <RaiderIoScoreText
-                              score={dungeon.bestTimedScore}
-                              className="tabular-nums"
-                            />
-                          </td>
-                          <td className="px-3 py-2.5 text-right tabular-nums">
-                            {formatRunDuration(dungeon.bestTimedDurationMs)}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
+                </tbody>
+              </table>
+            </div>
           </CardContent>
         </Card>
       </div>
 
-      <Card
-        className="flex flex-col"
-        style={summaryCardHeight === null ? undefined : { height: `${summaryCardHeight}px` }}
-      >
-        <CardHeader className="border-b pb-3">
-          <div className="flex items-center justify-between gap-3">
-            <CardTitle className="flex items-center gap-2 text-lg">
-              <Clock size={16} className="text-muted-foreground" />
-              Recent Runs
-            </CardTitle>
-            <HiddenPlayersControl
-              hiddenKeys={hiddenPlayerKeys}
-              hideAllNames={hideAllNames}
-              onToggleHideAllNames={toggleHideAllNames}
-              onUnhide={unhidePlayer}
-              onUnhideAll={unhideAllPlayers}
-            />
-          </div>
-        </CardHeader>
-        <CardContent className="flex min-h-0 flex-1 flex-col pt-4">
-          <div className="dark-scrollbar min-h-0 flex-1 overflow-auto rounded-md border border-border/60">
-            <table className="w-full min-w-[760px] text-sm">
-              <thead className="bg-muted/30 text-[11px] uppercase tracking-wider text-muted-foreground">
-                <tr>
-                  <th className="px-3 py-2 text-left font-medium">Played</th>
-                  <th className="px-3 py-2 text-left font-medium">Dungeon</th>
-                  <th className="px-3 py-2 text-right font-medium">Key</th>
-                  <th className="px-3 py-2 text-left font-medium">Result</th>
-                  <th className="px-3 py-2 text-right font-medium">Score</th>
-                  <th className="w-[7rem] whitespace-nowrap px-3 py-2 text-right font-medium">Time</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border/50">
-                {visibleRecentRuns.map((run) => (
-                  <tr key={getRecentRunRowKey(run)} className="transition-colors hover:bg-muted/15">
-                    <td className="px-3 py-2.5 text-muted-foreground align-top">
-                      <RecentRunPlayedAt run={run} />
-                    </td>
-                    <td className="px-3 py-2.5 align-top">
-                      <div className="flex items-center gap-2">
-                        <DungeonIcon
-                          mapChallengeModeID={run.mapChallengeModeID}
-                          mapName={run.mapName}
-                        />
-                        <div className="font-medium text-foreground leading-tight">{getRunLabel(run)}</div>
-                      </div>
-                      <RecentRunPartyMembers
-                        run={run}
-                        characterRealm={characterRealm}
-                        characterRegion={characterRegion}
-                        hiddenKeys={hiddenPlayerKeys}
-                        hideAllNames={hideAllNames}
-                        onHide={hidePlayer}
-                      />
-                    </td>
-                    <td className="px-3 py-2.5 align-top text-right">
-                      <RecentRunKeyCell run={run} />
-                    </td>
-                    <td className="px-3 py-2.5 align-top">
-                      <MythicPlusResultBadge run={run} />
-                    </td>
-                    <td className="px-3 py-2.5 align-top text-right">
-                      <div className="flex items-center justify-end gap-1.5 tabular-nums">
-                        <span>{formatRunScore(run.runScore)}</span>
-                        {formatRunScoreIncrease(run.scoreIncrease) && (
-                          <span className="text-xs font-medium text-emerald-300">
-                            (+{formatRunScoreIncrease(run.scoreIncrease)})
-                          </span>
-                        )}
-                      </div>
-                    </td>
-                    <td className="w-[7rem] whitespace-nowrap px-3 py-2.5 align-top text-right tabular-nums text-muted-foreground">
-                      {formatRunTimeComparison(run)}
-                    </td>
-                  </tr>
-                ))}
-                {hasMoreRecentRuns && (
-                  <tr className="bg-muted/10">
-                    <td colSpan={6} className="px-3 py-3 text-center">
-                      <Button size="sm" variant="outline" onClick={loadMoreRecentRuns}>
-                        Load {nextRecentRunCount} More
-                      </Button>
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </CardContent>
-      </Card>
+      <MythicPlannerPanel
+        characterId={characterId}
+        characterName={characterName}
+        currentScore={currentScore}
+        dungeons={summary.currentSeasonDungeons}
+      />
     </div>
   );
 }
@@ -1517,9 +1533,11 @@ type LayoutProps = {
   chartSnapshots: Snapshot[];
   filteredSnapshots: Snapshot[];
   mythicPlus?: MythicPlusData | null;
+  characterId: string;
+  characterName: string;
   characterRealm: string;
   characterRegion: string;
-  onOpenPlanner?: () => void;
+  currentMythicPlusScore: number | null;
   timeFrame: TimeFrame;
   setTimeFrame: (f: TimeFrame) => void;
 };
@@ -2037,7 +2055,7 @@ function RadarPanel({ snapshot }: { snapshot: Snapshot }) {
 
   return (
     <div className="space-y-3">
-      <ChartContainer config={radarConfig} className="w-full h-[180px]">
+      <ChartContainer config={radarConfig} className="h-[150px] w-full">
         <RadarChart data={radarData}>
           <PolarGrid />
           <PolarAngleAxis dataKey="stat" tick={{ fontSize: 11 }} />
@@ -2052,7 +2070,7 @@ function RadarPanel({ snapshot }: { snapshot: Snapshot }) {
           />
         </RadarChart>
       </ChartContainer>
-      <div className="space-y-1.5 text-sm">
+      <div className="space-y-1 text-sm">
         <StatRow label="Stamina" value={snapshot.stats.stamina.toLocaleString()} />
         {primaryStat && (
           <StatRow label={primaryStat.label} value={primaryStat.value.toLocaleString()} />
@@ -2142,20 +2160,21 @@ function IlvlChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeFr
   const lines = [{ key: "itemLevel", color: C.blue }];
   return (
     <Card>
-      <CardHeader className="pb-0">
+      <CardHeader className="px-4 pb-0 pt-4">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-sm font-medium flex items-center gap-1.5">
+          <CardTitle className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
             <Sword size={14} className="text-muted-foreground" /> Item Level
           </CardTitle>
           <FullscreenButton onClick={() => setFullscreen(true)} />
         </div>
       </CardHeader>
-      <CardContent>
+      <CardContent className="px-4 pb-4 pt-2">
         <SnapshotLineChart
           data={data}
           lines={lines}
           config={ilvlConfig}
           valueFormatter={(v) => v.toFixed(1)}
+          className="h-[150px]"
           yScaleOptions={ITEM_LEVEL_AUTO_SCALE}
           timeFrame={timeFrame}
         />
@@ -2183,20 +2202,21 @@ function MplusChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeF
   const lines = [{ key: "mythicPlusScore", color: C.red }];
   return (
     <Card>
-      <CardHeader className="pb-0">
+      <CardHeader className="px-4 pb-0 pt-4">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-sm font-medium flex items-center gap-1.5">
+          <CardTitle className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
             <Flame size={14} className="text-muted-foreground" /> M+ Score
           </CardTitle>
           <FullscreenButton onClick={() => setFullscreen(true)} />
         </div>
       </CardHeader>
-      <CardContent>
+      <CardContent className="px-4 pb-4 pt-2">
         <SnapshotLineChart
           data={data}
           lines={lines}
           config={mplusConfig}
           valueFormatter={(v) => v.toLocaleString()}
+          className="h-[150px]"
           yScaleOptions={MPLUS_AUTO_SCALE}
           timeFrame={timeFrame}
         />
@@ -2224,20 +2244,21 @@ function GoldChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeFr
   const lines = [{ key: "gold", color: C.gold }];
   return (
     <Card>
-      <CardHeader className="pb-0">
+      <CardHeader className="px-4 pb-0 pt-4">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-sm font-medium flex items-center gap-1.5">
+          <CardTitle className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
             <Coins size={14} className="text-muted-foreground" /> Gold
           </CardTitle>
           <FullscreenButton onClick={() => setFullscreen(true)} />
         </div>
       </CardHeader>
-      <CardContent>
+      <CardContent className="px-4 pb-4 pt-2">
         <SnapshotLineChart
           data={data}
           lines={lines}
           config={goldConfig}
           valueFormatter={(v) => `${goldUnits(v).toLocaleString()}g`}
+          className="h-[150px]"
           yScaleOptions={GOLD_SCALE}
           timeFrame={timeFrame}
         />
@@ -2325,16 +2346,17 @@ function CurrenciesChartCard({
   ];
   return (
     <Card className={className}>
-      <CardHeader className="pb-0">
-        <CardTitle className="text-sm font-medium flex items-center gap-1.5">
+      <CardHeader className="px-4 pb-0 pt-4">
+        <CardTitle className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
           <Gem size={14} className="text-muted-foreground" /> Currencies
         </CardTitle>
       </CardHeader>
-      <CardContent>
+      <CardContent className="px-4 pb-4 pt-2">
         <SnapshotLineChart
           data={data}
           lines={lines}
           config={currenciesConfig}
+          className="h-[150px]"
           showLegend
           lineEmphasis="equal"
           yScaleOptions={CURRENCIES_SCALE}
@@ -2385,10 +2407,12 @@ function PlaytimeChartCard({
 function CurrentSnapshotCard({ snapshot }: { snapshot: Snapshot }) {
   return (
     <Card>
-      <CardHeader className="border-b pb-3">
-        <CardTitle className="text-sm font-medium">Currencies</CardTitle>
+      <CardHeader className="border-b px-4 pb-2 pt-4">
+        <CardTitle className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+          Snapshot Totals
+        </CardTitle>
       </CardHeader>
-      <CardContent className="pt-3 space-y-1.5">
+      <CardContent className="space-y-1 px-4 pb-4 pt-2">
         <StatRow label="Gold" value={<GoldDisplay value={snapshot.gold} />} />
         <StatRow
           label="Playtime"
@@ -2449,24 +2473,26 @@ function OverviewLayout({
   latest,
   chartSnapshots,
   mythicPlus,
+  characterId,
+  characterName,
   characterRealm,
   characterRegion,
-  onOpenPlanner,
+  currentMythicPlusScore,
   timeFrame,
   setTimeFrame,
 }: LayoutProps) {
   return (
-    <div className="space-y-4">
-      <div className="grid gap-4 lg:grid-cols-[18rem_minmax(0,1fr)] items-start">
+    <div className="space-y-3">
+      <div className="grid items-start gap-3 lg:grid-cols-[16rem_minmax(0,1fr)]">
         {/* Sidebar */}
-        <div className="w-full lg:sticky lg:top-4 space-y-4">
+        <div className="w-full space-y-3 lg:sticky lg:top-4">
           <Card>
-            <CardHeader className="border-b pb-3">
-              <CardTitle className="text-sm font-medium flex items-center gap-1.5">
+            <CardHeader className="border-b px-4 pb-2 pt-4">
+              <CardTitle className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
                 <Zap size={14} className="text-muted-foreground" /> Combat Stats
               </CardTitle>
             </CardHeader>
-            <CardContent className="pt-3">
+            <CardContent className="px-4 pb-4 pt-2">
               <RadarPanel snapshot={latest} />
             </CardContent>
           </Card>
@@ -2474,7 +2500,7 @@ function OverviewLayout({
         </div>
 
         {/* Main charts */}
-        <div className="min-w-0 space-y-4">
+        <div className="min-w-0 space-y-3">
           <div className="flex items-center justify-between flex-wrap gap-2">
             <TimeFramePicker value={timeFrame} onChange={setTimeFrame} />
             <span className="text-muted-foreground text-xs">
@@ -2482,7 +2508,7 @@ function OverviewLayout({
             </span>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <IlvlChartCard snapshots={chartSnapshots} timeFrame={timeFrame} />
             <MplusChartCard snapshots={chartSnapshots} timeFrame={timeFrame} />
             <GoldChartCard snapshots={chartSnapshots} timeFrame={timeFrame} />
@@ -2491,9 +2517,11 @@ function OverviewLayout({
 
           <MythicPlusSection
             data={mythicPlus}
+            characterId={characterId}
+            characterName={characterName}
             characterRealm={characterRealm}
             characterRegion={characterRegion}
-            onOpenPlanner={onOpenPlanner}
+            currentScore={currentMythicPlusScore}
           />
         </div>
       </div>
@@ -2941,7 +2969,6 @@ function RouteComponent() {
   const [isUpdatingBooster, setIsUpdatingBooster] = useState(false);
   const [isSavingTradeSlots, setIsSavingTradeSlots] = useState(false);
   const [isDiscordSheetOpen, setIsDiscordSheetOpen] = useState(false);
-  const [isPlannerOpen, setIsPlannerOpen] = useState(false);
   const [layoutMode, setLayoutMode] = useState<LayoutMode>(() => {
     try {
       return (localStorage.getItem("wow-char-layout") as LayoutMode) ?? "overview";
@@ -3036,9 +3063,11 @@ function RouteComponent() {
     chartSnapshots,
     filteredSnapshots: snapshots,
     mythicPlus: mythicPlusData,
+    characterId,
+    characterName: character.name,
     characterRealm: character.realm,
     characterRegion: character.region,
-    onOpenPlanner: () => setIsPlannerOpen(true),
+    currentMythicPlusScore: mythicPlusData?.summary.currentScore ?? latest?.mythicPlusScore ?? null,
     timeFrame,
     setTimeFrame,
   };
@@ -3157,26 +3186,6 @@ function RouteComponent() {
             </div>
             <div className="flex w-full max-w-md flex-col gap-3 self-start xl:items-end">
               <div className="flex flex-wrap items-center gap-2 xl:justify-end">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setIsPlannerOpen(true)}
-                  className="border-border/60 bg-card text-muted-foreground hover:text-foreground"
-                >
-                  <Calculator size={14} />
-                  Planner
-                </Button>
-                <Sheet open={isPlannerOpen} onOpenChange={setIsPlannerOpen}>
-                  <SheetContent className="w-full overflow-y-auto sm:max-w-3xl">
-                    <MythicPlannerPanel
-                      characterId={characterId}
-                      characterName={character.name}
-                      currentScore={mythicPlusData?.summary.currentScore ?? latest?.mythicPlusScore ?? null}
-                      dungeons={mythicPlusData?.summary.currentSeasonDungeons ?? []}
-                    />
-                  </SheetContent>
-                </Sheet>
                 <Button
                   type="button"
                   size="sm"
@@ -3429,9 +3438,11 @@ function RouteComponent() {
       {layoutMode !== "overview" && (
         <MythicPlusSection
           data={mythicPlusData}
+          characterId={characterId}
+          characterName={character.name}
           characterRealm={character.realm}
           characterRegion={character.region}
-          onOpenPlanner={() => setIsPlannerOpen(true)}
+          currentScore={mythicPlusData?.summary.currentScore ?? latest?.mythicPlusScore ?? null}
         />
       )}
     </div>
