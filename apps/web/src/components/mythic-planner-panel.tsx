@@ -14,6 +14,7 @@ import { Label } from "@wow-dashboard/ui/components/label";
 import {
   CURRENT_SEASON_DUNGEONS,
   getMythicPlusDungeonMeta,
+  getRaiderIoDungeonScoreColor,
   getRaiderIoScoreColor,
 } from "../lib/mythic-plus-static";
 import {
@@ -168,15 +169,16 @@ function formatRunWindow(run: MythicPlannerRunSuggestion) {
 function ScoreText({
   score,
   className,
+  scale = "overall",
 }: {
   score: number;
   className?: string;
+  scale?: "overall" | "dungeon";
 }) {
-  return (
-    <span className={className} style={{ color: getRaiderIoScoreColor(score) }}>
-      {formatScore(score)}
-    </span>
-  );
+  const color =
+    scale === "dungeon" ? getRaiderIoDungeonScoreColor(score) : getRaiderIoScoreColor(score);
+
+  return <span className={className} style={{ color }}>{formatScore(score)}</span>;
 }
 
 function DungeonPlanIcon({
@@ -248,6 +250,17 @@ function OptionCard({
 }) {
   const optionStyle = OPTION_STYLES[option.id];
   const routeStatusLabel = getRouteStatusLabel(option.reachable);
+  const sortedRuns = useMemo(
+    () =>
+      [...option.runs].sort(
+        (a, b) =>
+          b.gain - a.gain ||
+          b.level - a.level ||
+          Number(a.runState === "depleted") - Number(b.runState === "depleted") ||
+          a.requiredDurationMs - b.requiredDurationMs,
+      ),
+    [option.runs],
+  );
 
   return (
     <Card className={`overflow-hidden ${optionStyle.cardClassName}`}>
@@ -323,47 +336,62 @@ function OptionCard({
           </div>
         </div>
 
-        <div className="space-y-2">
-          {option.runs.map((run) => {
+        <div className="space-y-1.5">
+          {sortedRuns.map((run) => {
             return (
               <div
                 key={`${run.dungeonKey}:${run.level}:${run.runState}:${Math.round(run.projectedScore * 10)}`}
-                className="flex flex-col gap-3 rounded-xl border border-border/60 bg-background/55 px-3 py-3"
+                className="rounded-lg border border-border/60 bg-background/55 px-3 py-2.5"
               >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex min-w-0 items-center gap-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex min-w-0 flex-1 items-start gap-3">
                     <DungeonPlanIcon
                       mapChallengeModeID={run.mapChallengeModeID}
                       mapName={run.mapName}
                     />
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-medium text-foreground">{run.mapName}</div>
-                      <div className="text-xs text-muted-foreground">
-                        Current <ScoreText score={run.currentScore} /> to estimated{" "}
-                        <ScoreText score={run.projectedScore} />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="truncate text-sm font-medium text-foreground">
+                          {run.mapName}
+                        </div>
+                        <Badge variant="outline" className="h-6 px-2 text-[11px]">
+                          +{run.level}
+                        </Badge>
+                        <Badge
+                          variant="outline"
+                          className={`h-6 px-2 text-[11px] ${
+                            run.runState === "timed"
+                              ? "border-emerald-400/35 text-emerald-200"
+                              : "border-amber-400/35 text-amber-200"
+                          }`}
+                        >
+                          {run.runState === "timed" ? "Timed" : "Depleted"}
+                        </Badge>
+                      </div>
+                      <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-muted-foreground">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          Current{" "}
+                          <ScoreText score={run.currentScore} scale="dungeon" className="font-medium" />{" "}
+                          -&gt; Expected{" "}
+                          <ScoreText
+                            score={run.projectedScore}
+                            scale="dungeon"
+                            className="font-semibold"
+                          />
+                        </div>
+                        <span>{formatRunWindow(run)}</span>
+                        <span>Timer {formatDuration(run.timerMs)}</span>
                       </div>
                     </div>
                   </div>
-                  <div className="flex flex-wrap items-center gap-2 text-xs">
-                    <Badge variant="outline">+{run.level}</Badge>
-                    <Badge
-                      variant="outline"
-                      className={
-                        run.runState === "timed"
-                          ? "border-emerald-400/35 text-emerald-200"
-                          : "border-amber-400/35 text-amber-200"
-                      }
-                    >
-                      {run.runState === "timed" ? "Timed" : "Depleted"}
-                    </Badge>
-                    <Badge variant="outline" className="tabular-nums text-emerald-300">
+                  <div className="shrink-0 rounded-lg border border-emerald-400/25 bg-emerald-500/8 px-2.5 py-1.5 text-right">
+                    <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-emerald-300/80">
+                      Gain
+                    </div>
+                    <div className="mt-0.5 text-base font-semibold tabular-nums text-emerald-300">
                       +{formatScore(run.gain)}
-                    </Badge>
+                    </div>
                   </div>
-                </div>
-                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
-                  <span>{formatRunWindow(run)}</span>
-                  <span>Timer {formatDuration(run.timerMs)}</span>
                 </div>
               </div>
             );
@@ -666,3 +694,4 @@ export function MythicPlannerPanel({
     </>
   );
 }
+

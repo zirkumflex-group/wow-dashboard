@@ -1,6 +1,6 @@
 import scoreTiers from "./raiderio-score-tiers-season-mn-1.json";
 
-type RaiderIoScoreTier = {
+export type RaiderIoScoreTier = {
   score: number;
   color: string;
 };
@@ -107,14 +107,38 @@ export function getMythicPlusDungeonTimerMs(
   return getMythicPlusDungeonMeta(mapChallengeModeID, mapName)?.timerMs ?? null;
 }
 
-export function getRaiderIoScoreColor(score?: number | null) {
+export function getRaiderIoScoreTier(score?: number | null) {
   if (score === undefined || score === null || !Number.isFinite(score)) return undefined;
 
   for (const tier of SCORE_TIERS) {
     if (score >= tier.score) {
-      return tier.color;
+      return tier;
     }
   }
 
-  return SCORE_TIERS[SCORE_TIERS.length - 1]?.color ?? "#ffffff";
+  return SCORE_TIERS[SCORE_TIERS.length - 1];
+}
+
+export function getRaiderIoScoreColor(score?: number | null) {
+  return getRaiderIoScoreTier(score)?.color;
+}
+
+export function getRaiderIoOverallEquivalentFromDungeonScore(
+  dungeonScore?: number | null,
+  dungeonCount = CURRENT_SEASON_DUNGEONS.length,
+) {
+  if (dungeonScore === undefined || dungeonScore === null || !Number.isFinite(dungeonScore)) {
+    return undefined;
+  }
+
+  return dungeonScore * Math.max(1, dungeonCount);
+}
+
+export function getRaiderIoDungeonScoreColor(
+  dungeonScore?: number | null,
+  dungeonCount = CURRENT_SEASON_DUNGEONS.length,
+) {
+  return getRaiderIoScoreColor(
+    getRaiderIoOverallEquivalentFromDungeonScore(dungeonScore, dungeonCount),
+  );
 }
