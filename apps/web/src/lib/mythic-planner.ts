@@ -135,8 +135,8 @@ function getTimedScoreRange(level: number) {
   const baseScore = getMythicPlannerBaseScore(level);
   return {
     baseScore,
-    minScore: Math.ceil(baseScore),
-    maxScore: Math.floor(baseScore + 15),
+    minScore: baseScore,
+    maxScore: baseScore + 15,
   };
 }
 
@@ -144,8 +144,8 @@ function getDepletedScoreRange(level: number) {
   const baseScore = getMythicPlannerBaseScore(level);
   return {
     baseScore,
-    minScore: Math.ceil(baseScore - 30),
-    maxScore: Math.floor(baseScore - 15),
+    minScore: baseScore - 30,
+    maxScore: baseScore - 15,
   };
 }
 
@@ -216,6 +216,17 @@ function compareCandidate(
     return candidate.projectedScore > current.projectedScore;
   }
 
+  const currentStatePenalty = current.runState === "timed" ? 0 : 1;
+  const candidateStatePenalty = candidate.runState === "timed" ? 0 : 1;
+  const stateComparison = compareNumbers(candidateStatePenalty, currentStatePenalty);
+  if (stateComparison !== 0) return stateComparison < 0;
+
+  const upgradeComparison = compareNumbers(
+    candidate.requiredUpgradeCount,
+    current.requiredUpgradeCount,
+  );
+  if (upgradeComparison !== 0) return upgradeComparison < 0;
+
   const levelComparison = compareNumbers(candidate.level, current.level);
   if (levelComparison !== 0) return levelComparison < 0;
 
@@ -240,7 +251,12 @@ function buildReducedCandidatesForDungeon(
     const timedRange = getTimedScoreRange(level);
     const depletedRange = getDepletedScoreRange(level);
 
-    for (let projectedScore = timedRange.minScore; projectedScore <= timedRange.maxScore; projectedScore += 1) {
+    for (
+      let projectedScoreUnits = Math.ceil(timedRange.minScore * SCORE_UNIT);
+      projectedScoreUnits <= Math.floor(timedRange.maxScore * SCORE_UNIT);
+      projectedScoreUnits += 1
+    ) {
+      const projectedScore = projectedScoreUnits / SCORE_UNIT;
       if (projectedScore <= dungeon.currentScore) continue;
 
       const gainUnits = Math.min(
@@ -277,10 +293,11 @@ function buildReducedCandidatesForDungeon(
     }
 
     for (
-      let projectedScore = depletedRange.minScore;
-      projectedScore <= depletedRange.maxScore;
-      projectedScore += 1
+      let projectedScoreUnits = Math.ceil(depletedRange.minScore * SCORE_UNIT);
+      projectedScoreUnits <= Math.floor(depletedRange.maxScore * SCORE_UNIT);
+      projectedScoreUnits += 1
     ) {
+      const projectedScore = projectedScoreUnits / SCORE_UNIT;
       if (projectedScore <= dungeon.currentScore) continue;
 
       const gainUnits = Math.min(
@@ -397,8 +414,11 @@ function comparePlanState(
   const highestLevelComparison = compareNumbers(candidate.highestLevel, current.highestLevel);
   if (highestLevelComparison !== 0) return highestLevelComparison < 0;
 
-  const totalLevelComparison = compareNumbers(candidate.totalLevel, current.totalLevel);
-  if (totalLevelComparison !== 0) return totalLevelComparison < 0;
+  const highestUpgradeComparison = compareNumbers(
+    candidate.highestRequiredUpgradeCount,
+    current.highestRequiredUpgradeCount,
+  );
+  if (highestUpgradeComparison !== 0) return highestUpgradeComparison < 0;
 
   const hardestEaseRankComparison = compareNumbers(candidate.hardestEaseRank, current.hardestEaseRank);
   if (hardestEaseRankComparison !== 0) return hardestEaseRankComparison < 0;
@@ -415,19 +435,28 @@ function comparePlanState(
   );
   if (highestTimingPressureComparison !== 0) return highestTimingPressureComparison < 0;
 
+  const averageUpgradeComparison = compareNumbers(
+    candidate.totalRequiredUpgradeCount / candidate.runs.length,
+    current.totalRequiredUpgradeCount / current.runs.length,
+  );
+  if (averageUpgradeComparison !== 0) return averageUpgradeComparison < 0;
+
   const timingPressureComparison = compareNumbers(
     candidate.totalTimingPressure / candidate.runs.length,
     current.totalTimingPressure / current.runs.length,
   );
   if (timingPressureComparison !== 0) return timingPressureComparison < 0;
 
-  const easeRankComparison = compareNumbers(candidate.totalEaseRank, current.totalEaseRank);
-  if (easeRankComparison !== 0) return easeRankComparison < 0;
-
   const depletedComparison = compareNumbers(candidate.depletedRuns, current.depletedRuns);
   if (depletedComparison !== 0) return depletedComparison < 0;
 
-  return candidate.runs.length > current.runs.length;
+  const runCountComparison = compareNumbers(candidate.runs.length, current.runs.length);
+  if (runCountComparison !== 0) return runCountComparison > 0;
+
+  const easeRankComparison = compareNumbers(candidate.totalEaseRank, current.totalEaseRank);
+  if (easeRankComparison !== 0) return easeRankComparison < 0;
+
+  return candidate.totalDurationMs < current.totalDurationMs;
 }
 
 function buildPlanForStrategy(
