@@ -68,6 +68,8 @@ type PlanState = {
   highestLevel: number;
   timedRuns: number;
   depletedRuns: number;
+  highestRequiredUpgradeCount: number;
+  totalRequiredUpgradeCount: number;
   hardestEaseRank: number;
   totalEaseRank: number;
   highestTimingPressure: number;
@@ -199,6 +201,12 @@ function compareCandidate(
     const stateComparison = compareNumbers(candidateStatePenalty, currentStatePenalty);
     if (stateComparison !== 0) return stateComparison < 0;
 
+    const upgradeComparison = compareNumbers(
+      candidate.requiredUpgradeCount,
+      current.requiredUpgradeCount,
+    );
+    if (upgradeComparison !== 0) return upgradeComparison < 0;
+
     const durationComparison = compareNumbers(candidate.requiredDurationMs, current.requiredDurationMs);
     if (durationComparison !== 0) return durationComparison < 0;
 
@@ -320,6 +328,8 @@ function getEmptyPlanState(): PlanState {
     highestLevel: 0,
     timedRuns: 0,
     depletedRuns: 0,
+    highestRequiredUpgradeCount: 0,
+    totalRequiredUpgradeCount: 0,
     hardestEaseRank: 0,
     totalEaseRank: 0,
     highestTimingPressure: 0,
@@ -336,6 +346,11 @@ function appendPlanState(state: PlanState, candidate: ReducedCandidate, gainUnit
     highestLevel: Math.max(state.highestLevel, candidate.level),
     timedRuns: state.timedRuns + (candidate.runState === "timed" ? 1 : 0),
     depletedRuns: state.depletedRuns + (candidate.runState === "depleted" ? 1 : 0),
+    highestRequiredUpgradeCount: Math.max(
+      state.highestRequiredUpgradeCount,
+      candidate.requiredUpgradeCount,
+    ),
+    totalRequiredUpgradeCount: state.totalRequiredUpgradeCount + candidate.requiredUpgradeCount,
     hardestEaseRank: Math.max(state.hardestEaseRank, candidate.easeRank),
     totalEaseRank: state.totalEaseRank + candidate.easeRank,
     highestTimingPressure: Math.max(state.highestTimingPressure, candidate.timingPressure),
@@ -352,6 +367,18 @@ function comparePlanState(
   if (!current) return true;
 
   if (strategy === "fastest") {
+    const highestUpgradeComparison = compareNumbers(
+      candidate.highestRequiredUpgradeCount,
+      current.highestRequiredUpgradeCount,
+    );
+    if (highestUpgradeComparison !== 0) return highestUpgradeComparison < 0;
+
+    const totalUpgradeComparison = compareNumbers(
+      candidate.totalRequiredUpgradeCount,
+      current.totalRequiredUpgradeCount,
+    );
+    if (totalUpgradeComparison !== 0) return totalUpgradeComparison < 0;
+
     const runCountComparison = compareNumbers(candidate.runs.length, current.runs.length);
     if (runCountComparison !== 0) return runCountComparison < 0;
 
@@ -447,7 +474,7 @@ function buildPlanForStrategy(
   const targetScore = currentScore + gapUnits / SCORE_UNIT;
 
   const descriptions: Record<MythicPlannerStrategy, string> = {
-    fastest: "Higher keys and fewer runs to close the gap quickly.",
+    fastest: "Fewer runs when possible, without forcing heavy +3 timer pressure.",
     easiest: "Prioritizes easier dungeons and softer timer requirements.",
   };
 
