@@ -150,20 +150,24 @@ function formatDuration(ms: number) {
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
-function formatRunWindow(run: MythicPlannerRunSuggestion) {
+function formatRunDelta(run: MythicPlannerRunSuggestion) {
   if (run.runState === "timed") {
     const earlyMs = Math.max(0, run.timerMs - run.requiredDurationMs);
     if (earlyMs === 0) {
-      return `Finish in ${formatDuration(run.requiredDurationMs)} or faster`;
+      return "On timer";
     }
-    return `Finish in ${formatDuration(run.requiredDurationMs)} or faster (${formatDuration(earlyMs)} early)`;
+    return `${formatDuration(earlyMs)} early`;
   }
 
   const overtimeMs = Math.max(0, run.requiredDurationMs - run.timerMs);
   if (overtimeMs === 0) {
-    return `Finish within ${formatDuration(run.requiredDurationMs)}`;
+    return "On timer";
   }
-  return `Finish within ${formatDuration(run.requiredDurationMs)} (${formatDuration(overtimeMs)} overtime)`;
+  return `${formatDuration(overtimeMs)} over`;
+}
+
+function getRouteStatusDetail(option: MythicPlannerPlanOption) {
+  return option.reachable ? "Hits target" : `Short ${formatScore(option.remainingScore)}`;
 }
 
 function ScoreText({
@@ -268,7 +272,7 @@ function OptionCard({
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="space-y-1">
             <CardTitle className="text-base">{option.label}</CardTitle>
-            <CardDescription>{option.description}</CardDescription>
+            <CardDescription className="text-xs">{option.description}</CardDescription>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant="outline" className={optionStyle.statusClassName}>
@@ -284,11 +288,11 @@ function OptionCard({
           </div>
         </div>
       </CardHeader>
-      <CardContent className="space-y-4 pt-4">
-        <div className={`grid gap-2 ${featured ? "sm:grid-cols-2 xl:grid-cols-4" : "sm:grid-cols-4"}`}>
-          <div className={`rounded-lg border px-3 py-2 ${optionStyle.projectedAccentClassName}`}>
+      <CardContent className="space-y-5 pt-4">
+        <div className={`grid gap-3 ${featured ? "sm:grid-cols-2 xl:grid-cols-4" : "sm:grid-cols-4"}`}>
+          <div className={`rounded-xl border px-3.5 py-3 ${optionStyle.projectedAccentClassName}`}>
             <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground/80">
-              Estimated M+ Score
+              Projected Score
             </div>
             <div className="mt-2 text-lg font-semibold tabular-nums">
               <ScoreText score={option.projectedScore} />
@@ -299,7 +303,7 @@ function OptionCard({
               </div>
             )}
           </div>
-          <div className="rounded-lg border border-border/60 bg-card/60 px-3 py-2">
+          <div className="rounded-xl border border-border/60 bg-card/60 px-3.5 py-3">
             <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground/80">
               Total Gain
             </div>
@@ -307,10 +311,10 @@ function OptionCard({
               +{formatScore(option.totalGain)}
             </div>
             <div className="mt-1 text-xs text-muted-foreground">
-              {option.timedRuns} timed / {option.depletedRuns} depleted
+              {option.timedRuns} timed, {option.depletedRuns} depleted
             </div>
           </div>
-          <div className="rounded-lg border border-border/60 bg-card/60 px-3 py-2">
+          <div className="rounded-xl border border-border/60 bg-card/60 px-3.5 py-3">
             <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground/80">
               Route Time
             </div>
@@ -318,78 +322,71 @@ function OptionCard({
               {formatDuration(option.totalDurationMs)}
             </div>
             <div className="mt-1 text-xs text-muted-foreground">
-              {option.remainingScore > 0
-                ? `${formatScore(option.remainingScore)} score still missing`
-                : "Reaches target"}
+              {option.remainingScore > 0 ? `Short ${formatScore(option.remainingScore)}` : "On target"}
             </div>
           </div>
-          <div className="rounded-lg border border-border/60 bg-card/60 px-3 py-2">
+          <div className="rounded-xl border border-border/60 bg-card/60 px-3.5 py-3">
             <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground/80">
-              Route Status
+              Status
             </div>
             <div className="mt-2 text-sm font-semibold">{routeStatusLabel}</div>
-            <div className="mt-1 text-xs text-muted-foreground">
-              {option.reachable
-                ? "This route reaches the selected target."
-                : "This route improves score but cannot reach the target under the current constraints."}
-            </div>
+            <div className="mt-1 text-xs text-muted-foreground">{getRouteStatusDetail(option)}</div>
           </div>
         </div>
 
-        <div className="space-y-1.5">
+        <div className="space-y-2">
           {sortedRuns.map((run) => {
             return (
               <div
                 key={`${run.dungeonKey}:${run.level}:${run.runState}:${Math.round(run.projectedScore * 10)}`}
-                className="rounded-lg border border-border/60 bg-background/55 px-3 py-2.5"
+                className="rounded-xl border border-border/60 bg-background/55 px-3.5 py-3"
               >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex min-w-0 flex-1 items-start gap-3">
-                    <DungeonPlanIcon
-                      mapChallengeModeID={run.mapChallengeModeID}
-                      mapName={run.mapName}
-                    />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <div className="truncate text-sm font-medium text-foreground">
-                          {run.mapName}
-                        </div>
-                        <Badge variant="outline" className="h-6 px-2 text-[11px]">
-                          +{run.level}
-                        </Badge>
-                        <Badge
-                          variant="outline"
-                          className={`h-6 px-2 text-[11px] ${
-                            run.runState === "timed"
-                              ? "border-emerald-400/35 text-emerald-200"
-                              : "border-amber-400/35 text-amber-200"
-                          }`}
+                <div className="flex min-w-0 items-start gap-3.5">
+                  <DungeonPlanIcon
+                    mapChallengeModeID={run.mapChallengeModeID}
+                    mapName={run.mapName}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2.5">
+                      <div className="truncate text-sm font-medium text-foreground">{run.mapName}</div>
+                      <span className="rounded-md border border-emerald-400/25 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-emerald-300">
+                        +{formatScore(run.gain)}
+                      </span>
+                      <Badge variant="outline" className="h-6 px-2 text-[11px]">
+                        +{run.level}
+                      </Badge>
+                      <Badge
+                        variant="outline"
+                        className={`h-6 px-2 text-[11px] ${
+                          run.runState === "timed"
+                            ? "border-emerald-400/35 text-emerald-200"
+                            : "border-amber-400/35 text-amber-200"
+                        }`}
                         >
                           {run.runState === "timed" ? "Timed" : "Depleted"}
                         </Badge>
-                      </div>
-                      <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-muted-foreground">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          Current{" "}
-                          <ScoreText score={run.currentScore} scale="dungeon" className="font-medium" />{" "}
-                          -&gt; Expected{" "}
-                          <ScoreText
-                            score={run.projectedScore}
-                            scale="dungeon"
-                            className="font-semibold"
-                          />
-                        </div>
-                        <span>{formatRunWindow(run)}</span>
-                        <span>Timer {formatDuration(run.timerMs)}</span>
-                      </div>
                     </div>
-                  </div>
-                  <div className="shrink-0 rounded-lg border border-emerald-400/25 bg-emerald-500/8 px-2.5 py-1.5 text-right">
-                    <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-emerald-300/80">
-                      Gain
-                    </div>
-                    <div className="mt-0.5 text-base font-semibold tabular-nums text-emerald-300">
-                      +{formatScore(run.gain)}
+                    <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[12px] text-muted-foreground">
+                      <span className="font-medium text-foreground/85">
+                        <ScoreText score={run.currentScore} scale="dungeon" className="font-medium" />{" "}
+                        -&gt;{" "}
+                        <ScoreText
+                          score={run.projectedScore}
+                          scale="dungeon"
+                          className="font-semibold"
+                        />
+                      </span>
+                      <span>Goal {formatDuration(run.requiredDurationMs)}</span>
+                      <span
+                        className={
+                          run.runState === "timed"
+                            ? "text-emerald-200/90"
+                            : "text-amber-200/90"
+                        }
+                      >
+                        {formatRunDelta(run)}
+                      </span>
+                      <span>Timer {formatDuration(run.timerMs)}</span>
                     </div>
                   </div>
                 </div>
@@ -474,19 +471,14 @@ export function MythicPlannerPanel({
           <Calculator size={18} className="text-muted-foreground" />
           <h3 className="text-lg font-semibold text-foreground">Mythic Planner</h3>
         </div>
-        <p className="text-sm text-muted-foreground">
-          Plan a target score push for {characterName} using the current season dungeon pool already
-          tracked on this page.
-        </p>
+        <p className="text-sm text-muted-foreground">Target score routes for {characterName}.</p>
       </div>
 
       <div className="mt-6 space-y-6">
         <Card className="border-border/70">
           <CardHeader className="border-b border-border/60 pb-3">
             <CardTitle className="text-base">Planner Inputs</CardTitle>
-            <CardDescription>
-              Target score, max key, and excluded dungeons persist per character in local storage.
-            </CardDescription>
+            <CardDescription>Saved per character.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-5 pt-4">
             <div className="grid gap-4 sm:grid-cols-3">
@@ -599,9 +591,6 @@ export function MythicPlannerPanel({
                   );
                 })}
               </div>
-              <p className="text-xs text-muted-foreground">
-                Select as many dungeons as you want to exclude from the generated routes.
-              </p>
             </div>
           </CardContent>
         </Card>
@@ -609,10 +598,7 @@ export function MythicPlannerPanel({
         <Card className="border-border/70">
           <CardHeader className="border-b border-border/60 pb-3">
             <CardTitle className="text-base">Plan Summary</CardTitle>
-            <CardDescription>
-              These routes use current seasonal bests as the baseline and estimate score deltas from
-              there.
-            </CardDescription>
+            <CardDescription>Based on current bests.</CardDescription>
           </CardHeader>
           <CardContent className="grid gap-3 pt-4 sm:grid-cols-3">
             <div className="rounded-lg border border-border/60 bg-card/60 px-3 py-3">
