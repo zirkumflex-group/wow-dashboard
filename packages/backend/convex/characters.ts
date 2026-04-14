@@ -23,9 +23,20 @@ import { nonTradeableSlotValidator } from "./schemas/characters";
 
 type MythicPlusRunDoc = Doc<"mythicPlusRuns"> & { canonicalKey?: string };
 type SnapshotDoc = Doc<"snapshots">;
+type CharacterDailySnapshotDoc = Doc<"characterDailySnapshots">;
 type DbReaderCtx = { db: QueryCtx["db"] };
 type SnapshotSummary = NonNullable<Doc<"characters">["latestSnapshot"]>;
 type CharacterNonTradeableSlot = NonNullable<Doc<"characters">["nonTradeableSlots"]>[number];
+type SnapshotTimeFrame = "7d" | "30d" | "90d" | "all";
+
+const snapshotTimeFrameValidator = v.union(
+  v.literal("7d"),
+  v.literal("30d"),
+  v.literal("90d"),
+  v.literal("all"),
+);
+
+const snapshotDetailMetricValidator = v.union(v.literal("stats"), v.literal("currencies"));
 
 function toSnapshotSummary(snapshot: SnapshotDoc | null): SnapshotSummary | null {
   if (!snapshot) return null;
@@ -257,6 +268,104 @@ function dedupeSnapshotsByTakenAt(snapshots: SnapshotDoc[]) {
   return Array.from(dedupedSnapshots.values()).sort(
     (a, b) => a.takenAt - b.takenAt || a._creationTime - b._creationTime,
   );
+}
+
+function getSnapshotTimeFrameCutoffSeconds(timeFrame: SnapshotTimeFrame) {
+  if (timeFrame === "all") return null;
+
+  const days = {
+    "7d": 7,
+    "30d": 30,
+    "90d": 90,
+  } satisfies Record<Exclude<SnapshotTimeFrame, "all">, number>;
+
+  return Math.floor(Date.now() / 1000) - days[timeFrame] * 86400;
+}
+
+function getSnapshotDayStart(takenAt: number) {
+  return Math.floor(takenAt / 86400) * 86400;
+}
+
+function getSnapshotBucketDaySpan(timeFrame: SnapshotTimeFrame) {
+  if (timeFrame === "90d" || timeFrame === "all") {
+    return 2;
+  }
+  return 1;
+}
+
+function bucketDailySnapshotsBySpan(
+  snapshots: CharacterDailySnapshotDoc[],
+  daySpan: number,
+) {
+  if (daySpan <= 1) {
+    return snapshots;
+  }
+
+  const bucketed = new Map<number, CharacterDailySnapshotDoc>();
+  for (const snapshot of snapshots) {
+    const bucketKey = Math.floor(snapshot.dayStartAt / (daySpan * 86400));
+    const current = bucketed.get(bucketKey);
+    if (!current || snapshot.lastTakenAt >= current.lastTakenAt) {
+      bucketed.set(bucketKey, snapshot);
+    }
+  }
+
+  return Array.from(bucketed.values()).sort((a, b) => a.dayStartAt - b.dayStartAt);
+}
+
+async function getFirstSnapshotForCharacter(
+  ctx: DbReaderCtx,
+  characterId: Doc<"characters">["_id"],
+) {
+  return await ctx.db
+    .query("snapshots")
+    .withIndex("by_character_and_time", (q) => q.eq("characterId", characterId))
+    .order("asc")
+    .first();
+}
+
+async function getBucketedRawSnapshotsForCharacter(
+  ctx: DbReaderCtx,
+  characterId: Doc<"characters">["_id"],
+  timeFrame: SnapshotTimeFrame,
+) {
+  const bucketDaySpan = getSnapshotBucketDaySpan(timeFrame);
+  const cutoffSeconds = getSnapshotTimeFrameCutoffSeconds(timeFrame);
+  const firstSnapshot =
+    cutoffSeconds === null ? await getFirstSnapshotForCharacter(ctx, characterId) : null;
+  const rangeStartAt = cutoffSeconds ?? firstSnapshot?.takenAt ?? null;
+  if (rangeStartAt === null) {
+    return [] as SnapshotDoc[];
+  }
+
+  const bucketStarts: number[] = [];
+  const endDayStartAt = getSnapshotDayStart(Math.floor(Date.now() / 1000));
+  const startDayStartAt = getSnapshotDayStart(rangeStartAt);
+  const bucketSpanSeconds = bucketDaySpan * 86400;
+  for (
+    let bucketStartAt = startDayStartAt;
+    bucketStartAt <= endDayStartAt;
+    bucketStartAt += bucketSpanSeconds
+  ) {
+    bucketStarts.push(bucketStartAt);
+  }
+
+  const snapshots = await Promise.all(
+    bucketStarts.map((bucketStartAt) =>
+      ctx.db
+        .query("snapshots")
+        .withIndex("by_character_and_time", (q) =>
+          q
+            .eq("characterId", characterId)
+            .gte("takenAt", bucketStartAt)
+            .lt("takenAt", bucketStartAt + bucketSpanSeconds),
+        )
+        .order("desc")
+        .first(),
+    ),
+  );
+
+  return snapshots.filter((snapshot): snapshot is SnapshotDoc => snapshot !== null);
 }
 
 function buildMythicPlusBucketSummary(runs: MythicPlusRunDoc[]) {
@@ -974,6 +1083,153 @@ export const getCharacterSnapshots = query({
   },
 });
 
+export const getCharacterHeader = query({
+  args: { characterId: v.id("characters") },
+  handler: async (ctx, { characterId }) => {
+    const authUser = await authComponent.safeGetAuthUser(ctx);
+    if (!authUser) return null;
+
+    const character = await ctx.db.get(characterId);
+    if (!character) return null;
+
+    const [owner, latestSnapshot, firstSnapshot] = await Promise.all([
+      ctx.db.get(character.playerId),
+      getLatestSnapshotForCharacter(ctx, characterId),
+      character.firstSnapshotAt === undefined ? getFirstSnapshotForCharacter(ctx, characterId) : null,
+    ]);
+
+    return {
+      character,
+      owner: owner
+        ? {
+            playerId: owner._id,
+            battleTag: owner.battleTag,
+            discordUserId: owner.discordUserId ?? null,
+          }
+        : null,
+      latestSnapshot,
+      firstSnapshotAt: character.firstSnapshotAt ?? firstSnapshot?.takenAt ?? null,
+      snapshotCount: character.snapshotCount ?? null,
+    };
+  },
+});
+
+export const getCharacterCoreTimeline = query({
+  args: {
+    characterId: v.id("characters"),
+    timeFrame: snapshotTimeFrameValidator,
+  },
+  handler: async (ctx, { characterId, timeFrame }) => {
+    const authUser = await authComponent.safeGetAuthUser(ctx);
+    if (!authUser) return null;
+
+    const character = await ctx.db.get(characterId);
+    if (!character) return null;
+
+    const cutoffSeconds = getSnapshotTimeFrameCutoffSeconds(timeFrame);
+    const bucketDaySpan = getSnapshotBucketDaySpan(timeFrame);
+    const dailySnapshots = await ctx.db
+      .query("characterDailySnapshots")
+      .withIndex("by_character_and_day", (q) => {
+        const range = q.eq("characterId", characterId);
+        return cutoffSeconds === null ? range : range.gte("dayStartAt", getSnapshotDayStart(cutoffSeconds));
+      })
+      .order("asc")
+      .collect();
+
+    if (dailySnapshots.length > 0) {
+      return {
+        snapshots: bucketDailySnapshotsBySpan(dailySnapshots, bucketDaySpan).map((snapshot) => ({
+          takenAt: snapshot.lastTakenAt,
+          itemLevel: snapshot.itemLevel,
+          gold: snapshot.gold,
+          playtimeSeconds: snapshot.playtimeSeconds,
+          mythicPlusScore: snapshot.mythicPlusScore,
+        })),
+      };
+    }
+
+    const snapshots = await getBucketedRawSnapshotsForCharacter(ctx, characterId, timeFrame);
+    return {
+      snapshots: snapshots.map((snapshot) => ({
+        takenAt: snapshot.takenAt,
+        itemLevel: snapshot.itemLevel,
+        gold: snapshot.gold,
+        playtimeSeconds: snapshot.playtimeSeconds,
+        mythicPlusScore: snapshot.mythicPlusScore,
+      })),
+    };
+  },
+});
+
+export const getCharacterDetailTimeline = query({
+  args: {
+    characterId: v.id("characters"),
+    timeFrame: snapshotTimeFrameValidator,
+    metric: snapshotDetailMetricValidator,
+  },
+  handler: async (ctx, { characterId, timeFrame, metric }) => {
+    const authUser = await authComponent.safeGetAuthUser(ctx);
+    if (!authUser) return null;
+
+    const character = await ctx.db.get(characterId);
+    if (!character) return null;
+
+    const snapshots = await getBucketedRawSnapshotsForCharacter(ctx, characterId, timeFrame);
+    if (metric === "stats") {
+      return {
+        metric,
+        snapshots: snapshots.map((snapshot) => ({
+          takenAt: snapshot.takenAt,
+          stats: snapshot.stats,
+        })),
+      };
+    }
+
+    return {
+      metric,
+      snapshots: snapshots.map((snapshot) => ({
+        takenAt: snapshot.takenAt,
+        currencies: snapshot.currencies,
+      })),
+    };
+  },
+});
+
+export const getCharacterSnapshotTimeline = query({
+  args: {
+    characterId: v.id("characters"),
+    timeFrame: snapshotTimeFrameValidator,
+  },
+  handler: async (ctx, { characterId, timeFrame }) => {
+    const authUser = await authComponent.safeGetAuthUser(ctx);
+    if (!authUser) return null;
+
+    const character = await ctx.db.get(characterId);
+    if (!character) return null;
+
+    const cutoffSeconds = getSnapshotTimeFrameCutoffSeconds(timeFrame);
+    const snapshots = await ctx.db
+      .query("snapshots")
+      .withIndex("by_character_and_time", (q) => {
+        const range = q.eq("characterId", characterId);
+        return cutoffSeconds === null ? range : range.gte("takenAt", cutoffSeconds);
+      })
+      .order("asc")
+      .collect();
+
+    return {
+      snapshots: dedupeSnapshotsByTakenAt(snapshots).map((snapshot) => ({
+        takenAt: snapshot.takenAt,
+        itemLevel: snapshot.itemLevel,
+        mythicPlusScore: snapshot.mythicPlusScore,
+        playtimeSeconds: snapshot.playtimeSeconds,
+        ownedKeystone: snapshot.ownedKeystone ?? undefined,
+      })),
+    };
+  },
+});
+
 export const getCharacterMythicPlus = query({
   args: { characterId: v.id("characters") },
   handler: async (ctx, { characterId }) => {
@@ -1454,6 +1710,102 @@ export const backfillCharacterLatestSnapshots = mutation({
     return {
       totalCharacters: characters.length,
       updatedCharacters,
+    };
+  },
+});
+
+export const backfillCharacterSnapshotOptimizations = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const authUser = await authComponent.safeGetAuthUser(ctx);
+    if (!authUser) {
+      return { totalCharacters: 0, updatedCharacters: 0, updatedDailySnapshots: 0 };
+    }
+
+    const player = await getPlayerForAuthUser(ctx, authUser._id as string);
+    if (!player) {
+      return { totalCharacters: 0, updatedCharacters: 0, updatedDailySnapshots: 0 };
+    }
+
+    const characters = await ctx.db
+      .query("characters")
+      .withIndex("by_player", (q) => q.eq("playerId", player._id))
+      .collect();
+
+    let updatedCharacters = 0;
+    let updatedDailySnapshots = 0;
+
+    for (const character of characters) {
+      const rawSnapshots = await ctx.db
+        .query("snapshots")
+        .withIndex("by_character_and_time", (q) => q.eq("characterId", character._id))
+        .order("asc")
+        .collect();
+      const snapshots = dedupeSnapshotsByTakenAt(rawSnapshots);
+      if (snapshots.length === 0) {
+        continue;
+      }
+
+      const firstSnapshotAt = snapshots[0]?.takenAt;
+      const snapshotCount = snapshots.length;
+      if (
+        firstSnapshotAt !== undefined &&
+        (character.firstSnapshotAt !== firstSnapshotAt || character.snapshotCount !== snapshotCount)
+      ) {
+        await ctx.db.patch(character._id, {
+          firstSnapshotAt,
+          snapshotCount,
+        });
+        updatedCharacters += 1;
+      }
+
+      const latestByDay = new Map<number, SnapshotDoc>();
+      for (const snapshot of snapshots) {
+        latestByDay.set(getSnapshotDayStart(snapshot.takenAt), snapshot);
+      }
+
+      for (const [dayStartAt, snapshot] of latestByDay) {
+        const existingDailySnapshot = await ctx.db
+          .query("characterDailySnapshots")
+          .withIndex("by_character_and_day", (q) =>
+            q.eq("characterId", character._id).eq("dayStartAt", dayStartAt),
+          )
+          .first();
+        const nextDailySnapshot = {
+          dayStartAt,
+          lastTakenAt: snapshot.takenAt,
+          itemLevel: snapshot.itemLevel,
+          gold: snapshot.gold,
+          playtimeSeconds: snapshot.playtimeSeconds,
+          mythicPlusScore: snapshot.mythicPlusScore,
+        };
+
+        if (!existingDailySnapshot) {
+          await ctx.db.insert("characterDailySnapshots", {
+            characterId: character._id,
+            ...nextDailySnapshot,
+          });
+          updatedDailySnapshots += 1;
+          continue;
+        }
+
+        if (
+          existingDailySnapshot.lastTakenAt !== nextDailySnapshot.lastTakenAt ||
+          existingDailySnapshot.itemLevel !== nextDailySnapshot.itemLevel ||
+          existingDailySnapshot.gold !== nextDailySnapshot.gold ||
+          existingDailySnapshot.playtimeSeconds !== nextDailySnapshot.playtimeSeconds ||
+          existingDailySnapshot.mythicPlusScore !== nextDailySnapshot.mythicPlusScore
+        ) {
+          await ctx.db.patch(existingDailySnapshot._id, nextDailySnapshot);
+          updatedDailySnapshots += 1;
+        }
+      }
+    }
+
+    return {
+      totalCharacters: characters.length,
+      updatedCharacters,
+      updatedDailySnapshots,
     };
   },
 });

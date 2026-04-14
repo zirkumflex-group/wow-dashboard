@@ -50,7 +50,7 @@ import {
   EyeOff,
   Zap,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   CartesianGrid,
@@ -110,13 +110,6 @@ const TIME_FRAME_OPTIONS: { value: TimeFrame; label: string }[] = [
   { value: "90d", label: "90D" },
   { value: "all", label: "All" },
 ];
-
-function filterByTimeFrame<T extends { takenAt: number }>(items: T[], frame: TimeFrame): T[] {
-  if (frame === "all") return items;
-  const days = ({ "7d": 7, "30d": 30, "90d": 90 } as Record<TimeFrame, number>)[frame];
-  const cutoff = Date.now() / 1000 - days * 86400;
-  return items.filter((s) => s.takenAt >= cutoff);
-}
 
 function TimeFramePicker({
   value,
@@ -1528,10 +1521,29 @@ type Snapshot = {
   };
 };
 
+type CoreChartSnapshot = {
+  takenAt: number;
+  itemLevel: number;
+  gold: number;
+  playtimeSeconds: number;
+  mythicPlusScore: number;
+};
+
+type StatsChartSnapshot = {
+  takenAt: number;
+  stats: Snapshot["stats"];
+};
+
+type CurrencyChartSnapshot = {
+  takenAt: number;
+  currencies: Snapshot["currencies"];
+};
+
 type LayoutProps = {
   latest: Snapshot;
-  chartSnapshots: Snapshot[];
-  filteredSnapshots: Snapshot[];
+  coreSnapshots: CoreChartSnapshot[];
+  statsSnapshots?: StatsChartSnapshot[] | null;
+  currencySnapshots?: CurrencyChartSnapshot[] | null;
   mythicPlus?: MythicPlusData | null;
   characterId: string;
   characterName: string;
@@ -1669,6 +1681,8 @@ function groupSnapshotsAuto(snapshots: Snapshot[]): Snapshot[] {
 }
 
 // ── Chart palette ─────────────────────────────────────────────────────────────
+
+void groupSnapshotsAuto;
 
 const C = {
   blue: "oklch(0.72 0.20 245)",
@@ -2154,7 +2168,7 @@ function RadarStrip({ snapshot }: { snapshot: Snapshot }) {
 
 // ── Chart cards used in Overview ──────────────────────────────────────────────
 
-function IlvlChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeFrame: TimeFrame }) {
+function IlvlChartCard({ snapshots, timeFrame }: { snapshots: CoreChartSnapshot[]; timeFrame: TimeFrame }) {
   const [fullscreen, setFullscreen] = useState(false);
   const data = snapshots.map((s) => ({ date: s.takenAt, itemLevel: s.itemLevel }));
   const lines = [{ key: "itemLevel", color: C.blue }];
@@ -2196,7 +2210,13 @@ function IlvlChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeFr
     </Card>
   );
 }
-function MplusChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeFrame: TimeFrame }) {
+function MplusChartCard({
+  snapshots,
+  timeFrame,
+}: {
+  snapshots: CoreChartSnapshot[];
+  timeFrame: TimeFrame;
+}) {
   const [fullscreen, setFullscreen] = useState(false);
   const data = snapshots.map((s) => ({ date: s.takenAt, mythicPlusScore: s.mythicPlusScore }));
   const lines = [{ key: "mythicPlusScore", color: C.red }];
@@ -2238,7 +2258,7 @@ function MplusChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeF
     </Card>
   );
 }
-function GoldChartCard({ snapshots, timeFrame }: { snapshots: Snapshot[]; timeFrame: TimeFrame }) {
+function GoldChartCard({ snapshots, timeFrame }: { snapshots: CoreChartSnapshot[]; timeFrame: TimeFrame }) {
   const [fullscreen, setFullscreen] = useState(false);
   const data = snapshots.map((s) => ({ date: s.takenAt, gold: s.gold }));
   const lines = [{ key: "gold", color: C.gold }];
@@ -2288,7 +2308,7 @@ function SecondaryStatsChartCard({
   timeFrame,
   className,
 }: {
-  snapshots: Snapshot[];
+  snapshots: StatsChartSnapshot[];
   timeFrame: TimeFrame;
   className?: string;
 }) {
@@ -2332,7 +2352,7 @@ function CurrenciesChartCard({
   timeFrame,
   className,
 }: {
-  snapshots: Snapshot[];
+  snapshots: CurrencyChartSnapshot[];
   timeFrame: TimeFrame;
   className?: string;
 }) {
@@ -2372,7 +2392,7 @@ function PlaytimeChartCard({
   timeFrame,
   className,
 }: {
-  snapshots: Snapshot[];
+  snapshots: CoreChartSnapshot[];
   timeFrame: TimeFrame;
   className?: string;
 }) {
@@ -2471,7 +2491,7 @@ function OwnedKeystoneMetric({ keystone }: { keystone?: Snapshot["ownedKeystone"
 
 function OverviewLayout({
   latest,
-  chartSnapshots,
+  coreSnapshots,
   mythicPlus,
   characterId,
   characterName,
@@ -2504,15 +2524,15 @@ function OverviewLayout({
           <div className="flex items-center justify-between flex-wrap gap-2">
             <TimeFramePicker value={timeFrame} onChange={setTimeFrame} />
             <span className="text-muted-foreground text-xs">
-              {chartSnapshots.length} point{chartSnapshots.length !== 1 ? "s" : ""}
+              {coreSnapshots.length} point{coreSnapshots.length !== 1 ? "s" : ""}
             </span>
           </div>
 
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <IlvlChartCard snapshots={chartSnapshots} timeFrame={timeFrame} />
-            <MplusChartCard snapshots={chartSnapshots} timeFrame={timeFrame} />
-            <GoldChartCard snapshots={chartSnapshots} timeFrame={timeFrame} />
-            <CurrenciesChartCard snapshots={chartSnapshots} timeFrame={timeFrame} />
+            <IlvlChartCard snapshots={coreSnapshots} timeFrame={timeFrame} />
+            <MplusChartCard snapshots={coreSnapshots} timeFrame={timeFrame} />
+            <GoldChartCard snapshots={coreSnapshots} timeFrame={timeFrame} />
+            <PlaytimeChartCard snapshots={coreSnapshots} timeFrame={timeFrame} />
           </div>
 
           <MythicPlusSection
@@ -2610,18 +2630,22 @@ function FocusCurrentValue({ metric, snapshot }: { metric: FocusMetric; snapshot
 
 function FocusChart({
   metric,
-  snapshots,
+  coreSnapshots,
+  statsSnapshots,
+  currencySnapshots,
   timeFrame,
 }: {
   metric: FocusMetric;
-  snapshots: Snapshot[];
+  coreSnapshots: CoreChartSnapshot[];
+  statsSnapshots?: StatsChartSnapshot[] | null;
+  currencySnapshots?: CurrencyChartSnapshot[] | null;
   timeFrame: TimeFrame;
 }) {
   const h = "h-[420px]";
   if (metric === "ilvl") {
     return (
       <SnapshotLineChart
-        data={snapshots.map((s) => ({ date: s.takenAt, itemLevel: s.itemLevel }))}
+        data={coreSnapshots.map((s) => ({ date: s.takenAt, itemLevel: s.itemLevel }))}
         lines={[{ key: "itemLevel", color: C.blue }]}
         config={ilvlConfig}
         valueFormatter={(v) => v.toFixed(1)}
@@ -2634,7 +2658,7 @@ function FocusChart({
   if (metric === "mplus") {
     return (
       <SnapshotLineChart
-        data={snapshots.map((s) => ({ date: s.takenAt, mythicPlusScore: s.mythicPlusScore }))}
+        data={coreSnapshots.map((s) => ({ date: s.takenAt, mythicPlusScore: s.mythicPlusScore }))}
         lines={[{ key: "mythicPlusScore", color: C.red }]}
         config={mplusConfig}
         valueFormatter={(v) => v.toLocaleString()}
@@ -2647,7 +2671,7 @@ function FocusChart({
   if (metric === "gold") {
     return (
       <SnapshotLineChart
-        data={snapshots.map((s) => ({ date: s.takenAt, gold: s.gold }))}
+        data={coreSnapshots.map((s) => ({ date: s.takenAt, gold: s.gold }))}
         lines={[{ key: "gold", color: C.gold }]}
         config={goldConfig}
         valueFormatter={(v) => `${goldUnits(v).toLocaleString()}g`}
@@ -2658,9 +2682,16 @@ function FocusChart({
     );
   }
   if (metric === "stats") {
+    if (!statsSnapshots) {
+      return (
+        <div className={`${h} flex items-center justify-center text-sm text-muted-foreground`}>
+          Loading stat history...
+        </div>
+      );
+    }
     return (
       <SnapshotLineChart
-        data={snapshots.map((s) => ({
+        data={statsSnapshots.map((s) => ({
           date: s.takenAt,
           critPercent: s.stats.critPercent,
           hastePercent: s.stats.hastePercent,
@@ -2683,9 +2714,16 @@ function FocusChart({
     );
   }
   if (metric === "currencies") {
+    if (!currencySnapshots) {
+      return (
+        <div className={`${h} flex items-center justify-center text-sm text-muted-foreground`}>
+          Loading currency history...
+        </div>
+      );
+    }
     return (
       <SnapshotLineChart
-        data={snapshots.map((s) => ({ date: s.takenAt, ...s.currencies }))}
+        data={currencySnapshots.map((s) => ({ date: s.takenAt, ...s.currencies }))}
         lines={[
           { key: "adventurerDawncrest", color: C.blue },
           { key: "veteranDawncrest", color: C.teal },
@@ -2705,7 +2743,7 @@ function FocusChart({
   if (metric === "playtime") {
     return (
       <SnapshotLineChart
-        data={snapshots.map((s) => ({
+        data={coreSnapshots.map((s) => ({
           date: s.takenAt,
           playtimeHours: Math.round(s.playtimeSeconds / 3600),
         }))}
@@ -2721,9 +2759,19 @@ function FocusChart({
   return null;
 }
 
-function FocusLayout({ latest, chartSnapshots, timeFrame, setTimeFrame }: LayoutProps) {
-  const [metric, setMetric] = useState<FocusMetric>("ilvl");
-
+function FocusLayout({
+  latest,
+  coreSnapshots,
+  statsSnapshots,
+  currencySnapshots,
+  timeFrame,
+  setTimeFrame,
+  metric,
+  setMetric,
+}: LayoutProps & {
+  metric: FocusMetric;
+  setMetric: (metric: FocusMetric) => void;
+}) {
   return (
     <div className="flex flex-col lg:flex-row gap-4 items-start">
       {/* Main chart area */}
@@ -2755,12 +2803,18 @@ function FocusLayout({ latest, chartSnapshots, timeFrame, setTimeFrame }: Layout
         <div className="flex items-center justify-between flex-wrap gap-2">
           <TimeFramePicker value={timeFrame} onChange={setTimeFrame} />
           <span className="text-muted-foreground text-xs">
-            {chartSnapshots.length} point{chartSnapshots.length !== 1 ? "s" : ""}
+            {coreSnapshots.length} point{coreSnapshots.length !== 1 ? "s" : ""}
           </span>
         </div>
         <Card>
           <CardContent className="pt-4">
-            <FocusChart metric={metric} snapshots={chartSnapshots} timeFrame={timeFrame} />
+            <FocusChart
+              metric={metric}
+              coreSnapshots={coreSnapshots}
+              statsSnapshots={statsSnapshots}
+              currencySnapshots={currencySnapshots}
+              timeFrame={timeFrame}
+            />
           </CardContent>
         </Card>
       </div>
@@ -2809,7 +2863,14 @@ function FocusLayout({ latest, chartSnapshots, timeFrame, setTimeFrame }: Layout
 // Full scrollable history at bottom (no pagination)
 // ════════════════════════════════════════════════════════════════════════════
 
-function TimelineLayout({ latest, chartSnapshots, timeFrame, setTimeFrame }: LayoutProps) {
+function TimelineLayout({
+  latest,
+  coreSnapshots,
+  statsSnapshots,
+  currencySnapshots,
+  timeFrame,
+  setTimeFrame,
+}: LayoutProps) {
   const chartH = "h-[260px]";
 
   return (
@@ -2818,7 +2879,7 @@ function TimelineLayout({ latest, chartSnapshots, timeFrame, setTimeFrame }: Lay
       <div className="flex items-center justify-between flex-wrap gap-2">
         <TimeFramePicker value={timeFrame} onChange={setTimeFrame} />
         <span className="text-muted-foreground text-xs">
-          {chartSnapshots.length} point{chartSnapshots.length !== 1 ? "s" : ""}
+          {coreSnapshots.length} point{coreSnapshots.length !== 1 ? "s" : ""}
         </span>
       </div>
 
@@ -2834,7 +2895,7 @@ function TimelineLayout({ latest, chartSnapshots, timeFrame, setTimeFrame }: Lay
         </CardHeader>
         <CardContent>
           <SnapshotLineChart
-            data={chartSnapshots.map((s) => ({ date: s.takenAt, itemLevel: s.itemLevel }))}
+            data={coreSnapshots.map((s) => ({ date: s.takenAt, itemLevel: s.itemLevel }))}
             lines={[{ key: "itemLevel", color: C.blue }]}
             config={ilvlConfig}
             valueFormatter={(v) => v.toFixed(1)}
@@ -2853,7 +2914,7 @@ function TimelineLayout({ latest, chartSnapshots, timeFrame, setTimeFrame }: Lay
         </CardHeader>
         <CardContent>
           <SnapshotLineChart
-            data={chartSnapshots.map((s) => ({
+            data={coreSnapshots.map((s) => ({
               date: s.takenAt,
               mythicPlusScore: s.mythicPlusScore,
             }))}
@@ -2875,7 +2936,7 @@ function TimelineLayout({ latest, chartSnapshots, timeFrame, setTimeFrame }: Lay
         </CardHeader>
         <CardContent>
           <SnapshotLineChart
-            data={chartSnapshots.map((s) => ({ date: s.takenAt, gold: s.gold }))}
+            data={coreSnapshots.map((s) => ({ date: s.takenAt, gold: s.gold }))}
             lines={[{ key: "gold", color: C.gold }]}
             config={goldConfig}
             valueFormatter={(v) => `${goldUnits(v).toLocaleString()}g`}
@@ -2886,9 +2947,33 @@ function TimelineLayout({ latest, chartSnapshots, timeFrame, setTimeFrame }: Lay
         </CardContent>
       </Card>
 
-      <SecondaryStatsChartCard snapshots={chartSnapshots} timeFrame={timeFrame} />
-      <CurrenciesChartCard snapshots={chartSnapshots} timeFrame={timeFrame} />
-      <PlaytimeChartCard snapshots={chartSnapshots} timeFrame={timeFrame} />
+      {statsSnapshots ? (
+        <SecondaryStatsChartCard snapshots={statsSnapshots} timeFrame={timeFrame} />
+      ) : (
+        <Card>
+          <CardHeader className="pb-0">
+            <CardTitle className="text-sm font-medium flex items-center gap-1.5">
+              <Zap size={14} className="text-muted-foreground" /> Secondary Stats
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="text-sm text-muted-foreground">Loading stat history...</CardContent>
+        </Card>
+      )}
+      {currencySnapshots ? (
+        <CurrenciesChartCard snapshots={currencySnapshots} timeFrame={timeFrame} />
+      ) : (
+        <Card>
+          <CardHeader className="px-4 pb-0 pt-4">
+            <CardTitle className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+              <Gem size={14} className="text-muted-foreground" /> Currencies
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="px-4 pb-4 pt-2 text-sm text-muted-foreground">
+            Loading currency history...
+          </CardContent>
+        </Card>
+      )}
+      <PlaytimeChartCard snapshots={coreSnapshots} timeFrame={timeFrame} />
     </div>
   );
 }
@@ -2945,8 +3030,28 @@ function CharacterLinks({ region, realm, name }: { region: string; realm: string
 
 function RouteComponent() {
   const { characterId } = Route.useParams();
-  const data = useQuery(api.characters.getCharacterSnapshots, {
+  const [timeFrame, setTimeFrame] = useState<TimeFrame>("30d");
+  const { pinnedCharacterIdSet, togglePinnedCharacter } = usePinnedCharacters();
+  const [discordUserIdInput, setDiscordUserIdInput] = useState("");
+  const [nonTradeableSlotsDraft, setNonTradeableSlotsDraft] = useState<TradeSlotKey[]>([]);
+  const [isSavingDiscordUserId, setIsSavingDiscordUserId] = useState(false);
+  const [isUpdatingBooster, setIsUpdatingBooster] = useState(false);
+  const [isSavingTradeSlots, setIsSavingTradeSlots] = useState(false);
+  const [isDiscordSheetOpen, setIsDiscordSheetOpen] = useState(false);
+  const [focusMetric, setFocusMetric] = useState<FocusMetric>("ilvl");
+  const [layoutMode, setLayoutMode] = useState<LayoutMode>(() => {
+    try {
+      return (localStorage.getItem("wow-char-layout") as LayoutMode) ?? "overview";
+    } catch {
+      return "overview";
+    }
+  });
+  const header = useQuery(api.characters.getCharacterHeader, {
     characterId: characterId as Id<"characters">,
+  });
+  const coreTimeline = useQuery(api.characters.getCharacterCoreTimeline, {
+    characterId: characterId as Id<"characters">,
+    timeFrame,
   });
   const mythicPlus = useQuery(api.characters.getCharacterMythicPlus, {
     characterId: characterId as Id<"characters">,
@@ -2956,65 +3061,59 @@ function RouteComponent() {
     (api as any).characters.setCharacterNonTradeableSlots,
   );
   const setPlayerDiscordUserId = useMutation((api as any).players.setPlayerDiscordUserId);
-  const snapshotsCacheRef = useRef(new Map<string, Exclude<typeof data, undefined>>());
-  const mythicPlusCacheRef = useRef(new Map<string, Exclude<typeof mythicPlus, undefined>>());
-  const resolvedData = data ?? snapshotsCacheRef.current.get(characterId);
-  const resolvedMythicPlus = mythicPlus ?? mythicPlusCacheRef.current.get(characterId);
-
-  const [timeFrame, setTimeFrame] = useState<TimeFrame>("30d");
-  const { pinnedCharacterIdSet, togglePinnedCharacter } = usePinnedCharacters();
-  const [discordUserIdInput, setDiscordUserIdInput] = useState("");
-  const [nonTradeableSlotsDraft, setNonTradeableSlotsDraft] = useState<TradeSlotKey[]>([]);
-  const [isSavingDiscordUserId, setIsSavingDiscordUserId] = useState(false);
-  const [isUpdatingBooster, setIsUpdatingBooster] = useState(false);
-  const [isSavingTradeSlots, setIsSavingTradeSlots] = useState(false);
-  const [isDiscordSheetOpen, setIsDiscordSheetOpen] = useState(false);
-  const [layoutMode, setLayoutMode] = useState<LayoutMode>(() => {
-    try {
-      return (localStorage.getItem("wow-char-layout") as LayoutMode) ?? "overview";
-    } catch {
-      return "overview";
-    }
-  });
-
-  useEffect(() => {
-    if (data !== undefined) {
-      snapshotsCacheRef.current.set(characterId, data);
-    }
-  }, [characterId, data]);
+  const needsStatsTimeline =
+    layoutMode === "timeline" || (layoutMode === "focus" && focusMetric === "stats");
+  const needsCurrencyTimeline =
+    layoutMode === "timeline" || (layoutMode === "focus" && focusMetric === "currencies");
+  const statsTimeline = useQuery(
+    api.characters.getCharacterDetailTimeline,
+    needsStatsTimeline
+      ? {
+          characterId: characterId as Id<"characters">,
+          timeFrame,
+          metric: "stats",
+        }
+      : "skip",
+  );
+  const currencyTimeline = useQuery(
+    api.characters.getCharacterDetailTimeline,
+    needsCurrencyTimeline
+      ? {
+          characterId: characterId as Id<"characters">,
+          timeFrame,
+          metric: "currencies",
+        }
+      : "skip",
+  );
 
   useEffect(() => {
-    if (mythicPlus !== undefined) {
-      mythicPlusCacheRef.current.set(characterId, mythicPlus);
-    }
-  }, [characterId, mythicPlus]);
-
-  useEffect(() => {
-    setDiscordUserIdInput(resolvedData?.owner?.discordUserId ?? "");
-  }, [characterId, resolvedData?.owner?.discordUserId]);
+    setDiscordUserIdInput(header?.owner?.discordUserId ?? "");
+  }, [characterId, header?.owner?.discordUserId]);
 
   useEffect(() => {
     setNonTradeableSlotsDraft(
-      normalizeTradeSlotKeys((resolvedData?.character.nonTradeableSlots ?? []) as TradeSlotKey[]),
+      normalizeTradeSlotKeys((header?.character.nonTradeableSlots ?? []) as TradeSlotKey[]),
     );
-  }, [characterId, resolvedData?.character.nonTradeableSlots]);
+  }, [characterId, header?.character.nonTradeableSlots]);
 
   useEffect(() => {
     const appTitle = "WoW Dashboard";
-    if (resolvedData === undefined) {
+    if (header === undefined) {
       document.title = `Character | ${appTitle}`;
       return;
     }
-    if (!resolvedData) {
+    if (!header) {
       document.title = `Character Not Found | ${appTitle}`;
       return;
     }
 
-    document.title = `${resolvedData.character.name} (${resolvedData.character.realm}) | ${appTitle}`;
-  }, [resolvedData]);
+    document.title = `${header.character.name} (${header.character.realm}) | ${appTitle}`;
+  }, [header]);
 
   function handleLayoutChange(mode: LayoutMode) {
-    setLayoutMode(mode);
+    startTransition(() => {
+      setLayoutMode(mode);
+    });
     try {
       localStorage.setItem("wow-char-layout", mode);
     } catch {
@@ -3022,20 +3121,19 @@ function RouteComponent() {
     }
   }
 
-  const resolvedSnapshots = resolvedData?.snapshots;
-  const timeFrameFiltered = useMemo(() => {
-    if (!resolvedSnapshots) return [] as Snapshot[];
-    return filterByTimeFrame(resolvedSnapshots, timeFrame);
-  }, [resolvedSnapshots, timeFrame]);
-  const chartSnapshots = useMemo(() => groupSnapshotsAuto(timeFrameFiltered), [timeFrameFiltered]);
+  function handleTimeFrameChange(nextFrame: TimeFrame) {
+    startTransition(() => {
+      setTimeFrame(nextFrame);
+    });
+  }
 
-  if (resolvedData === undefined) {
+  if (header === undefined || coreTimeline === undefined) {
     return (
       <div className="w-full px-4 py-6 sm:px-6 lg:px-8" />
     );
   }
 
-  if (!resolvedData) {
+  if (!header) {
     return (
       <div className="container mx-auto max-w-3xl px-4 py-6">
         <p className="text-muted-foreground text-sm">Character not found.</p>
@@ -3043,25 +3141,35 @@ function RouteComponent() {
     );
   }
 
-  const { character, snapshots } = resolvedData;
-  const owner = resolvedData.owner;
+  const { character, latestSnapshot, firstSnapshotAt, snapshotCount } = header;
+  const owner = header.owner;
   const isPinnedToQuickAccess = pinnedCharacterIdSet.has(characterId);
   const isBoosterCharacter = character.isBooster === true;
   const nonTradeableSlots = (character.nonTradeableSlots ?? []) as TradeSlotKey[];
-  const mythicPlusData = resolvedMythicPlus as MythicPlusData | null | undefined;
+  const mythicPlusData = mythicPlus as MythicPlusData | null | undefined;
   const normalizedDiscordUserIdInput = discordUserIdInput.trim();
   const hasDiscordUserIdChanges = normalizedDiscordUserIdInput !== (owner?.discordUserId ?? "");
   const hasTradeSlotChanges =
     JSON.stringify(nonTradeableSlotsDraft) !== JSON.stringify(nonTradeableSlots);
 
-  const latest = snapshots[snapshots.length - 1] ?? null;
-  const firstSnapshot = snapshots[0] ?? null;
+  const latest = (latestSnapshot as Snapshot | null) ?? null;
+  const coreSnapshots = (coreTimeline?.snapshots ?? []) as CoreChartSnapshot[];
+  const statsSnapshots =
+    needsStatsTimeline && statsTimeline ? (statsTimeline.snapshots as StatsChartSnapshot[]) : null;
+  const currencySnapshots =
+    needsCurrencyTimeline && currencyTimeline
+      ? (currencyTimeline.snapshots as CurrencyChartSnapshot[])
+      : null;
   const lastMythicPlusRunAt = mythicPlusData?.summary.overall.lastRunAt ?? null;
+  const trackingCountLabel = snapshotCount === null ? "Tracked Points" : "Snapshots";
+  const trackingCountValue =
+    snapshotCount === null ? coreSnapshots.length.toLocaleString() : snapshotCount.toLocaleString();
 
   const layoutProps: LayoutProps = {
     latest: latest!,
-    chartSnapshots,
-    filteredSnapshots: snapshots,
+    coreSnapshots,
+    statsSnapshots,
+    currencySnapshots,
     mythicPlus: mythicPlusData,
     characterId,
     characterName: character.name,
@@ -3069,7 +3177,7 @@ function RouteComponent() {
     characterRegion: character.region,
     currentMythicPlusScore: mythicPlusData?.summary.currentScore ?? latest?.mythicPlusScore ?? null,
     timeFrame,
-    setTimeFrame,
+    setTimeFrame: handleTimeFrameChange,
   };
 
   async function handleBoosterToggle() {
@@ -3400,8 +3508,8 @@ function RouteComponent() {
                   Tracking
                 </div>
                 <div className="mt-3 space-y-2">
-                  <StatRow label="Since" value={formatDate(firstSnapshot?.takenAt ?? latest.takenAt)} />
-                  <StatRow label="Snapshots" value={snapshots.length.toLocaleString()} />
+                  <StatRow label="Since" value={formatDate(firstSnapshotAt ?? latest.takenAt)} />
+                  <StatRow label={trackingCountLabel} value={trackingCountValue} />
                 </div>
               </div>
               <div className="rounded-md border border-border/60 bg-card px-4 py-3">
@@ -3427,10 +3535,16 @@ function RouteComponent() {
         )}
       </Card>
       {/* Active layout */}
-      {latest && snapshots.length > 0 && (
+      {latest && coreSnapshots.length > 0 && (
         <>
           {layoutMode === "overview" && <OverviewLayout {...layoutProps} />}
-          {layoutMode === "focus" && <FocusLayout {...layoutProps} />}
+          {layoutMode === "focus" && (
+            <FocusLayout
+              {...layoutProps}
+              metric={focusMetric}
+              setMetric={(metric) => startTransition(() => setFocusMetric(metric))}
+            />
+          )}
           {layoutMode === "timeline" && <TimelineLayout {...layoutProps} />}
         </>
       )}

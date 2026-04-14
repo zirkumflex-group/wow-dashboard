@@ -58,6 +58,7 @@ const snapshotValidator = v.object({
 
 type SnapshotDoc = Doc<"snapshots">;
 type CharacterDoc = Doc<"characters">;
+type CharacterDailySnapshotDoc = Doc<"characterDailySnapshots">;
 type SnapshotFields = Pick<
   SnapshotDoc,
   | "takenAt"
@@ -280,6 +281,29 @@ function shouldReplaceCharacterLatestSnapshot(
   if (nextSnapshot.takenAt > currentSnapshot.takenAt) return true;
   if (nextSnapshot.takenAt < currentSnapshot.takenAt) return false;
   return !isSameCharacterLatestSnapshot(currentSnapshot, nextSnapshot);
+}
+
+function getSnapshotDayStart(takenAt: number) {
+  return Math.floor(takenAt / 86400) * 86400;
+}
+
+function toCharacterDailySnapshotFields(snapshot: SnapshotFields) {
+  return {
+    dayStartAt: getSnapshotDayStart(snapshot.takenAt),
+    lastTakenAt: snapshot.takenAt,
+    itemLevel: snapshot.itemLevel,
+    gold: snapshot.gold,
+    playtimeSeconds: snapshot.playtimeSeconds,
+    mythicPlusScore: snapshot.mythicPlusScore,
+  };
+}
+
+function shouldReplaceCharacterDailySnapshot(
+  currentSnapshot: Pick<CharacterDailySnapshotDoc, "lastTakenAt"> | null,
+  nextSnapshot: SnapshotFields,
+) {
+  if (!currentSnapshot) return true;
+  return nextSnapshot.takenAt >= currentSnapshot.lastTakenAt;
 }
 
 function pickDefinedValue<T>(preferredValue: T | undefined, fallbackValue: T | undefined): T | undefined {
@@ -744,6 +768,35 @@ export const ingestAddonData = mutation({
 
       let nextCharacterLatestSnapshot = existing?.latestSnapshot;
       let shouldPersistLatestSnapshot = false;
+      let nextCharacterFirstSnapshotAt = existing?.firstSnapshotAt;
+      let nextCharacterSnapshotCount = existing?.snapshotCount;
+      let shouldPersistSnapshotMetadata = false;
+
+      if (nextCharacterFirstSnapshotAt === undefined || nextCharacterSnapshotCount === undefined) {
+        const existingSnapshots = await ctx.db
+          .query("snapshots")
+          .withIndex("by_character", (q) => q.eq("characterId", characterId))
+          .collect();
+
+        const seenTakenAt = new Set<number>();
+        let firstSnapshotAt: number | undefined;
+        for (const snapshot of existingSnapshots) {
+          if (seenTakenAt.has(snapshot.takenAt)) {
+            continue;
+          }
+          seenTakenAt.add(snapshot.takenAt);
+          if (firstSnapshotAt === undefined || snapshot.takenAt < firstSnapshotAt) {
+            firstSnapshotAt = snapshot.takenAt;
+          }
+        }
+
+        nextCharacterFirstSnapshotAt = firstSnapshotAt;
+        nextCharacterSnapshotCount = seenTakenAt.size;
+        shouldPersistSnapshotMetadata =
+          existing?.firstSnapshotAt !== nextCharacterFirstSnapshotAt ||
+          existing?.snapshotCount !== nextCharacterSnapshotCount;
+      }
+
       for (const snap of charData.snapshots) {
         const normalizedSpec = normalizeSnapshotSpec(snap.spec);
         if (!normalizedSpec) {
@@ -786,6 +839,7 @@ export const ingestAddonData = mutation({
           .first();
 
         let latestSnapshotCandidate: CharacterLatestSnapshot;
+        let dailySnapshotSource: SnapshotFields;
         if (!existingSnap) {
           await ctx.db.insert("snapshots", {
             characterId,
@@ -793,15 +847,42 @@ export const ingestAddonData = mutation({
           });
           newSnapshots++;
           latestSnapshotCandidate = toCharacterLatestSnapshot(nextSnapshot);
+          dailySnapshotSource = nextSnapshot;
+          nextCharacterFirstSnapshotAt =
+            nextCharacterFirstSnapshotAt === undefined
+              ? nextSnapshot.takenAt
+              : Math.min(nextCharacterFirstSnapshotAt, nextSnapshot.takenAt);
+          nextCharacterSnapshotCount = (nextCharacterSnapshotCount ?? 0) + 1;
+          shouldPersistSnapshotMetadata = true;
         } else {
           const existingSnapshotFields = toSnapshotFields(existingSnap);
           const mergedSnapshot = mergeSnapshotFields(existingSnapshotFields, nextSnapshot);
           if (!snapshotFieldsEqual(existingSnapshotFields, mergedSnapshot)) {
             await ctx.db.patch(existingSnap._id, mergedSnapshot);
             latestSnapshotCandidate = toCharacterLatestSnapshot(mergedSnapshot);
+            dailySnapshotSource = mergedSnapshot;
           } else {
             latestSnapshotCandidate = toCharacterLatestSnapshot(existingSnapshotFields);
+            dailySnapshotSource = existingSnapshotFields;
           }
+        }
+
+        const dayStartAt = getSnapshotDayStart(dailySnapshotSource.takenAt);
+        const existingDailySnapshot = await ctx.db
+          .query("characterDailySnapshots")
+          .withIndex("by_character_and_day", (q) =>
+            q.eq("characterId", characterId).eq("dayStartAt", dayStartAt),
+          )
+          .first();
+        const nextDailySnapshot = toCharacterDailySnapshotFields(dailySnapshotSource);
+
+        if (!existingDailySnapshot) {
+          await ctx.db.insert("characterDailySnapshots", {
+            characterId,
+            ...nextDailySnapshot,
+          });
+        } else if (shouldReplaceCharacterDailySnapshot(existingDailySnapshot, dailySnapshotSource)) {
+          await ctx.db.patch(existingDailySnapshot._id, nextDailySnapshot);
         }
 
         if (
@@ -813,10 +894,20 @@ export const ingestAddonData = mutation({
         }
       }
 
+      const characterPatch: Partial<CharacterDoc> = {};
       if (shouldPersistLatestSnapshot && nextCharacterLatestSnapshot) {
-        await ctx.db.patch(characterId, {
-          latestSnapshot: nextCharacterLatestSnapshot,
-        });
+        characterPatch.latestSnapshot = nextCharacterLatestSnapshot;
+      }
+      if (shouldPersistSnapshotMetadata) {
+        if (nextCharacterFirstSnapshotAt !== undefined) {
+          characterPatch.firstSnapshotAt = nextCharacterFirstSnapshotAt;
+        }
+        if (nextCharacterSnapshotCount !== undefined) {
+          characterPatch.snapshotCount = nextCharacterSnapshotCount;
+        }
+      }
+      if (Object.keys(characterPatch).length > 0) {
+        await ctx.db.patch(characterId, characterPatch);
       }
 
       const existingCharacterRuns = await ctx.db

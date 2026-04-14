@@ -20,6 +20,7 @@ import type * as loginCodes from "../loginCodes.js";
 import type * as mythicPlus from "../mythicPlus.js";
 import type * as players from "../players.js";
 import type * as rateLimiter from "../rateLimiter.js";
+import type * as schemas_characterDailySnapshots from "../schemas/characterDailySnapshots.js";
 import type * as schemas_characters from "../schemas/characters.js";
 import type * as schemas_mythicPlusRuns from "../schemas/mythicPlusRuns.js";
 import type * as schemas_players from "../schemas/players.js";
@@ -46,6 +47,7 @@ declare const fullApi: ApiFromModules<{
   mythicPlus: typeof mythicPlus;
   players: typeof players;
   rateLimiter: typeof rateLimiter;
+  "schemas/characterDailySnapshots": typeof schemas_characterDailySnapshots;
   "schemas/characters": typeof schemas_characters;
   "schemas/mythicPlusRuns": typeof schemas_mythicPlusRuns;
   "schemas/players": typeof schemas_players;

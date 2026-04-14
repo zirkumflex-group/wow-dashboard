@@ -45,6 +45,8 @@ export const charactersTable = defineTable({
   isBooster: v.optional(v.boolean()),
   nonTradeableSlots: v.optional(v.array(nonTradeableSlotValidator)),
   latestSnapshot: v.optional(latestSnapshotSummaryValidator),
+  firstSnapshotAt: v.optional(v.number()),
+  snapshotCount: v.optional(v.number()),
 })
   .index("by_player", ["playerId"])
   .index("by_player_and_realm", ["playerId", "realm"])

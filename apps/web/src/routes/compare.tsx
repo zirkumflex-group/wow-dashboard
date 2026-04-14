@@ -287,20 +287,20 @@ function RouteComponent() {
   const characterId3 = selectedCharacterIds[3] ?? null;
 
   const snapshots0 = useQuery(
-    api.characters.getCharacterSnapshots,
-    characterId0 ? { characterId: characterId0 as Id<"characters"> } : "skip",
+    api.characters.getCharacterSnapshotTimeline,
+    characterId0 ? { characterId: characterId0 as Id<"characters">, timeFrame } : "skip",
   );
   const snapshots1 = useQuery(
-    api.characters.getCharacterSnapshots,
-    characterId1 ? { characterId: characterId1 as Id<"characters"> } : "skip",
+    api.characters.getCharacterSnapshotTimeline,
+    characterId1 ? { characterId: characterId1 as Id<"characters">, timeFrame } : "skip",
   );
   const snapshots2 = useQuery(
-    api.characters.getCharacterSnapshots,
-    characterId2 ? { characterId: characterId2 as Id<"characters"> } : "skip",
+    api.characters.getCharacterSnapshotTimeline,
+    characterId2 ? { characterId: characterId2 as Id<"characters">, timeFrame } : "skip",
   );
   const snapshots3 = useQuery(
-    api.characters.getCharacterSnapshots,
-    characterId3 ? { characterId: characterId3 as Id<"characters"> } : "skip",
+    api.characters.getCharacterSnapshotTimeline,
+    characterId3 ? { characterId: characterId3 as Id<"characters">, timeFrame } : "skip",
   );
 
   const snapshotResults = [snapshots0, snapshots1, snapshots2, snapshots3];
