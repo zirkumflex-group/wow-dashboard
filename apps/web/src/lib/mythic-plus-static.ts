@@ -11,6 +11,8 @@ export type MythicPlusDungeonMeta = {
   shortName: string;
   iconUrl: string;
   timerMs: number;
+  easeRank: number;
+  easeTier: "S" | "A" | "B" | "C";
 };
 
 export const CURRENT_SEASON_DUNGEONS: MythicPlusDungeonMeta[] = [
@@ -20,6 +22,8 @@ export const CURRENT_SEASON_DUNGEONS: MythicPlusDungeonMeta[] = [
     shortName: "AA",
     iconUrl: "https://cdn.raiderio.net/images/wow/icons/large/achievement_dungeon_dragonacademy.jpg",
     timerMs: 30 * 60 * 1000,
+    easeRank: 5,
+    easeTier: "A",
   },
   {
     mapChallengeModeID: 558,
@@ -27,6 +31,8 @@ export const CURRENT_SEASON_DUNGEONS: MythicPlusDungeonMeta[] = [
     shortName: "MT",
     iconUrl: "https://cdn.raiderio.net/images/wow/icons/large/inv_achievement_dungeon_magistersterrace.jpg",
     timerMs: 34 * 60 * 1000,
+    easeRank: 6,
+    easeTier: "B",
   },
   {
     mapChallengeModeID: 560,
@@ -34,6 +40,8 @@ export const CURRENT_SEASON_DUNGEONS: MythicPlusDungeonMeta[] = [
     shortName: "MC",
     iconUrl: "https://cdn.raiderio.net/images/wow/icons/large/inv_achievement_dungeon_maisarahills.jpg",
     timerMs: 33 * 60 * 1000,
+    easeRank: 8,
+    easeTier: "C",
   },
   {
     mapChallengeModeID: 559,
@@ -41,6 +49,8 @@ export const CURRENT_SEASON_DUNGEONS: MythicPlusDungeonMeta[] = [
     shortName: "NPX",
     iconUrl: "https://cdn.raiderio.net/images/wow/icons/large/inv_achievement_dungeon_voidscararena.jpg",
     timerMs: 30 * 60 * 1000,
+    easeRank: 7,
+    easeTier: "B",
   },
   {
     mapChallengeModeID: 556,
@@ -48,6 +58,8 @@ export const CURRENT_SEASON_DUNGEONS: MythicPlusDungeonMeta[] = [
     shortName: "POS",
     iconUrl: "https://cdn.raiderio.net/images/wow/icons/large/achievement_dungeon_icecrown_pitofsaron.jpg",
     timerMs: 30 * 60 * 1000,
+    easeRank: 1,
+    easeTier: "S",
   },
   {
     mapChallengeModeID: 239,
@@ -55,6 +67,8 @@ export const CURRENT_SEASON_DUNGEONS: MythicPlusDungeonMeta[] = [
     shortName: "SEAT",
     iconUrl: "https://cdn.raiderio.net/images/wow/icons/large/achievement_boss_triumvirate_darknaaru.jpg",
     timerMs: 34 * 60 * 1000,
+    easeRank: 2,
+    easeTier: "A",
   },
   {
     mapChallengeModeID: 161,
@@ -62,6 +76,8 @@ export const CURRENT_SEASON_DUNGEONS: MythicPlusDungeonMeta[] = [
     shortName: "SR",
     iconUrl: "https://cdn.raiderio.net/images/wow/icons/large/achievement_dungeon_arakkoaspires.jpg",
     timerMs: 28 * 60 * 1000,
+    easeRank: 3,
+    easeTier: "A",
   },
   {
     mapChallengeModeID: 557,
@@ -69,6 +85,8 @@ export const CURRENT_SEASON_DUNGEONS: MythicPlusDungeonMeta[] = [
     shortName: "WS",
     iconUrl: "https://cdn.raiderio.net/images/wow/icons/large/inv_achievement_dungeon_windrunnerspire.jpg",
     timerMs: 33.5 * 60 * 1000,
+    easeRank: 4,
+    easeTier: "A",
   },
 ];
 
@@ -105,6 +123,13 @@ export function getMythicPlusDungeonTimerMs(
   mapName?: string | null,
 ) {
   return getMythicPlusDungeonMeta(mapChallengeModeID, mapName)?.timerMs ?? null;
+}
+
+export function getMythicPlusDungeonEaseRank(
+  mapChallengeModeID?: number | null,
+  mapName?: string | null,
+) {
+  return getMythicPlusDungeonMeta(mapChallengeModeID, mapName)?.easeRank ?? CURRENT_SEASON_DUNGEONS.length;
 }
 
 export function getRaiderIoScoreTier(score?: number | null) {

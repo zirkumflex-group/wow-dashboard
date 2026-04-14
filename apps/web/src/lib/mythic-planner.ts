@@ -1,3 +1,5 @@
+import { getMythicPlusDungeonEaseRank } from "./mythic-plus-static";
+
 export type MythicPlannerDungeonInput = {
   mapChallengeModeID: number | null;
   mapName: string;
@@ -24,6 +26,7 @@ export type MythicPlannerRunSuggestion = {
   level: number;
   requiredDurationMs: number;
   runState: "timed" | "depleted";
+  requiredUpgradeCount: 0 | 1 | 2 | 3;
 };
 
 export type MythicPlannerPlanOption = {
@@ -54,6 +57,8 @@ type MythicPlannerStrategy = MythicPlannerPlanOption["id"];
 
 type ReducedCandidate = MythicPlannerRunSuggestion & {
   gainUnits: number;
+  easeRank: number;
+  timingPressure: number;
 };
 
 type PlanState = {
@@ -63,6 +68,10 @@ type PlanState = {
   highestLevel: number;
   timedRuns: number;
   depletedRuns: number;
+  hardestEaseRank: number;
+  totalEaseRank: number;
+  highestTimingPressure: number;
+  totalTimingPressure: number;
   runs: ReducedCandidate[];
 };
 
@@ -150,6 +159,33 @@ function getRequiredDurationMs(level: number, timerMs: number, score: number) {
   return Math.round(timerMs * (1 - overtimeFraction));
 }
 
+function getTimingPressure(timerMs: number, requiredDurationMs: number, runState: "timed" | "depleted") {
+  if (runState === "depleted") {
+    return 0;
+  }
+
+  return clamp((timerMs - requiredDurationMs) / timerMs, 0, 0.4);
+}
+
+function getRequiredUpgradeCount(
+  timerMs: number,
+  requiredDurationMs: number,
+  runState: "timed" | "depleted",
+): 0 | 1 | 2 | 3 {
+  if (runState === "depleted") {
+    return 0;
+  }
+
+  const remainingFraction = clamp((timerMs - requiredDurationMs) / timerMs, 0, 0.4);
+  if (remainingFraction >= 0.4) {
+    return 3;
+  }
+  if (remainingFraction >= 0.2) {
+    return 2;
+  }
+  return 1;
+}
+
 function compareCandidate(
   strategy: MythicPlannerStrategy,
   current: ReducedCandidate | undefined,
@@ -157,12 +193,12 @@ function compareCandidate(
 ) {
   if (!current) return true;
 
-  const currentStatePenalty = current.runState === "timed" ? 0 : 1;
-  const candidateStatePenalty = candidate.runState === "timed" ? 0 : 1;
-  const stateComparison = compareNumbers(candidateStatePenalty, currentStatePenalty);
-  if (stateComparison !== 0) return stateComparison < 0;
-
   if (strategy === "fastest") {
+    const currentStatePenalty = current.runState === "timed" ? 0 : 1;
+    const candidateStatePenalty = candidate.runState === "timed" ? 0 : 1;
+    const stateComparison = compareNumbers(candidateStatePenalty, currentStatePenalty);
+    if (stateComparison !== 0) return stateComparison < 0;
+
     const durationComparison = compareNumbers(candidate.requiredDurationMs, current.requiredDurationMs);
     if (durationComparison !== 0) return durationComparison < 0;
 
@@ -175,8 +211,11 @@ function compareCandidate(
   const levelComparison = compareNumbers(candidate.level, current.level);
   if (levelComparison !== 0) return levelComparison < 0;
 
-  const durationComparison = compareNumbers(candidate.requiredDurationMs, current.requiredDurationMs);
-  if (durationComparison !== 0) return durationComparison > 0;
+  const easeRankComparison = compareNumbers(candidate.easeRank, current.easeRank);
+  if (easeRankComparison !== 0) return easeRankComparison < 0;
+
+  const timingPressureComparison = compareNumbers(candidate.timingPressure, current.timingPressure);
+  if (timingPressureComparison !== 0) return timingPressureComparison < 0;
 
   return candidate.projectedScore < current.projectedScore;
 }
@@ -201,6 +240,7 @@ function buildReducedCandidatesForDungeon(
         Math.ceil((projectedScore - dungeon.currentScore) * SCORE_UNIT),
       );
       if (gainUnits <= 0) continue;
+      const requiredDurationMs = getRequiredDurationMs(level, dungeon.timerMs, projectedScore);
 
       const candidate: ReducedCandidate = {
         dungeonKey: getMythicPlannerDungeonKey(dungeon),
@@ -212,8 +252,15 @@ function buildReducedCandidatesForDungeon(
         gain: projectedScore - dungeon.currentScore,
         gainUnits,
         level,
-        requiredDurationMs: getRequiredDurationMs(level, dungeon.timerMs, projectedScore),
+        requiredDurationMs,
         runState: "timed",
+        requiredUpgradeCount: getRequiredUpgradeCount(dungeon.timerMs, requiredDurationMs, "timed"),
+        easeRank: getMythicPlusDungeonEaseRank(dungeon.mapChallengeModeID, dungeon.mapName),
+        timingPressure: getTimingPressure(
+          dungeon.timerMs,
+          requiredDurationMs,
+          "timed",
+        ),
       };
 
       if (compareCandidate(strategy, reduced.get(gainUnits), candidate)) {
@@ -233,6 +280,7 @@ function buildReducedCandidatesForDungeon(
         Math.ceil((projectedScore - dungeon.currentScore) * SCORE_UNIT),
       );
       if (gainUnits <= 0) continue;
+      const requiredDurationMs = getRequiredDurationMs(level, dungeon.timerMs, projectedScore);
 
       const candidate: ReducedCandidate = {
         dungeonKey: getMythicPlannerDungeonKey(dungeon),
@@ -244,8 +292,15 @@ function buildReducedCandidatesForDungeon(
         gain: projectedScore - dungeon.currentScore,
         gainUnits,
         level,
-        requiredDurationMs: getRequiredDurationMs(level, dungeon.timerMs, projectedScore),
+        requiredDurationMs,
         runState: "depleted",
+        requiredUpgradeCount: getRequiredUpgradeCount(dungeon.timerMs, requiredDurationMs, "depleted"),
+        easeRank: getMythicPlusDungeonEaseRank(dungeon.mapChallengeModeID, dungeon.mapName),
+        timingPressure: getTimingPressure(
+          dungeon.timerMs,
+          requiredDurationMs,
+          "depleted",
+        ),
       };
 
       if (compareCandidate(strategy, reduced.get(gainUnits), candidate)) {
@@ -265,6 +320,10 @@ function getEmptyPlanState(): PlanState {
     highestLevel: 0,
     timedRuns: 0,
     depletedRuns: 0,
+    hardestEaseRank: 0,
+    totalEaseRank: 0,
+    highestTimingPressure: 0,
+    totalTimingPressure: 0,
     runs: [],
   };
 }
@@ -277,6 +336,10 @@ function appendPlanState(state: PlanState, candidate: ReducedCandidate, gainUnit
     highestLevel: Math.max(state.highestLevel, candidate.level),
     timedRuns: state.timedRuns + (candidate.runState === "timed" ? 1 : 0),
     depletedRuns: state.depletedRuns + (candidate.runState === "depleted" ? 1 : 0),
+    hardestEaseRank: Math.max(state.hardestEaseRank, candidate.easeRank),
+    totalEaseRank: state.totalEaseRank + candidate.easeRank,
+    highestTimingPressure: Math.max(state.highestTimingPressure, candidate.timingPressure),
+    totalTimingPressure: state.totalTimingPressure + candidate.timingPressure,
     runs: [...state.runs, candidate],
   };
 }
@@ -310,13 +373,34 @@ function comparePlanState(
   const totalLevelComparison = compareNumbers(candidate.totalLevel, current.totalLevel);
   if (totalLevelComparison !== 0) return totalLevelComparison < 0;
 
+  const hardestEaseRankComparison = compareNumbers(candidate.hardestEaseRank, current.hardestEaseRank);
+  if (hardestEaseRankComparison !== 0) return hardestEaseRankComparison < 0;
+
+  const averageEaseRankComparison = compareNumbers(
+    candidate.totalEaseRank / candidate.runs.length,
+    current.totalEaseRank / current.runs.length,
+  );
+  if (averageEaseRankComparison !== 0) return averageEaseRankComparison < 0;
+
+  const highestTimingPressureComparison = compareNumbers(
+    candidate.highestTimingPressure,
+    current.highestTimingPressure,
+  );
+  if (highestTimingPressureComparison !== 0) return highestTimingPressureComparison < 0;
+
+  const timingPressureComparison = compareNumbers(
+    candidate.totalTimingPressure / candidate.runs.length,
+    current.totalTimingPressure / current.runs.length,
+  );
+  if (timingPressureComparison !== 0) return timingPressureComparison < 0;
+
+  const easeRankComparison = compareNumbers(candidate.totalEaseRank, current.totalEaseRank);
+  if (easeRankComparison !== 0) return easeRankComparison < 0;
+
   const depletedComparison = compareNumbers(candidate.depletedRuns, current.depletedRuns);
   if (depletedComparison !== 0) return depletedComparison < 0;
 
-  const durationComparison = compareNumbers(candidate.totalDurationMs, current.totalDurationMs);
-  if (durationComparison !== 0) return durationComparison > 0;
-
-  return candidate.runs.length < current.runs.length;
+  return candidate.runs.length > current.runs.length;
 }
 
 function buildPlanForStrategy(
@@ -364,7 +448,7 @@ function buildPlanForStrategy(
 
   const descriptions: Record<MythicPlannerStrategy, string> = {
     fastest: "Higher keys and fewer runs to close the gap quickly.",
-    easiest: "Prioritizes lower keys, even if the route takes longer.",
+    easiest: "Prioritizes easier dungeons and softer timer requirements.",
   };
 
   const labels: Record<MythicPlannerStrategy, string> = {
@@ -388,7 +472,12 @@ function buildPlanForStrategy(
       if (strategy === "fastest") {
         return b.gain - a.gain || b.level - a.level || a.requiredDurationMs - b.requiredDurationMs;
       }
-      return a.level - b.level || a.requiredDurationMs - b.requiredDurationMs || b.gain - a.gain;
+      return (
+        a.easeRank - b.easeRank ||
+        a.level - b.level ||
+        a.timingPressure - b.timingPressure ||
+        b.gain - a.gain
+      );
     }),
   };
 }
