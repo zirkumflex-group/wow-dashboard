@@ -4,6 +4,11 @@ import type { Doc } from "./_generated/dataModel";
 import { mutation, query } from "./_generated/server";
 import { authComponent } from "./auth";
 import {
+  buildMythicPlusSummary,
+  buildRecentRuns,
+  dedupeMythicPlusRuns as dedupeMythicPlusRunRows,
+} from "./characters";
+import {
   buildCanonicalMythicPlusRunFingerprint,
   canUseMythicPlusRunCompatibilityAliasMatch,
   getMythicPlusRunAttemptId,
@@ -75,6 +80,11 @@ type SnapshotFields = Pick<
   | "stats"
 >;
 type CharacterLatestSnapshot = NonNullable<CharacterDoc["latestSnapshot"]>;
+type CharacterLatestSnapshotDetails = NonNullable<CharacterDoc["latestSnapshotDetails"]>;
+type CharacterMythicPlusSummary = NonNullable<CharacterDoc["mythicPlusSummary"]>;
+type CharacterMythicPlusRecentRunPreview = NonNullable<
+  CharacterDoc["mythicPlusRecentRunsPreview"]
+>;
 type MythicPlusRunDoc = Doc<"mythicPlusRuns"> & { canonicalKey?: string };
 type MythicPlusRunMembers = MythicPlusRunDoc["members"];
 type MythicPlusRunInput = Omit<MythicPlusRunDoc, "_id" | "_creationTime" | "characterId">;
@@ -102,6 +112,7 @@ type MythicPlusRunPatch = {
 };
 const LEGACY_DST_SHIFT_SECONDS = 60 * 60;
 const LEGACY_DST_SHIFT_TOLERANCE_SECONDS = 2 * 60;
+const MYTHIC_PLUS_PREVIEW_RUN_LIMIT = 20;
 
 type ExistingRunLookups = {
   byAttemptId: Map<string, MythicPlusRunDoc>;
@@ -242,6 +253,25 @@ function toCharacterLatestSnapshot(snapshot: SnapshotFields): CharacterLatestSna
   };
 }
 
+function toCharacterLatestSnapshotDetails(
+  snapshot: SnapshotFields,
+): CharacterLatestSnapshotDetails {
+  return {
+    takenAt: snapshot.takenAt,
+    level: snapshot.level,
+    spec: snapshot.spec,
+    role: snapshot.role,
+    itemLevel: snapshot.itemLevel,
+    gold: snapshot.gold,
+    playtimeSeconds: snapshot.playtimeSeconds,
+    playtimeThisLevelSeconds: snapshot.playtimeThisLevelSeconds,
+    mythicPlusScore: snapshot.mythicPlusScore,
+    ownedKeystone: snapshot.ownedKeystone,
+    currencies: snapshot.currencies,
+    stats: snapshot.stats,
+  };
+}
+
 function isSameCharacterLatestSnapshot(
   currentSnapshot: CharacterLatestSnapshot | undefined,
   nextSnapshot: CharacterLatestSnapshot | undefined,
@@ -281,6 +311,15 @@ function shouldReplaceCharacterLatestSnapshot(
   if (nextSnapshot.takenAt > currentSnapshot.takenAt) return true;
   if (nextSnapshot.takenAt < currentSnapshot.takenAt) return false;
   return !isSameCharacterLatestSnapshot(currentSnapshot, nextSnapshot);
+}
+
+function isSameCharacterLatestSnapshotDetails(
+  currentSnapshot: CharacterLatestSnapshotDetails | undefined,
+  nextSnapshot: CharacterLatestSnapshotDetails | undefined,
+) {
+  if (!currentSnapshot && !nextSnapshot) return true;
+  if (!currentSnapshot || !nextSnapshot) return false;
+  return snapshotFieldsEqual(currentSnapshot, nextSnapshot);
 }
 
 function getSnapshotDayStart(takenAt: number) {
@@ -767,7 +806,9 @@ export const ingestAddonData = mutation({
       }
 
       let nextCharacterLatestSnapshot = existing?.latestSnapshot;
+      let nextCharacterLatestSnapshotDetails = existing?.latestSnapshotDetails;
       let shouldPersistLatestSnapshot = false;
+      let shouldPersistLatestSnapshotDetails = false;
       let nextCharacterFirstSnapshotAt = existing?.firstSnapshotAt;
       let nextCharacterSnapshotCount = existing?.snapshotCount;
       let shouldPersistSnapshotMetadata = false;
@@ -839,6 +880,7 @@ export const ingestAddonData = mutation({
           .first();
 
         let latestSnapshotCandidate: CharacterLatestSnapshot;
+        let latestSnapshotDetailsCandidate: CharacterLatestSnapshotDetails;
         let dailySnapshotSource: SnapshotFields;
         if (!existingSnap) {
           await ctx.db.insert("snapshots", {
@@ -847,6 +889,7 @@ export const ingestAddonData = mutation({
           });
           newSnapshots++;
           latestSnapshotCandidate = toCharacterLatestSnapshot(nextSnapshot);
+          latestSnapshotDetailsCandidate = toCharacterLatestSnapshotDetails(nextSnapshot);
           dailySnapshotSource = nextSnapshot;
           nextCharacterFirstSnapshotAt =
             nextCharacterFirstSnapshotAt === undefined
@@ -860,9 +903,11 @@ export const ingestAddonData = mutation({
           if (!snapshotFieldsEqual(existingSnapshotFields, mergedSnapshot)) {
             await ctx.db.patch(existingSnap._id, mergedSnapshot);
             latestSnapshotCandidate = toCharacterLatestSnapshot(mergedSnapshot);
+            latestSnapshotDetailsCandidate = toCharacterLatestSnapshotDetails(mergedSnapshot);
             dailySnapshotSource = mergedSnapshot;
           } else {
             latestSnapshotCandidate = toCharacterLatestSnapshot(existingSnapshotFields);
+            latestSnapshotDetailsCandidate = toCharacterLatestSnapshotDetails(existingSnapshotFields);
             dailySnapshotSource = existingSnapshotFields;
           }
         }
@@ -892,11 +937,24 @@ export const ingestAddonData = mutation({
           nextCharacterLatestSnapshot = latestSnapshotCandidate;
           shouldPersistLatestSnapshot = true;
         }
+        if (
+          nextCharacterLatestSnapshot?.takenAt === latestSnapshotCandidate.takenAt &&
+          !isSameCharacterLatestSnapshotDetails(
+            nextCharacterLatestSnapshotDetails,
+            latestSnapshotDetailsCandidate,
+          )
+        ) {
+          nextCharacterLatestSnapshotDetails = latestSnapshotDetailsCandidate;
+          shouldPersistLatestSnapshotDetails = true;
+        }
       }
 
       const characterPatch: Partial<CharacterDoc> = {};
       if (shouldPersistLatestSnapshot && nextCharacterLatestSnapshot) {
         characterPatch.latestSnapshot = nextCharacterLatestSnapshot;
+      }
+      if (shouldPersistLatestSnapshotDetails && nextCharacterLatestSnapshotDetails) {
+        characterPatch.latestSnapshotDetails = nextCharacterLatestSnapshotDetails;
       }
       if (shouldPersistSnapshotMetadata) {
         if (nextCharacterFirstSnapshotAt !== undefined) {
@@ -914,6 +972,7 @@ export const ingestAddonData = mutation({
         .query("mythicPlusRuns")
         .withIndex("by_character", (q) => q.eq("characterId", characterId))
         .collect();
+      const currentCharacterRuns = new Map(existingCharacterRuns.map((run) => [run._id, run] as const));
 
       const existingRunLookups = {
         byAttemptId: new Map<string, MythicPlusRunDoc>(),
@@ -1032,6 +1091,31 @@ export const ingestAddonData = mutation({
             } as MythicPlusRunDoc,
             [nextRun.fingerprint, nextFingerprint],
           );
+          currentCharacterRuns.set(insertedId, {
+            _id: insertedId,
+            _creationTime: now,
+            characterId,
+            fingerprint: nextFingerprint,
+            attemptId: nextRun.attemptId,
+            canonicalKey: nextRun.canonicalKey,
+            observedAt: nextRun.observedAt,
+            seasonID: nextRun.seasonID,
+            mapChallengeModeID: nextRun.mapChallengeModeID,
+            mapName: nextRun.mapName,
+            level: nextRun.level,
+            status: nextRun.status,
+            completed: nextRun.completed,
+            completedInTime: nextRun.completedInTime,
+            durationMs: nextRun.durationMs,
+            runScore: nextRun.runScore,
+            startDate: nextRun.startDate,
+            completedAt: nextRun.completedAt,
+            endedAt: nextRun.endedAt,
+            abandonedAt: nextRun.abandonedAt,
+            abandonReason: nextRun.abandonReason,
+            thisWeek: nextRun.thisWeek,
+            members: nextRun.members,
+          } as MythicPlusRunDoc);
           newMythicPlusRuns++;
         } else {
           const mergedRun = mergeMythicPlusRunData(existingRun, nextRun);
@@ -1039,6 +1123,10 @@ export const ingestAddonData = mutation({
 
           if (Object.keys(patch).length > 0) {
             await ctx.db.patch(existingRun._id, patch as any);
+            currentCharacterRuns.set(existingRun._id, {
+              ...existingRun,
+              ...patch,
+            });
             registerRunLookups(
               existingRunLookups,
               { ...existingRun, ...patch },
@@ -1052,6 +1140,35 @@ export const ingestAddonData = mutation({
             ]);
           }
         }
+      }
+
+      const currentScore =
+        nextCharacterLatestSnapshot?.mythicPlusScore ??
+        nextCharacterLatestSnapshotDetails?.mythicPlusScore ??
+        null;
+      const dedupedRuns = dedupeMythicPlusRunRows(Array.from(currentCharacterRuns.values()));
+      const recentRuns = buildRecentRuns(dedupedRuns);
+      const mythicPlusSummary = buildMythicPlusSummary(
+        dedupedRuns,
+        currentScore,
+      ) as CharacterMythicPlusSummary;
+      const mythicPlusRecentRunsPreview = recentRuns.slice(
+        0,
+        MYTHIC_PLUS_PREVIEW_RUN_LIMIT,
+      ) as CharacterMythicPlusRecentRunPreview;
+      const mythicPlusRunCount = recentRuns.length;
+
+      if (
+        JSON.stringify(existing?.mythicPlusSummary ?? null) !== JSON.stringify(mythicPlusSummary) ||
+        JSON.stringify(existing?.mythicPlusRecentRunsPreview ?? null) !==
+          JSON.stringify(mythicPlusRecentRunsPreview) ||
+        existing?.mythicPlusRunCount !== mythicPlusRunCount
+      ) {
+        await ctx.db.patch(characterId, {
+          mythicPlusSummary,
+          mythicPlusRecentRunsPreview,
+          mythicPlusRunCount,
+        });
       }
 
       collapsedMythicPlusRuns += await collapseDuplicateMythicPlusRunsForCharacter(ctx, characterId);

@@ -50,7 +50,7 @@ import {
   EyeOff,
   Zap,
 } from "lucide-react";
-import { startTransition, useCallback, useEffect, useRef, useState } from "react";
+import { memo, startTransition, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   CartesianGrid,
@@ -1052,6 +1052,8 @@ function MythicPlusResultBadge({ run }: { run: MythicPlusRun }) {
 
 function MythicPlusSection({
   data,
+  isLoadingAllRuns,
+  onRequestAllRuns,
   characterId,
   characterName,
   characterRealm,
@@ -1059,6 +1061,8 @@ function MythicPlusSection({
   currentScore,
 }: {
   data: MythicPlusData | null | undefined;
+  isLoadingAllRuns: boolean;
+  onRequestAllRuns: () => void;
   characterId: string;
   characterName: string;
   characterRealm: string;
@@ -1077,8 +1081,8 @@ function MythicPlusSection({
   const [summaryCardHeight, setSummaryCardHeight] = useState<number | null>(null);
   const summaryCardRef = useRef<HTMLDivElement | null>(null);
   const latestRunResetKey = data?.runs[0] ? getRecentRunRowKey(data.runs[0]) : "";
-  const recentRunsResetKey = `${data?.runs.length ?? 0}:${latestRunResetKey}`;
-  const totalRunCount = data?.runs.length ?? 0;
+  const recentRunsResetKey = `${data?.totalRunCount ?? 0}:${latestRunResetKey}`;
+  const totalRunCount = data?.totalRunCount ?? 0;
   const hasMoreRecentRuns = visibleRecentRunCount < totalRunCount;
 
   useEffect(() => {
@@ -1154,16 +1158,21 @@ function MythicPlusSection({
   }
 
   const currentSeason = summary.currentSeason;
-  const visibleRecentRuns = runs.slice(0, visibleRecentRunCount);
+  const visibleRecentRuns = runs.slice(0, Math.min(visibleRecentRunCount, runs.length));
   const nextRecentRunCount = Math.min(
     RECENT_RUN_LOAD_INCREMENT,
-    runs.length - visibleRecentRunCount,
+    totalRunCount - visibleRecentRunCount,
   );
+  const shouldRequestAllRuns = data.isPreview;
 
   function loadMoreRecentRuns() {
-    setVisibleRecentRunCount((currentValue) =>
-      Math.min(currentValue + RECENT_RUN_LOAD_INCREMENT, runs.length),
-    );
+    setVisibleRecentRunCount((currentValue) => {
+      const nextVisibleCount = Math.min(currentValue + RECENT_RUN_LOAD_INCREMENT, totalRunCount);
+      if (nextVisibleCount > runs.length && shouldRequestAllRuns) {
+        onRequestAllRuns();
+      }
+      return nextVisibleCount;
+    });
   }
 
   return (
@@ -1401,8 +1410,13 @@ function MythicPlusSection({
                   {hasMoreRecentRuns && (
                     <tr className="bg-muted/10">
                       <td colSpan={6} className="px-3 py-3 text-center">
-                        <Button size="sm" variant="outline" onClick={loadMoreRecentRuns}>
-                          Load {nextRecentRunCount} More
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={loadMoreRecentRuns}
+                          disabled={isLoadingAllRuns}
+                        >
+                          {isLoadingAllRuns ? "Loading more..." : `Load ${nextRecentRunCount} More`}
                         </Button>
                       </td>
                     </tr>
@@ -1545,6 +1559,8 @@ type LayoutProps = {
   statsSnapshots?: StatsChartSnapshot[] | null;
   currencySnapshots?: CurrencyChartSnapshot[] | null;
   mythicPlus?: MythicPlusData | null;
+  mythicPlusIsLoadingAllRuns?: boolean;
+  requestAllMythicPlusRuns?: () => void;
   characterId: string;
   characterName: string;
   characterRealm: string;
@@ -1643,46 +1659,13 @@ type MythicPlusSummary = {
 type MythicPlusData = {
   runs: MythicPlusRun[];
   summary: MythicPlusSummary;
+  totalRunCount: number;
+  isPreview: boolean;
 };
 
 // ── Snapshot grouping ─────────────────────────────────────────────────────────
 
-function groupSnapshotsAuto(snapshots: Snapshot[]): Snapshot[] {
-  if (snapshots.length <= 30) return snapshots;
-
-  function groupBy(snaps: Snapshot[], key: (s: Snapshot) => string): Snapshot[] {
-    const map = new Map<string, Snapshot>();
-    for (const s of snaps) map.set(key(s), s);
-    return [...map.values()];
-  }
-
-  const toDay = (s: Snapshot) => {
-    const d = new Date(s.takenAt * 1000);
-    return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
-  };
-  const toWeek = (s: Snapshot) => {
-    const d = new Date(s.takenAt * 1000);
-    const diff = d.getDay() === 0 ? -6 : 1 - d.getDay();
-    const mon = new Date(d);
-    mon.setDate(d.getDate() + diff);
-    return `${mon.getFullYear()}-${mon.getMonth()}-${mon.getDate()}`;
-  };
-  const toMonth = (s: Snapshot) => {
-    const d = new Date(s.takenAt * 1000);
-    return `${d.getFullYear()}-${d.getMonth()}`;
-  };
-
-  const daily = groupBy(snapshots, toDay);
-  if (daily.length <= 30) return daily.length >= 2 ? daily : snapshots.slice(-30);
-  const weekly = groupBy(snapshots, toWeek);
-  if (weekly.length <= 30) return weekly.length >= 2 ? weekly : snapshots.slice(-30);
-  const monthly = groupBy(snapshots, toMonth);
-  return monthly.length >= 2 ? monthly : snapshots.slice(-30);
-}
-
 // ── Chart palette ─────────────────────────────────────────────────────────────
-
-void groupSnapshotsAuto;
 
 const C = {
   blue: "oklch(0.72 0.20 245)",
@@ -2493,6 +2476,8 @@ function OverviewLayout({
   latest,
   coreSnapshots,
   mythicPlus,
+  mythicPlusIsLoadingAllRuns,
+  requestAllMythicPlusRuns,
   characterId,
   characterName,
   characterRealm,
@@ -2537,6 +2522,8 @@ function OverviewLayout({
 
           <MythicPlusSection
             data={mythicPlus}
+            isLoadingAllRuns={mythicPlusIsLoadingAllRuns ?? false}
+            onRequestAllRuns={requestAllMythicPlusRuns ?? (() => undefined)}
             characterId={characterId}
             characterName={characterName}
             characterRealm={characterRealm}
@@ -3028,6 +3015,90 @@ function CharacterLinks({ region, realm, name }: { region: string; realm: string
   );
 }
 
+type CharacterPageContentProps = {
+  latest: Snapshot;
+  coreSnapshots: CoreChartSnapshot[];
+  statsSnapshots: StatsChartSnapshot[] | null;
+  currencySnapshots: CurrencyChartSnapshot[] | null;
+  mythicPlusData: MythicPlusData | null | undefined;
+  isLoadingAllMythicPlusRuns: boolean;
+  onRequestAllMythicPlusRuns: () => void;
+  characterId: string;
+  characterName: string;
+  characterRealm: string;
+  characterRegion: string;
+  currentMythicPlusScore: number | null;
+  timeFrame: TimeFrame;
+  onTimeFrameChange: (timeFrame: TimeFrame) => void;
+  layoutMode: LayoutMode;
+  focusMetric: FocusMetric;
+  onFocusMetricChange: (metric: FocusMetric) => void;
+};
+
+const CharacterPageContent = memo(function CharacterPageContent({
+  latest,
+  coreSnapshots,
+  statsSnapshots,
+  currencySnapshots,
+  mythicPlusData,
+  isLoadingAllMythicPlusRuns,
+  onRequestAllMythicPlusRuns,
+  characterId,
+  characterName,
+  characterRealm,
+  characterRegion,
+  currentMythicPlusScore,
+  timeFrame,
+  onTimeFrameChange,
+  layoutMode,
+  focusMetric,
+  onFocusMetricChange,
+}: CharacterPageContentProps) {
+  const layoutProps: LayoutProps = {
+    latest,
+    coreSnapshots,
+    statsSnapshots,
+    currencySnapshots,
+    mythicPlus: mythicPlusData,
+    mythicPlusIsLoadingAllRuns: isLoadingAllMythicPlusRuns,
+    requestAllMythicPlusRuns: onRequestAllMythicPlusRuns,
+    characterId,
+    characterName,
+    characterRealm,
+    characterRegion,
+    currentMythicPlusScore,
+    timeFrame,
+    setTimeFrame: onTimeFrameChange,
+  };
+
+  return (
+    <>
+      {layoutMode === "overview" && <OverviewLayout {...layoutProps} />}
+      {layoutMode === "focus" && (
+        <FocusLayout
+          {...layoutProps}
+          metric={focusMetric}
+          setMetric={onFocusMetricChange}
+        />
+      )}
+      {layoutMode === "timeline" && <TimelineLayout {...layoutProps} />}
+
+      {layoutMode !== "overview" && (
+        <MythicPlusSection
+          data={mythicPlusData}
+          isLoadingAllRuns={isLoadingAllMythicPlusRuns}
+          onRequestAllRuns={onRequestAllMythicPlusRuns}
+          characterId={characterId}
+          characterName={characterName}
+          characterRealm={characterRealm}
+          characterRegion={characterRegion}
+          currentScore={currentMythicPlusScore}
+        />
+      )}
+    </>
+  );
+});
+
 function RouteComponent() {
   const { characterId } = Route.useParams();
   const [timeFrame, setTimeFrame] = useState<TimeFrame>("30d");
@@ -3039,6 +3110,7 @@ function RouteComponent() {
   const [isSavingTradeSlots, setIsSavingTradeSlots] = useState(false);
   const [isDiscordSheetOpen, setIsDiscordSheetOpen] = useState(false);
   const [focusMetric, setFocusMetric] = useState<FocusMetric>("ilvl");
+  const [shouldLoadFullMythicPlusRuns, setShouldLoadFullMythicPlusRuns] = useState(false);
   const [layoutMode, setLayoutMode] = useState<LayoutMode>(() => {
     try {
       return (localStorage.getItem("wow-char-layout") as LayoutMode) ?? "overview";
@@ -3056,6 +3128,14 @@ function RouteComponent() {
   const mythicPlus = useQuery(api.characters.getCharacterMythicPlus, {
     characterId: characterId as Id<"characters">,
   });
+  const mythicPlusAllRuns = useQuery(
+    api.characters.getCharacterMythicPlusAllRuns,
+    shouldLoadFullMythicPlusRuns
+      ? {
+          characterId: characterId as Id<"characters">,
+        }
+      : "skip",
+  );
   const setCharacterBoosterStatus = useMutation((api as any).characters.setCharacterBoosterStatus);
   const setCharacterNonTradeableSlots = useMutation(
     (api as any).characters.setCharacterNonTradeableSlots,
@@ -3091,6 +3171,10 @@ function RouteComponent() {
   }, [characterId, header?.owner?.discordUserId]);
 
   useEffect(() => {
+    setShouldLoadFullMythicPlusRuns(false);
+  }, [characterId]);
+
+  useEffect(() => {
     setNonTradeableSlotsDraft(
       normalizeTradeSlotKeys((header?.character.nonTradeableSlots ?? []) as TradeSlotKey[]),
     );
@@ -3121,11 +3205,21 @@ function RouteComponent() {
     }
   }
 
-  function handleTimeFrameChange(nextFrame: TimeFrame) {
+  const handleTimeFrameChange = useCallback((nextFrame: TimeFrame) => {
     startTransition(() => {
       setTimeFrame(nextFrame);
     });
-  }
+  }, []);
+
+  const handleFocusMetricChange = useCallback((metric: FocusMetric) => {
+    startTransition(() => {
+      setFocusMetric(metric);
+    });
+  }, []);
+
+  const handleRequestAllMythicPlusRuns = useCallback(() => {
+    setShouldLoadFullMythicPlusRuns(true);
+  }, []);
 
   if (header === undefined || coreTimeline === undefined) {
     return (
@@ -3146,7 +3240,18 @@ function RouteComponent() {
   const isPinnedToQuickAccess = pinnedCharacterIdSet.has(characterId);
   const isBoosterCharacter = character.isBooster === true;
   const nonTradeableSlots = (character.nonTradeableSlots ?? []) as TradeSlotKey[];
-  const mythicPlusData = mythicPlus as MythicPlusData | null | undefined;
+  const baseMythicPlusData = mythicPlus as MythicPlusData | null | undefined;
+  const mythicPlusData =
+    baseMythicPlusData === undefined || baseMythicPlusData === null
+      ? baseMythicPlusData
+      : {
+          ...baseMythicPlusData,
+          runs: mythicPlusAllRuns?.runs ?? baseMythicPlusData.runs,
+          totalRunCount: mythicPlusAllRuns?.totalRunCount ?? baseMythicPlusData.totalRunCount,
+          isPreview: mythicPlusAllRuns ? false : baseMythicPlusData.isPreview,
+        };
+  const isLoadingAllMythicPlusRuns =
+    shouldLoadFullMythicPlusRuns && mythicPlusAllRuns === undefined;
   const normalizedDiscordUserIdInput = discordUserIdInput.trim();
   const hasDiscordUserIdChanges = normalizedDiscordUserIdInput !== (owner?.discordUserId ?? "");
   const hasTradeSlotChanges =
@@ -3164,21 +3269,6 @@ function RouteComponent() {
   const trackingCountLabel = snapshotCount === null ? "Tracked Points" : "Snapshots";
   const trackingCountValue =
     snapshotCount === null ? coreSnapshots.length.toLocaleString() : snapshotCount.toLocaleString();
-
-  const layoutProps: LayoutProps = {
-    latest: latest!,
-    coreSnapshots,
-    statsSnapshots,
-    currencySnapshots,
-    mythicPlus: mythicPlusData,
-    characterId,
-    characterName: character.name,
-    characterRealm: character.realm,
-    characterRegion: character.region,
-    currentMythicPlusScore: mythicPlusData?.summary.currentScore ?? latest?.mythicPlusScore ?? null,
-    timeFrame,
-    setTimeFrame: handleTimeFrameChange,
-  };
 
   async function handleBoosterToggle() {
     if (isUpdatingBooster) {
@@ -3536,27 +3626,26 @@ function RouteComponent() {
       </Card>
       {/* Active layout */}
       {latest && coreSnapshots.length > 0 && (
-        <>
-          {layoutMode === "overview" && <OverviewLayout {...layoutProps} />}
-          {layoutMode === "focus" && (
-            <FocusLayout
-              {...layoutProps}
-              metric={focusMetric}
-              setMetric={(metric) => startTransition(() => setFocusMetric(metric))}
-            />
-          )}
-          {layoutMode === "timeline" && <TimelineLayout {...layoutProps} />}
-        </>
-      )}
-
-      {layoutMode !== "overview" && (
-        <MythicPlusSection
-          data={mythicPlusData}
+        <CharacterPageContent
+          latest={latest}
+          coreSnapshots={coreSnapshots}
+          statsSnapshots={statsSnapshots}
+          currencySnapshots={currencySnapshots}
+          mythicPlusData={mythicPlusData}
+          isLoadingAllMythicPlusRuns={isLoadingAllMythicPlusRuns}
+          onRequestAllMythicPlusRuns={handleRequestAllMythicPlusRuns}
           characterId={characterId}
           characterName={character.name}
           characterRealm={character.realm}
           characterRegion={character.region}
-          currentScore={mythicPlusData?.summary.currentScore ?? latest?.mythicPlusScore ?? null}
+          currentMythicPlusScore={
+            mythicPlusData?.summary.currentScore ?? latest?.mythicPlusScore ?? null
+          }
+          timeFrame={timeFrame}
+          onTimeFrameChange={handleTimeFrameChange}
+          layoutMode={layoutMode}
+          focusMetric={focusMetric}
+          onFocusMetricChange={handleFocusMetricChange}
         />
       )}
     </div>

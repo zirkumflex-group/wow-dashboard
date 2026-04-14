@@ -26,8 +26,14 @@ type SnapshotDoc = Doc<"snapshots">;
 type CharacterDailySnapshotDoc = Doc<"characterDailySnapshots">;
 type DbReaderCtx = { db: QueryCtx["db"] };
 type SnapshotSummary = NonNullable<Doc<"characters">["latestSnapshot"]>;
+type SnapshotDetails = NonNullable<Doc<"characters">["latestSnapshotDetails"]>;
+type CharacterMythicPlusSummary = NonNullable<Doc<"characters">["mythicPlusSummary"]>;
+type CharacterMythicPlusRecentRunPreview = NonNullable<
+  Doc<"characters">["mythicPlusRecentRunsPreview"]
+>[number];
 type CharacterNonTradeableSlot = NonNullable<Doc<"characters">["nonTradeableSlots"]>[number];
 type SnapshotTimeFrame = "7d" | "30d" | "90d" | "all";
+const MYTHIC_PLUS_PREVIEW_RUN_LIMIT = 20;
 
 const snapshotTimeFrameValidator = v.union(
   v.literal("7d"),
@@ -52,6 +58,25 @@ function toSnapshotSummary(snapshot: SnapshotDoc | null): SnapshotSummary | null
     playtimeThisLevelSeconds: snapshot.playtimeThisLevelSeconds,
     mythicPlusScore: snapshot.mythicPlusScore,
     ownedKeystone: snapshot.ownedKeystone ?? undefined,
+  };
+}
+
+function toSnapshotDetails(snapshot: SnapshotDoc | null): SnapshotDetails | null {
+  if (!snapshot) return null;
+
+  return {
+    takenAt: snapshot.takenAt,
+    level: snapshot.level,
+    spec: snapshot.spec,
+    role: snapshot.role,
+    itemLevel: snapshot.itemLevel,
+    gold: snapshot.gold,
+    playtimeSeconds: snapshot.playtimeSeconds,
+    playtimeThisLevelSeconds: snapshot.playtimeThisLevelSeconds,
+    mythicPlusScore: snapshot.mythicPlusScore,
+    ownedKeystone: snapshot.ownedKeystone ?? undefined,
+    currencies: snapshot.currencies,
+    stats: snapshot.stats,
   };
 }
 
@@ -99,6 +124,28 @@ function isSameSnapshotSummary(current: SnapshotSummary | null, next: SnapshotSu
 
 function getCharacterStoredLatestSnapshot(character: Doc<"characters">): SnapshotSummary | null {
   return character.latestSnapshot ?? null;
+}
+
+function getCharacterStoredLatestSnapshotDetails(
+  character: Doc<"characters">,
+): SnapshotDetails | null {
+  return character.latestSnapshotDetails ?? null;
+}
+
+function getCharacterStoredMythicPlusData(character: Doc<"characters">) {
+  const summary = character.mythicPlusSummary ?? null;
+  const runs = character.mythicPlusRecentRunsPreview ?? null;
+  const totalRunCount = character.mythicPlusRunCount ?? null;
+  if (!summary || !runs || totalRunCount === null) {
+    return null;
+  }
+
+  return {
+    summary,
+    runs,
+    totalRunCount,
+    isPreview: totalRunCount > runs.length,
+  };
 }
 
 async function getPlayerForAuthUser(ctx: DbReaderCtx, authUserId: string) {
@@ -553,7 +600,10 @@ function buildDungeonSummaries(runs: MythicPlusRunDoc[]) {
   });
 }
 
-function buildMythicPlusSummary(runs: MythicPlusRunDoc[], currentScore: number | null) {
+export function buildMythicPlusSummary(
+  runs: MythicPlusRunDoc[],
+  currentScore: number | null,
+): CharacterMythicPlusSummary {
   let latestSeasonID: number | null = null;
   for (const run of runs) {
     if (run.seasonID === undefined) continue;
@@ -596,7 +646,9 @@ function getRunMemberIdentityFingerprint(run: MythicPlusRunDoc) {
     .join(",");
 }
 
-function buildRecentRuns(runs: MythicPlusRunDoc[]) {
+export function buildRecentRuns(
+  runs: MythicPlusRunDoc[],
+): CharacterMythicPlusRecentRunPreview[] {
   const bestPreviousScoreByDungeon = new Map<string, number>();
   const scoreIncreaseByRunId = new Map<string, number>();
   const normalizeIdentityToken = (value: string | undefined): string | null => {
@@ -721,7 +773,7 @@ function buildRecentRuns(runs: MythicPlusRunDoc[]) {
   return collapsedRuns;
 }
 
-function dedupeMythicPlusRuns(runs: MythicPlusRunDoc[]) {
+export function dedupeMythicPlusRuns(runs: MythicPlusRunDoc[]) {
   const dedupedRuns: MythicPlusRunDoc[] = [];
   const LEGACY_DST_SHIFT_SECONDS = 60 * 60;
   const LEGACY_DST_SHIFT_TOLERANCE_SECONDS = 2 * 60;
@@ -1092,9 +1144,14 @@ export const getCharacterHeader = query({
     const character = await ctx.db.get(characterId);
     if (!character) return null;
 
+    const storedLatestSnapshotDetails = getCharacterStoredLatestSnapshotDetails(character);
     const [owner, latestSnapshot, firstSnapshot] = await Promise.all([
       ctx.db.get(character.playerId),
-      getLatestSnapshotForCharacter(ctx, characterId),
+      storedLatestSnapshotDetails
+        ? Promise.resolve(storedLatestSnapshotDetails)
+        : getLatestSnapshotForCharacter(ctx, characterId).then((snapshot) =>
+            toSnapshotDetails(snapshot),
+          ),
       character.firstSnapshotAt === undefined ? getFirstSnapshotForCharacter(ctx, characterId) : null,
     ]);
 
@@ -1239,24 +1296,62 @@ export const getCharacterMythicPlus = query({
     const character = await ctx.db.get(characterId);
     if (!character) return null;
 
-    const [runs, latestSnapshot] = await Promise.all([
+    const storedMythicPlusData = getCharacterStoredMythicPlusData(character);
+    if (storedMythicPlusData) {
+      return storedMythicPlusData;
+    }
+
+    const currentScorePromise =
+      character.latestSnapshot?.mythicPlusScore !== undefined
+        ? Promise.resolve(character.latestSnapshot.mythicPlusScore)
+        : character.latestSnapshotDetails?.mythicPlusScore !== undefined
+          ? Promise.resolve(character.latestSnapshotDetails.mythicPlusScore)
+      : getLatestSnapshotSummaryForCharacter(ctx, character).then(
+          (latestSnapshot) => latestSnapshot?.mythicPlusScore ?? null,
+        );
+
+    const [runs, currentScore] = await Promise.all([
       ctx.db
         .query("mythicPlusRuns")
         .withIndex("by_character_and_observedAt", (q) => q.eq("characterId", characterId))
         .order("desc")
         .collect(),
-      ctx.db
-        .query("snapshots")
-        .withIndex("by_character_and_time", (q) => q.eq("characterId", characterId))
-        .order("desc")
-        .first(),
+      currentScorePromise,
     ]);
 
     const sortedRuns = dedupeMythicPlusRuns(runs);
+    const recentRuns = buildRecentRuns(sortedRuns);
 
     return {
-      runs: buildRecentRuns(sortedRuns),
-      summary: buildMythicPlusSummary(sortedRuns, latestSnapshot?.mythicPlusScore ?? null),
+      runs: recentRuns,
+      summary: buildMythicPlusSummary(sortedRuns, currentScore),
+      totalRunCount: recentRuns.length,
+      isPreview: false,
+    };
+  },
+});
+
+export const getCharacterMythicPlusAllRuns = query({
+  args: { characterId: v.id("characters") },
+  handler: async (ctx, { characterId }) => {
+    const authUser = await authComponent.safeGetAuthUser(ctx);
+    if (!authUser) return null;
+
+    const character = await ctx.db.get(characterId);
+    if (!character) return null;
+
+    const runs = await ctx.db
+      .query("mythicPlusRuns")
+      .withIndex("by_character_and_observedAt", (q) => q.eq("characterId", characterId))
+      .order("desc")
+      .collect();
+
+    const sortedRuns = dedupeMythicPlusRuns(runs);
+    const recentRuns = buildRecentRuns(sortedRuns);
+
+    return {
+      runs: recentRuns,
+      totalRunCount: recentRuns.length,
     };
   },
 });
@@ -1695,14 +1790,23 @@ export const backfillCharacterLatestSnapshots = mutation({
 
     let updatedCharacters = 0;
     for (const character of characters) {
-      const latestSnapshot = await getLatestSnapshotSummaryForCharacter(ctx, character);
-      if (!latestSnapshot) continue;
+      const latestRawSnapshot = await getLatestSnapshotForCharacter(ctx, character._id);
+      const latestSnapshot = toSnapshotSummary(latestRawSnapshot);
+      const latestSnapshotDetails = toSnapshotDetails(latestRawSnapshot);
+      if (!latestSnapshot || !latestSnapshotDetails) continue;
 
       const currentLatestSnapshot = getCharacterStoredLatestSnapshot(character);
-      if (isSameSnapshotSummary(currentLatestSnapshot, latestSnapshot)) continue;
+      const currentLatestSnapshotDetails = getCharacterStoredLatestSnapshotDetails(character);
+      if (
+        isSameSnapshotSummary(currentLatestSnapshot, latestSnapshot) &&
+        JSON.stringify(currentLatestSnapshotDetails) === JSON.stringify(latestSnapshotDetails)
+      ) {
+        continue;
+      }
 
       await ctx.db.patch(character._id, {
         latestSnapshot,
+        latestSnapshotDetails,
       });
       updatedCharacters += 1;
     }
@@ -1748,14 +1852,35 @@ export const backfillCharacterSnapshotOptimizations = mutation({
 
       const firstSnapshotAt = snapshots[0]?.takenAt;
       const snapshotCount = snapshots.length;
+      const latestSnapshotDetails = toSnapshotDetails(snapshots[snapshots.length - 1] ?? null);
+      const latestSnapshotSummary = toSnapshotSummary(snapshots[snapshots.length - 1] ?? null);
+      let shouldPatchCharacter = false;
+      const characterPatch: Partial<Doc<"characters">> = {};
       if (
         firstSnapshotAt !== undefined &&
         (character.firstSnapshotAt !== firstSnapshotAt || character.snapshotCount !== snapshotCount)
       ) {
-        await ctx.db.patch(character._id, {
-          firstSnapshotAt,
-          snapshotCount,
-        });
+        characterPatch.firstSnapshotAt = firstSnapshotAt;
+        characterPatch.snapshotCount = snapshotCount;
+        shouldPatchCharacter = true;
+      }
+      if (
+        latestSnapshotSummary &&
+        !isSameSnapshotSummary(character.latestSnapshot ?? null, latestSnapshotSummary)
+      ) {
+        characterPatch.latestSnapshot = latestSnapshotSummary;
+        shouldPatchCharacter = true;
+      }
+      if (
+        latestSnapshotDetails &&
+        JSON.stringify(character.latestSnapshotDetails ?? null) !==
+          JSON.stringify(latestSnapshotDetails)
+      ) {
+        characterPatch.latestSnapshotDetails = latestSnapshotDetails;
+        shouldPatchCharacter = true;
+      }
+      if (shouldPatchCharacter) {
+        await ctx.db.patch(character._id, characterPatch);
         updatedCharacters += 1;
       }
 
@@ -1806,6 +1931,67 @@ export const backfillCharacterSnapshotOptimizations = mutation({
       totalCharacters: characters.length,
       updatedCharacters,
       updatedDailySnapshots,
+    };
+  },
+});
+
+export const backfillCharacterMythicPlusOptimizations = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const authUser = await authComponent.safeGetAuthUser(ctx);
+    if (!authUser) {
+      return { totalCharacters: 0, updatedCharacters: 0 };
+    }
+
+    const player = await getPlayerForAuthUser(ctx, authUser._id as string);
+    if (!player) {
+      return { totalCharacters: 0, updatedCharacters: 0 };
+    }
+
+    const characters = await ctx.db
+      .query("characters")
+      .withIndex("by_player", (q) => q.eq("playerId", player._id))
+      .collect();
+
+    let updatedCharacters = 0;
+    for (const character of characters) {
+      const runs = await ctx.db
+        .query("mythicPlusRuns")
+        .withIndex("by_character_and_observedAt", (q) => q.eq("characterId", character._id))
+        .order("desc")
+        .collect();
+
+      const dedupedRuns = dedupeMythicPlusRuns(runs);
+      const recentRuns = buildRecentRuns(dedupedRuns);
+      const mythicPlusSummary = buildMythicPlusSummary(
+        dedupedRuns,
+        character.latestSnapshot?.mythicPlusScore ??
+          character.latestSnapshotDetails?.mythicPlusScore ??
+          null,
+      );
+      const mythicPlusRecentRunsPreview = recentRuns.slice(0, MYTHIC_PLUS_PREVIEW_RUN_LIMIT);
+      const mythicPlusRunCount = recentRuns.length;
+
+      if (
+        JSON.stringify(character.mythicPlusSummary ?? null) === JSON.stringify(mythicPlusSummary) &&
+        JSON.stringify(character.mythicPlusRecentRunsPreview ?? null) ===
+          JSON.stringify(mythicPlusRecentRunsPreview) &&
+        character.mythicPlusRunCount === mythicPlusRunCount
+      ) {
+        continue;
+      }
+
+      await ctx.db.patch(character._id, {
+        mythicPlusSummary,
+        mythicPlusRecentRunsPreview,
+        mythicPlusRunCount,
+      });
+      updatedCharacters += 1;
+    }
+
+    return {
+      totalCharacters: characters.length,
+      updatedCharacters,
     };
   },
 });

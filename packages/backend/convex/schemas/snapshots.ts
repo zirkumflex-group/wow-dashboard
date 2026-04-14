@@ -107,6 +107,29 @@ export const ownedKeystoneValidator = v.object({
   mapName: v.optional(v.string()),
 });
 
+export const currenciesValidator = v.object({
+  adventurerDawncrest: v.number(),
+  veteranDawncrest: v.number(),
+  championDawncrest: v.number(),
+  heroDawncrest: v.number(),
+  mythDawncrest: v.number(),
+  radiantSparkDust: v.number(),
+});
+
+export const statsValidator = v.object({
+  stamina: v.number(),
+  strength: v.number(),
+  agility: v.number(),
+  intellect: v.number(),
+  critPercent: v.number(),
+  hastePercent: v.number(),
+  masteryPercent: v.number(),
+  versatilityPercent: v.number(),
+  speedPercent: v.optional(v.number()),
+  leechPercent: v.optional(v.number()),
+  avoidancePercent: v.optional(v.number()),
+});
+
 export const snapshotsTable = defineTable({
   characterId: v.id("characters"),
   takenAt: v.number(),
@@ -119,27 +142,8 @@ export const snapshotsTable = defineTable({
   playtimeThisLevelSeconds: v.optional(v.number()),
   mythicPlusScore: v.number(),
   ownedKeystone: v.optional(ownedKeystoneValidator),
-  currencies: v.object({
-    adventurerDawncrest: v.number(),
-    veteranDawncrest: v.number(),
-    championDawncrest: v.number(),
-    heroDawncrest: v.number(),
-    mythDawncrest: v.number(),
-    radiantSparkDust: v.number(),
-  }),
-  stats: v.object({
-    stamina: v.number(),
-    strength: v.number(),
-    agility: v.number(),
-    intellect: v.number(),
-    critPercent: v.number(),
-    hastePercent: v.number(),
-    masteryPercent: v.number(),
-    versatilityPercent: v.number(),
-    speedPercent: v.optional(v.number()),
-    leechPercent: v.optional(v.number()),
-    avoidancePercent: v.optional(v.number()),
-  }),
+  currencies: currenciesValidator,
+  stats: statsValidator,
 })
   .index("by_character", ["characterId"])
   .index("by_character_and_time", ["characterId", "takenAt"]);
