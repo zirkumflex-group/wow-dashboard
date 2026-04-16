@@ -800,6 +800,13 @@ function hasCompatibleLegacyDstShift(a: MythicPlusRunLike, b: MythicPlusRunLike)
   return false;
 }
 
+export function canMergeMythicPlusRunsAcrossCanonicalMismatch(
+  existingRun: MythicPlusRunLike,
+  candidateRun: MythicPlusRunLike,
+): boolean {
+  return hasCompatibleLegacyDstShift(existingRun, candidateRun);
+}
+
 export function canUseMythicPlusRunCompatibilityAliasMatch(
   existingRun: MythicPlusRunLike,
   candidateRun: MythicPlusRunLike,

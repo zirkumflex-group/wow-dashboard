@@ -59,6 +59,7 @@ const makeLookups = () => ({
   byAttemptId: new Map<string, any>(),
   byCanonicalKey: new Map<string, any>(),
   byCompatibilityAlias: new Map<string, any>(),
+  byId: new Map<string, any>(),
 });
 
 let runSequence = 0;
@@ -365,6 +366,60 @@ describe("Mythic+ identity contract", () => {
     assert.equal(recentRuns.length, 1);
     assert.equal(recentRuns[0]?.runScore, 335);
     assert.equal(recentRuns[0]?.members?.length, 5);
+    assertRecentRunsSortAndDisplayAlignment(recentRuns);
+  });
+
+  it("recent runs and summary collapse minute-jitter legacy duplicates with partial party data", () => {
+    const addonCompletion = makeRun({
+      fingerprint: "seat-addon-scoreless",
+      canonicalKey: "aid|attempt|17|239|10|0",
+      attemptId: "attempt|17|239|10|0",
+      seasonID: 17,
+      mapChallengeModeID: 239,
+      mapName: "Seat of the Triumvirate",
+      level: 10,
+      startDate: 0,
+      completedAt: 1_776_344_640,
+      endedAt: 1_776_344_640,
+      durationMs: 1_314_000,
+      completed: true,
+      completedInTime: true,
+      status: "completed",
+      observedAt: 1_776_344_641,
+      members: [
+        { name: "Pratt", realm: "Deathwing", role: "tank", classTag: "WARRIOR" },
+        { name: "Francisfekir", role: "dps", classTag: "MONK" },
+        { name: "Nitöryü", realm: "Blackmoore", role: "dps", classTag: "ROGUE" },
+        { name: "Rojgnoj", realm: "Kazzak", role: "dps", classTag: "MAGE" },
+        { name: "Shamora", realm: "Deathwing", role: "healer", classTag: "SHAMAN" },
+      ],
+    });
+    const scoredHistory = makeRun({
+      fingerprint: "seat-history-scored",
+      canonicalKey: "run|17|239|10|1776344580",
+      seasonID: 17,
+      mapChallengeModeID: 239,
+      mapName: "Seat of the Triumvirate",
+      level: 10,
+      completedAt: 1_776_344_580,
+      endedAt: 1_776_344_580,
+      durationMs: 1_314_000,
+      runScore: 333,
+      completed: true,
+      completedInTime: true,
+      status: "completed",
+      observedAt: 1_776_344_900,
+    });
+
+    const { deduped, recentRuns, summary } = projectRuns([addonCompletion, scoredHistory]);
+
+    assert.equal(deduped.length, 2);
+    assert.equal(recentRuns.length, 1);
+    assert.equal(recentRuns[0]?.runScore, 333);
+    assert.equal(recentRuns[0]?.members?.length, 5);
+    assert.equal(summary.overall.totalRuns, 1);
+    assert.equal(summary.overall.completedRuns, 1);
+    assert.equal(summary.overall.timedRuns, 1);
     assertRecentRunsSortAndDisplayAlignment(recentRuns);
   });
 

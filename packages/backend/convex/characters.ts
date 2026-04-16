@@ -7,6 +7,7 @@ import { internalMutation, mutation, query } from "./_generated/server";
 import { authComponent } from "./auth";
 import {
   buildCanonicalMythicPlusRunFingerprint,
+  canMergeMythicPlusRunsAcrossCanonicalMismatch,
   canUseMythicPlusRunCompatibilityAliasMatch,
   getMythicPlusRunAttemptId,
   getMythicPlusRunCompatibilityLookupAliases,
@@ -138,6 +139,12 @@ function getCharacterStoredMythicPlusData(character: Doc<"characters">) {
   const runs = character.mythicPlusRecentRunsPreview ?? null;
   const totalRunCount = character.mythicPlusRunCount ?? null;
   if (!summary || !runs || totalRunCount === null) {
+    return null;
+  }
+
+  // Fall back to live recomputation when a stored preview still contains
+  // legacy duplicate rows that current projection logic would collapse.
+  if (collapseLegacyDisplayDuplicateRuns(runs as MythicPlusRunDoc[]).length !== runs.length) {
     return null;
   }
 
@@ -651,37 +658,7 @@ function buildDungeonSummaries(runs: MythicPlusRunDoc[]) {
   });
 }
 
-export function buildMythicPlusSummary(
-  runs: MythicPlusRunDoc[],
-  currentScore: number | null,
-): CharacterMythicPlusSummary {
-  let latestSeasonID: number | null = null;
-  for (const run of runs) {
-    if (run.seasonID === undefined) continue;
-    latestSeasonID = latestSeasonID === null ? run.seasonID : Math.max(latestSeasonID, run.seasonID);
-  }
-
-  const currentSeasonRuns =
-    latestSeasonID === null ? [] : runs.filter((run) => run.seasonID === latestSeasonID);
-
-  return {
-    latestSeasonID,
-    currentScore,
-    overall: buildMythicPlusBucketSummary(runs),
-    currentSeason:
-      latestSeasonID === null ? null : buildMythicPlusBucketSummary(currentSeasonRuns),
-    currentSeasonDungeons: buildDungeonSummaries(currentSeasonRuns),
-  };
-}
-
-type RecentRunRow = MythicPlusRunDoc & {
-  status: ReturnType<typeof getMythicPlusRunLifecycleStatus>;
-  playedAt: number;
-  sortTimestamp: number;
-  rowKey: string;
-  upgradeCount: number | null;
-  scoreIncrease: number | null;
-};
+const LEGACY_DISPLAY_DUPLICATE_RUN_TOLERANCE_SECONDS = 2 * 60;
 
 function getRunMemberIdentityFingerprint(run: MythicPlusRunDoc) {
   return (run.members ?? [])
@@ -697,9 +674,125 @@ function getRunMemberIdentityFingerprint(run: MythicPlusRunDoc) {
     .join(",");
 }
 
+function getLegacyDisplayDuplicateSignature(run: MythicPlusRunDoc) {
+  if (!isCompletedRun(run) || run.level === undefined || run.durationMs === undefined) {
+    return null;
+  }
+
+  const mapToken =
+    run.mapChallengeModeID !== undefined
+      ? String(run.mapChallengeModeID)
+      : getMapLabel(run).trim().toLowerCase();
+  const timedToken = String(getMythicPlusRunTimedState(run) ?? "unknown");
+  return `${mapToken}|${run.level}|${run.durationMs}|${timedToken}`;
+}
+
+function areLegacyDisplayDuplicatePartiesCompatible(a: MythicPlusRunDoc, b: MythicPlusRunDoc) {
+  const partyFingerprintA = getRunMemberIdentityFingerprint(a);
+  const partyFingerprintB = getRunMemberIdentityFingerprint(b);
+  if (partyFingerprintA === "" || partyFingerprintB === "") {
+    return true;
+  }
+  if (partyFingerprintA === partyFingerprintB) {
+    return true;
+  }
+
+  const mergedMembers = mergeMythicPlusRunMembers(a.members, b.members);
+  if (!mergedMembers) {
+    return false;
+  }
+
+  return mergedMembers.length <= Math.max(a.members?.length ?? 0, b.members?.length ?? 0);
+}
+
+function mergeLegacyDisplayDuplicateRuns(
+  currentRun: MythicPlusRunDoc,
+  candidateRun: MythicPlusRunDoc,
+): MythicPlusRunDoc {
+  const candidatePreferred = shouldReplaceMythicPlusRun(currentRun, candidateRun);
+  const preferredRun = candidatePreferred ? candidateRun : currentRun;
+  const fallbackRun = candidatePreferred ? currentRun : candidateRun;
+
+  return {
+    ...fallbackRun,
+    ...preferredRun,
+    members: mergeMythicPlusRunMembers(currentRun.members, candidateRun.members),
+  };
+}
+
+function collapseLegacyDisplayDuplicateRuns(runs: MythicPlusRunDoc[]) {
+  const collapsedRuns: MythicPlusRunDoc[] = [];
+  const collapseIndexesBySignature = new Map<string, number[]>();
+
+  for (const run of runs) {
+    const signature = getLegacyDisplayDuplicateSignature(run);
+    if (!signature) {
+      collapsedRuns.push(run);
+      continue;
+    }
+
+    const playedAt = getRunTimestamp(run);
+    const candidateIndexes = collapseIndexesBySignature.get(signature) ?? [];
+    let matchedIndex = -1;
+
+    for (const candidateIndex of candidateIndexes) {
+      const currentRun = collapsedRuns[candidateIndex];
+      if (!currentRun) {
+        continue;
+      }
+
+      if (Math.abs(getRunTimestamp(currentRun) - playedAt) > LEGACY_DISPLAY_DUPLICATE_RUN_TOLERANCE_SECONDS) {
+        continue;
+      }
+
+      if (!areLegacyDisplayDuplicatePartiesCompatible(currentRun, run)) {
+        continue;
+      }
+
+      matchedIndex = candidateIndex;
+      break;
+    }
+
+    if (matchedIndex < 0) {
+      collapseIndexesBySignature.set(signature, [...candidateIndexes, collapsedRuns.length]);
+      collapsedRuns.push(run);
+      continue;
+    }
+
+    collapsedRuns[matchedIndex] = mergeLegacyDisplayDuplicateRuns(collapsedRuns[matchedIndex]!, run);
+  }
+
+  return collapsedRuns;
+}
+
+export function buildMythicPlusSummary(
+  runs: MythicPlusRunDoc[],
+  currentScore: number | null,
+): CharacterMythicPlusSummary {
+  const normalizedRuns = collapseLegacyDisplayDuplicateRuns(runs);
+  let latestSeasonID: number | null = null;
+  for (const run of normalizedRuns) {
+    if (run.seasonID === undefined) continue;
+    latestSeasonID = latestSeasonID === null ? run.seasonID : Math.max(latestSeasonID, run.seasonID);
+  }
+
+  const currentSeasonRuns =
+    latestSeasonID === null ? [] : normalizedRuns.filter((run) => run.seasonID === latestSeasonID);
+
+  return {
+    latestSeasonID,
+    currentScore,
+    overall: buildMythicPlusBucketSummary(normalizedRuns),
+    currentSeason:
+      latestSeasonID === null ? null : buildMythicPlusBucketSummary(currentSeasonRuns),
+    currentSeasonDungeons: buildDungeonSummaries(currentSeasonRuns),
+  };
+}
+
 export function buildRecentRuns(
   runs: MythicPlusRunDoc[],
 ): CharacterMythicPlusRecentRunPreview[] {
+  const normalizedRuns = collapseLegacyDisplayDuplicateRuns(runs);
   const bestPreviousScoreByDungeon = new Map<string, number>();
   const scoreIncreaseByRunId = new Map<string, number>();
   const normalizeIdentityToken = (value: string | undefined): string | null => {
@@ -734,8 +827,8 @@ export function buildRecentRuns(
     return `${identityComposite}|${playedAt}`;
   };
 
-  for (let index = runs.length - 1; index >= 0; index -= 1) {
-    const run = runs[index];
+  for (let index = normalizedRuns.length - 1; index >= 0; index -= 1) {
+    const run = normalizedRuns[index];
     if (!run) {
       continue;
     }
@@ -760,7 +853,7 @@ export function buildRecentRuns(
     );
   }
 
-  const projectedRuns: RecentRunRow[] = runs.map((run) => {
+  return normalizedRuns.map((run) => {
     const status = getMythicPlusRunLifecycleStatus(run);
     const sortTimestamp = getRunTimestamp(run);
     return {
@@ -773,55 +866,6 @@ export function buildRecentRuns(
       scoreIncrease: scoreIncreaseByRunId.get(run._id) ?? null,
     };
   });
-
-  const collapseIndexByKey = new Map<string, number>();
-  const collapsedRuns: RecentRunRow[] = [];
-  const getLegacyCollapseKey = (run: RecentRunRow) => {
-    if (!isCompletedRun(run) || run.level === undefined || run.durationMs === undefined) {
-      return null;
-    }
-
-    const mapToken =
-      run.mapChallengeModeID !== undefined
-        ? String(run.mapChallengeModeID)
-        : getMapLabel(run).trim().toLowerCase();
-    const timedToken = String(getMythicPlusRunTimedState(run) ?? "unknown");
-    const partyFingerprint = getRunMemberIdentityFingerprint(run);
-    return `${run.playedAt}|${mapToken}|${run.level}|${run.durationMs}|${timedToken}|${partyFingerprint}`;
-  };
-
-  for (const run of projectedRuns) {
-    const collapseKey = getLegacyCollapseKey(run);
-    if (!collapseKey) {
-      collapsedRuns.push(run);
-      continue;
-    }
-
-    const existingIndex = collapseIndexByKey.get(collapseKey);
-    if (existingIndex === undefined) {
-      collapseIndexByKey.set(collapseKey, collapsedRuns.length);
-      collapsedRuns.push(run);
-      continue;
-    }
-
-    const currentRun = collapsedRuns[existingIndex]!;
-    const candidatePreferred = shouldReplaceMythicPlusRun(currentRun, run);
-    const preferredRun = candidatePreferred ? run : currentRun;
-    const fallbackRun = candidatePreferred ? currentRun : run;
-
-    collapsedRuns[existingIndex] = {
-      ...fallbackRun,
-      ...preferredRun,
-      members: mergeMythicPlusRunMembers(currentRun.members, run.members),
-      rowKey: preferredRun.rowKey,
-      playedAt: preferredRun.playedAt,
-      sortTimestamp: preferredRun.sortTimestamp,
-      upgradeCount: preferredRun.upgradeCount ?? fallbackRun.upgradeCount,
-      scoreIncrease: preferredRun.scoreIncrease ?? fallbackRun.scoreIncrease,
-    };
-  }
-
-  return collapsedRuns;
 }
 
 export function dedupeMythicPlusRuns(runs: MythicPlusRunDoc[]) {
@@ -910,7 +954,34 @@ export function dedupeMythicPlusRuns(runs: MythicPlusRunDoc[]) {
       }
 
       const candidateCanonicalKey = getMythicPlusRunCanonicalKey(candidate);
-      if (canonicalKey && candidateCanonicalKey && canonicalKey !== candidateCanonicalKey) {
+      if (
+        canonicalKey &&
+        candidateCanonicalKey &&
+        canonicalKey !== candidateCanonicalKey &&
+        !canMergeMythicPlusRunsAcrossCanonicalMismatch(candidate, run)
+      ) {
+        continue;
+      }
+
+      return candidateIndex;
+    }
+
+    for (let candidateIndex = 0; candidateIndex < dedupedRuns.length; candidateIndex += 1) {
+      const candidate = dedupedRuns[candidateIndex];
+      if (!candidate) {
+        continue;
+      }
+      if (!canUseMythicPlusRunCompatibilityAliasMatch(candidate, run)) {
+        continue;
+      }
+
+      const candidateCanonicalKey = getMythicPlusRunCanonicalKey(candidate);
+      if (
+        canonicalKey &&
+        candidateCanonicalKey &&
+        canonicalKey !== candidateCanonicalKey &&
+        !canMergeMythicPlusRunsAcrossCanonicalMismatch(candidate, run)
+      ) {
         continue;
       }
 

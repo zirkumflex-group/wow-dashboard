@@ -118,6 +118,7 @@ type ExistingRunLookups = {
   byAttemptId: Map<string, MythicPlusRunDoc>;
   byCanonicalKey: Map<string, MythicPlusRunDoc>;
   byCompatibilityAlias: Map<string, MythicPlusRunDoc>;
+  byId: Map<string, MythicPlusRunDoc>;
 };
 
 function setPreferredRunLookup(
@@ -140,6 +141,10 @@ function registerRunLookups(
   run: MythicPlusRunDoc,
   aliases: Array<string | undefined | null> = [],
 ) {
+  if (typeof run._id === "string" && run._id.trim() !== "") {
+    lookups.byId.set(run._id, run);
+  }
+
   const attemptId = getMythicPlusRunAttemptId(run);
   if (attemptId) {
     setPreferredRunLookup(lookups.byAttemptId, attemptId, run);
@@ -197,7 +202,19 @@ function findMatchingExistingRunByIdentity(
       return candidate;
     }
   }
-  return undefined;
+
+  let fallbackMatch: MythicPlusRunDoc | undefined;
+  for (const candidate of lookups.byId.values()) {
+    if (!canUseMythicPlusRunCompatibilityAliasMatch(candidate, run)) {
+      continue;
+    }
+
+    if (fallbackMatch === undefined || shouldReplaceMythicPlusRun(fallbackMatch, candidate)) {
+      fallbackMatch = candidate;
+    }
+  }
+
+  return fallbackMatch;
 }
 
 function toSnapshotFields(snapshot: SnapshotFields): SnapshotFields {
@@ -979,6 +996,7 @@ export const ingestAddonData = mutation({
         byAttemptId: new Map<string, MythicPlusRunDoc>(),
         byCanonicalKey: new Map<string, MythicPlusRunDoc>(),
         byCompatibilityAlias: new Map<string, MythicPlusRunDoc>(),
+        byId: new Map<string, MythicPlusRunDoc>(),
       };
       for (const existingRun of existingCharacterRuns) {
         registerRunLookups(existingRunLookups, existingRun);
