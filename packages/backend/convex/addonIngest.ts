@@ -334,6 +334,7 @@ function toCharacterDailySnapshotFields(snapshot: SnapshotFields) {
     gold: snapshot.gold,
     playtimeSeconds: snapshot.playtimeSeconds,
     mythicPlusScore: snapshot.mythicPlusScore,
+    currencies: snapshot.currencies,
   };
 }
 

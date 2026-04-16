@@ -2,7 +2,7 @@ import { v } from "convex/values";
 import type { Doc } from "./_generated/dataModel";
 
 import { components, internal } from "./_generated/api";
-import type { QueryCtx } from "./_generated/server";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internalMutation, mutation, query } from "./_generated/server";
 import { authComponent } from "./auth";
 import {
@@ -25,6 +25,7 @@ type MythicPlusRunDoc = Doc<"mythicPlusRuns"> & { canonicalKey?: string };
 type SnapshotDoc = Doc<"snapshots">;
 type CharacterDailySnapshotDoc = Doc<"characterDailySnapshots">;
 type DbReaderCtx = { db: QueryCtx["db"] };
+type DbWriterCtx = { db: MutationCtx["db"] };
 type SnapshotSummary = NonNullable<Doc<"characters">["latestSnapshot"]>;
 type SnapshotDetails = NonNullable<Doc<"characters">["latestSnapshotDetails"]>;
 type CharacterMythicPlusSummary = NonNullable<Doc<"characters">["mythicPlusSummary"]>;
@@ -333,11 +334,59 @@ function getSnapshotDayStart(takenAt: number) {
   return Math.floor(takenAt / 86400) * 86400;
 }
 
-function getSnapshotBucketDaySpan(timeFrame: SnapshotTimeFrame) {
-  if (timeFrame === "90d" || timeFrame === "all") {
-    return 2;
+function getSnapshotBucketTargetPointCount(timeFrame: SnapshotTimeFrame) {
+  if (timeFrame === "7d") return 7;
+  if (timeFrame === "30d") return 30;
+  if (timeFrame === "90d") return 45;
+  return 60;
+}
+
+const SNAPSHOT_BUCKET_SPAN_OPTIONS_SECONDS = [
+  60 * 60,
+  2 * 60 * 60,
+  4 * 60 * 60,
+  6 * 60 * 60,
+  12 * 60 * 60,
+  24 * 60 * 60,
+  2 * 24 * 60 * 60,
+  3 * 24 * 60 * 60,
+  7 * 24 * 60 * 60,
+  14 * 24 * 60 * 60,
+  30 * 24 * 60 * 60,
+] as const;
+
+function getSnapshotBucketSpanSeconds(
+  timeFrame: SnapshotTimeFrame,
+  rangeStartAt: number,
+  rangeEndAt: number,
+) {
+  const rangeSeconds = Math.max(0, rangeEndAt - rangeStartAt);
+  if (rangeSeconds <= 0) {
+    return SNAPSHOT_BUCKET_SPAN_OPTIONS_SECONDS[0];
   }
-  return 1;
+
+  const targetPointCount = Math.max(getSnapshotBucketTargetPointCount(timeFrame) - 1, 1);
+  const rawBucketSpanSeconds = Math.max(
+    SNAPSHOT_BUCKET_SPAN_OPTIONS_SECONDS[0],
+    Math.ceil(rangeSeconds / targetPointCount),
+  );
+
+  return (
+    SNAPSHOT_BUCKET_SPAN_OPTIONS_SECONDS.find((spanSeconds) => spanSeconds >= rawBucketSpanSeconds) ??
+    Math.ceil(rawBucketSpanSeconds / 86400) * 86400
+  );
+}
+
+function getSnapshotBucketDaySpan(bucketSpanSeconds: number) {
+  return Math.max(1, Math.ceil(bucketSpanSeconds / 86400));
+}
+
+function hasCharacterDailySnapshotCurrencies(
+  snapshot: CharacterDailySnapshotDoc,
+): snapshot is CharacterDailySnapshotDoc & {
+  currencies: NonNullable<CharacterDailySnapshotDoc["currencies"]>;
+} {
+  return snapshot.currencies !== undefined;
 }
 
 function bucketDailySnapshotsBySpan(
@@ -376,22 +425,24 @@ async function getBucketedRawSnapshotsForCharacter(
   characterId: Doc<"characters">["_id"],
   timeFrame: SnapshotTimeFrame,
 ) {
-  const bucketDaySpan = getSnapshotBucketDaySpan(timeFrame);
   const cutoffSeconds = getSnapshotTimeFrameCutoffSeconds(timeFrame);
-  const firstSnapshot =
-    cutoffSeconds === null ? await getFirstSnapshotForCharacter(ctx, characterId) : null;
+  const [firstSnapshot, latestSnapshot] = await Promise.all([
+    cutoffSeconds === null ? getFirstSnapshotForCharacter(ctx, characterId) : null,
+    getLatestSnapshotForCharacter(ctx, characterId),
+  ]);
   const rangeStartAt = cutoffSeconds ?? firstSnapshot?.takenAt ?? null;
-  if (rangeStartAt === null) {
+  const rangeEndAt = latestSnapshot?.takenAt ?? null;
+  if (rangeStartAt === null || rangeEndAt === null || rangeEndAt < rangeStartAt) {
     return [] as SnapshotDoc[];
   }
 
+  const bucketSpanSeconds = getSnapshotBucketSpanSeconds(timeFrame, rangeStartAt, rangeEndAt);
   const bucketStarts: number[] = [];
-  const endDayStartAt = getSnapshotDayStart(Math.floor(Date.now() / 1000));
-  const startDayStartAt = getSnapshotDayStart(rangeStartAt);
-  const bucketSpanSeconds = bucketDaySpan * 86400;
+  const startBucketAt = Math.floor(rangeStartAt / bucketSpanSeconds) * bucketSpanSeconds;
+  const endBucketAt = Math.floor(rangeEndAt / bucketSpanSeconds) * bucketSpanSeconds;
   for (
-    let bucketStartAt = startDayStartAt;
-    bucketStartAt <= endDayStartAt;
+    let bucketStartAt = startBucketAt;
+    bucketStartAt <= endBucketAt;
     bucketStartAt += bucketSpanSeconds
   ) {
     bucketStarts.push(bucketStartAt);
@@ -1184,7 +1235,6 @@ export const getCharacterCoreTimeline = query({
     if (!character) return null;
 
     const cutoffSeconds = getSnapshotTimeFrameCutoffSeconds(timeFrame);
-    const bucketDaySpan = getSnapshotBucketDaySpan(timeFrame);
     const dailySnapshots = await ctx.db
       .query("characterDailySnapshots")
       .withIndex("by_character_and_day", (q) => {
@@ -1195,15 +1245,23 @@ export const getCharacterCoreTimeline = query({
       .collect();
 
     if (dailySnapshots.length > 0) {
-      return {
-        snapshots: bucketDailySnapshotsBySpan(dailySnapshots, bucketDaySpan).map((snapshot) => ({
-          takenAt: snapshot.lastTakenAt,
-          itemLevel: snapshot.itemLevel,
-          gold: snapshot.gold,
-          playtimeSeconds: snapshot.playtimeSeconds,
-          mythicPlusScore: snapshot.mythicPlusScore,
-        })),
-      };
+      const rangeStartAt = cutoffSeconds ?? dailySnapshots[0]!.dayStartAt;
+      const rangeEndAt = dailySnapshots[dailySnapshots.length - 1]!.lastTakenAt;
+      const bucketSpanSeconds = getSnapshotBucketSpanSeconds(timeFrame, rangeStartAt, rangeEndAt);
+
+      if (bucketSpanSeconds >= 86400 && dailySnapshots.every(hasCharacterDailySnapshotCurrencies)) {
+        const bucketDaySpan = getSnapshotBucketDaySpan(bucketSpanSeconds);
+        return {
+          snapshots: bucketDailySnapshotsBySpan(dailySnapshots, bucketDaySpan).map((snapshot) => ({
+            takenAt: snapshot.lastTakenAt,
+            itemLevel: snapshot.itemLevel,
+            gold: snapshot.gold,
+            playtimeSeconds: snapshot.playtimeSeconds,
+            mythicPlusScore: snapshot.mythicPlusScore,
+            currencies: snapshot.currencies,
+          })),
+        };
+      }
     }
 
     const snapshots = await getBucketedRawSnapshotsForCharacter(ctx, characterId, timeFrame);
@@ -1214,6 +1272,7 @@ export const getCharacterCoreTimeline = query({
         gold: snapshot.gold,
         playtimeSeconds: snapshot.playtimeSeconds,
         mythicPlusScore: snapshot.mythicPlusScore,
+        currencies: snapshot.currencies,
       })),
     };
   },
@@ -1818,6 +1877,111 @@ export const backfillCharacterLatestSnapshots = mutation({
   },
 });
 
+async function backfillSnapshotOptimizationsForCharacters(
+  ctx: DbWriterCtx,
+  characters: Doc<"characters">[],
+) {
+  let updatedCharacters = 0;
+  let updatedDailySnapshots = 0;
+
+  for (const character of characters) {
+    const rawSnapshots = await ctx.db
+      .query("snapshots")
+      .withIndex("by_character_and_time", (q) => q.eq("characterId", character._id))
+      .order("asc")
+      .collect();
+    const snapshots = dedupeSnapshotsByTakenAt(rawSnapshots);
+    if (snapshots.length === 0) {
+      continue;
+    }
+
+    const firstSnapshotAt = snapshots[0]?.takenAt;
+    const snapshotCount = snapshots.length;
+    const latestSnapshotDetails = toSnapshotDetails(snapshots[snapshots.length - 1] ?? null);
+    const latestSnapshotSummary = toSnapshotSummary(snapshots[snapshots.length - 1] ?? null);
+    let shouldPatchCharacter = false;
+    const characterPatch: Partial<Doc<"characters">> = {};
+    if (
+      firstSnapshotAt !== undefined &&
+      (character.firstSnapshotAt !== firstSnapshotAt || character.snapshotCount !== snapshotCount)
+    ) {
+      characterPatch.firstSnapshotAt = firstSnapshotAt;
+      characterPatch.snapshotCount = snapshotCount;
+      shouldPatchCharacter = true;
+    }
+    if (
+      latestSnapshotSummary &&
+      !isSameSnapshotSummary(character.latestSnapshot ?? null, latestSnapshotSummary)
+    ) {
+      characterPatch.latestSnapshot = latestSnapshotSummary;
+      shouldPatchCharacter = true;
+    }
+    if (
+      latestSnapshotDetails &&
+      JSON.stringify(character.latestSnapshotDetails ?? null) !==
+        JSON.stringify(latestSnapshotDetails)
+    ) {
+      characterPatch.latestSnapshotDetails = latestSnapshotDetails;
+      shouldPatchCharacter = true;
+    }
+    if (shouldPatchCharacter) {
+      await ctx.db.patch(character._id, characterPatch);
+      updatedCharacters += 1;
+    }
+
+    const latestByDay = new Map<number, SnapshotDoc>();
+    for (const snapshot of snapshots) {
+      latestByDay.set(getSnapshotDayStart(snapshot.takenAt), snapshot);
+    }
+
+    for (const [dayStartAt, snapshot] of latestByDay) {
+      const existingDailySnapshot = await ctx.db
+        .query("characterDailySnapshots")
+        .withIndex("by_character_and_day", (q) =>
+          q.eq("characterId", character._id).eq("dayStartAt", dayStartAt),
+        )
+        .first();
+      const nextDailySnapshot = {
+        dayStartAt,
+        lastTakenAt: snapshot.takenAt,
+        itemLevel: snapshot.itemLevel,
+        gold: snapshot.gold,
+        playtimeSeconds: snapshot.playtimeSeconds,
+        mythicPlusScore: snapshot.mythicPlusScore,
+        currencies: snapshot.currencies,
+      };
+
+      if (!existingDailySnapshot) {
+        await ctx.db.insert("characterDailySnapshots", {
+          characterId: character._id,
+          ...nextDailySnapshot,
+        });
+        updatedDailySnapshots += 1;
+        continue;
+      }
+
+      if (
+        existingDailySnapshot.lastTakenAt !== nextDailySnapshot.lastTakenAt ||
+        existingDailySnapshot.itemLevel !== nextDailySnapshot.itemLevel ||
+        existingDailySnapshot.gold !== nextDailySnapshot.gold ||
+        existingDailySnapshot.playtimeSeconds !== nextDailySnapshot.playtimeSeconds ||
+        existingDailySnapshot.mythicPlusScore !== nextDailySnapshot.mythicPlusScore ||
+        JSON.stringify(existingDailySnapshot.currencies ?? null) !==
+          JSON.stringify(nextDailySnapshot.currencies)
+      ) {
+        await ctx.db.patch(existingDailySnapshot._id, nextDailySnapshot);
+        updatedDailySnapshots += 1;
+      }
+    }
+  }
+
+  return {
+    totalCharacters: characters.length,
+    updatedCharacters,
+    updatedDailySnapshots,
+  };
+}
+
 export const backfillCharacterSnapshotOptimizations = mutation({
   args: {},
   handler: async (ctx) => {
@@ -1836,104 +2000,63 @@ export const backfillCharacterSnapshotOptimizations = mutation({
       .withIndex("by_player", (q) => q.eq("playerId", player._id))
       .collect();
 
-    let updatedCharacters = 0;
-    let updatedDailySnapshots = 0;
-
-    for (const character of characters) {
-      const rawSnapshots = await ctx.db
-        .query("snapshots")
-        .withIndex("by_character_and_time", (q) => q.eq("characterId", character._id))
-        .order("asc")
-        .collect();
-      const snapshots = dedupeSnapshotsByTakenAt(rawSnapshots);
-      if (snapshots.length === 0) {
-        continue;
-      }
-
-      const firstSnapshotAt = snapshots[0]?.takenAt;
-      const snapshotCount = snapshots.length;
-      const latestSnapshotDetails = toSnapshotDetails(snapshots[snapshots.length - 1] ?? null);
-      const latestSnapshotSummary = toSnapshotSummary(snapshots[snapshots.length - 1] ?? null);
-      let shouldPatchCharacter = false;
-      const characterPatch: Partial<Doc<"characters">> = {};
-      if (
-        firstSnapshotAt !== undefined &&
-        (character.firstSnapshotAt !== firstSnapshotAt || character.snapshotCount !== snapshotCount)
-      ) {
-        characterPatch.firstSnapshotAt = firstSnapshotAt;
-        characterPatch.snapshotCount = snapshotCount;
-        shouldPatchCharacter = true;
-      }
-      if (
-        latestSnapshotSummary &&
-        !isSameSnapshotSummary(character.latestSnapshot ?? null, latestSnapshotSummary)
-      ) {
-        characterPatch.latestSnapshot = latestSnapshotSummary;
-        shouldPatchCharacter = true;
-      }
-      if (
-        latestSnapshotDetails &&
-        JSON.stringify(character.latestSnapshotDetails ?? null) !==
-          JSON.stringify(latestSnapshotDetails)
-      ) {
-        characterPatch.latestSnapshotDetails = latestSnapshotDetails;
-        shouldPatchCharacter = true;
-      }
-      if (shouldPatchCharacter) {
-        await ctx.db.patch(character._id, characterPatch);
-        updatedCharacters += 1;
-      }
-
-      const latestByDay = new Map<number, SnapshotDoc>();
-      for (const snapshot of snapshots) {
-        latestByDay.set(getSnapshotDayStart(snapshot.takenAt), snapshot);
-      }
-
-      for (const [dayStartAt, snapshot] of latestByDay) {
-        const existingDailySnapshot = await ctx.db
-          .query("characterDailySnapshots")
-          .withIndex("by_character_and_day", (q) =>
-            q.eq("characterId", character._id).eq("dayStartAt", dayStartAt),
-          )
-          .first();
-        const nextDailySnapshot = {
-          dayStartAt,
-          lastTakenAt: snapshot.takenAt,
-          itemLevel: snapshot.itemLevel,
-          gold: snapshot.gold,
-          playtimeSeconds: snapshot.playtimeSeconds,
-          mythicPlusScore: snapshot.mythicPlusScore,
-        };
-
-        if (!existingDailySnapshot) {
-          await ctx.db.insert("characterDailySnapshots", {
-            characterId: character._id,
-            ...nextDailySnapshot,
-          });
-          updatedDailySnapshots += 1;
-          continue;
-        }
-
-        if (
-          existingDailySnapshot.lastTakenAt !== nextDailySnapshot.lastTakenAt ||
-          existingDailySnapshot.itemLevel !== nextDailySnapshot.itemLevel ||
-          existingDailySnapshot.gold !== nextDailySnapshot.gold ||
-          existingDailySnapshot.playtimeSeconds !== nextDailySnapshot.playtimeSeconds ||
-          existingDailySnapshot.mythicPlusScore !== nextDailySnapshot.mythicPlusScore
-        ) {
-          await ctx.db.patch(existingDailySnapshot._id, nextDailySnapshot);
-          updatedDailySnapshots += 1;
-        }
-      }
-    }
-
-    return {
-      totalCharacters: characters.length,
-      updatedCharacters,
-      updatedDailySnapshots,
-    };
+    return await backfillSnapshotOptimizationsForCharacters(ctx, characters);
   },
 });
+
+export const backfillAllCharacterSnapshotOptimizations = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const characters = await ctx.db.query("characters").collect();
+    return await backfillSnapshotOptimizationsForCharacters(ctx, characters);
+  },
+});
+
+async function backfillMythicPlusOptimizationsForCharacters(
+  ctx: DbWriterCtx,
+  characters: Doc<"characters">[],
+) {
+  let updatedCharacters = 0;
+  for (const character of characters) {
+    const runs = await ctx.db
+      .query("mythicPlusRuns")
+      .withIndex("by_character_and_observedAt", (q) => q.eq("characterId", character._id))
+      .order("desc")
+      .collect();
+
+    const dedupedRuns = dedupeMythicPlusRuns(runs);
+    const recentRuns = buildRecentRuns(dedupedRuns);
+    const mythicPlusSummary = buildMythicPlusSummary(
+      dedupedRuns,
+      character.latestSnapshot?.mythicPlusScore ??
+        character.latestSnapshotDetails?.mythicPlusScore ??
+        null,
+    );
+    const mythicPlusRecentRunsPreview = recentRuns.slice(0, MYTHIC_PLUS_PREVIEW_RUN_LIMIT);
+    const mythicPlusRunCount = recentRuns.length;
+
+    if (
+      JSON.stringify(character.mythicPlusSummary ?? null) === JSON.stringify(mythicPlusSummary) &&
+      JSON.stringify(character.mythicPlusRecentRunsPreview ?? null) ===
+        JSON.stringify(mythicPlusRecentRunsPreview) &&
+      character.mythicPlusRunCount === mythicPlusRunCount
+    ) {
+      continue;
+    }
+
+    await ctx.db.patch(character._id, {
+      mythicPlusSummary,
+      mythicPlusRecentRunsPreview,
+      mythicPlusRunCount,
+    });
+    updatedCharacters += 1;
+  }
+
+  return {
+    totalCharacters: characters.length,
+    updatedCharacters,
+  };
+}
 
 export const backfillCharacterMythicPlusOptimizations = mutation({
   args: {},
@@ -1953,45 +2076,14 @@ export const backfillCharacterMythicPlusOptimizations = mutation({
       .withIndex("by_player", (q) => q.eq("playerId", player._id))
       .collect();
 
-    let updatedCharacters = 0;
-    for (const character of characters) {
-      const runs = await ctx.db
-        .query("mythicPlusRuns")
-        .withIndex("by_character_and_observedAt", (q) => q.eq("characterId", character._id))
-        .order("desc")
-        .collect();
+    return await backfillMythicPlusOptimizationsForCharacters(ctx, characters);
+  },
+});
 
-      const dedupedRuns = dedupeMythicPlusRuns(runs);
-      const recentRuns = buildRecentRuns(dedupedRuns);
-      const mythicPlusSummary = buildMythicPlusSummary(
-        dedupedRuns,
-        character.latestSnapshot?.mythicPlusScore ??
-          character.latestSnapshotDetails?.mythicPlusScore ??
-          null,
-      );
-      const mythicPlusRecentRunsPreview = recentRuns.slice(0, MYTHIC_PLUS_PREVIEW_RUN_LIMIT);
-      const mythicPlusRunCount = recentRuns.length;
-
-      if (
-        JSON.stringify(character.mythicPlusSummary ?? null) === JSON.stringify(mythicPlusSummary) &&
-        JSON.stringify(character.mythicPlusRecentRunsPreview ?? null) ===
-          JSON.stringify(mythicPlusRecentRunsPreview) &&
-        character.mythicPlusRunCount === mythicPlusRunCount
-      ) {
-        continue;
-      }
-
-      await ctx.db.patch(character._id, {
-        mythicPlusSummary,
-        mythicPlusRecentRunsPreview,
-        mythicPlusRunCount,
-      });
-      updatedCharacters += 1;
-    }
-
-    return {
-      totalCharacters: characters.length,
-      updatedCharacters,
-    };
+export const backfillAllCharacterMythicPlusOptimizations = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const characters = await ctx.db.query("characters").collect();
+    return await backfillMythicPlusOptimizationsForCharacters(ctx, characters);
   },
 });

@@ -105,10 +105,10 @@ const CARD_DATE_TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
 type TimeFrame = "7d" | "30d" | "90d" | "all";
 
 const TIME_FRAME_OPTIONS: { value: TimeFrame; label: string }[] = [
-  { value: "7d", label: "7D" },
-  { value: "30d", label: "30D" },
-  { value: "90d", label: "90D" },
   { value: "all", label: "All" },
+  { value: "90d", label: "90D" },
+  { value: "30d", label: "30D" },
+  { value: "7d", label: "7D" },
 ];
 
 function TimeFramePicker({
@@ -120,21 +120,28 @@ function TimeFramePicker({
 }) {
   return (
     <div className="flex items-center gap-2">
-      <span className="text-muted-foreground text-xs">Range</span>
+      <span className="text-muted-foreground text-xs">Zoom</span>
       <div className="flex rounded-md border overflow-hidden">
-        {TIME_FRAME_OPTIONS.map((opt) => (
-          <button
-            key={opt.value}
-            onClick={() => onChange(opt.value)}
-            className={`px-3 py-1 text-xs transition-colors ${
-              value === opt.value
-                ? "bg-primary text-primary-foreground"
-                : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
-            }`}
-          >
-            {opt.label}
-          </button>
-        ))}
+        {TIME_FRAME_OPTIONS.map((opt) => {
+          const isDisabled = opt.value !== "all";
+          return (
+            <button
+              key={opt.value}
+              type="button"
+              disabled={isDisabled}
+              onClick={() => onChange(opt.value)}
+              className={`px-3 py-1 text-xs transition-colors ${
+                value === opt.value
+                  ? "bg-primary text-primary-foreground"
+                  : isDisabled
+                    ? "cursor-not-allowed bg-muted/20 text-muted-foreground/50"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+              }`}
+            >
+              {opt.label}
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -236,6 +243,59 @@ function xAxisTickFormatter(ts: unknown, frame: TimeFrame): string {
     return d.toLocaleDateString(undefined, { weekday: "short", day: "numeric" });
   }
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function capXAxisTicks(ticks: number[], maxCount: number) {
+  if (ticks.length <= maxCount) {
+    return ticks;
+  }
+
+  const selectedTicks = new Set<number>([ticks[0]!, ticks[ticks.length - 1]!]);
+  const step = (ticks.length - 1) / (maxCount - 1);
+  for (let index = 1; index < maxCount - 1; index += 1) {
+    selectedTicks.add(ticks[Math.round(step * index)]!);
+  }
+
+  return Array.from(selectedTicks).sort((a, b) => a - b);
+}
+
+function getXAxisTicks(data: Record<string, number | undefined>[], frame: TimeFrame) {
+  const timestamps = data
+    .map((datum) => normalizeTimestampSeconds(datum.date))
+    .filter((timestamp): timestamp is number => timestamp !== null);
+  const uniqueTimestamps = Array.from(new Set(timestamps)).sort((a, b) => a - b);
+  if (uniqueTimestamps.length <= 2) {
+    return uniqueTimestamps;
+  }
+
+  const importantTicks = uniqueTimestamps.filter((timestamp, index) => {
+    if (index === 0 || index === uniqueTimestamps.length - 1) {
+      return true;
+    }
+
+    const date = new Date(timestamp * 1000);
+    if (Number.isNaN(date.getTime())) {
+      return false;
+    }
+
+    if (frame === "7d") {
+      return true;
+    }
+    if (frame === "30d") {
+      return date.getDay() === 1;
+    }
+    if (frame === "90d") {
+      return date.getDate() === 1 || date.getDate() === 15;
+    }
+    return date.getDate() === 1;
+  });
+
+  const maxTickCount = frame === "all" ? 8 : frame === "90d" ? 9 : frame === "30d" ? 7 : 8;
+  if (importantTicks.length >= 3) {
+    return capXAxisTicks(importantTicks, maxTickCount);
+  }
+
+  return capXAxisTicks(uniqueTimestamps, maxTickCount);
 }
 
 function xTooltipLabelFormatter(
@@ -1541,6 +1601,7 @@ type CoreChartSnapshot = {
   gold: number;
   playtimeSeconds: number;
   mythicPlusScore: number;
+  currencies: Snapshot["currencies"];
 };
 
 type StatsChartSnapshot = {
@@ -1868,7 +1929,7 @@ function SnapshotLineChart({
     );
   }
 
-  const xAxisInterval = data.length > 10 ? Math.ceil(data.length / 10) - 1 : 0;
+  const xAxisTicks = getXAxisTicks(data, timeFrame ?? "all");
   const latestDatum = data[data.length - 1];
   const hasPrimaryEmphasis = lineEmphasis === "primary" && lines.length > 1;
   const primaryLineKey = hasPrimaryEmphasis ? getPrimaryLineKey(lines, latestDatum) : undefined;
@@ -1955,7 +2016,9 @@ function SnapshotLineChart({
             fill: "var(--muted-foreground)",
             fillOpacity: 0.7,
           }}
-          interval={xAxisInterval}
+          ticks={xAxisTicks}
+          interval={0}
+          minTickGap={18}
           tickFormatter={(ts: number) => xAxisTickFormatter(ts, timeFrame ?? "all")}
         />
         <YAxis
@@ -2517,7 +2580,7 @@ function OverviewLayout({
             <IlvlChartCard snapshots={coreSnapshots} timeFrame={timeFrame} />
             <MplusChartCard snapshots={coreSnapshots} timeFrame={timeFrame} />
             <GoldChartCard snapshots={coreSnapshots} timeFrame={timeFrame} />
-            <PlaytimeChartCard snapshots={coreSnapshots} timeFrame={timeFrame} />
+            <CurrenciesChartCard snapshots={coreSnapshots} timeFrame={timeFrame} />
           </div>
 
           <MythicPlusSection
@@ -3101,7 +3164,7 @@ const CharacterPageContent = memo(function CharacterPageContent({
 
 function RouteComponent() {
   const { characterId } = Route.useParams();
-  const [timeFrame, setTimeFrame] = useState<TimeFrame>("30d");
+  const [timeFrame, setTimeFrame] = useState<TimeFrame>("all");
   const { pinnedCharacterIdSet, togglePinnedCharacter } = usePinnedCharacters();
   const [discordUserIdInput, setDiscordUserIdInput] = useState("");
   const [nonTradeableSlotsDraft, setNonTradeableSlotsDraft] = useState<TradeSlotKey[]>([]);
