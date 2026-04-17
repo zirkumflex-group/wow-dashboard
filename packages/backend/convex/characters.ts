@@ -134,7 +134,31 @@ function getCharacterStoredLatestSnapshotDetails(
   return character.latestSnapshotDetails ?? null;
 }
 
-function getCharacterStoredMythicPlusData(character: Doc<"characters">) {
+function getCharacterStoredLatestSnapshotTakenAt(character: Doc<"characters">) {
+  return getCharacterStoredLatestSnapshotDetails(character)?.takenAt ??
+    getCharacterStoredLatestSnapshot(character)?.takenAt ??
+    null;
+}
+
+function buildCharacterMythicPlusData(
+  summary: CharacterMythicPlusSummary,
+  runs: CharacterMythicPlusRecentRunPreview[],
+  totalRunCount: number,
+  includeAllRuns: boolean,
+) {
+  const visibleRuns = includeAllRuns ? runs : runs.slice(0, MYTHIC_PLUS_PREVIEW_RUN_LIMIT);
+  return {
+    summary,
+    runs: visibleRuns,
+    totalRunCount,
+    isPreview: totalRunCount > visibleRuns.length,
+  };
+}
+
+function getCharacterStoredMythicPlusData(
+  character: Doc<"characters">,
+  includeAllRuns: boolean,
+) {
   const summary = character.mythicPlusSummary ?? null;
   const runs = character.mythicPlusRecentRunsPreview ?? null;
   const totalRunCount = character.mythicPlusRunCount ?? null;
@@ -148,12 +172,11 @@ function getCharacterStoredMythicPlusData(character: Doc<"characters">) {
     return null;
   }
 
-  return {
-    summary,
-    runs,
-    totalRunCount,
-    isPreview: totalRunCount > runs.length,
-  };
+  if (includeAllRuns && totalRunCount > runs.length) {
+    return null;
+  }
+
+  return buildCharacterMythicPlusData(summary, runs, totalRunCount, includeAllRuns);
 }
 
 async function getPlayerForAuthUser(ctx: DbReaderCtx, authUserId: string) {
@@ -427,50 +450,76 @@ async function getFirstSnapshotForCharacter(
     .first();
 }
 
-async function getBucketedRawSnapshotsForCharacter(
+function shouldReplaceBucketSnapshot(currentSnapshot: SnapshotDoc | undefined, candidateSnapshot: SnapshotDoc) {
+  if (!currentSnapshot) return true;
+  if (candidateSnapshot.takenAt !== currentSnapshot.takenAt) {
+    return candidateSnapshot.takenAt > currentSnapshot.takenAt;
+  }
+
+  return shouldReplaceSnapshot(currentSnapshot, candidateSnapshot);
+}
+
+async function getSnapshotRangeBoundsForCharacter(
   ctx: DbReaderCtx,
-  characterId: Doc<"characters">["_id"],
+  character: Doc<"characters">,
   timeFrame: SnapshotTimeFrame,
 ) {
   const cutoffSeconds = getSnapshotTimeFrameCutoffSeconds(timeFrame);
-  const [firstSnapshot, latestSnapshot] = await Promise.all([
-    cutoffSeconds === null ? getFirstSnapshotForCharacter(ctx, characterId) : null,
-    getLatestSnapshotForCharacter(ctx, characterId),
-  ]);
-  const rangeStartAt = cutoffSeconds ?? firstSnapshot?.takenAt ?? null;
-  const rangeEndAt = latestSnapshot?.takenAt ?? null;
+  const storedLatestTakenAt = getCharacterStoredLatestSnapshotTakenAt(character);
+  const latestTakenAtPromise =
+    storedLatestTakenAt !== null
+      ? Promise.resolve(storedLatestTakenAt)
+      : getLatestSnapshotForCharacter(ctx, character._id).then((snapshot) => snapshot?.takenAt ?? null);
+  const rangeStartAtPromise =
+    cutoffSeconds !== null
+      ? Promise.resolve(cutoffSeconds)
+      : character.firstSnapshotAt !== undefined
+        ? Promise.resolve(character.firstSnapshotAt)
+        : getFirstSnapshotForCharacter(ctx, character._id).then((snapshot) => snapshot?.takenAt ?? null);
+
+  const [rangeStartAt, rangeEndAt] = await Promise.all([rangeStartAtPromise, latestTakenAtPromise]);
   if (rangeStartAt === null || rangeEndAt === null || rangeEndAt < rangeStartAt) {
+    return null;
+  }
+
+  return { rangeStartAt, rangeEndAt };
+}
+
+async function getBucketedRawSnapshotsForCharacter(
+  ctx: DbReaderCtx,
+  character: Doc<"characters">,
+  timeFrame: SnapshotTimeFrame,
+) {
+  const rangeBounds = await getSnapshotRangeBoundsForCharacter(ctx, character, timeFrame);
+  if (!rangeBounds) {
     return [] as SnapshotDoc[];
   }
 
+  const { rangeStartAt, rangeEndAt } = rangeBounds;
   const bucketSpanSeconds = getSnapshotBucketSpanSeconds(timeFrame, rangeStartAt, rangeEndAt);
-  const bucketStarts: number[] = [];
-  const startBucketAt = Math.floor(rangeStartAt / bucketSpanSeconds) * bucketSpanSeconds;
-  const endBucketAt = Math.floor(rangeEndAt / bucketSpanSeconds) * bucketSpanSeconds;
-  for (
-    let bucketStartAt = startBucketAt;
-    bucketStartAt <= endBucketAt;
-    bucketStartAt += bucketSpanSeconds
-  ) {
-    bucketStarts.push(bucketStartAt);
+  const rawSnapshots = await ctx.db
+    .query("snapshots")
+    .withIndex("by_character_and_time", (q) =>
+      q
+        .eq("characterId", character._id)
+        .gte("takenAt", rangeStartAt)
+        .lt("takenAt", rangeEndAt + 1),
+    )
+    .order("asc")
+    .collect();
+
+  const bucketedSnapshots = new Map<number, SnapshotDoc>();
+  for (const snapshot of rawSnapshots) {
+    const bucketStartAt = Math.floor(snapshot.takenAt / bucketSpanSeconds) * bucketSpanSeconds;
+    const currentSnapshot = bucketedSnapshots.get(bucketStartAt);
+    if (shouldReplaceBucketSnapshot(currentSnapshot, snapshot)) {
+      bucketedSnapshots.set(bucketStartAt, snapshot);
+    }
   }
 
-  const snapshots = await Promise.all(
-    bucketStarts.map((bucketStartAt) =>
-      ctx.db
-        .query("snapshots")
-        .withIndex("by_character_and_time", (q) =>
-          q
-            .eq("characterId", characterId)
-            .gte("takenAt", bucketStartAt)
-            .lt("takenAt", bucketStartAt + bucketSpanSeconds),
-        )
-        .order("desc")
-        .first(),
-    ),
+  return Array.from(bucketedSnapshots.values()).sort(
+    (a, b) => a.takenAt - b.takenAt || a._creationTime - b._creationTime,
   );
-
-  return snapshots.filter((snapshot): snapshot is SnapshotDoc => snapshot !== null);
 }
 
 function buildMythicPlusBucketSummary(runs: MythicPlusRunDoc[]) {
@@ -1278,7 +1327,17 @@ export const getCharacterHeader = query({
     ]);
 
     return {
-      character,
+      character: {
+        _id: character._id,
+        name: character.name,
+        realm: character.realm,
+        region: character.region,
+        class: character.class,
+        race: character.race,
+        faction: character.faction,
+        isBooster: character.isBooster,
+        nonTradeableSlots: character.nonTradeableSlots,
+      },
       owner: owner
         ? {
             playerId: owner._id,
@@ -1335,7 +1394,7 @@ export const getCharacterCoreTimeline = query({
       }
     }
 
-    const snapshots = await getBucketedRawSnapshotsForCharacter(ctx, characterId, timeFrame);
+    const snapshots = await getBucketedRawSnapshotsForCharacter(ctx, character, timeFrame);
     return {
       snapshots: snapshots.map((snapshot) => ({
         takenAt: snapshot.takenAt,
@@ -1362,7 +1421,7 @@ export const getCharacterDetailTimeline = query({
     const character = await ctx.db.get(characterId);
     if (!character) return null;
 
-    const snapshots = await getBucketedRawSnapshotsForCharacter(ctx, characterId, timeFrame);
+    const snapshots = await getBucketedRawSnapshotsForCharacter(ctx, character, timeFrame);
     if (metric === "stats") {
       return {
         metric,
@@ -1395,18 +1454,8 @@ export const getCharacterSnapshotTimeline = query({
     const character = await ctx.db.get(characterId);
     if (!character) return null;
 
-    const cutoffSeconds = getSnapshotTimeFrameCutoffSeconds(timeFrame);
-    const snapshots = await ctx.db
-      .query("snapshots")
-      .withIndex("by_character_and_time", (q) => {
-        const range = q.eq("characterId", characterId);
-        return cutoffSeconds === null ? range : range.gte("takenAt", cutoffSeconds);
-      })
-      .order("asc")
-      .collect();
-
     return {
-      snapshots: dedupeSnapshotsByTakenAt(snapshots).map((snapshot) => ({
+      snapshots: (await getBucketedRawSnapshotsForCharacter(ctx, character, timeFrame)).map((snapshot) => ({
         takenAt: snapshot.takenAt,
         itemLevel: snapshot.itemLevel,
         mythicPlusScore: snapshot.mythicPlusScore,
@@ -1418,15 +1467,19 @@ export const getCharacterSnapshotTimeline = query({
 });
 
 export const getCharacterMythicPlus = query({
-  args: { characterId: v.id("characters") },
-  handler: async (ctx, { characterId }) => {
+  args: {
+    characterId: v.id("characters"),
+    includeAllRuns: v.optional(v.boolean()),
+  },
+  handler: async (ctx, { characterId, includeAllRuns }) => {
     const authUser = await authComponent.safeGetAuthUser(ctx);
     if (!authUser) return null;
 
     const character = await ctx.db.get(characterId);
     if (!character) return null;
 
-    const storedMythicPlusData = getCharacterStoredMythicPlusData(character);
+    const shouldIncludeAllRuns = includeAllRuns === true;
+    const storedMythicPlusData = getCharacterStoredMythicPlusData(character, shouldIncludeAllRuns);
     if (storedMythicPlusData) {
       return storedMythicPlusData;
     }
@@ -1450,39 +1503,14 @@ export const getCharacterMythicPlus = query({
     ]);
 
     const sortedRuns = dedupeMythicPlusRuns(runs);
-    const recentRuns = buildRecentRuns(sortedRuns);
+    const projectedRuns = buildRecentRuns(sortedRuns);
 
-    return {
-      runs: recentRuns,
-      summary: buildMythicPlusSummary(sortedRuns, currentScore),
-      totalRunCount: recentRuns.length,
-      isPreview: false,
-    };
-  },
-});
-
-export const getCharacterMythicPlusAllRuns = query({
-  args: { characterId: v.id("characters") },
-  handler: async (ctx, { characterId }) => {
-    const authUser = await authComponent.safeGetAuthUser(ctx);
-    if (!authUser) return null;
-
-    const character = await ctx.db.get(characterId);
-    if (!character) return null;
-
-    const runs = await ctx.db
-      .query("mythicPlusRuns")
-      .withIndex("by_character_and_observedAt", (q) => q.eq("characterId", characterId))
-      .order("desc")
-      .collect();
-
-    const sortedRuns = dedupeMythicPlusRuns(runs);
-    const recentRuns = buildRecentRuns(sortedRuns);
-
-    return {
-      runs: recentRuns,
-      totalRunCount: recentRuns.length,
-    };
+    return buildCharacterMythicPlusData(
+      buildMythicPlusSummary(sortedRuns, currentScore),
+      projectedRuns,
+      projectedRuns.length,
+      shouldIncludeAllRuns,
+    );
   },
 });
 

@@ -1609,10 +1609,7 @@ type StatsChartSnapshot = {
   stats: Snapshot["stats"];
 };
 
-type CurrencyChartSnapshot = {
-  takenAt: number;
-  currencies: Snapshot["currencies"];
-};
+type CurrencyChartSnapshot = Pick<CoreChartSnapshot, "takenAt" | "currencies">;
 
 type LayoutProps = {
   latest: Snapshot;
@@ -3190,12 +3187,14 @@ function RouteComponent() {
   });
   const mythicPlus = useQuery(api.characters.getCharacterMythicPlus, {
     characterId: characterId as Id<"characters">,
+    includeAllRuns: false,
   });
   const mythicPlusAllRuns = useQuery(
-    api.characters.getCharacterMythicPlusAllRuns,
+    api.characters.getCharacterMythicPlus,
     shouldLoadFullMythicPlusRuns
       ? {
           characterId: characterId as Id<"characters">,
+          includeAllRuns: true,
         }
       : "skip",
   );
@@ -3215,16 +3214,6 @@ function RouteComponent() {
           characterId: characterId as Id<"characters">,
           timeFrame,
           metric: "stats",
-        }
-      : "skip",
-  );
-  const currencyTimeline = useQuery(
-    api.characters.getCharacterDetailTimeline,
-    needsCurrencyTimeline
-      ? {
-          characterId: characterId as Id<"characters">,
-          timeFrame,
-          metric: "currencies",
         }
       : "skip",
   );
@@ -3324,10 +3313,7 @@ function RouteComponent() {
   const coreSnapshots = (coreTimeline?.snapshots ?? []) as CoreChartSnapshot[];
   const statsSnapshots =
     needsStatsTimeline && statsTimeline ? (statsTimeline.snapshots as StatsChartSnapshot[]) : null;
-  const currencySnapshots =
-    needsCurrencyTimeline && currencyTimeline
-      ? (currencyTimeline.snapshots as CurrencyChartSnapshot[])
-      : null;
+  const currencySnapshots = needsCurrencyTimeline ? (coreSnapshots as CurrencyChartSnapshot[]) : null;
   const lastMythicPlusRunAt = mythicPlusData?.summary.overall.lastRunAt ?? null;
   const trackingCountLabel = snapshotCount === null ? "Tracked Points" : "Snapshots";
   const trackingCountValue =
