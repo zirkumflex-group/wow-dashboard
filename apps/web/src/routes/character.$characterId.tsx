@@ -1,3 +1,5 @@
+import { convexQuery } from "@convex-dev/react-query";
+import { useQuery as useTanStackQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { api } from "@wow-dashboard/backend/convex/_generated/api";
 import type { Id } from "@wow-dashboard/backend/convex/_generated/dataModel";
@@ -9,7 +11,6 @@ import {
 import { getClassTextColor } from "../lib/class-colors";
 import { usePinnedCharacters } from "../lib/pinned-characters";
 import { formatPlaytime, PlaytimeBreakdown } from "../components/playtime-breakdown";
-import { MythicPlannerPanel } from "../components/mythic-planner-panel";
 import { Badge } from "@wow-dashboard/ui/components/badge";
 import { Button } from "@wow-dashboard/ui/components/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@wow-dashboard/ui/components/card";
@@ -31,8 +32,9 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "@wow-dashboard/ui/components/sheet";
-import { useMutation, useQuery } from "convex/react";
+import { useMutation, useQuery as useConvexQuery } from "convex/react";
 import {
+  Calculator,
   Clock,
   Coins,
   Columns,
@@ -50,7 +52,7 @@ import {
   EyeOff,
   Zap,
 } from "lucide-react";
-import { memo, startTransition, useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, lazy, memo, startTransition, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   CartesianGrid,
@@ -73,7 +75,27 @@ import {
   type TradeSlotKey,
 } from "../lib/trade-slots";
 
+const DEFAULT_TIME_FRAME = "all" as const;
+
+function getCharacterPageQueryOptions(characterId: Id<"characters">, timeFrame: TimeFrame) {
+  return convexQuery(api.characters.getCharacterPage, {
+    characterId,
+    timeFrame,
+    includeStats: false,
+  });
+}
+
+const LazyMythicPlannerPanel = lazy(() =>
+  import("../components/mythic-planner-panel").then((module) => ({
+    default: module.MythicPlannerPanel,
+  })),
+);
+
 export const Route = createFileRoute("/character/$characterId")({
+  loader: ({ context, params }) =>
+    context.queryClient.ensureQueryData(
+      getCharacterPageQueryOptions(params.characterId as Id<"characters">, DEFAULT_TIME_FRAME),
+    ),
   component: RouteComponent,
 });
 
@@ -1110,6 +1132,43 @@ function MythicPlusResultBadge({ run }: { run: MythicPlusRun }) {
   return null;
 }
 
+function DeferredMythicPlannerPanel({
+  characterId,
+  characterName,
+  currentScore,
+  dungeons,
+}: {
+  characterId: string;
+  characterName: string;
+  currentScore: number | null;
+  dungeons: MythicPlusSummary["currentSeasonDungeons"];
+}) {
+  return (
+    <Suspense
+      fallback={
+        <Card>
+          <CardHeader className="border-b pb-3">
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <Calculator size={16} className="text-muted-foreground" />
+              Planner
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="pt-4 text-sm text-muted-foreground">
+            Loading planner...
+          </CardContent>
+        </Card>
+      }
+    >
+      <LazyMythicPlannerPanel
+        characterId={characterId}
+        characterName={characterName}
+        currentScore={currentScore}
+        dungeons={dungeons}
+      />
+    </Suspense>
+  );
+}
+
 function MythicPlusSection({
   data,
   isLoadingAllRuns,
@@ -1207,7 +1266,7 @@ function MythicPlusSection({
           </CardContent>
         </Card>
 
-        <MythicPlannerPanel
+        <DeferredMythicPlannerPanel
           characterId={characterId}
           characterName={characterName}
           currentScore={currentScore}
@@ -1488,12 +1547,12 @@ function MythicPlusSection({
         </Card>
       </div>
 
-      <MythicPlannerPanel
-        characterId={characterId}
-        characterName={characterName}
-        currentScore={currentScore}
-        dungeons={summary.currentSeasonDungeons}
-      />
+        <DeferredMythicPlannerPanel
+          characterId={characterId}
+          characterName={characterName}
+          currentScore={currentScore}
+          dungeons={summary.currentSeasonDungeons}
+        />
     </div>
   );
 }
@@ -3161,7 +3220,8 @@ const CharacterPageContent = memo(function CharacterPageContent({
 
 function RouteComponent() {
   const { characterId } = Route.useParams();
-  const [timeFrame, setTimeFrame] = useState<TimeFrame>("all");
+  const characterRecordId = characterId as Id<"characters">;
+  const [timeFrame, setTimeFrame] = useState<TimeFrame>(DEFAULT_TIME_FRAME);
   const { pinnedCharacterIdSet, togglePinnedCharacter } = usePinnedCharacters();
   const [discordUserIdInput, setDiscordUserIdInput] = useState("");
   const [nonTradeableSlotsDraft, setNonTradeableSlotsDraft] = useState<TradeSlotKey[]>([]);
@@ -3178,22 +3238,14 @@ function RouteComponent() {
       return "overview";
     }
   });
-  const header = useQuery(api.characters.getCharacterHeader, {
-    characterId: characterId as Id<"characters">,
-  });
-  const coreTimeline = useQuery(api.characters.getCharacterCoreTimeline, {
-    characterId: characterId as Id<"characters">,
-    timeFrame,
-  });
-  const mythicPlus = useQuery(api.characters.getCharacterMythicPlus, {
-    characterId: characterId as Id<"characters">,
-    includeAllRuns: false,
-  });
-  const mythicPlusAllRuns = useQuery(
+  const characterPageQuery = useTanStackQuery(getCharacterPageQueryOptions(characterRecordId, timeFrame));
+  const characterPage = characterPageQuery.data;
+  const pageHeader = characterPage?.header;
+  const mythicPlusAllRuns = useConvexQuery(
     api.characters.getCharacterMythicPlus,
     shouldLoadFullMythicPlusRuns
       ? {
-          characterId: characterId as Id<"characters">,
+          characterId: characterRecordId,
           includeAllRuns: true,
         }
       : "skip",
@@ -3207,11 +3259,11 @@ function RouteComponent() {
     layoutMode === "timeline" || (layoutMode === "focus" && focusMetric === "stats");
   const needsCurrencyTimeline =
     layoutMode === "timeline" || (layoutMode === "focus" && focusMetric === "currencies");
-  const statsTimeline = useQuery(
+  const statsTimeline = useConvexQuery(
     api.characters.getCharacterDetailTimeline,
     needsStatsTimeline
       ? {
-          characterId: characterId as Id<"characters">,
+          characterId: characterRecordId,
           timeFrame,
           metric: "stats",
         }
@@ -3219,8 +3271,8 @@ function RouteComponent() {
   );
 
   useEffect(() => {
-    setDiscordUserIdInput(header?.owner?.discordUserId ?? "");
-  }, [characterId, header?.owner?.discordUserId]);
+    setDiscordUserIdInput(pageHeader?.owner?.discordUserId ?? "");
+  }, [characterId, pageHeader?.owner?.discordUserId]);
 
   useEffect(() => {
     setShouldLoadFullMythicPlusRuns(false);
@@ -3228,23 +3280,23 @@ function RouteComponent() {
 
   useEffect(() => {
     setNonTradeableSlotsDraft(
-      normalizeTradeSlotKeys((header?.character.nonTradeableSlots ?? []) as TradeSlotKey[]),
+      normalizeTradeSlotKeys((pageHeader?.character.nonTradeableSlots ?? []) as TradeSlotKey[]),
     );
-  }, [characterId, header?.character.nonTradeableSlots]);
+  }, [characterId, pageHeader?.character.nonTradeableSlots]);
 
   useEffect(() => {
     const appTitle = "WoW Dashboard";
-    if (header === undefined) {
+    if (characterPage === undefined) {
       document.title = `Character | ${appTitle}`;
       return;
     }
-    if (!header) {
+    if (characterPage === null) {
       document.title = `Character Not Found | ${appTitle}`;
       return;
     }
 
-    document.title = `${header.character.name} (${header.character.realm}) | ${appTitle}`;
-  }, [header]);
+    document.title = `${characterPage.header.character.name} (${characterPage.header.character.realm}) | ${appTitle}`;
+  }, [characterPage]);
 
   function handleLayoutChange(mode: LayoutMode) {
     startTransition(() => {
@@ -3273,13 +3325,13 @@ function RouteComponent() {
     setShouldLoadFullMythicPlusRuns(true);
   }, []);
 
-  if (header === undefined || coreTimeline === undefined) {
+  if (characterPage === undefined) {
     return (
       <div className="w-full px-4 py-6 sm:px-6 lg:px-8" />
     );
   }
 
-  if (!header) {
+  if (characterPage === null) {
     return (
       <div className="container mx-auto max-w-3xl px-4 py-6">
         <p className="text-muted-foreground text-sm">Character not found.</p>
@@ -3287,6 +3339,7 @@ function RouteComponent() {
     );
   }
 
+  const { header, coreTimeline, mythicPlus } = characterPage;
   const { character, latestSnapshot, firstSnapshotAt, snapshotCount } = header;
   const owner = header.owner;
   const isPinnedToQuickAccess = pinnedCharacterIdSet.has(characterId);
