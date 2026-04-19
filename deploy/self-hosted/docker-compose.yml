@@ -1,0 +1,88 @@
+services:
+  caddy:
+    image: caddy:2.10
+    restart: unless-stopped
+    depends_on:
+      - web
+      - backend
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN}
+      CONVEX_API_DOMAIN: ${CONVEX_API_DOMAIN}
+      CONVEX_SITE_DOMAIN: ${CONVEX_SITE_DOMAIN}
+      LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - wow_dashboard
+
+  web:
+    build:
+      context: ../..
+      dockerfile: deploy/self-hosted/web.Dockerfile
+      args:
+        VITE_CONVEX_URL: https://${CONVEX_API_DOMAIN}
+        VITE_CONVEX_SITE_URL: https://${CONVEX_SITE_DOMAIN}
+    restart: unless-stopped
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3000
+      NODE_ENV: production
+    expose:
+      - "3000"
+    networks:
+      - wow_dashboard
+
+  backend:
+    image: ghcr.io/get-convex/convex-backend:${CONVEX_REV:-latest}
+    restart: unless-stopped
+    stop_grace_period: 10s
+    stop_signal: SIGINT
+    environment:
+      APPLICATION_MAX_CONCURRENT_MUTATIONS: ${APPLICATION_MAX_CONCURRENT_MUTATIONS:-16}
+      APPLICATION_MAX_CONCURRENT_NODE_ACTIONS: ${APPLICATION_MAX_CONCURRENT_NODE_ACTIONS:-16}
+      APPLICATION_MAX_CONCURRENT_QUERIES: ${APPLICATION_MAX_CONCURRENT_QUERIES:-16}
+      APPLICATION_MAX_CONCURRENT_V8_ACTIONS: ${APPLICATION_MAX_CONCURRENT_V8_ACTIONS:-16}
+      CONVEX_CLOUD_ORIGIN: https://${CONVEX_API_DOMAIN}
+      CONVEX_SITE_ORIGIN: https://${CONVEX_SITE_DOMAIN}
+      DISABLE_METRICS_ENDPOINT: ${DISABLE_METRICS_ENDPOINT:-true}
+      DOCUMENT_RETENTION_DELAY: ${DOCUMENT_RETENTION_DELAY:-172800}
+      INSTANCE_NAME: ${INSTANCE_NAME}
+      INSTANCE_SECRET: ${INSTANCE_SECRET}
+      RUST_LOG: ${RUST_LOG:-info}
+    volumes:
+      - convex_data:/convex/data
+    expose:
+      - "3210"
+      - "3211"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:3210/version >/dev/null || exit 1"]
+      interval: 5s
+      start_period: 10s
+    networks:
+      - wow_dashboard
+
+  dashboard:
+    image: ghcr.io/get-convex/convex-dashboard:${CONVEX_REV:-latest}
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      NEXT_PUBLIC_DEPLOYMENT_URL: https://${CONVEX_API_DOMAIN}
+    ports:
+      - "127.0.0.1:${DASHBOARD_PORT:-6791}:6791"
+    networks:
+      - wow_dashboard
+
+volumes:
+  caddy_config:
+  caddy_data:
+  convex_data:
+
+networks:
+  wow_dashboard:

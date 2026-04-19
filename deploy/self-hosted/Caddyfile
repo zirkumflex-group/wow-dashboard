@@ -1,0 +1,18 @@
+{
+	email {$LETSENCRYPT_EMAIL}
+}
+
+{$APP_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy web:3000
+}
+
+{$CONVEX_API_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy backend:3210
+}
+
+{$CONVEX_SITE_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy backend:3211
+}
