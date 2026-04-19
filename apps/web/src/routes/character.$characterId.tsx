@@ -52,7 +52,7 @@ import {
   EyeOff,
   Zap,
 } from "lucide-react";
-import { Suspense, lazy, memo, startTransition, useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, lazy, memo, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   CartesianGrid,
@@ -3325,6 +3325,19 @@ function RouteComponent() {
     setShouldLoadFullMythicPlusRuns(true);
   }, []);
 
+  const baseMythicPlusData = (characterPage?.mythicPlus ?? null) as MythicPlusData | null;
+  const mythicPlusData = useMemo(() => {
+    if (!baseMythicPlusData) {
+      return baseMythicPlusData;
+    }
+    return {
+      ...baseMythicPlusData,
+      runs: mythicPlusAllRuns?.runs ?? baseMythicPlusData.runs,
+      totalRunCount: mythicPlusAllRuns?.totalRunCount ?? baseMythicPlusData.totalRunCount,
+      isPreview: mythicPlusAllRuns ? false : baseMythicPlusData.isPreview,
+    };
+  }, [baseMythicPlusData, mythicPlusAllRuns]);
+
   if (characterPage === undefined) {
     return (
       <div className="w-full px-4 py-6 sm:px-6 lg:px-8" />
@@ -3339,22 +3352,12 @@ function RouteComponent() {
     );
   }
 
-  const { header, coreTimeline, mythicPlus } = characterPage;
+  const { header, coreTimeline } = characterPage;
   const { character, latestSnapshot, firstSnapshotAt, snapshotCount } = header;
   const owner = header.owner;
   const isPinnedToQuickAccess = pinnedCharacterIdSet.has(characterId);
   const isBoosterCharacter = character.isBooster === true;
   const nonTradeableSlots = (character.nonTradeableSlots ?? []) as TradeSlotKey[];
-  const baseMythicPlusData = mythicPlus as MythicPlusData | null | undefined;
-  const mythicPlusData =
-    baseMythicPlusData === undefined || baseMythicPlusData === null
-      ? baseMythicPlusData
-      : {
-          ...baseMythicPlusData,
-          runs: mythicPlusAllRuns?.runs ?? baseMythicPlusData.runs,
-          totalRunCount: mythicPlusAllRuns?.totalRunCount ?? baseMythicPlusData.totalRunCount,
-          isPreview: mythicPlusAllRuns ? false : baseMythicPlusData.isPreview,
-        };
   const isLoadingAllMythicPlusRuns =
     shouldLoadFullMythicPlusRuns && mythicPlusAllRuns === undefined;
   const normalizedDiscordUserIdInput = discordUserIdInput.trim();

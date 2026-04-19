@@ -48,6 +48,8 @@ type StatsTimelineSnapshot = {
   stats: SnapshotDoc["stats"];
 };
 const MYTHIC_PLUS_PREVIEW_RUN_LIMIT = 20;
+const MYTHIC_PLUS_FALLBACK_RUN_LIMIT = 2000;
+const RAW_SNAPSHOT_FALLBACK_LIMIT = 10000;
 
 const snapshotTimeFrameValidator = v.union(
   v.literal("7d"),
@@ -240,12 +242,6 @@ function getCharacterStoredMythicPlusData(
   const runs = character.mythicPlusRecentRunsPreview ?? null;
   const totalRunCount = character.mythicPlusRunCount ?? null;
   if (!summary || !runs || totalRunCount === null) {
-    return null;
-  }
-
-  // Fall back to live recomputation when a stored preview still contains
-  // legacy duplicate rows that current projection logic would collapse.
-  if (collapseLegacyDisplayDuplicateRuns(runs as MythicPlusRunDoc[]).length !== runs.length) {
     return null;
   }
 
@@ -591,7 +587,7 @@ async function getBucketedRawSnapshotsForCharacter(
         .lt("takenAt", rangeEndAt + 1),
     )
     .order("asc")
-    .collect();
+    .take(RAW_SNAPSHOT_FALLBACK_LIMIT);
 
   const bucketedSnapshots = new Map<number, SnapshotDoc>();
   for (const snapshot of rawSnapshots) {
@@ -1548,7 +1544,7 @@ async function buildCharacterMythicPlusPayload(
       .query("mythicPlusRuns")
       .withIndex("by_character_and_observedAt", (q) => q.eq("characterId", character._id))
       .order("desc")
-      .collect(),
+      .take(MYTHIC_PLUS_FALLBACK_RUN_LIMIT),
     currentScorePromise,
   ]);
 
