@@ -2,12 +2,22 @@ import { serve } from "@hono/node-server";
 import { eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { loginCodeTtlSeconds } from "@wow-dashboard/api-schema";
+import {
+  charactersLatestQuerySchema,
+  loginCodeTtlSeconds,
+  playerRouteParamsSchema,
+  updatePlayerDiscordBodySchema,
+} from "@wow-dashboard/api-schema";
 import { players } from "@wow-dashboard/db";
 import { env } from "@wow-dashboard/env/server";
 import { auth, type ApiAuthSession, type ApiAuthUser } from "./auth";
 import { db } from "./db";
 import { createLoginCode, redeemLoginCode } from "./lib/loginCodes";
+import {
+  readCharactersWithLatestSnapshot,
+  readPlayerCharacters,
+} from "./services/characters";
+import { updatePlayerDiscordUserId } from "./services/players";
 
 type AppBindings = {
   Variables: {
@@ -275,12 +285,16 @@ function renderDevAuthPage(callbackUrl: string) {
 </html>`;
 }
 
+function formatValidationError(issues: { message: string }[]): string {
+  return issues[0]?.message ?? "Invalid request";
+}
+
 app.use(
   "/api/*",
   cors({
     origin: env.SITE_URL,
     allowHeaders: ["Content-Type", "Authorization"],
-    allowMethods: ["GET", "POST", "OPTIONS"],
+    allowMethods: ["GET", "POST", "PATCH", "OPTIONS"],
     exposeHeaders: ["Content-Length", "set-auth-token"],
     maxAge: 600,
     credentials: true,
@@ -403,6 +417,88 @@ app.get("/api/me", (c) => {
     session: serializeSession(session),
     user: serializeUser(user),
   });
+});
+
+app.get("/api/characters/latest", async (c) => {
+  const session = c.get("session");
+  const user = c.get("user");
+
+  if (!session || !user) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const searchParams = new URL(c.req.url).searchParams;
+  const parsedQuery = charactersLatestQuerySchema.safeParse({
+    characterId: searchParams.getAll("characterId"),
+  });
+
+  if (!parsedQuery.success) {
+    return c.json({ error: formatValidationError(parsedQuery.error.issues) }, 400);
+  }
+
+  return c.json(await readCharactersWithLatestSnapshot(parsedQuery.data.characterId));
+});
+
+app.get("/api/players/:id/characters", async (c) => {
+  const session = c.get("session");
+  const user = c.get("user");
+
+  if (!session || !user) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const parsedParams = playerRouteParamsSchema.safeParse(c.req.param());
+  if (!parsedParams.success) {
+    return c.json({ error: formatValidationError(parsedParams.error.issues) }, 400);
+  }
+
+  return c.json(await readPlayerCharacters(parsedParams.data.id));
+});
+
+app.patch("/api/players/:id/discord", async (c) => {
+  const session = c.get("session");
+  const user = c.get("user");
+
+  if (!session || !user) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const parsedParams = playerRouteParamsSchema.safeParse(c.req.param());
+  if (!parsedParams.success) {
+    return c.json({ error: formatValidationError(parsedParams.error.issues) }, 400);
+  }
+
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "Invalid request body" }, 400);
+  }
+
+  const parsedBody = updatePlayerDiscordBodySchema.safeParse(body);
+  if (!parsedBody.success) {
+    return c.json({ error: formatValidationError(parsedBody.error.issues) }, 400);
+  }
+
+  try {
+    const result = await updatePlayerDiscordUserId(
+      parsedParams.data.id,
+      parsedBody.data.discordUserId,
+    );
+
+    if (!result) {
+      return c.json({ error: "Player not found." }, 404);
+    }
+
+    return c.json(result);
+  } catch (error) {
+    return c.json(
+      {
+        error: error instanceof Error ? error.message : String(error),
+      },
+      400,
+    );
+  }
 });
 
 function getPort() {
