@@ -6,7 +6,15 @@
   "scripts": {
     "build": "tsc --project tsconfig.json",
     "check-types": "tsc --noEmit --project tsconfig.json",
-    "dev": "tsx watch src/worker.ts"
+    "dev": "tsx watch src/worker.ts",
+    "start": "node dist/worker.js"
+  },
+  "dependencies": {
+    "@wow-dashboard/api-schema": "workspace:*",
+    "@wow-dashboard/db": "workspace:*",
+    "@wow-dashboard/env": "workspace:*",
+    "drizzle-orm": "catalog:",
+    "pg-boss": "catalog:"
   },
   "devDependencies": {
     "@types/node": "^24.3.0",

@@ -6,15 +6,20 @@
   "scripts": {
     "build": "tsc --project tsconfig.json",
     "check-types": "tsc --noEmit --project tsconfig.json",
-    "dev": "tsx watch src/server.ts"
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js"
   },
   "dependencies": {
+    "@wow-dashboard/api-schema": "workspace:*",
     "@wow-dashboard/db": "workspace:*",
     "@wow-dashboard/env": "workspace:*",
     "@hono/node-server": "catalog:",
     "better-auth": "catalog:",
     "drizzle-orm": "catalog:",
-    "hono": "catalog:"
+    "hono": "catalog:",
+    "ioredis": "catalog:",
+    "pg-boss": "catalog:",
+    "rate-limiter-flexible": "catalog:"
   },
   "devDependencies": {
     "@types/node": "^24.3.0",

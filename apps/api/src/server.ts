@@ -2,10 +2,12 @@ import { serve } from "@hono/node-server";
 import { eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { loginCodeTtlSeconds } from "@wow-dashboard/api-schema";
 import { players } from "@wow-dashboard/db";
 import { env } from "@wow-dashboard/env/server";
 import { auth, type ApiAuthSession, type ApiAuthUser } from "./auth";
 import { db } from "./db";
+import { createLoginCode, redeemLoginCode } from "./lib/loginCodes";
 
 type AppBindings = {
   Variables: {
@@ -314,6 +316,46 @@ app.get("/dev/auth", (c) => {
   const callbackUrl = new URL("/api/auth/oauth2/callback/battlenet", env.BETTER_AUTH_URL).toString();
 
   return c.html(renderDevAuthPage(callbackUrl));
+});
+
+app.post("/api/auth/login-code", async (c) => {
+  const session = c.get("session");
+  const user = c.get("user");
+
+  if (!session || !user) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const code = await createLoginCode({
+    token: session.token,
+    userId: user.id,
+  });
+
+  return c.json({
+    code,
+    expiresIn: loginCodeTtlSeconds,
+  });
+});
+
+app.post("/api/auth/redeem-code", async (c) => {
+  let body: { code?: unknown };
+  try {
+    body = (await c.req.json()) as { code?: unknown };
+  } catch {
+    return c.json({ error: "Invalid request body" }, 400);
+  }
+
+  const code = typeof body.code === "string" ? body.code : "";
+  if (!code) {
+    return c.json({ error: "code is required" }, 400);
+  }
+
+  const token = await redeemLoginCode(code);
+  if (!token) {
+    return c.json({ error: "Invalid or expired code" }, 401);
+  }
+
+  return c.json({ token });
 });
 
 app.on(["GET", "POST"], "/api/auth/*", (c) => auth.handler(c.req.raw));

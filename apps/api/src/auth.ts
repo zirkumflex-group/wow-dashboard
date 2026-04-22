@@ -4,9 +4,11 @@ import { betterAuth } from "better-auth";
 import type { GenericEndpointContext } from "better-auth";
 import { bearer } from "better-auth/plugins/bearer";
 import { genericOAuth } from "better-auth/plugins/generic-oauth";
-import { auditLog, players, schema } from "@wow-dashboard/db";
+import { players, schema } from "@wow-dashboard/db";
 import { env } from "@wow-dashboard/env/server";
 import { db } from "./db";
+import { insertAuditEvent } from "./lib/audit";
+import { enqueueSyncCharactersJob } from "./lib/queue";
 
 type BattleNetProfile = Record<string, string | undefined>;
 type BattleNetAccountHook = {
@@ -44,23 +46,6 @@ function readBattleTagFromIdToken(idToken: string | null | undefined): string | 
   return typeof battleTag === "string" && battleTag.trim() !== "" ? battleTag : null;
 }
 
-async function insertAuditEvent(
-  event: string,
-  values: {
-    userId?: string | null;
-    metadata?: unknown;
-    error?: string;
-  } = {},
-): Promise<void> {
-  await db.insert(auditLog).values({
-    userId: values.userId ?? null,
-    event,
-    metadata: values.metadata,
-    error: values.error,
-    timestamp: new Date(),
-  });
-}
-
 async function upsertPlayerBinding(account: BattleNetAccountHook): Promise<void> {
   const battleTag = readBattleTagFromIdToken(account.idToken) ?? account.accountId;
 
@@ -88,6 +73,26 @@ async function readPlayerBinding(userId: string) {
 
 function isBattleNetAccount(account: { providerId?: string | null }): account is BattleNetAccountHook {
   return account.providerId === "battlenet";
+}
+
+async function queueCharacterSync(account: BattleNetAccountHook) {
+  if (!account.accessToken) {
+    return { queued: false as const, error: undefined };
+  }
+
+  try {
+    await enqueueSyncCharactersJob({
+      userId: account.userId,
+      accessToken: account.accessToken,
+    });
+
+    return { queued: true as const, error: undefined };
+  } catch (error) {
+    return {
+      queued: false as const,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 export const auth = betterAuth({
@@ -125,13 +130,16 @@ export const auth = betterAuth({
           if (!isBattleNetAccount(account)) return;
 
           await upsertPlayerBinding(account);
+          const sync = await queueCharacterSync(account);
           await insertAuditEvent("auth.account.created", {
             userId: account.userId,
             metadata: {
               providerId: account.providerId,
               battlenetAccountId: account.accountId,
               syncPrepared: Boolean(account.accessToken),
+              syncQueued: sync.queued,
             },
+            error: sync.error,
           });
         },
       },
@@ -146,13 +154,22 @@ export const auth = betterAuth({
             accessToken: account.accessToken,
             idToken: account.idToken,
           });
+          const sync = await queueCharacterSync({
+            accountId: account.accountId,
+            providerId: account.providerId,
+            userId: account.userId,
+            accessToken: account.accessToken,
+            idToken: account.idToken,
+          });
           await insertAuditEvent("auth.account.updated", {
             userId: account.userId,
             metadata: {
               providerId: account.providerId,
               battlenetAccountId: account.accountId,
               syncPrepared: Boolean(account.accessToken),
+              syncQueued: sync.queued,
             },
+            error: sync.error,
           });
         },
       },
