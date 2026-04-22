@@ -1,9 +1,25 @@
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { config } from "dotenv";
 
-const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+function findRepoRoot(startDir: string) {
+  let currentDir = startDir;
+
+  while (true) {
+    if (existsSync(resolve(currentDir, "pnpm-workspace.yaml"))) {
+      return currentDir;
+    }
+
+    const parentDir = dirname(currentDir);
+    if (parentDir === currentDir) {
+      return startDir;
+    }
+
+    currentDir = parentDir;
+  }
+}
+
+const repoRoot = findRepoRoot(process.env.INIT_CWD ?? process.cwd());
 const nodeEnv = process.env.NODE_ENV ?? "development";
 
 const envFiles = [

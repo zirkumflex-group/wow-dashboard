@@ -4,11 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc --project tsconfig.json",
+    "build": "esbuild src/start.ts --bundle --platform=node --target=node20 --format=cjs --outfile=dist/start.cjs --sourcemap --alias:@wow-dashboard/api-schema=../../packages/api-schema/src/index.ts --alias:@wow-dashboard/db=../../packages/db/src/index.ts --alias:@wow-dashboard/env/server=../../packages/env/src/server.ts",
     "check-types": "tsc --noEmit --project tsconfig.json",
-    "dev": "tsx watch src/server.ts",
+    "dev": "tsx watch src/start.ts",
     "test": "tsx --test src/**/*.test.ts",
-    "start": "tsx src/start.ts"
+    "start": "node dist/start.cjs"
   },
   "dependencies": {
     "@wow-dashboard/api-schema": "workspace:*",
@@ -25,6 +25,7 @@
   "devDependencies": {
     "@types/node": "^24.3.0",
     "@wow-dashboard/config": "workspace:*",
+    "esbuild": "^0.27.4",
     "tsx": "^4.20.5",
     "typescript": "^5"
   }

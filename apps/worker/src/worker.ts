@@ -54,16 +54,3 @@ export async function shutdownWorker(boss: PgBoss, signal: string) {
   await boss.stop();
   await closeWorkerDatabase();
 }
-
-if (import.meta.main) {
-  const boss = await startWorker();
-
-  const handleSignal = (signal: string) => {
-    void shutdownWorker(boss, signal).finally(() => {
-      process.exit(0);
-    });
-  };
-
-  process.on("SIGINT", () => handleSignal("SIGINT"));
-  process.on("SIGTERM", () => handleSignal("SIGTERM"));
-}

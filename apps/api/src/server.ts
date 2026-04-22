@@ -903,7 +903,3 @@ export function startApi() {
 
   console.log(`[api] listening on http://${host}:${port}`);
 }
-
-if (import.meta.main) {
-  startApi();
-}
