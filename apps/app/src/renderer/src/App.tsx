@@ -38,12 +38,19 @@ interface SnapshotData {
     strength: number;
     agility: number;
     intellect: number;
+    critRating?: number;
     critPercent: number;
+    hasteRating?: number;
     hastePercent: number;
+    masteryRating?: number;
     masteryPercent: number;
+    versatilityRating?: number;
     versatilityPercent: number;
+    speedRating?: number;
     speedPercent?: number;
+    leechRating?: number;
     leechPercent?: number;
+    avoidanceRating?: number;
     avoidancePercent?: number;
   };
 }
@@ -157,7 +164,11 @@ declare global {
         checkAddonInstalled: () => Promise<boolean>;
         getInstalledAddonVersion: () => Promise<string | null>;
         installAddon: (downloadUrl: string, checksumUrl: string | null) => Promise<void>;
-        getLatestAddonRelease: () => Promise<{ url: string; checksumUrl: string | null; version: string }>;
+        getLatestAddonRelease: () => Promise<{
+          url: string;
+          checksumUrl: string | null;
+          version: string;
+        }>;
         getAddonUpdateStatus: () => Promise<AddonUpdateState>;
         triggerAddonUpdateCheck: () => Promise<AddonUpdateCheckResult>;
         watchAddonFile: () => Promise<boolean>;
@@ -294,11 +305,21 @@ function formatBytes(bytes: number) {
 }
 
 function formatDate(ms: number) {
-  return new Date(ms).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  return new Date(ms).toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
 }
 
 function formatDateTime(ms: number) {
-  return new Date(ms).toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  return new Date(ms).toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function formatLastSyncTime(lastSyncedAt: number) {
@@ -349,13 +370,12 @@ function isUploadableMythicPlusRun(run: MythicPlusRunData, sinceTs: number) {
   return lastMutationAt > effectiveSinceTs;
 }
 
-function getPendingUploadCounts(
-  chars: CharacterData[],
-  sinceTs: number,
-): PendingUploadCounts {
+function getPendingUploadCounts(chars: CharacterData[], sinceTs: number): PendingUploadCounts {
   return chars.reduce(
     (totals, char) => ({
-      snapshots: totals.snapshots + char.snapshots.filter((snapshot) => isUploadableSnapshot(snapshot, sinceTs)).length,
+      snapshots:
+        totals.snapshots +
+        char.snapshots.filter((snapshot) => isUploadableSnapshot(snapshot, sinceTs)).length,
       mythicPlusRuns:
         totals.mythicPlusRuns +
         char.mythicPlusRuns.filter((run) => isUploadableMythicPlusRun(run, sinceTs)).length,
@@ -460,7 +480,9 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
   const uploadAddon = useMutation({
     mutationFn: (input: { characters: CharacterData[] }) =>
       apiClient.ingestAddonData({
-        characters: input.characters as Parameters<typeof apiClient.ingestAddonData>[0]["characters"],
+        characters: input.characters as Parameters<
+          typeof apiClient.ingestAddonData
+        >[0]["characters"],
       }),
   });
   const resync = useMutation({
@@ -476,7 +498,9 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
   const [lastSyncedAt, setLastSyncedAt] = useState(0);
   const [addonInstalled, setAddonInstalled] = useState<boolean | null>(null);
   const [addonVersion, setAddonVersion] = useState<string | null>(null);
-  const [addonUpdateState, setAddonUpdateState] = useState<AddonUpdateState>(INITIAL_ADDON_UPDATE_STATE);
+  const [addonUpdateState, setAddonUpdateState] = useState<AddonUpdateState>(
+    INITIAL_ADDON_UPDATE_STATE,
+  );
   const [installing, setInstalling] = useState(false);
   const [addonActionError, setAddonActionError] = useState<string | null>(null);
   const [appUpdateState, setAppUpdateState] = useState<AppUpdateState>(INITIAL_APP_UPDATE_STATE);
@@ -596,50 +620,55 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
       window.electron.wow.getRetailPath(),
       window.electron.settings.getAppSettings(),
       window.electron.wow.getAddonUpdateStatus(),
-    ]).then(([versionResult, appUpdateResult, retailPathResult, settingsResult, addonUpdateResult]) => {
-      if (cancelled) return;
+    ]).then(
+      ([versionResult, appUpdateResult, retailPathResult, settingsResult, addonUpdateResult]) => {
+        if (cancelled) return;
 
-      if (versionResult.status === "fulfilled") {
-        setAppVersion(versionResult.value);
-      } else {
-        console.warn("[wow-dashboard] Failed to hydrate app version:", versionResult.reason);
-      }
+        if (versionResult.status === "fulfilled") {
+          setAppVersion(versionResult.value);
+        } else {
+          console.warn("[wow-dashboard] Failed to hydrate app version:", versionResult.reason);
+        }
 
-      if (appUpdateResult.status === "fulfilled") {
-        setAppUpdateState(appUpdateResult.value);
-        setAppVersion((currentVersion) => appUpdateResult.value.currentVersion || currentVersion);
-      } else {
-        console.warn(
-          "[wow-dashboard] Failed to hydrate desktop update state:",
-          appUpdateResult.reason,
-        );
-      }
+        if (appUpdateResult.status === "fulfilled") {
+          setAppUpdateState(appUpdateResult.value);
+          setAppVersion((currentVersion) => appUpdateResult.value.currentVersion || currentVersion);
+        } else {
+          console.warn(
+            "[wow-dashboard] Failed to hydrate desktop update state:",
+            appUpdateResult.reason,
+          );
+        }
 
-      if (retailPathResult.status === "fulfilled") {
-        setRetailPath(retailPathResult.value);
-      } else {
-        console.warn("[wow-dashboard] Failed to hydrate WoW retail path:", retailPathResult.reason);
-      }
+        if (retailPathResult.status === "fulfilled") {
+          setRetailPath(retailPathResult.value);
+        } else {
+          console.warn(
+            "[wow-dashboard] Failed to hydrate WoW retail path:",
+            retailPathResult.reason,
+          );
+        }
 
-      if (settingsResult.status === "fulfilled") {
-        setCloseBehavior(settingsResult.value.closeBehavior);
-        setAutostart(settingsResult.value.autostart);
-        setLaunchMinimized(settingsResult.value.launchMinimized);
-        setLastSyncedAt(settingsResult.value.lastSyncedAt);
-        lastSyncedAtRef.current = settingsResult.value.lastSyncedAt;
-      } else {
-        console.warn("[wow-dashboard] Failed to hydrate app settings:", settingsResult.reason);
-      }
+        if (settingsResult.status === "fulfilled") {
+          setCloseBehavior(settingsResult.value.closeBehavior);
+          setAutostart(settingsResult.value.autostart);
+          setLaunchMinimized(settingsResult.value.launchMinimized);
+          setLastSyncedAt(settingsResult.value.lastSyncedAt);
+          lastSyncedAtRef.current = settingsResult.value.lastSyncedAt;
+        } else {
+          console.warn("[wow-dashboard] Failed to hydrate app settings:", settingsResult.reason);
+        }
 
-      if (addonUpdateResult.status === "fulfilled") {
-        applyAddonUpdateSnapshot(addonUpdateResult.value);
-      } else {
-        console.warn(
-          "[wow-dashboard] Failed to hydrate addon update state:",
-          addonUpdateResult.reason,
-        );
-      }
-    });
+        if (addonUpdateResult.status === "fulfilled") {
+          applyAddonUpdateSnapshot(addonUpdateResult.value);
+        } else {
+          console.warn(
+            "[wow-dashboard] Failed to hydrate addon update state:",
+            addonUpdateResult.reason,
+          );
+        }
+      },
+    );
 
     return () => {
       cancelled = true;
@@ -814,7 +843,9 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
             .map((c) => ({
               ...c,
               snapshots: c.snapshots.filter((snapshot) => isUploadableSnapshot(snapshot, sinceTs)),
-              mythicPlusRuns: c.mythicPlusRuns.filter((run) => isUploadableMythicPlusRun(run, sinceTs)),
+              mythicPlusRuns: c.mythicPlusRuns.filter((run) =>
+                isUploadableMythicPlusRun(run, sinceTs),
+              ),
             }))
             .filter((c) => c.snapshots.length > 0 || c.mythicPlusRuns.length > 0);
 
@@ -869,9 +900,12 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
 
   // 15-minute fallback sync; primary sync is triggered by the file watcher.
   useEffect(() => {
-    const id = setInterval(() => {
-      void doUploadRef.current();
-    }, 15 * 60 * 1000);
+    const id = setInterval(
+      () => {
+        void doUploadRef.current();
+      },
+      15 * 60 * 1000,
+    );
     return () => clearInterval(id);
   }, []);
 
@@ -918,17 +952,15 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
           : "Downloading…"
         : appUpdateState.status === "installing"
           ? "Installing…"
-        : appUpdateState.status === "upToDate"
-          ? "Up to date"
-          : appUpdateState.status === "downloaded"
-            ? "Update ready"
-            : appUpdateState.status === "unsupported"
-              ? "Updates unavailable in dev"
-              : "Check for Updates";
+          : appUpdateState.status === "upToDate"
+            ? "Up to date"
+            : appUpdateState.status === "downloaded"
+              ? "Update ready"
+              : appUpdateState.status === "unsupported"
+                ? "Updates unavailable in dev"
+                : "Check for Updates";
   const addonCheckDisabled =
-    installing ||
-    addonUpdateState.status === "checking" ||
-    addonUpdateState.status === "updating";
+    installing || addonUpdateState.status === "checking" || addonUpdateState.status === "updating";
   const checkingAddonUpdate =
     addonUpdateState.status === "checking" || addonUpdateState.status === "updating";
   const addonUpToDate =
@@ -957,8 +989,8 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
         {appUpdateState.status === "downloaded" && appUpdateReadyVersion && (
           <div className="flex items-center justify-between gap-3 rounded-lg border border-green-700 bg-green-950 px-4 py-3 text-sm text-green-300">
             <p>
-              App v{appUpdateReadyVersion} is ready to install. It will still install
-              automatically the next time WoW Dashboard fully exits.
+              App v{appUpdateReadyVersion} is ready to install. It will still install automatically
+              the next time WoW Dashboard fully exits.
             </p>
             <button
               onClick={handleInstallAppUpdate}
@@ -975,13 +1007,13 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
         )}
         {(appUpdateState.status === "available" || appUpdateState.status === "downloading") &&
           appUpdateState.availableVersion && (
-          <div className="rounded-lg border border-blue-700 bg-blue-950 px-4 py-3 text-sm text-blue-300">
-            App update v{appUpdateState.availableVersion} is downloading in the background
-            {appUpdateState.status === "downloading" && appUpdateState.progressPercent !== null
-              ? ` (${Math.round(appUpdateState.progressPercent)}%)`
-              : ""}
-          </div>
-        )}
+            <div className="rounded-lg border border-blue-700 bg-blue-950 px-4 py-3 text-sm text-blue-300">
+              App update v{appUpdateState.availableVersion} is downloading in the background
+              {appUpdateState.status === "downloading" && appUpdateState.progressPercent !== null
+                ? ` (${Math.round(appUpdateState.progressPercent)}%)`
+                : ""}
+            </div>
+          )}
         {appUpdateError && (
           <div className="rounded-lg border border-red-700 bg-red-950 px-4 py-3 text-sm text-red-300">
             {appUpdateError}
@@ -1083,8 +1115,8 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
                   {(addonUpdateState.status === "error" ||
                     addonUpdateState.status === "invalidRetailPath") &&
                     addonUpdateError && (
-                    <p className="mt-0.5 text-xs text-red-400">{addonUpdateError}</p>
-                  )}
+                      <p className="mt-0.5 text-xs text-red-400">{addonUpdateError}</p>
+                    )}
                 </>
               )}
             </div>
@@ -1145,7 +1177,8 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
             </button>
           </div>
           <p className="text-xs text-gray-500">
-            Manual sync uploads addon snapshots and Mythic+ runs, then refreshes Battle.net character data.
+            Manual sync uploads addon snapshots and Mythic+ runs, then refreshes Battle.net
+            character data.
           </p>
           <p className="text-xs text-gray-500">
             Last successful sync: {formatLastSyncTime(lastSyncedAt)}
@@ -1169,7 +1202,8 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
               {(lastUploadResult.newSnapshots > 0 || lastUploadResult.newMythicPlusRuns > 0) && (
                 <span className="text-xs text-gray-500">
                   ({lastUploadResult.newSnapshots} new snapshot
-                  {lastUploadResult.newSnapshots !== 1 ? "s" : ""}, {lastUploadResult.newMythicPlusRuns} new M+ run
+                  {lastUploadResult.newSnapshots !== 1 ? "s" : ""},{" "}
+                  {lastUploadResult.newMythicPlusRuns} new M+ run
                   {lastUploadResult.newMythicPlusRuns !== 1 ? "s" : ""} uploaded)
                 </span>
               )}
@@ -1184,7 +1218,8 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
             </p>
           ) : (
             <p className="text-sm text-yellow-400">
-              {pendingUploadCounts.snapshots} snapshot{pendingUploadCounts.snapshots !== 1 ? "s" : ""} and{" "}
+              {pendingUploadCounts.snapshots} snapshot
+              {pendingUploadCounts.snapshots !== 1 ? "s" : ""} and{" "}
               {pendingUploadCounts.mythicPlusRuns} M+ run
               {pendingUploadCounts.mythicPlusRuns !== 1 ? "s" : ""} pending upload
             </p>
@@ -1194,9 +1229,13 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
           {addonFileStats && (
             <div className="grid grid-cols-2 gap-x-4 gap-y-1 pt-1 text-xs text-gray-500">
               <span>Total snapshots</span>
-              <span className="text-gray-400">{addonFileStats.totalSnapshots.toLocaleString()}</span>
+              <span className="text-gray-400">
+                {addonFileStats.totalSnapshots.toLocaleString()}
+              </span>
               <span>Total M+ runs</span>
-              <span className="text-gray-400">{addonFileStats.totalMythicPlusRuns.toLocaleString()}</span>
+              <span className="text-gray-400">
+                {addonFileStats.totalMythicPlusRuns.toLocaleString()}
+              </span>
               <span>File size</span>
               <span className="text-gray-400">{formatBytes(addonFileStats.totalBytes)}</span>
               <span>Created</span>
@@ -1204,9 +1243,7 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
               <span>Last modified</span>
               <span className="text-gray-400">{formatDate(addonFileStats.modifiedAt)}</span>
               <span>Last synced</span>
-              <span className="text-gray-400">
-                {formatLastSyncTime(lastSyncedAt)}
-              </span>
+              <span className="text-gray-400">{formatLastSyncTime(lastSyncedAt)}</span>
             </div>
           )}
         </div>

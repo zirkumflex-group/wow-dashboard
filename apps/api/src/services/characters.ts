@@ -177,8 +177,7 @@ function normalizeOwnedKeystone(
 
   return {
     level: ownedKeystone.level,
-    ...(ownedKeystone.mapChallengeModeID !== undefined &&
-    ownedKeystone.mapChallengeModeID !== null
+    ...(ownedKeystone.mapChallengeModeID !== undefined && ownedKeystone.mapChallengeModeID !== null
       ? { mapChallengeModeID: ownedKeystone.mapChallengeModeID }
       : {}),
     ...(ownedKeystone.mapName !== undefined && ownedKeystone.mapName !== null
@@ -202,8 +201,7 @@ function normalizeNonTradeableSlots(
 function serializeSnapshotSummary(
   snapshot: LatestSnapshotSummary | LatestSnapshotDetails,
 ): LatestSnapshotSummary {
-  const playtimeThisLevelSeconds =
-    snapshot.playtimeThisLevelSeconds ?? undefined;
+  const playtimeThisLevelSeconds = snapshot.playtimeThisLevelSeconds ?? undefined;
   const ownedKeystone = normalizeOwnedKeystone(snapshot.ownedKeystone);
 
   return {
@@ -289,6 +287,13 @@ function getSnapshotCompletenessScore(snapshot: SnapshotRecord) {
   if (snapshot.playtimeSeconds > 0) score += 1;
   if (snapshot.playtimeThisLevelSeconds !== null) score += 1;
   if (snapshot.ownedKeystone) score += 1;
+  if (snapshot.stats.critRating !== undefined) score += 1;
+  if (snapshot.stats.hasteRating !== undefined) score += 1;
+  if (snapshot.stats.masteryRating !== undefined) score += 1;
+  if (snapshot.stats.versatilityRating !== undefined) score += 1;
+  if (snapshot.stats.speedRating !== undefined) score += 1;
+  if (snapshot.stats.leechRating !== undefined) score += 1;
+  if (snapshot.stats.avoidanceRating !== undefined) score += 1;
   if (snapshot.stats.speedPercent !== undefined) score += 2;
   if (snapshot.stats.leechPercent !== undefined) score += 2;
   if (snapshot.stats.avoidancePercent !== undefined) score += 2;
@@ -296,7 +301,10 @@ function getSnapshotCompletenessScore(snapshot: SnapshotRecord) {
   return score;
 }
 
-function shouldReplaceSnapshot(currentSnapshot: SnapshotRecord | undefined, candidateSnapshot: SnapshotRecord) {
+function shouldReplaceSnapshot(
+  currentSnapshot: SnapshotRecord | undefined,
+  candidateSnapshot: SnapshotRecord,
+) {
   if (!currentSnapshot) return true;
 
   const currentScore = getSnapshotCompletenessScore(currentSnapshot);
@@ -463,17 +471,11 @@ async function readCharactersForIds(characterIds: string[]): Promise<CharacterRe
     return [];
   }
 
-  return await db
-    .select()
-    .from(characters)
-    .where(inArray(characters.id, characterIds));
+  return await db.select().from(characters).where(inArray(characters.id, characterIds));
 }
 
 async function readCharactersForPlayerId(playerId: string): Promise<CharacterRecord[]> {
-  return await db
-    .select()
-    .from(characters)
-    .where(eq(characters.playerId, playerId));
+  return await db.select().from(characters).where(eq(characters.playerId, playerId));
 }
 
 async function readAllCharacters(): Promise<CharacterRecord[]> {
@@ -582,7 +584,10 @@ function hasCharacterDailySnapshotStats(
   return snapshot.stats !== null && snapshot.stats !== undefined;
 }
 
-function bucketDailySnapshotsBySpan(snapshotsByDay: CharacterDailySnapshotRecord[], daySpan: number) {
+function bucketDailySnapshotsBySpan(
+  snapshotsByDay: CharacterDailySnapshotRecord[],
+  daySpan: number,
+) {
   if (daySpan <= 1) {
     return snapshotsByDay;
   }
@@ -602,7 +607,10 @@ function bucketDailySnapshotsBySpan(snapshotsByDay: CharacterDailySnapshotRecord
   );
 }
 
-function shouldReplaceBucketSnapshot(currentSnapshot: SnapshotRecord | undefined, candidateSnapshot: SnapshotRecord) {
+function shouldReplaceBucketSnapshot(
+  currentSnapshot: SnapshotRecord | undefined,
+  candidateSnapshot: SnapshotRecord,
+) {
   if (!currentSnapshot) return true;
   if (candidateSnapshot.takenAt.getTime() !== currentSnapshot.takenAt.getTime()) {
     return candidateSnapshot.takenAt.getTime() > currentSnapshot.takenAt.getTime();
@@ -692,7 +700,9 @@ async function readTimelinePayloadForCharacter(
       const bucketedDailySnapshots = bucketDailySnapshotsBySpan(dailySnapshots, bucketDaySpan);
 
       return {
-        coreSnapshots: bucketedDailySnapshots.map((snapshot) => projectCoreTimelineSnapshot(snapshot)),
+        coreSnapshots: bucketedDailySnapshots.map((snapshot) =>
+          projectCoreTimelineSnapshot(snapshot),
+        ),
         statsSnapshots: includeStats
           ? bucketedDailySnapshots.map((snapshot) => projectStatsTimelineSnapshot(snapshot))
           : null,
@@ -790,7 +800,11 @@ export async function readCharacterPage(
   const ownerPromise = readCharacterOwner(character);
   const latestSnapshotPromise = readLatestSnapshotDetailsForCharacter(character);
   const firstSnapshotAtPromise = readFirstSnapshotAtForCharacter(character);
-  const timelinePayloadPromise = readTimelinePayloadForCharacter(character, timeFrame, includeStats);
+  const timelinePayloadPromise = readTimelinePayloadForCharacter(
+    character,
+    timeFrame,
+    includeStats,
+  );
   const mythicPlusPromise = latestSnapshotPromise.then((latestSnapshot) =>
     readCharacterMythicPlusData(character, false, latestSnapshot?.mythicPlusScore ?? null),
   );
@@ -840,7 +854,11 @@ export async function readCharacterDetailTimeline(
     return null;
   }
 
-  const timelinePayload = await readTimelinePayloadForCharacter(character, timeFrame, metric === "stats");
+  const timelinePayload = await readTimelinePayloadForCharacter(
+    character,
+    timeFrame,
+    metric === "stats",
+  );
   if (metric === "stats") {
     return {
       metric,
@@ -954,13 +972,11 @@ export async function readPlayerCharacters(
   let highestMythicPlusScore: number | null = null;
   let highestMythicPlusCharacterName: string | null = null;
   let totalItemLevel = 0;
-  let bestKeystone:
-    | {
-        level: number;
-        mapChallengeModeID: number | null;
-        mapName: string | null;
-      }
-    | null = null;
+  let bestKeystone: {
+    level: number;
+    mapChallengeModeID: number | null;
+    mapName: string | null;
+  } | null = null;
   let latestSnapshotAt: number | null = null;
 
   for (const character of snappedCharacters) {
@@ -1080,17 +1096,14 @@ export async function readScoreboardCharacters(): Promise<ScoreboardCharacterEnt
     })
     .sort(
       (left, right) =>
-        right.mythicPlusScore - left.mythicPlusScore ||
-        right.itemLevel - left.itemLevel,
+        right.mythicPlusScore - left.mythicPlusScore || right.itemLevel - left.itemLevel,
     );
 }
 
 export async function readPlayerScoreboard(): Promise<PlayerScoreboardEntry[]> {
   const charactersWithSnapshots = await attachLatestSnapshots(await readAllCharacters());
   const snappedCharacters = charactersWithSnapshots.filter(
-    (
-      character,
-    ): character is SerializedDashboardCharacter & { snapshot: LatestSnapshotSummary } =>
+    (character): character is SerializedDashboardCharacter & { snapshot: LatestSnapshotSummary } =>
       character.snapshot !== null,
   );
 
@@ -1099,17 +1112,15 @@ export async function readPlayerScoreboard(): Promise<PlayerScoreboardEntry[]> {
     return [];
   }
 
-  const playerRows = await db
-    .select()
-    .from(players)
-    .where(inArray(players.id, playerIds));
-  const playerBattleTagMap = new Map(
-    playerRows.map((player) => [player.id, player.battleTag]),
-  );
+  const playerRows = await db.select().from(players).where(inArray(players.id, playerIds));
+  const playerBattleTagMap = new Map(playerRows.map((player) => [player.id, player.battleTag]));
 
-  const playerMap = new Map<string, Omit<PlayerScoreboardEntry, "averageItemLevel"> & {
-    totalItemLevel: number;
-  }>();
+  const playerMap = new Map<
+    string,
+    Omit<PlayerScoreboardEntry, "averageItemLevel"> & {
+      totalItemLevel: number;
+    }
+  >();
 
   for (const character of snappedCharacters) {
     const snapshot = character.snapshot;
@@ -1132,8 +1143,7 @@ export async function readPlayerScoreboard(): Promise<PlayerScoreboardEntry[]> {
           snapshot.ownedKeystone.level > existing.bestKeystoneLevel)
       ) {
         existing.bestKeystoneLevel = snapshot.ownedKeystone.level;
-        existing.bestKeystoneMapChallengeModeID =
-          snapshot.ownedKeystone.mapChallengeModeID ?? null;
+        existing.bestKeystoneMapChallengeModeID = snapshot.ownedKeystone.mapChallengeModeID ?? null;
         existing.bestKeystoneMapName = snapshot.ownedKeystone.mapName ?? null;
       }
 

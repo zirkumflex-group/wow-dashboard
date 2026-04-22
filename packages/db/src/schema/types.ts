@@ -100,12 +100,19 @@ export interface Stats {
   strength: number;
   agility: number;
   intellect: number;
+  critRating?: number;
   critPercent: number;
+  hasteRating?: number;
   hastePercent: number;
+  masteryRating?: number;
   masteryPercent: number;
+  versatilityRating?: number;
   versatilityPercent: number;
+  speedRating?: number;
   speedPercent?: number;
+  leechRating?: number;
   leechPercent?: number;
+  avoidanceRating?: number;
   avoidancePercent?: number;
 }
 

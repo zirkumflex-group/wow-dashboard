@@ -1,8 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
-import {
-  getMythicPlusDungeonMeta,
-} from "../lib/mythic-plus-static";
+import { getMythicPlusDungeonMeta } from "../lib/mythic-plus-static";
 import { getClassTextColor } from "../lib/class-colors";
 import { usePinnedCharacters } from "../lib/pinned-characters";
 import { formatPlaytime, PlaytimeBreakdown } from "../components/playtime-breakdown";
@@ -43,7 +41,16 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { Suspense, lazy, memo, startTransition, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  Suspense,
+  lazy,
+  memo,
+  startTransition,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 import {
   CartesianGrid,
@@ -51,6 +58,7 @@ import {
   LineChart,
   PolarAngleAxis,
   PolarGrid,
+  PolarRadiusAxis,
   Radar,
   RadarChart,
   XAxis,
@@ -266,6 +274,37 @@ function xAxisTickFormatter(ts: unknown, frame: TimeFrame): string {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
+function getTickBucketKey(timestamp: number, frame: TimeFrame) {
+  const date = new Date(timestamp * 1000);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  const year = date.getFullYear();
+  const month = date.getMonth();
+  const day = date.getDate();
+
+  if (frame === "all") {
+    return `${year}-${month}`;
+  }
+
+  return `${year}-${month}-${day}`;
+}
+
+function dedupeTicksByBucket(ticks: number[], frame: TimeFrame) {
+  const seenBuckets = new Set<string>();
+
+  return ticks.filter((timestamp) => {
+    const bucketKey = getTickBucketKey(timestamp, frame);
+    if (bucketKey === null || seenBuckets.has(bucketKey)) {
+      return false;
+    }
+
+    seenBuckets.add(bucketKey);
+    return true;
+  });
+}
+
 function capXAxisTicks(ticks: number[], maxCount: number) {
   if (ticks.length <= maxCount) {
     return ticks;
@@ -310,13 +349,14 @@ function getXAxisTicks(data: Record<string, number | undefined>[], frame: TimeFr
     }
     return date.getDate() === 1;
   });
+  const dedupedImportantTicks = dedupeTicksByBucket(importantTicks, frame);
 
   const maxTickCount = frame === "all" ? 8 : frame === "90d" ? 9 : frame === "30d" ? 7 : 8;
-  if (importantTicks.length >= 3) {
-    return capXAxisTicks(importantTicks, maxTickCount);
+  if (dedupedImportantTicks.length >= 3) {
+    return capXAxisTicks(dedupedImportantTicks, maxTickCount);
   }
 
-  return capXAxisTicks(uniqueTimestamps, maxTickCount);
+  return capXAxisTicks(dedupeTicksByBucket(uniqueTimestamps, frame), maxTickCount);
 }
 
 function xTooltipLabelFormatter(
@@ -384,6 +424,94 @@ function StatRow({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
+type CombatStatSummary = {
+  label: string;
+  percent: number;
+  rating?: number;
+};
+
+type CombatRadarDatum = {
+  stat: string;
+  value: number;
+  percentValue: number;
+  ratingValue?: number;
+};
+
+const CORE_COMBAT_STATS = [
+  {
+    label: "Crit",
+    getPercent: (stats: Snapshot["stats"]) => stats.critPercent,
+    getRating: (stats: Snapshot["stats"]) => stats.critRating,
+  },
+  {
+    label: "Haste",
+    getPercent: (stats: Snapshot["stats"]) => stats.hastePercent,
+    getRating: (stats: Snapshot["stats"]) => stats.hasteRating,
+  },
+  {
+    label: "Mastery",
+    getPercent: (stats: Snapshot["stats"]) => stats.masteryPercent,
+    getRating: (stats: Snapshot["stats"]) => stats.masteryRating,
+  },
+  {
+    label: "Versatility",
+    getPercent: (stats: Snapshot["stats"]) => stats.versatilityPercent,
+    getRating: (stats: Snapshot["stats"]) => stats.versatilityRating,
+  },
+] as const;
+
+const TERTIARY_COMBAT_STATS = [
+  {
+    label: "Speed",
+    getPercent: (stats: Snapshot["stats"]) => stats.speedPercent ?? 0,
+    getRating: (stats: Snapshot["stats"]) => stats.speedRating,
+  },
+  {
+    label: "Leech",
+    getPercent: (stats: Snapshot["stats"]) => stats.leechPercent ?? 0,
+    getRating: (stats: Snapshot["stats"]) => stats.leechRating,
+  },
+  {
+    label: "Avoidance",
+    getPercent: (stats: Snapshot["stats"]) => stats.avoidancePercent ?? 0,
+    getRating: (stats: Snapshot["stats"]) => stats.avoidanceRating,
+  },
+] as const;
+
+function formatCombatStatPercent(value: number) {
+  return `${value.toFixed(2)}%`;
+}
+
+function formatCombatStatRating(value?: number) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.round(value).toLocaleString()
+    : null;
+}
+
+function renderCombatStatValue(stat: CombatStatSummary) {
+  const rating = formatCombatStatRating(stat.rating);
+  const percent = formatCombatStatPercent(stat.percent);
+
+  if (!rating) {
+    return percent;
+  }
+
+  return (
+    <span className="tabular-nums">
+      {rating}
+      <span className="text-muted-foreground"> ({percent})</span>
+    </span>
+  );
+}
+
+function getCoreCombatStats(snapshot: Snapshot): CombatStatSummary[] {
+  return CORE_COMBAT_STATS.map((stat) => ({
+    label: stat.label,
+    percent: stat.getPercent(snapshot.stats),
+    rating: stat.getRating(snapshot.stats),
+  }));
+}
+
 function getPrimaryStat(snapshot: Snapshot) {
   const primaryStats = [
     { label: "Strength", value: snapshot.stats.strength },
@@ -399,11 +527,54 @@ function getPrimaryStat(snapshot: Snapshot) {
 }
 
 function getTertiaryStats(snapshot: Snapshot) {
-  return [
-    { label: "Speed", value: snapshot.stats.speedPercent ?? 0 },
-    { label: "Leech", value: snapshot.stats.leechPercent ?? 0 },
-    { label: "Avoidance", value: snapshot.stats.avoidancePercent ?? 0 },
-  ].filter((stat) => stat.value > 0);
+  return TERTIARY_COMBAT_STATS.map((stat) => ({
+    label: stat.label,
+    percent: stat.getPercent(snapshot.stats),
+    rating: stat.getRating(snapshot.stats),
+  })).filter((stat) => stat.percent > 0 || (stat.rating ?? 0) > 0);
+}
+
+function CombatRadarTooltip({
+  active,
+  payload,
+}: {
+  active?: boolean;
+  payload?: Array<{ payload?: CombatRadarDatum }>;
+}) {
+  const datum = payload?.[0]?.payload;
+
+  if (!active || !datum) {
+    return null;
+  }
+
+  const rating = formatCombatStatRating(datum.ratingValue);
+
+  return (
+    <div className="grid min-w-36 gap-1.5 rounded-lg border border-border/50 bg-background px-2.5 py-1.5 text-xs shadow-xl">
+      <div className="font-medium">{datum.stat}</div>
+      {rating ? (
+        <>
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-muted-foreground">Rating</span>
+            <span className="font-mono font-medium text-foreground tabular-nums">{rating}</span>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-muted-foreground">Percent</span>
+            <span className="font-mono font-medium text-foreground tabular-nums">
+              {formatCombatStatPercent(datum.percentValue)}
+            </span>
+          </div>
+        </>
+      ) : (
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-muted-foreground">Percent</span>
+          <span className="font-mono font-medium text-foreground tabular-nums">
+            {formatCombatStatPercent(datum.percentValue)}
+          </span>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function StatGrid({
@@ -458,9 +629,7 @@ function TopMetricCard({
           </div>
         )}
       </div>
-      <div className="mt-3 min-w-0 text-xl font-semibold leading-none text-foreground">
-        {value}
-      </div>
+      <div className="mt-3 min-w-0 text-xl font-semibold leading-none text-foreground">{value}</div>
     </div>
   );
 }
@@ -552,12 +721,19 @@ type Snapshot = {
     strength: number;
     agility: number;
     intellect: number;
+    critRating?: number;
     critPercent: number;
+    hasteRating?: number;
     hastePercent: number;
+    masteryRating?: number;
     masteryPercent: number;
+    versatilityRating?: number;
     versatilityPercent: number;
+    speedRating?: number;
     speedPercent?: number;
+    leechRating?: number;
     leechPercent?: number;
+    avoidanceRating?: number;
     avoidancePercent?: number;
   };
 };
@@ -921,14 +1097,10 @@ function SnapshotLineChart({
       }
 
       const numericValue =
-        typeof value === "number"
-          ? value
-          : typeof value === "string"
-            ? Number(value)
-            : Number.NaN;
+        typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
       const label =
         showLabel && Number.isFinite(numericValue)
-          ? valueFormatter?.(numericValue) ?? numericValue.toLocaleString()
+          ? (valueFormatter?.(numericValue) ?? numericValue.toLocaleString())
           : null;
       const showLabelBelow = cy < 28;
       const markerOpacity = variant === "primary" ? 1 : variant === "equal" ? 0.9 : 0.65;
@@ -1030,9 +1202,7 @@ function SnapshotLineChart({
           }
         />
         {showLegend && (
-          <ChartLegend
-            content={<ChartLegendContent className="text-muted-foreground/85" />}
-          />
+          <ChartLegend content={<ChartLegendContent className="text-muted-foreground/85" />} />
         )}
         {lines.map(({ key, color }) => {
           const isPrimaryLine = primaryLineKey === undefined || key === primaryLineKey;
@@ -1075,12 +1245,17 @@ function SnapshotLineChart({
 // ── Radar panel (always-visible, reused across layouts) ───────────────────────
 
 function RadarPanel({ snapshot }: { snapshot: Snapshot }) {
-  const radarData = [
-    { stat: "Crit", value: snapshot.stats.critPercent },
-    { stat: "Haste", value: snapshot.stats.hastePercent },
-    { stat: "Mastery", value: snapshot.stats.masteryPercent },
-    { stat: "Versatility", value: snapshot.stats.versatilityPercent },
-  ];
+  const combatStats = getCoreCombatStats(snapshot);
+  const radarData = combatStats.map<CombatRadarDatum>((stat) => ({
+    stat: stat.label,
+    value: stat.percent,
+    percentValue: stat.percent,
+    ratingValue: stat.rating,
+  }));
+  const radarMax = Math.max(
+    10,
+    Math.ceil(Math.max(...radarData.map((stat) => stat.value)) / 5) * 5,
+  );
   const tertiaryStats = getTertiaryStats(snapshot);
   const primaryStat = getPrimaryStat(snapshot);
 
@@ -1089,8 +1264,9 @@ function RadarPanel({ snapshot }: { snapshot: Snapshot }) {
       <ChartContainer config={radarConfig} className="h-[150px] w-full">
         <RadarChart data={radarData}>
           <PolarGrid />
+          <PolarRadiusAxis axisLine={false} tick={false} domain={[0, radarMax]} />
           <PolarAngleAxis dataKey="stat" tick={{ fontSize: 11 }} />
-          <ChartTooltip cursor={false} content={<ChartTooltipContent indicator="dot" />} />
+          <ChartTooltip cursor={false} content={<CombatRadarTooltip />} />
           <Radar
             dataKey="value"
             fill={C.blue}
@@ -1107,13 +1283,12 @@ function RadarPanel({ snapshot }: { snapshot: Snapshot }) {
           <StatRow label={primaryStat.label} value={primaryStat.value.toLocaleString()} />
         )}
         <div className="border-t border-border/50 my-1" />
-        <StatRow label="Crit" value={`${snapshot.stats.critPercent.toFixed(2)}%`} />
-        <StatRow label="Haste" value={`${snapshot.stats.hastePercent.toFixed(2)}%`} />
-        <StatRow label="Mastery" value={`${snapshot.stats.masteryPercent.toFixed(2)}%`} />
-        <StatRow label="Versatility" value={`${snapshot.stats.versatilityPercent.toFixed(2)}%`} />
+        {combatStats.map((stat) => (
+          <StatRow key={stat.label} label={stat.label} value={renderCombatStatValue(stat)} />
+        ))}
         {tertiaryStats.length > 0 && <div className="border-t border-border/50 my-1" />}
         {tertiaryStats.map((stat) => (
-          <StatRow key={stat.label} label={stat.label} value={`${stat.value.toFixed(2)}%`} />
+          <StatRow key={stat.label} label={stat.label} value={renderCombatStatValue(stat)} />
         ))}
       </div>
     </div>
@@ -1122,12 +1297,17 @@ function RadarPanel({ snapshot }: { snapshot: Snapshot }) {
 
 // Compact horizontal radar for Timeline layout
 function RadarStrip({ snapshot }: { snapshot: Snapshot }) {
-  const radarData = [
-    { stat: "Crit", value: snapshot.stats.critPercent },
-    { stat: "Haste", value: snapshot.stats.hastePercent },
-    { stat: "Mastery", value: snapshot.stats.masteryPercent },
-    { stat: "Versatility", value: snapshot.stats.versatilityPercent },
-  ];
+  const combatStats = getCoreCombatStats(snapshot);
+  const radarData = combatStats.map<CombatRadarDatum>((stat) => ({
+    stat: stat.label,
+    value: stat.percent,
+    percentValue: stat.percent,
+    ratingValue: stat.rating,
+  }));
+  const radarMax = Math.max(
+    10,
+    Math.ceil(Math.max(...radarData.map((stat) => stat.value)) / 5) * 5,
+  );
   const tertiaryStats = getTertiaryStats(snapshot);
   const primaryStat = getPrimaryStat(snapshot);
   return (
@@ -1138,8 +1318,9 @@ function RadarStrip({ snapshot }: { snapshot: Snapshot }) {
             <ChartContainer config={radarConfig} className="w-[130px] h-[130px]">
               <RadarChart data={radarData}>
                 <PolarGrid />
+                <PolarRadiusAxis axisLine={false} tick={false} domain={[0, radarMax]} />
                 <PolarAngleAxis dataKey="stat" tick={{ fontSize: 10 }} />
-                <ChartTooltip cursor={false} content={<ChartTooltipContent indicator="dot" />} />
+                <ChartTooltip cursor={false} content={<CombatRadarTooltip />} />
                 <Radar
                   dataKey="value"
                   fill={C.blue}
@@ -1153,13 +1334,9 @@ function RadarStrip({ snapshot }: { snapshot: Snapshot }) {
           </div>
           <div className="flex-1 space-y-2">
             <div className="grid grid-cols-2 gap-x-8 gap-y-1.5 text-sm">
-              <StatRow label="Crit" value={`${snapshot.stats.critPercent.toFixed(2)}%`} />
-              <StatRow label="Haste" value={`${snapshot.stats.hastePercent.toFixed(2)}%`} />
-              <StatRow label="Mastery" value={`${snapshot.stats.masteryPercent.toFixed(2)}%`} />
-              <StatRow
-                label="Versatility"
-                value={`${snapshot.stats.versatilityPercent.toFixed(2)}%`}
-              />
+              {combatStats.map((stat) => (
+                <StatRow key={stat.label} label={stat.label} value={renderCombatStatValue(stat)} />
+              ))}
               <StatRow label="Stamina" value={snapshot.stats.stamina.toLocaleString()} />
               {primaryStat && (
                 <StatRow label={primaryStat.label} value={primaryStat.value.toLocaleString()} />
@@ -1171,7 +1348,7 @@ function RadarStrip({ snapshot }: { snapshot: Snapshot }) {
                   <StatRow
                     key={stat.label}
                     label={stat.label}
-                    value={`${stat.value.toFixed(2)}%`}
+                    value={renderCombatStatValue(stat)}
                   />
                 ))}
               </div>
@@ -1185,7 +1362,13 @@ function RadarStrip({ snapshot }: { snapshot: Snapshot }) {
 
 // ── Chart cards used in Overview ──────────────────────────────────────────────
 
-function IlvlChartCard({ snapshots, timeFrame }: { snapshots: CoreChartSnapshot[]; timeFrame: TimeFrame }) {
+function IlvlChartCard({
+  snapshots,
+  timeFrame,
+}: {
+  snapshots: CoreChartSnapshot[];
+  timeFrame: TimeFrame;
+}) {
   const [fullscreen, setFullscreen] = useState(false);
   const data = snapshots.map((s) => ({ date: s.takenAt, itemLevel: s.itemLevel }));
   const lines = [{ key: "itemLevel", color: C.blue }];
@@ -1275,7 +1458,13 @@ function MplusChartCard({
     </Card>
   );
 }
-function GoldChartCard({ snapshots, timeFrame }: { snapshots: CoreChartSnapshot[]; timeFrame: TimeFrame }) {
+function GoldChartCard({
+  snapshots,
+  timeFrame,
+}: {
+  snapshots: CoreChartSnapshot[];
+  timeFrame: TimeFrame;
+}) {
   const [fullscreen, setFullscreen] = useState(false);
   const data = snapshots.map((s) => ({ date: s.takenAt, gold: s.gold }));
   const lines = [{ key: "gold", color: C.gold }];
@@ -1640,15 +1829,10 @@ function FocusCurrentValue({ metric, snapshot }: { metric: FocusMetric; snapshot
     case "stats":
       return (
         <div className="flex flex-wrap gap-4 text-sm">
-          {[
-            { l: "Crit", v: snapshot.stats.critPercent },
-            { l: "Haste", v: snapshot.stats.hastePercent },
-            { l: "Mastery", v: snapshot.stats.masteryPercent },
-            { l: "Versatility", v: snapshot.stats.versatilityPercent },
-          ].map(({ l, v }) => (
-            <span key={l}>
-              <span className="text-muted-foreground">{l} </span>
-              <strong className="tabular-nums">{v.toFixed(1)}%</strong>
+          {getCoreCombatStats(snapshot).map((stat) => (
+            <span key={stat.label}>
+              <span className="text-muted-foreground">{stat.label} </span>
+              <strong className="tabular-nums">{renderCombatStatValue(stat)}</strong>
             </span>
           ))}
         </div>
@@ -2009,7 +2193,9 @@ function TimelineLayout({
               <Zap size={14} className="text-muted-foreground" /> Secondary Stats
             </CardTitle>
           </CardHeader>
-          <CardContent className="text-sm text-muted-foreground">Loading stat history...</CardContent>
+          <CardContent className="text-sm text-muted-foreground">
+            Loading stat history...
+          </CardContent>
         </Card>
       )}
       {currencySnapshots ? (
@@ -2157,11 +2343,7 @@ const CharacterPageContent = memo(function CharacterPageContent({
     <>
       {layoutMode === "overview" && <OverviewLayout {...layoutProps} />}
       {layoutMode === "focus" && (
-        <FocusLayout
-          {...layoutProps}
-          metric={focusMetric}
-          setMetric={onFocusMetricChange}
-        />
+        <FocusLayout {...layoutProps} metric={focusMetric} setMetric={onFocusMetricChange} />
       )}
       {layoutMode === "timeline" && <TimelineLayout {...layoutProps} />}
 
@@ -2270,14 +2452,19 @@ function RouteComponent() {
     });
   }, []);
 
-  const handleFocusMetricChange = useCallback((metric: FocusMetric) => {
-    if (layoutMode === "focus" && metric === "stats") {
-      void queryClient.prefetchQuery(getCharacterStatsTimelineQueryOptions(characterId, timeFrame));
-    }
-    startTransition(() => {
-      setFocusMetric(metric);
-    });
-  }, [characterId, layoutMode, queryClient, timeFrame]);
+  const handleFocusMetricChange = useCallback(
+    (metric: FocusMetric) => {
+      if (layoutMode === "focus" && metric === "stats") {
+        void queryClient.prefetchQuery(
+          getCharacterStatsTimelineQueryOptions(characterId, timeFrame),
+        );
+      }
+      startTransition(() => {
+        setFocusMetric(metric);
+      });
+    },
+    [characterId, layoutMode, queryClient, timeFrame],
+  );
 
   const handleRequestAllMythicPlusRuns = useCallback(() => {
     void queryClient.prefetchQuery(getCharacterMythicPlusAllRunsQueryOptions(characterId));
@@ -2300,9 +2487,7 @@ function RouteComponent() {
   }, [baseMythicPlusData, mythicPlusAllRuns]);
 
   if (characterPage === undefined) {
-    return (
-      <div className="w-full px-4 py-6 sm:px-6 lg:px-8" />
-    );
+    return <div className="w-full px-4 py-6 sm:px-6 lg:px-8" />;
   }
 
   if (characterPage === null) {
@@ -2377,13 +2562,8 @@ function RouteComponent() {
   });
 
   const setPlayerDiscordUserId = useMutation({
-    mutationFn: ({
-      playerId,
-      discordUserId,
-    }: {
-      playerId: string;
-      discordUserId: string | null;
-    }) => apiClient.updatePlayerDiscordUserId(playerId, { discordUserId }),
+    mutationFn: ({ playerId, discordUserId }: { playerId: string; discordUserId: string | null }) =>
+      apiClient.updatePlayerDiscordUserId(playerId, { discordUserId }),
     onSuccess: async () => {
       await Promise.all([
         invalidateCharacterPageQueries(),
@@ -2397,7 +2577,9 @@ function RouteComponent() {
   const coreSnapshots = (coreTimeline?.snapshots ?? []) as CoreChartSnapshot[];
   const statsSnapshots =
     needsStatsTimeline && statsTimeline ? (statsTimeline.snapshots as StatsChartSnapshot[]) : null;
-  const currencySnapshots = needsCurrencyTimeline ? (coreSnapshots as CurrencyChartSnapshot[]) : null;
+  const currencySnapshots = needsCurrencyTimeline
+    ? (coreSnapshots as CurrencyChartSnapshot[])
+    : null;
   const lastMythicPlusRunAt = mythicPlusData?.summary.overall.lastRunAt ?? null;
   const trackingCountLabel = snapshotCount === null ? "Tracked Points" : "Snapshots";
   const trackingCountValue =
@@ -2430,7 +2612,9 @@ function RouteComponent() {
         discordUserId: normalizedDiscordUserIdInput === "" ? null : normalizedDiscordUserIdInput,
       });
       setIsDiscordSheetOpen(false);
-      toast.success(normalizedDiscordUserIdInput === "" ? "Discord ID cleared." : "Discord ID saved.");
+      toast.success(
+        normalizedDiscordUserIdInput === "" ? "Discord ID cleared." : "Discord ID saved.",
+      );
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not save Discord ID.");
     } finally {
@@ -2485,7 +2669,9 @@ function RouteComponent() {
                   </Badge>
                 </div>
               )}
-              <CardTitle className={`text-3xl font-bold tracking-tight sm:text-4xl ${classColor(character.class)}`}>
+              <CardTitle
+                className={`text-3xl font-bold tracking-tight sm:text-4xl ${classColor(character.class)}`}
+              >
                 {character.name}
               </CardTitle>
               <p className="hidden">
@@ -2592,7 +2778,9 @@ function RouteComponent() {
                       className="border-border/60 bg-card text-muted-foreground hover:text-foreground"
                     >
                       Trade Locks
-                      {nonTradeableSlots.length > 0 ? ` ${getTradeSlotEditorCount(nonTradeableSlots)}` : ""}
+                      {nonTradeableSlots.length > 0
+                        ? ` ${getTradeSlotEditorCount(nonTradeableSlots)}`
+                        : ""}
                     </Button>
                   </SheetTrigger>
                   <SheetContent className="w-full sm:max-w-lg">
@@ -2611,23 +2799,29 @@ function RouteComponent() {
                             className="flex cursor-pointer items-start gap-3 rounded-lg border border-border/60 bg-card/50 p-3"
                           >
                             <Checkbox
-                              checked={slot.slotKeys.every((slotKey) => nonTradeableSlotsDraft.includes(slotKey))}
+                              checked={slot.slotKeys.every((slotKey) =>
+                                nonTradeableSlotsDraft.includes(slotKey),
+                              )}
                               onCheckedChange={() => toggleNonTradeableSlot(slot.slotKeys)}
                             />
                             <div>
                               <p className="text-sm font-medium text-foreground">{slot.label}</p>
-                              <p className="text-xs text-muted-foreground">Drop in this slot stays bound.</p>
+                              <p className="text-xs text-muted-foreground">
+                                Drop in this slot stays bound.
+                              </p>
                             </div>
                           </label>
                         ))}
                       </div>
                       {nonTradeableSlotsDraft.length === 0 ? (
                         <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-200">
-                          No locked slots. This character is marked as able to trade all tracked slots.
+                          No locked slots. This character is marked as able to trade all tracked
+                          slots.
                         </div>
                       ) : (
                         <div className="rounded-xl border border-orange-500/30 bg-orange-500/10 p-3 text-sm text-orange-200">
-                          Locked slots: {getTradeSlotExportLabels(nonTradeableSlotsDraft).join(", ")}
+                          Locked slots:{" "}
+                          {getTradeSlotExportLabels(nonTradeableSlotsDraft).join(", ")}
                         </div>
                       )}
                       <div className="flex flex-wrap gap-2">
@@ -2677,7 +2871,9 @@ function RouteComponent() {
               <TopMetricCard
                 label="M+ score"
                 meta="Current"
-                value={<span className="tabular-nums">{latest.mythicPlusScore.toLocaleString()}</span>}
+                value={
+                  <span className="tabular-nums">{latest.mythicPlusScore.toLocaleString()}</span>
+                }
               />
               <TopMetricCard
                 label="Keystone"

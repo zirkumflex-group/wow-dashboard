@@ -82,7 +82,10 @@ function getElectronLoginUrl(): string {
 }
 
 function getApiAuthUrl(pathname: string): string {
-  return new URL(pathname.replace(/^\//, ""), API_URL.endsWith("/") ? API_URL : `${API_URL}/`).toString();
+  return new URL(
+    pathname.replace(/^\//, ""),
+    API_URL.endsWith("/") ? API_URL : `${API_URL}/`,
+  ).toString();
 }
 
 function persistDesktopSessionToken(token: string): void {
@@ -571,12 +574,19 @@ interface SnapshotData {
     strength: number;
     agility: number;
     intellect: number;
+    critRating?: number;
     critPercent: number;
+    hasteRating?: number;
     hastePercent: number;
+    masteryRating?: number;
     masteryPercent: number;
+    versatilityRating?: number;
     versatilityPercent: number;
+    speedRating?: number;
     speedPercent?: number;
+    leechRating?: number;
     leechPercent?: number;
+    avoidanceRating?: number;
     avoidancePercent?: number;
   };
 }
@@ -606,6 +616,13 @@ function getSnapshotCompletenessScore(snapshot: SnapshotData): number {
   if (snapshot.playtimeSeconds > 0) score += 1;
   if (snapshot.playtimeThisLevelSeconds !== undefined) score += 1;
   if (snapshot.ownedKeystone !== undefined) score += 1;
+  if (snapshot.stats.critRating !== undefined) score += 1;
+  if (snapshot.stats.hasteRating !== undefined) score += 1;
+  if (snapshot.stats.masteryRating !== undefined) score += 1;
+  if (snapshot.stats.versatilityRating !== undefined) score += 1;
+  if (snapshot.stats.speedRating !== undefined) score += 1;
+  if (snapshot.stats.leechRating !== undefined) score += 1;
+  if (snapshot.stats.avoidanceRating !== undefined) score += 1;
   if (snapshot.stats.speedPercent !== undefined) score += 2;
   if (snapshot.stats.leechPercent !== undefined) score += 2;
   if (snapshot.stats.avoidancePercent !== undefined) score += 2;
@@ -621,12 +638,20 @@ function mergeSnapshotData(current: SnapshotData, candidate: SnapshotData): Snap
 
   return {
     ...preferred,
-    playtimeSeconds: preferred.playtimeSeconds > 0 ? preferred.playtimeSeconds : fallback.playtimeSeconds,
+    playtimeSeconds:
+      preferred.playtimeSeconds > 0 ? preferred.playtimeSeconds : fallback.playtimeSeconds,
     playtimeThisLevelSeconds:
       preferred.playtimeThisLevelSeconds ?? fallback.playtimeThisLevelSeconds,
     ownedKeystone: preferred.ownedKeystone ?? fallback.ownedKeystone,
     stats: {
       ...preferred.stats,
+      critRating: preferred.stats.critRating ?? fallback.stats.critRating,
+      hasteRating: preferred.stats.hasteRating ?? fallback.stats.hasteRating,
+      masteryRating: preferred.stats.masteryRating ?? fallback.stats.masteryRating,
+      versatilityRating: preferred.stats.versatilityRating ?? fallback.stats.versatilityRating,
+      speedRating: preferred.stats.speedRating ?? fallback.stats.speedRating,
+      leechRating: preferred.stats.leechRating ?? fallback.stats.leechRating,
+      avoidanceRating: preferred.stats.avoidanceRating ?? fallback.stats.avoidanceRating,
       speedPercent: preferred.stats.speedPercent ?? fallback.stats.speedPercent,
       leechPercent: preferred.stats.leechPercent ?? fallback.stats.leechPercent,
       avoidancePercent: preferred.stats.avoidancePercent ?? fallback.stats.avoidancePercent,
@@ -848,7 +873,7 @@ function findMergeableRunMemberIndex(
     return exactIndex;
   }
   if (candidateRealm === "") {
-    return sameNameCount === 1 ? unresolvedIndex ?? sameNameIndex : undefined;
+    return sameNameCount === 1 ? (unresolvedIndex ?? sameNameIndex) : undefined;
   }
 
   return unresolvedCount === 1 ? unresolvedIndex : undefined;
@@ -870,7 +895,10 @@ function mergeMythicPlusRunMembers(
   currentMembers: MythicPlusRunMemberData[] | undefined,
   candidateMembers: MythicPlusRunMemberData[] | undefined,
 ) {
-  if ((!currentMembers || currentMembers.length === 0) && (!candidateMembers || candidateMembers.length === 0)) {
+  if (
+    (!currentMembers || currentMembers.length === 0) &&
+    (!candidateMembers || candidateMembers.length === 0)
+  ) {
     return undefined;
   }
 
@@ -1073,11 +1101,7 @@ function getSanitizedRunDurationMs(run: Partial<MythicPlusRunData>): number | un
   }
 
   const runEndAt = run.completedAt ?? run.endedAt ?? run.abandonedAt;
-  if (
-    run.startDate !== undefined &&
-    runEndAt !== undefined &&
-    runEndAt >= run.startDate
-  ) {
+  if (run.startDate !== undefined && runEndAt !== undefined && runEndAt >= run.startDate) {
     const derivedDurationMs = (runEndAt - run.startDate) * 1000;
     if (
       Number.isFinite(derivedDurationMs) &&
@@ -1292,7 +1316,9 @@ function getMythicPlusRunCanonicalKey(run: Partial<MythicPlusRunData>): string |
   return buildRunCanonicalKeyWithIdentityTimestamp(run, identityTimestamp);
 }
 
-function buildCanonicalMythicPlusRunFingerprint(run: Partial<MythicPlusRunData>): string | undefined {
+function buildCanonicalMythicPlusRunFingerprint(
+  run: Partial<MythicPlusRunData>,
+): string | undefined {
   return getMythicPlusRunCanonicalKey(run);
 }
 
@@ -1416,7 +1442,11 @@ function getMythicPlusRunDedupKeys(run: Partial<MythicPlusRunData>): string[] {
 }
 
 function getMythicPlusRunDedupKey(run: Partial<MythicPlusRunData>): string {
-  return getMythicPlusRunCanonicalKey(run) ?? getMythicPlusRunDedupKeys(run)[0] ?? buildRunFingerprint(run);
+  return (
+    getMythicPlusRunCanonicalKey(run) ??
+    getMythicPlusRunDedupKeys(run)[0] ??
+    buildRunFingerprint(run)
+  );
 }
 
 function getRunStrictEventTimestamps(run: Partial<MythicPlusRunData>): number[] {
@@ -1490,7 +1520,10 @@ function hasCompatibleLegacyDstShift(
   leftRun: Partial<MythicPlusRunData>,
   rightRun: Partial<MythicPlusRunData>,
 ): boolean {
-  if (!hasStrongCompletedRunIdentitySignature(leftRun) || !hasStrongCompletedRunIdentitySignature(rightRun)) {
+  if (
+    !hasStrongCompletedRunIdentitySignature(leftRun) ||
+    !hasStrongCompletedRunIdentitySignature(rightRun)
+  ) {
     return false;
   }
 
@@ -1638,12 +1671,14 @@ function findMatchingMythicPlusRunByIdentity(
 
 function getMythicPlusRunCompletionEstimate(run: Partial<MythicPlusRunData>): number | undefined {
   const durationMs = getSanitizedRunDurationMs(run);
-  return run.endedAt ??
+  return (
+    run.endedAt ??
     run.abandonedAt ??
     run.completedAt ??
     (run.startDate !== undefined && durationMs !== undefined
       ? run.startDate + Math.floor(durationMs / 1000 + 0.5)
-      : undefined);
+      : undefined)
+  );
 }
 
 function getMythicPlusRunSortValue(run: Partial<MythicPlusRunData>): number {
@@ -1904,9 +1939,7 @@ function normalizeStoredMythicPlusRun(runRaw: LuaTable): MythicPlusRunData {
     attemptId:
       normalizeAttemptId(runRaw.attemptId) ??
       normalizeAttemptId(runRaw.attemptID) ??
-      (legacyRaw
-        ? normalizeAttemptId(legacyRaw.attemptId ?? legacyRaw.attemptID)
-        : undefined) ??
+      (legacyRaw ? normalizeAttemptId(legacyRaw.attemptId ?? legacyRaw.attemptID) : undefined) ??
       undefined,
     canonicalKey:
       normalizeCanonicalKey(runRaw.canonicalKey) ??
@@ -1925,7 +1958,11 @@ function normalizeStoredMythicPlusRun(runRaw: LuaTable): MythicPlusRunData {
       toOptionalNumber(runRaw.mapChallengeModeID) ??
       toOptionalNumber(runRaw.challengeModeID) ??
       toOptionalNumber(runRaw.mapID) ??
-      (legacyRaw ? toOptionalNumber(legacyRaw.mapChallengeModeID ?? legacyRaw.challengeModeID ?? legacyRaw.mapID) : undefined),
+      (legacyRaw
+        ? toOptionalNumber(
+            legacyRaw.mapChallengeModeID ?? legacyRaw.challengeModeID ?? legacyRaw.mapID,
+          )
+        : undefined),
     mapName:
       toOptionalString(runRaw.mapName) ??
       toOptionalString(runRaw.name) ??
@@ -2015,7 +2052,8 @@ function normalizeStoredMythicPlusRun(runRaw: LuaTable): MythicPlusRunData {
   }
 
   run.fingerprint =
-    (toOptionalString(runRaw.fingerprint) && isTemporaryAttemptFingerprint(toOptionalString(runRaw.fingerprint))
+    (toOptionalString(runRaw.fingerprint) &&
+    isTemporaryAttemptFingerprint(toOptionalString(runRaw.fingerprint))
       ? toOptionalString(runRaw.fingerprint)
       : undefined) ??
     buildCanonicalMythicPlusRunFingerprint(run) ??
@@ -2272,12 +2310,17 @@ function upsertMythicPlusRunByIdentity(
 
   const mergedRun = mergeMythicPlusRunData(existingRun, incomingRun);
   Object.assign(existingRun, mergedRun);
-  registerMythicPlusRunLookups(lookups, existingRun, [incomingRun.fingerprint, mergedRun.fingerprint]);
+  registerMythicPlusRunLookups(lookups, existingRun, [
+    incomingRun.fingerprint,
+    mergedRun.fingerprint,
+  ]);
 }
 
 function extractCharacters(db: Record<string, unknown>): CharacterData[] {
   const characters = (db.characters ?? {}) as Record<string, unknown>;
-  const pendingMembersStore = isRecord(db.pendingMythicPlusMembers) ? db.pendingMythicPlusMembers : {};
+  const pendingMembersStore = isRecord(db.pendingMythicPlusMembers)
+    ? db.pendingMythicPlusMembers
+    : {};
   const result: CharacterData[] = [];
   const validRegions: Region[] = ["us", "eu", "kr", "tw"];
 
@@ -2333,12 +2376,19 @@ function extractCharacters(db: Record<string, unknown>): CharacterData[] {
           strength: Number(stats.strength ?? 0),
           agility: Number(stats.agility ?? 0),
           intellect: Number(stats.intellect ?? 0),
+          critRating: toOptionalNumber(stats.critRating),
           critPercent: Number(stats.critPercent ?? 0),
+          hasteRating: toOptionalNumber(stats.hasteRating),
           hastePercent: Number(stats.hastePercent ?? 0),
+          masteryRating: toOptionalNumber(stats.masteryRating),
           masteryPercent: Number(stats.masteryPercent ?? 0),
+          versatilityRating: toOptionalNumber(stats.versatilityRating),
           versatilityPercent: Number(stats.versatilityPercent ?? 0),
+          speedRating: toOptionalNumber(stats.speedRating),
           speedPercent: toOptionalNumber(stats.speedPercent),
+          leechRating: toOptionalNumber(stats.leechRating),
           leechPercent: toOptionalNumber(stats.leechPercent),
+          avoidanceRating: toOptionalNumber(stats.avoidanceRating),
           avoidancePercent: toOptionalNumber(stats.avoidancePercent),
         },
       });
@@ -2374,9 +2424,7 @@ function extractCharacters(db: Record<string, unknown>): CharacterData[] {
   return result;
 }
 
-async function findAndParseAddonData(
-  retailPath: string,
-): Promise<{
+async function findAndParseAddonData(retailPath: string): Promise<{
   characters: CharacterData[];
   accountsFound: string[];
   fileStats: AddonFileStats | null;
@@ -2430,7 +2478,9 @@ async function findAndParseAddonData(
       if (!existing) {
         allChars.set(key, char);
       } else {
-        const snapshotsByTime = new Map(existing.snapshots.map((snapshot) => [snapshot.takenAt, snapshot]));
+        const snapshotsByTime = new Map(
+          existing.snapshots.map((snapshot) => [snapshot.takenAt, snapshot]),
+        );
         for (const snap of char.snapshots) {
           const current = snapshotsByTime.get(snap.takenAt);
           if (!current) {
@@ -2587,9 +2637,12 @@ ipcMain.handle("auth:login", () => {
     };
 
     // Set up pending deep-link resolution with a 10-minute timeout.
-    const timeout = setTimeout(() => {
-      finalizeError(new Error("Login timed out"));
-    }, 10 * 60 * 1000);
+    const timeout = setTimeout(
+      () => {
+        finalizeError(new Error("Login timed out"));
+      },
+      10 * 60 * 1000,
+    );
 
     pendingLoginResolve = (token: string) => {
       finalizeSuccess(token);
@@ -2728,7 +2781,9 @@ async function getValidatedRetailPathFromSettings(): Promise<string | null> {
   return validatedRetailPath;
 }
 
-function getAddonRetailPathStatus(reason: "missing" | "invalid" | null): "noRetailPath" | "invalidRetailPath" {
+function getAddonRetailPathStatus(
+  reason: "missing" | "invalid" | null,
+): "noRetailPath" | "invalidRetailPath" {
   return reason === "invalid" ? "invalidRetailPath" : "noRetailPath";
 }
 
@@ -3033,14 +3088,17 @@ async function fetchLatestAddonRelease(): Promise<AddonReleaseInfo> {
   const releases = (await res.json()) as any[];
   const addonRelease = releases.find(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (release: any) => release.tag_name.startsWith("addon-v") && !release.draft && !release.prerelease,
+    (release: any) =>
+      release.tag_name.startsWith("addon-v") && !release.draft && !release.prerelease,
   );
   if (!addonRelease) throw new Error("No addon release found on GitHub");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const asset = addonRelease.assets.find((asset: any) => asset.name === "wow-dashboard.zip");
   if (!asset) throw new Error("No wow-dashboard.zip asset found in latest addon release");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const checksumAsset = addonRelease.assets.find((asset: any) => asset.name === "wow-dashboard.zip.sha256");
+  const checksumAsset = addonRelease.assets.find(
+    (asset: any) => asset.name === "wow-dashboard.zip.sha256",
+  );
   return {
     url: asset.browser_download_url as string,
     checksumUrl: checksumAsset ? (checksumAsset.browser_download_url as string) : null,
@@ -3129,8 +3187,11 @@ async function applyStagedAddonUpdateIfReady(): Promise<AddonApplyStagedResult> 
       };
     }
 
-    const { validatedRetailPath, error: retailPathError, reason } =
-      await resolveRetailPathFromSettings();
+    const {
+      validatedRetailPath,
+      error: retailPathError,
+      reason,
+    } = await resolveRetailPathFromSettings();
     if (!validatedRetailPath) {
       updateAddonUpdateState({
         status: getAddonRetailPathStatus(reason),
@@ -3226,236 +3287,238 @@ async function stageLatestAddonUpdate(): Promise<AddonUpdateCheckResult> {
     return addonUpdateCheckInFlight;
   }
 
-  const updateCheckPromise: Promise<AddonUpdateCheckResult> = (async (): Promise<AddonUpdateCheckResult> => {
-    if (stagingAddonUpdate) {
-      return {
-        status: addonUpdateState.status === "applied" ? "applied" : "staged",
-        installedVersion: addonUpdateState.installedVersion,
-        latestVersion: addonUpdateState.latestVersion,
-        stagedVersion: addonUpdateState.stagedVersion,
-        error: addonUpdateState.error,
-      } satisfies AddonUpdateCheckResult;
-    }
-
-    stagingAddonUpdate = true;
-    const startedAt = Date.now();
-
-    try {
-      const stagedAtStart = await getUsableStagedAddonUpdate();
-      updateAddonUpdateState({
-        status: "checking",
-        stagedVersion: stagedAtStart?.version ?? null,
-        error: null,
-        lastCheckedAt: startedAt,
-      });
-
-      const { validatedRetailPath, error: retailPathError, reason } =
-        await resolveRetailPathFromSettings();
-
-      if (!validatedRetailPath) {
-        const status = getAddonRetailPathStatus(reason);
-        updateAddonUpdateState({
-          status,
-          installedVersion: null,
-          error: retailPathError,
-          lastCheckedAt: startedAt,
-        });
+  const updateCheckPromise: Promise<AddonUpdateCheckResult> =
+    (async (): Promise<AddonUpdateCheckResult> => {
+      if (stagingAddonUpdate) {
         return {
-          status,
-          installedVersion: null,
+          status: addonUpdateState.status === "applied" ? "applied" : "staged",
+          installedVersion: addonUpdateState.installedVersion,
           latestVersion: addonUpdateState.latestVersion,
-          stagedVersion: stagedAtStart?.version ?? null,
-          error: retailPathError,
+          stagedVersion: addonUpdateState.stagedVersion,
+          error: addonUpdateState.error,
         } satisfies AddonUpdateCheckResult;
       }
 
-      const installedVersion = await getInstalledAddonVersionForRetailPath(validatedRetailPath);
-      updateAddonUpdateState({
-        installedVersion,
-        error: null,
-        lastCheckedAt: startedAt,
-      });
+      stagingAddonUpdate = true;
+      const startedAt = Date.now();
 
-      if (!installedVersion) {
-        await clearStagedAddonUpdate();
+      try {
+        const stagedAtStart = await getUsableStagedAddonUpdate();
         updateAddonUpdateState({
-          status: "notInstalled",
-          stagedVersion: null,
-          latestVersion: null,
-        });
-        return {
-          status: "notInstalled",
-          installedVersion: null,
-          latestVersion: null,
-          stagedVersion: null,
+          status: "checking",
+          stagedVersion: stagedAtStart?.version ?? null,
           error: null,
-        };
-      }
+          lastCheckedAt: startedAt,
+        });
 
-      const latestRelease = await fetchLatestAddonRelease();
-      updateAddonUpdateState({
-        latestVersion: latestRelease.version,
-        error: null,
-        lastCheckedAt: startedAt,
-      });
+        const {
+          validatedRetailPath,
+          error: retailPathError,
+          reason,
+        } = await resolveRetailPathFromSettings();
 
-      if (!isOutdatedVersion(installedVersion, latestRelease.version)) {
-        const staged = await getUsableStagedAddonUpdate();
-        if (staged && !isOutdatedVersion(installedVersion, staged.version)) {
-          await clearStagedAddonUpdate();
+        if (!validatedRetailPath) {
+          const status = getAddonRetailPathStatus(reason);
+          updateAddonUpdateState({
+            status,
+            installedVersion: null,
+            error: retailPathError,
+            lastCheckedAt: startedAt,
+          });
+          return {
+            status,
+            installedVersion: null,
+            latestVersion: addonUpdateState.latestVersion,
+            stagedVersion: stagedAtStart?.version ?? null,
+            error: retailPathError,
+          } satisfies AddonUpdateCheckResult;
         }
+
+        const installedVersion = await getInstalledAddonVersionForRetailPath(validatedRetailPath);
         updateAddonUpdateState({
-          status: "upToDate",
+          installedVersion,
+          error: null,
+          lastCheckedAt: startedAt,
+        });
+
+        if (!installedVersion) {
+          await clearStagedAddonUpdate();
+          updateAddonUpdateState({
+            status: "notInstalled",
+            stagedVersion: null,
+            latestVersion: null,
+          });
+          return {
+            status: "notInstalled",
+            installedVersion: null,
+            latestVersion: null,
+            stagedVersion: null,
+            error: null,
+          };
+        }
+
+        const latestRelease = await fetchLatestAddonRelease();
+        updateAddonUpdateState({
+          latestVersion: latestRelease.version,
+          error: null,
+          lastCheckedAt: startedAt,
+        });
+
+        if (!isOutdatedVersion(installedVersion, latestRelease.version)) {
+          const staged = await getUsableStagedAddonUpdate();
+          if (staged && !isOutdatedVersion(installedVersion, staged.version)) {
+            await clearStagedAddonUpdate();
+          }
+          updateAddonUpdateState({
+            status: "upToDate",
+            installedVersion,
+            latestVersion: latestRelease.version,
+            stagedVersion: null,
+            error: null,
+          });
+          return {
+            status: "upToDate",
+            installedVersion,
+            latestVersion: latestRelease.version,
+            stagedVersion: null,
+            error: null,
+          };
+        }
+
+        updateAddonUpdateState({
+          status: "updating",
           installedVersion,
           latestVersion: latestRelease.version,
-          stagedVersion: null,
           error: null,
         });
-        return {
-          status: "upToDate",
-          installedVersion,
-          latestVersion: latestRelease.version,
-          stagedVersion: null,
-          error: null,
-        };
-      }
 
-      updateAddonUpdateState({
-        status: "updating",
-        installedVersion,
-        latestVersion: latestRelease.version,
-        error: null,
-      });
+        const staged = await getUsableStagedAddonUpdate();
+        if (
+          staged &&
+          staged.version === latestRelease.version &&
+          staged.checksumUrl === latestRelease.checksumUrl
+        ) {
+          updateAddonUpdateState({
+            status: "staged",
+            stagedVersion: staged.version,
+            error: null,
+          });
+        } else {
+          const checksumPath = latestRelease.checksumUrl ? getStagedAddonChecksumPath() : null;
+          await downloadAddonPackage(
+            latestRelease.url,
+            latestRelease.checksumUrl,
+            getStagedAddonZipPath(),
+            checksumPath,
+          );
+          await writeStagedAddonUpdate({
+            version: latestRelease.version,
+            checksumUrl: latestRelease.checksumUrl,
+            downloadedAt: Date.now(),
+          });
+          broadcastToRenderers("wow:addonUpdateStaged", latestRelease.version);
+          updateAddonUpdateState({
+            status: "staged",
+            stagedVersion: latestRelease.version,
+            error: null,
+          });
+        }
 
-      const staged = await getUsableStagedAddonUpdate();
-      if (
-        staged &&
-        staged.version === latestRelease.version &&
-        staged.checksumUrl === latestRelease.checksumUrl
-      ) {
-        updateAddonUpdateState({
-          status: "staged",
-          stagedVersion: staged.version,
-          error: null,
-        });
-      } else {
-        const checksumPath = latestRelease.checksumUrl ? getStagedAddonChecksumPath() : null;
-        await downloadAddonPackage(
-          latestRelease.url,
-          latestRelease.checksumUrl,
-          getStagedAddonZipPath(),
-          checksumPath,
-        );
-        await writeStagedAddonUpdate({
-          version: latestRelease.version,
-          checksumUrl: latestRelease.checksumUrl,
-          downloadedAt: Date.now(),
-        });
-        broadcastToRenderers("wow:addonUpdateStaged", latestRelease.version);
-        updateAddonUpdateState({
-          status: "staged",
-          stagedVersion: latestRelease.version,
-          error: null,
-        });
-      }
+        const applyResult = await applyStagedAddonUpdateIfReady();
+        if (applyResult.outcome === "applied") {
+          return {
+            status: "applied",
+            installedVersion: latestRelease.version,
+            latestVersion: latestRelease.version,
+            stagedVersion: null,
+            error: null,
+          };
+        }
 
-      const applyResult = await applyStagedAddonUpdateIfReady();
-      if (applyResult.outcome === "applied") {
-        return {
-          status: "applied",
-          installedVersion: latestRelease.version,
-          latestVersion: latestRelease.version,
-          stagedVersion: null,
-          error: null,
-        };
-      }
+        if (applyResult.outcome === "retryableError" || applyResult.outcome === "fatalError") {
+          const postInstallVersion =
+            await getInstalledAddonVersionForRetailPath(validatedRetailPath);
+          return {
+            status: "error",
+            installedVersion: postInstallVersion,
+            latestVersion: latestRelease.version,
+            stagedVersion: applyResult.stagedVersion,
+            error: applyResult.error,
+          };
+        }
 
-      if (
-        applyResult.outcome === "retryableError" ||
-        applyResult.outcome === "fatalError"
-      ) {
+        const currentAddonUpdateState = getAddonUpdateStateSnapshot();
+        if (
+          currentAddonUpdateState.status === "noRetailPath" ||
+          currentAddonUpdateState.status === "invalidRetailPath" ||
+          currentAddonUpdateState.status === "notInstalled" ||
+          currentAddonUpdateState.status === "upToDate"
+        ) {
+          return {
+            status: currentAddonUpdateState.status,
+            installedVersion: currentAddonUpdateState.installedVersion,
+            latestVersion: currentAddonUpdateState.latestVersion ?? latestRelease.version,
+            stagedVersion: currentAddonUpdateState.stagedVersion,
+            error: currentAddonUpdateState.error,
+          };
+        }
+
+        const remainingStaged = await getUsableStagedAddonUpdate();
+        if (remainingStaged && currentAddonUpdateState.status !== "error") {
+          updateAddonUpdateState({
+            status: "staged",
+            stagedVersion: remainingStaged.version,
+            installedVersion,
+            latestVersion: latestRelease.version,
+            error: null,
+          });
+          return {
+            status: "staged",
+            installedVersion,
+            latestVersion: latestRelease.version,
+            stagedVersion: remainingStaged.version,
+            error: null,
+          };
+        }
+
         const postInstallVersion = await getInstalledAddonVersionForRetailPath(validatedRetailPath);
+        const errorMessage = addonUpdateState.error ?? "Addon update could not be applied.";
+        updateAddonUpdateState({
+          status: "error",
+          installedVersion: postInstallVersion,
+          latestVersion: latestRelease.version,
+          stagedVersion: null,
+          error: errorMessage,
+        });
         return {
           status: "error",
           installedVersion: postInstallVersion,
           latestVersion: latestRelease.version,
-          stagedVersion: applyResult.stagedVersion,
-          error: applyResult.error,
+          stagedVersion: null,
+          error: errorMessage,
         };
-      }
-
-      const currentAddonUpdateState = getAddonUpdateStateSnapshot();
-      if (
-        currentAddonUpdateState.status === "noRetailPath" ||
-        currentAddonUpdateState.status === "invalidRetailPath" ||
-        currentAddonUpdateState.status === "notInstalled" ||
-        currentAddonUpdateState.status === "upToDate"
-      ) {
-        return {
-          status: currentAddonUpdateState.status,
-          installedVersion: currentAddonUpdateState.installedVersion,
-          latestVersion: currentAddonUpdateState.latestVersion ?? latestRelease.version,
-          stagedVersion: currentAddonUpdateState.stagedVersion,
-          error: currentAddonUpdateState.error,
-        };
-      }
-
-      const remainingStaged = await getUsableStagedAddonUpdate();
-      if (remainingStaged && currentAddonUpdateState.status !== "error") {
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const staged = await getUsableStagedAddonUpdate();
         updateAddonUpdateState({
-          status: "staged",
-          stagedVersion: remainingStaged.version,
-          installedVersion,
-          latestVersion: latestRelease.version,
-          error: null,
+          status: "error",
+          stagedVersion: staged?.version ?? null,
+          error: message,
+          lastCheckedAt: startedAt,
         });
         return {
-          status: "staged",
-          installedVersion,
-          latestVersion: latestRelease.version,
-          stagedVersion: remainingStaged.version,
-          error: null,
+          status: "error",
+          installedVersion: addonUpdateState.installedVersion,
+          latestVersion: addonUpdateState.latestVersion,
+          stagedVersion: staged?.version ?? null,
+          error: message,
         };
+      } finally {
+        stagingAddonUpdate = false;
       }
-
-      const postInstallVersion = await getInstalledAddonVersionForRetailPath(validatedRetailPath);
-      const errorMessage = addonUpdateState.error ?? "Addon update could not be applied.";
-      updateAddonUpdateState({
-        status: "error",
-        installedVersion: postInstallVersion,
-        latestVersion: latestRelease.version,
-        stagedVersion: null,
-        error: errorMessage,
-      });
-      return {
-        status: "error",
-        installedVersion: postInstallVersion,
-        latestVersion: latestRelease.version,
-        stagedVersion: null,
-        error: errorMessage,
-      };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const staged = await getUsableStagedAddonUpdate();
-      updateAddonUpdateState({
-        status: "error",
-        stagedVersion: staged?.version ?? null,
-        error: message,
-        lastCheckedAt: startedAt,
-      });
-      return {
-        status: "error",
-        installedVersion: addonUpdateState.installedVersion,
-        latestVersion: addonUpdateState.latestVersion,
-        stagedVersion: staged?.version ?? null,
-        error: message,
-      };
-    } finally {
-      stagingAddonUpdate = false;
-    }
-  })().finally(() => {
-    addonUpdateCheckInFlight = null;
-  });
+    })().finally(() => {
+      addonUpdateCheckInFlight = null;
+    });
 
   addonUpdateCheckInFlight = updateCheckPromise;
   return updateCheckPromise;

@@ -180,7 +180,10 @@ function snapshotFieldsToInsert(characterId: string, snapshot: SnapshotFields) {
   };
 }
 
-function mergeSnapshotFields(existingSnapshot: SnapshotFields, incomingSnapshot: SnapshotFields): SnapshotFields {
+function mergeSnapshotFields(
+  existingSnapshot: SnapshotFields,
+  incomingSnapshot: SnapshotFields,
+): SnapshotFields {
   return {
     ...incomingSnapshot,
     playtimeSeconds:
@@ -192,9 +195,19 @@ function mergeSnapshotFields(existingSnapshot: SnapshotFields, incomingSnapshot:
     ownedKeystone: incomingSnapshot.ownedKeystone ?? existingSnapshot.ownedKeystone,
     stats: {
       ...incomingSnapshot.stats,
+      critRating: incomingSnapshot.stats.critRating ?? existingSnapshot.stats.critRating,
+      hasteRating: incomingSnapshot.stats.hasteRating ?? existingSnapshot.stats.hasteRating,
+      masteryRating: incomingSnapshot.stats.masteryRating ?? existingSnapshot.stats.masteryRating,
+      versatilityRating:
+        incomingSnapshot.stats.versatilityRating ?? existingSnapshot.stats.versatilityRating,
+      speedRating: incomingSnapshot.stats.speedRating ?? existingSnapshot.stats.speedRating,
+      leechRating: incomingSnapshot.stats.leechRating ?? existingSnapshot.stats.leechRating,
+      avoidanceRating:
+        incomingSnapshot.stats.avoidanceRating ?? existingSnapshot.stats.avoidanceRating,
       speedPercent: incomingSnapshot.stats.speedPercent ?? existingSnapshot.stats.speedPercent,
       leechPercent: incomingSnapshot.stats.leechPercent ?? existingSnapshot.stats.leechPercent,
-      avoidancePercent: incomingSnapshot.stats.avoidancePercent ?? existingSnapshot.stats.avoidancePercent,
+      avoidancePercent:
+        incomingSnapshot.stats.avoidancePercent ?? existingSnapshot.stats.avoidancePercent,
     },
   };
 }
@@ -304,7 +317,10 @@ function shouldReplaceCharacterDailySnapshot(
   return nextSnapshot.takenAt >= toUnixSeconds(currentSnapshot.lastTakenAt)!;
 }
 
-function pickDefinedValue<T>(preferredValue: T | undefined, fallbackValue: T | undefined): T | undefined {
+function pickDefinedValue<T>(
+  preferredValue: T | undefined,
+  fallbackValue: T | undefined,
+): T | undefined {
   return preferredValue !== undefined ? preferredValue : fallbackValue;
 }
 
@@ -397,8 +413,11 @@ function mergeMythicPlusRunData(
     observedAt:
       mergedObservedAt > 0
         ? mergedObservedAt
-        : pickDefinedValue(preferredRun.observedAt, fallbackRun.observedAt) ?? 0,
-    attemptId: pickDefinedValue(deriveAttemptIdFromRun(preferredRun), deriveAttemptIdFromRun(fallbackRun)),
+        : (pickDefinedValue(preferredRun.observedAt, fallbackRun.observedAt) ?? 0),
+    attemptId: pickDefinedValue(
+      deriveAttemptIdFromRun(preferredRun),
+      deriveAttemptIdFromRun(fallbackRun),
+    ),
     canonicalKey: pickDefinedValue(
       deriveCanonicalKeyFromRun(preferredRun),
       deriveCanonicalKeyFromRun(fallbackRun),
@@ -471,8 +490,10 @@ function buildMythicPlusRunPatch(
   if (mergedRun.mapName !== undefined && existingRun.mapName !== mergedRun.mapName) {
     patch.mapName = mergedRun.mapName;
   }
-  if (mergedRun.level !== undefined && existingRun.level !== mergedRun.level) patch.level = mergedRun.level;
-  if (mergedRun.status !== undefined && existingRun.status !== mergedRun.status) patch.status = mergedRun.status;
+  if (mergedRun.level !== undefined && existingRun.level !== mergedRun.level)
+    patch.level = mergedRun.level;
+  if (mergedRun.status !== undefined && existingRun.status !== mergedRun.status)
+    patch.status = mergedRun.status;
   if (mergedRun.completed !== undefined && existingRun.completed !== mergedRun.completed) {
     patch.completed = mergedRun.completed;
   }
@@ -668,7 +689,9 @@ function mythicPlusRunPatchToDbPatch(patch: MythicPlusRunPatch) {
     ...(patch.canonicalKey !== undefined ? { canonicalKey: patch.canonicalKey } : {}),
     ...(patch.observedAt !== undefined ? { observedAt: fromUnixSeconds(patch.observedAt) } : {}),
     ...(patch.seasonID !== undefined ? { seasonId: patch.seasonID } : {}),
-    ...(patch.mapChallengeModeID !== undefined ? { mapChallengeModeId: patch.mapChallengeModeID } : {}),
+    ...(patch.mapChallengeModeID !== undefined
+      ? { mapChallengeModeId: patch.mapChallengeModeID }
+      : {}),
     ...(patch.mapName !== undefined ? { mapName: patch.mapName } : {}),
     ...(patch.level !== undefined ? { level: patch.level } : {}),
     ...(patch.status !== undefined ? { status: patch.status } : {}),
@@ -851,7 +874,11 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
       let nextCharacterSnapshotCount = currentCharacterRow?.snapshotCount ?? undefined;
       let shouldPersistSnapshotMetadata = false;
 
-      if (nextCharacterFirstSnapshotAt === null || nextCharacterSnapshotCount === null || nextCharacterSnapshotCount === undefined) {
+      if (
+        nextCharacterFirstSnapshotAt === null ||
+        nextCharacterSnapshotCount === null ||
+        nextCharacterSnapshotCount === undefined
+      ) {
         const existingSnapshots = await tx.query.snapshots.findMany({
           where: eq(snapshots.characterId, characterId),
         });
@@ -915,10 +942,7 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
 
         const takenAt = fromUnixSeconds(snapshotInput.takenAt);
         let existingSnapshotRow = await tx.query.snapshots.findFirst({
-          where: and(
-            eq(snapshots.characterId, characterId),
-            eq(snapshots.takenAt, takenAt),
-          ),
+          where: and(eq(snapshots.characterId, characterId), eq(snapshots.takenAt, takenAt)),
         });
 
         let latestSnapshotCandidate: LatestSnapshotSummary | null = null;
@@ -953,7 +977,9 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
             });
 
             if (!existingSnapshotRow) {
-              throw new Error("Snapshot insert did not return a row and the conflicting row could not be reloaded.");
+              throw new Error(
+                "Snapshot insert did not return a row and the conflicting row could not be reloaded.",
+              );
             }
           }
         }
@@ -972,7 +998,8 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
             dailySnapshotSource = mergedSnapshot;
           } else {
             latestSnapshotCandidate = toCharacterLatestSnapshot(existingSnapshotFields);
-            latestSnapshotDetailsCandidate = toCharacterLatestSnapshotDetails(existingSnapshotFields);
+            latestSnapshotDetailsCandidate =
+              toCharacterLatestSnapshotDetails(existingSnapshotFields);
             dailySnapshotSource = existingSnapshotFields;
           }
         }
@@ -996,7 +1023,9 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
             ...nextDailySnapshot,
             legacyConvexId: null,
           });
-        } else if (shouldReplaceCharacterDailySnapshot(existingDailySnapshot, dailySnapshotSource)) {
+        } else if (
+          shouldReplaceCharacterDailySnapshot(existingDailySnapshot, dailySnapshotSource)
+        ) {
           await tx
             .update(characterDailySnapshots)
             .set(nextDailySnapshot)
@@ -1004,7 +1033,10 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
         }
 
         if (
-          shouldReplaceCharacterLatestSnapshot(nextCharacterLatestSnapshot, latestSnapshotCandidate) &&
+          shouldReplaceCharacterLatestSnapshot(
+            nextCharacterLatestSnapshot,
+            latestSnapshotCandidate,
+          ) &&
           !isSameCharacterLatestSnapshot(nextCharacterLatestSnapshot, latestSnapshotCandidate)
         ) {
           nextCharacterLatestSnapshot = latestSnapshotCandidate;
@@ -1124,7 +1156,10 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
             .returning();
 
           const insertedDocument = mythicPlusRunRowToDocument(insertedRun!);
-          registerRunLookups(existingRunLookups, insertedDocument, [nextRun.fingerprint, nextFingerprint]);
+          registerRunLookups(existingRunLookups, insertedDocument, [
+            nextRun.fingerprint,
+            nextFingerprint,
+          ]);
           currentCharacterRuns.set(insertedDocument._id!, insertedDocument);
           newMythicPlusRuns += 1;
           continue;
@@ -1135,7 +1170,10 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
         const dbPatch = mythicPlusRunPatchToDbPatch(patch);
 
         if (Object.keys(dbPatch).length > 0 && existingRun._id) {
-          await tx.update(mythicPlusRuns).set(dbPatch).where(eq(mythicPlusRuns.id, existingRun._id));
+          await tx
+            .update(mythicPlusRuns)
+            .set(dbPatch)
+            .where(eq(mythicPlusRuns.id, existingRun._id));
           currentCharacterRuns.set(existingRun._id, {
             ...existingRun,
             ...patch,

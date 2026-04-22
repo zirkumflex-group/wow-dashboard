@@ -227,12 +227,19 @@ end
 --         strength             number
 --         agility              number
 --         intellect            number
+--         critRating           number
 --         critPercent          number
+--         hasteRating          number
 --         hastePercent         number
+--         masteryRating        number
 --         masteryPercent       number
+--         versatilityRating    number
 --         versatilityPercent   number
+--         speedRating          number
 --         speedPercent         number
+--         leechRating          number
 --         leechPercent         number
+--         avoidanceRating      number
 --         avoidancePercent     number
 --   pendingMythicPlusMembers table -- keyed by "Name-Realm"
 --     capturedAt    number
@@ -3242,12 +3249,19 @@ local function BuildPendingSnapshot()
         strength           = strength or 0,
         agility            = agility or 0,
         intellect          = intellect or 0,
+        critRating         = CR_CRIT_MELEE and GetCombatRating(CR_CRIT_MELEE) or 0,
         critPercent        = GetCritChance()    or 0,
+        hasteRating        = CR_HASTE_MELEE and GetCombatRating(CR_HASTE_MELEE) or 0,
         hastePercent       = GetMeleeHaste()    or 0,
+        masteryRating      = CR_MASTERY and GetCombatRating(CR_MASTERY) or 0,
         masteryPercent     = GetMasteryEffect() or 0,
+        versatilityRating  = CR_VERSATILITY_DAMAGE_DONE and GetCombatRating(CR_VERSATILITY_DAMAGE_DONE) or 0,
         versatilityPercent = GetCombatRatingBonus(CR_VERSATILITY_DAMAGE_DONE) or 0,
+        speedRating        = CR_SPEED and GetCombatRating(CR_SPEED) or 0,
         speedPercent       = CR_SPEED and GetCombatRatingBonus(CR_SPEED) or 0,
+        leechRating        = CR_LIFESTEAL and GetCombatRating(CR_LIFESTEAL) or 0,
         leechPercent       = CR_LIFESTEAL and GetCombatRatingBonus(CR_LIFESTEAL) or 0,
+        avoidanceRating    = CR_AVOIDANCE and GetCombatRating(CR_AVOIDANCE) or 0,
         avoidancePercent   = CR_AVOIDANCE and GetCombatRatingBonus(CR_AVOIDANCE) or 0,
     }
 
