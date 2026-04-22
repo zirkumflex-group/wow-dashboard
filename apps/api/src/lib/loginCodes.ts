@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { loginCodeTtlSeconds } from "@wow-dashboard/api-schema";
+import { auth } from "../auth";
 import { insertAuditEvent } from "./audit";
 import { ensureRedis } from "./redis";
 
@@ -25,16 +26,29 @@ function createRandomCode(): string {
   return randomBytes(codeBytes).toString("hex");
 }
 
+async function createDesktopSessionToken(userId: string): Promise<string> {
+  const authContext = await auth.$context;
+  const session = await authContext.internalAdapter.createSession(userId, false, {
+    userAgent: "wow-dashboard-desktop",
+  });
+
+  if (!session) {
+    throw new Error("Failed to create desktop session");
+  }
+
+  return session.token;
+}
+
 export async function createLoginCode(input: {
-  token: string;
   userId: string;
 }): Promise<string> {
   const redis = await ensureRedis();
+  const token = await createDesktopSessionToken(input.userId);
 
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const code = createRandomCode();
     const payload: StoredLoginCode = {
-      token: input.token,
+      token,
       userId: input.userId,
       createdAt: new Date().toISOString(),
     };
@@ -88,7 +102,6 @@ export async function redeemLoginCode(code: string): Promise<string | null> {
 
 export async function completeDesktopLoginAttempt(input: {
   attemptId: string;
-  token: string;
   userId: string;
 }): Promise<void> {
   const attemptId = input.attemptId.trim();
@@ -97,8 +110,9 @@ export async function completeDesktopLoginAttempt(input: {
   }
 
   const redis = await ensureRedis();
+  const token = await createDesktopSessionToken(input.userId);
   const payload: StoredLoginCode = {
-    token: input.token,
+    token,
     userId: input.userId,
     createdAt: new Date().toISOString(),
   };

@@ -285,6 +285,87 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     assert.equal(payload.session.userId, auth.userId);
   });
 
+  it("creates a dedicated desktop session for login-code handoff", async () => {
+    const auth = await seedAuthenticatedUser();
+
+    const codeResponse = await app.request("http://localhost/api/auth/login-code", {
+      method: "POST",
+      headers: authHeaders(auth.token),
+    });
+
+    assert.equal(codeResponse.status, 200);
+    const codePayload = (await codeResponse.json()) as { code: string };
+
+    const redeemResponse = await app.request("http://localhost/api/auth/redeem-code", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ code: codePayload.code }),
+    });
+
+    assert.equal(redeemResponse.status, 200);
+    const redeemPayload = (await redeemResponse.json()) as { token: string };
+
+    assert.notEqual(redeemPayload.token, auth.token);
+
+    const [browserSessionResponse, desktopSessionResponse] = await Promise.all([
+      app.request("http://localhost/api/me", {
+        headers: authHeaders(auth.token),
+      }),
+      app.request("http://localhost/api/me", {
+        headers: authHeaders(redeemPayload.token),
+      }),
+    ]);
+
+    assert.equal(browserSessionResponse.status, 200);
+    assert.equal(desktopSessionResponse.status, 200);
+  });
+
+  it("creates a dedicated desktop session for the browser callback handoff", async () => {
+    const auth = await seedAuthenticatedUser();
+    const attemptId = randomUUID();
+
+    const completeResponse = await app.request("http://localhost/api/auth/desktop-login/complete", {
+      method: "POST",
+      headers: {
+        ...authHeaders(auth.token),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ attemptId }),
+    });
+
+    assert.equal(completeResponse.status, 200);
+
+    const desktopLoginResponse = await app.request(
+      `http://localhost/api/auth/desktop-login?attemptId=${attemptId}`,
+    );
+
+    assert.equal(desktopLoginResponse.status, 200);
+    const desktopLoginPayload = (await desktopLoginResponse.json()) as
+      | { status: "pending" }
+      | { status: "complete"; token: string };
+
+    assert.equal(desktopLoginPayload.status, "complete");
+    if (desktopLoginPayload.status !== "complete") {
+      throw new Error("Expected desktop login attempt to complete");
+    }
+
+    assert.notEqual(desktopLoginPayload.token, auth.token);
+
+    const [browserSessionResponse, desktopSessionResponse] = await Promise.all([
+      app.request("http://localhost/api/me", {
+        headers: authHeaders(auth.token),
+      }),
+      app.request("http://localhost/api/me", {
+        headers: authHeaders(desktopLoginPayload.token),
+      }),
+    ]);
+
+    assert.equal(browserSessionResponse.status, 200);
+    assert.equal(desktopSessionResponse.status, 200);
+  });
+
   it("returns latest pinned character snapshots in request order", async () => {
     const auth = await seedAuthenticatedUser();
     const playerId = await seedPlayer(auth.userId);

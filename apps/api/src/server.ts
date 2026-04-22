@@ -385,15 +385,13 @@ app.get("/dev/auth", (c) => {
 });
 
 app.post("/api/auth/login-code", async (c) => {
-  const session = c.get("session");
   const user = c.get("user");
 
-  if (!session || !user) {
+  if (!user) {
     return c.json({ error: "Unauthorized" }, 401);
   }
 
   const code = await createLoginCode({
-    token: session.token,
     userId: user.id,
   });
 
@@ -404,10 +402,9 @@ app.post("/api/auth/login-code", async (c) => {
 });
 
 app.post("/api/auth/desktop-login/complete", async (c) => {
-  const session = c.get("session");
   const user = c.get("user");
 
-  if (!session || !user) {
+  if (!user) {
     return c.json({ error: "Unauthorized" }, 401);
   }
 
@@ -425,7 +422,6 @@ app.post("/api/auth/desktop-login/complete", async (c) => {
 
   await completeDesktopLoginAttempt({
     attemptId,
-    token: session.token,
     userId: user.id,
   });
 
