@@ -1,5 +1,6 @@
-import { desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import {
+  account,
   characters,
   players,
   snapshots,
@@ -13,6 +14,9 @@ import {
   type OwnedKeystone,
 } from "@wow-dashboard/db";
 import { db } from "../db";
+import { insertAuditEvent } from "../lib/audit";
+import { enqueueSyncCharactersJob } from "../lib/queue";
+import { limitBattleNetSync } from "../lib/rateLimit";
 
 type CharacterRecord = typeof characters.$inferSelect;
 type SnapshotRecord = typeof snapshots.$inferSelect;
@@ -47,6 +51,46 @@ type SerializedPinnedCharacter = SerializedCharacter & {
   } | null;
 };
 
+export type SerializedDashboardCharacter = SerializedCharacter & {
+  snapshot: LatestSnapshotSummary | null;
+};
+
+export type ScoreboardCharacterEntry = {
+  characterId: string;
+  playerId: string;
+  name: string;
+  realm: string;
+  region: CharacterRegion;
+  class: string;
+  race: string;
+  faction: CharacterFaction;
+  mythicPlusScore: number;
+  itemLevel: number;
+  gold: number;
+  playtimeSeconds: number;
+  playtimeThisLevelSeconds?: number;
+  ownedKeystone: OwnedKeystone | null;
+  spec: LatestSnapshotSummary["spec"];
+  role: LatestSnapshotSummary["role"];
+  level: number;
+  takenAt: number;
+};
+
+export type PlayerScoreboardEntry = {
+  playerId: string;
+  battleTag: string;
+  totalPlaytimeSeconds: number;
+  totalGold: number;
+  highestMythicPlusScore: number;
+  highestMythicPlusCharacterName: string | null;
+  averageItemLevel: number;
+  characterCount: number;
+  bestKeystoneLevel: number | null;
+  bestKeystoneMapChallengeModeID: number | null;
+  bestKeystoneMapName: string | null;
+  latestSnapshotAt: number | null;
+};
+
 export type PlayerCharactersResponse = {
   player: {
     playerId: string;
@@ -68,6 +112,28 @@ export type PlayerCharactersResponse = {
     latestSnapshotAt: number | null;
   };
   characters: SerializedCharacterWithSnapshot[];
+};
+
+export type CharacterBoosterExportEntry = {
+  _id: string;
+  playerId: string;
+  name: string;
+  realm: string;
+  region: CharacterRegion;
+  class: string;
+  faction: CharacterFaction;
+  isBooster: boolean;
+  nonTradeableSlots: NonTradeableSlot[];
+  ownerBattleTag: string | null;
+  ownerDiscordUserId: string | null;
+  snapshot: {
+    spec: LatestSnapshotSummary["spec"];
+    role: LatestSnapshotSummary["role"];
+    mythicPlusScore: number;
+    itemLevel: number;
+    takenAt: number;
+    ownedKeystone: OwnedKeystone | null;
+  } | null;
 };
 
 function toUnixSeconds(value: Date | number | null | undefined): number | null {
@@ -99,6 +165,18 @@ function normalizeOwnedKeystone(
       ? { mapName: ownedKeystone.mapName }
       : {}),
   };
+}
+
+function getRoleSortRank(role: LatestSnapshotSummary["role"] | null | undefined) {
+  if (role === "tank") return 0;
+  if (role === "dps") return 1;
+  return 2;
+}
+
+function normalizeNonTradeableSlots(
+  nonTradeableSlots: readonly NonTradeableSlot[],
+): NonTradeableSlot[] {
+  return Array.from(new Set(nonTradeableSlots));
 }
 
 function serializeSnapshotSummary(
@@ -209,6 +287,48 @@ async function readCharactersForIds(characterIds: string[]): Promise<CharacterRe
     .where(inArray(characters.id, characterIds));
 }
 
+async function readCharactersForPlayerId(playerId: string): Promise<CharacterRecord[]> {
+  return await db
+    .select()
+    .from(characters)
+    .where(eq(characters.playerId, playerId));
+}
+
+async function readAllCharacters(): Promise<CharacterRecord[]> {
+  return await db.select().from(characters);
+}
+
+async function attachLatestSnapshots(
+  characterRows: CharacterRecord[],
+): Promise<SerializedDashboardCharacter[]> {
+  return await Promise.all(
+    characterRows.map(async (character) => ({
+      ...serializeCharacter(character),
+      snapshot: await readLatestSnapshotSummaryForCharacter(character),
+    })),
+  );
+}
+
+async function readPlayerIdForUser(userId: string): Promise<string | null> {
+  const player = await db.query.players.findFirst({
+    where: eq(players.userId, userId),
+  });
+
+  return player?.id ?? null;
+}
+
+async function readBattleNetAccountForUser(userId: string) {
+  return await db.query.account.findFirst({
+    where: and(eq(account.userId, userId), eq(account.providerId, "battlenet")),
+  });
+}
+
+async function readCharacterById(characterId: string) {
+  return await db.query.characters.findFirst({
+    where: eq(characters.id, characterId),
+  });
+}
+
 export async function readCharactersWithLatestSnapshot(
   characterIds: string[],
 ): Promise<SerializedPinnedCharacter[]> {
@@ -255,16 +375,8 @@ export async function readPlayerCharacters(
     return null;
   }
 
-  const characterRows = await db
-    .select()
-    .from(characters)
-    .where(eq(characters.playerId, playerId));
-
-  const charactersWithSnapshots = await Promise.all(
-    characterRows.map(async (character) => ({
-      ...serializeCharacter(character),
-      snapshot: await readLatestSnapshotSummaryForCharacter(character),
-    })),
+  const charactersWithSnapshots = await attachLatestSnapshots(
+    await readCharactersForPlayerId(playerId),
   );
 
   const snappedCharacters = charactersWithSnapshots.filter(
@@ -353,4 +465,301 @@ export async function readPlayerCharacters(
     },
     characters: sortedCharacters,
   };
+}
+
+export async function readMyCharactersWithSnapshot(
+  userId: string,
+): Promise<SerializedDashboardCharacter[] | null> {
+  const playerId = await readPlayerIdForUser(userId);
+  if (!playerId) {
+    return null;
+  }
+
+  return await attachLatestSnapshots(await readCharactersForPlayerId(playerId));
+}
+
+export async function readScoreboardCharacters(): Promise<ScoreboardCharacterEntry[]> {
+  const charactersWithSnapshots = await attachLatestSnapshots(await readAllCharacters());
+
+  return charactersWithSnapshots
+    .flatMap((character) => {
+      const snapshot = character.snapshot;
+      if (!snapshot) {
+        return [];
+      }
+
+      return [
+        {
+          characterId: character._id,
+          playerId: character.playerId,
+          name: character.name,
+          realm: character.realm,
+          region: character.region,
+          class: character.class,
+          race: character.race,
+          faction: character.faction,
+          mythicPlusScore: snapshot.mythicPlusScore,
+          itemLevel: snapshot.itemLevel,
+          gold: snapshot.gold,
+          playtimeSeconds: snapshot.playtimeSeconds,
+          ...(snapshot.playtimeThisLevelSeconds !== undefined
+            ? {
+                playtimeThisLevelSeconds: snapshot.playtimeThisLevelSeconds,
+              }
+            : {}),
+          ownedKeystone: snapshot.ownedKeystone ?? null,
+          spec: snapshot.spec,
+          role: snapshot.role,
+          level: snapshot.level,
+          takenAt: snapshot.takenAt,
+        },
+      ];
+    })
+    .sort(
+      (left, right) =>
+        right.mythicPlusScore - left.mythicPlusScore ||
+        right.itemLevel - left.itemLevel,
+    );
+}
+
+export async function readPlayerScoreboard(): Promise<PlayerScoreboardEntry[]> {
+  const charactersWithSnapshots = await attachLatestSnapshots(await readAllCharacters());
+  const snappedCharacters = charactersWithSnapshots.filter(
+    (
+      character,
+    ): character is SerializedDashboardCharacter & { snapshot: LatestSnapshotSummary } =>
+      character.snapshot !== null,
+  );
+
+  const playerIds = [...new Set(snappedCharacters.map((character) => character.playerId))];
+  if (playerIds.length === 0) {
+    return [];
+  }
+
+  const playerRows = await db
+    .select()
+    .from(players)
+    .where(inArray(players.id, playerIds));
+  const playerBattleTagMap = new Map(
+    playerRows.map((player) => [player.id, player.battleTag]),
+  );
+
+  const playerMap = new Map<string, Omit<PlayerScoreboardEntry, "averageItemLevel"> & {
+    totalItemLevel: number;
+  }>();
+
+  for (const character of snappedCharacters) {
+    const snapshot = character.snapshot;
+    const existing = playerMap.get(character.playerId);
+
+    if (existing) {
+      existing.totalPlaytimeSeconds += snapshot.playtimeSeconds;
+      existing.totalGold += snapshot.gold;
+      existing.totalItemLevel += snapshot.itemLevel;
+      existing.characterCount += 1;
+
+      if (snapshot.mythicPlusScore > existing.highestMythicPlusScore) {
+        existing.highestMythicPlusScore = snapshot.mythicPlusScore;
+        existing.highestMythicPlusCharacterName = character.name;
+      }
+
+      if (
+        snapshot.ownedKeystone &&
+        (existing.bestKeystoneLevel === null ||
+          snapshot.ownedKeystone.level > existing.bestKeystoneLevel)
+      ) {
+        existing.bestKeystoneLevel = snapshot.ownedKeystone.level;
+        existing.bestKeystoneMapChallengeModeID =
+          snapshot.ownedKeystone.mapChallengeModeID ?? null;
+        existing.bestKeystoneMapName = snapshot.ownedKeystone.mapName ?? null;
+      }
+
+      if (existing.latestSnapshotAt === null || snapshot.takenAt > existing.latestSnapshotAt) {
+        existing.latestSnapshotAt = snapshot.takenAt;
+      }
+
+      continue;
+    }
+
+    playerMap.set(character.playerId, {
+      playerId: character.playerId,
+      battleTag: playerBattleTagMap.get(character.playerId) ?? "",
+      totalPlaytimeSeconds: snapshot.playtimeSeconds,
+      totalGold: snapshot.gold,
+      highestMythicPlusScore: snapshot.mythicPlusScore,
+      highestMythicPlusCharacterName: character.name,
+      totalItemLevel: snapshot.itemLevel,
+      characterCount: 1,
+      bestKeystoneLevel: snapshot.ownedKeystone?.level ?? null,
+      bestKeystoneMapChallengeModeID: snapshot.ownedKeystone?.mapChallengeModeID ?? null,
+      bestKeystoneMapName: snapshot.ownedKeystone?.mapName ?? null,
+      latestSnapshotAt: snapshot.takenAt,
+    });
+  }
+
+  return Array.from(playerMap.values())
+    .map((player) => ({
+      playerId: player.playerId,
+      battleTag: player.battleTag,
+      totalPlaytimeSeconds: player.totalPlaytimeSeconds,
+      totalGold: player.totalGold,
+      highestMythicPlusScore: player.highestMythicPlusScore,
+      highestMythicPlusCharacterName: player.highestMythicPlusCharacterName,
+      averageItemLevel:
+        player.characterCount > 0 ? player.totalItemLevel / player.characterCount : 0,
+      characterCount: player.characterCount,
+      bestKeystoneLevel: player.bestKeystoneLevel,
+      bestKeystoneMapChallengeModeID: player.bestKeystoneMapChallengeModeID,
+      bestKeystoneMapName: player.bestKeystoneMapName,
+      latestSnapshotAt: player.latestSnapshotAt,
+    }))
+    .sort(
+      (left, right) =>
+        right.highestMythicPlusScore - left.highestMythicPlusScore ||
+        right.totalPlaytimeSeconds - left.totalPlaytimeSeconds ||
+        right.totalGold - left.totalGold,
+    );
+}
+
+export async function requestCharacterResync(
+  userId: string,
+): Promise<{ ok: boolean; nextAllowedAt: number | null }> {
+  const rateLimit = await limitBattleNetSync(userId);
+  if (!rateLimit.ok) {
+    await insertAuditEvent("battlenet.resync.rate_limited", {
+      userId,
+      metadata: {
+        retryAfterMs: rateLimit.retryAfterMs,
+      },
+    });
+
+    return {
+      ok: false,
+      nextAllowedAt: Date.now() + rateLimit.retryAfterMs,
+    };
+  }
+
+  const battleNetAccount = await readBattleNetAccountForUser(userId);
+  if (!battleNetAccount?.accessToken) {
+    return {
+      ok: false,
+      nextAllowedAt: null,
+    };
+  }
+
+  await enqueueSyncCharactersJob({
+    userId,
+    accessToken: battleNetAccount.accessToken,
+  });
+
+  await insertAuditEvent("battlenet.resync", {
+    userId,
+  });
+
+  return {
+    ok: true,
+    nextAllowedAt: null,
+  };
+}
+
+export async function updateCharacterBoosterStatus(
+  characterId: string,
+  isBooster: boolean,
+): Promise<{ characterId: string; isBooster: boolean } | null> {
+  const character = await readCharacterById(characterId);
+  if (!character) {
+    return null;
+  }
+
+  await db
+    .update(characters)
+    .set({
+      isBooster,
+    })
+    .where(eq(characters.id, characterId));
+
+  return {
+    characterId,
+    isBooster,
+  };
+}
+
+export async function updateCharacterNonTradeableSlots(
+  characterId: string,
+  nonTradeableSlots: readonly NonTradeableSlot[],
+): Promise<{ characterId: string; nonTradeableSlots: NonTradeableSlot[] } | null> {
+  const character = await readCharacterById(characterId);
+  if (!character) {
+    return null;
+  }
+
+  const normalizedSlots = normalizeNonTradeableSlots(nonTradeableSlots);
+
+  await db
+    .update(characters)
+    .set({
+      nonTradeableSlots: normalizedSlots.length > 0 ? normalizedSlots : null,
+    })
+    .where(eq(characters.id, characterId));
+
+  return {
+    characterId,
+    nonTradeableSlots: normalizedSlots,
+  };
+}
+
+export async function readBoosterCharactersForExport(): Promise<CharacterBoosterExportEntry[]> {
+  const boosterCharacters = await db.query.characters.findMany({
+    where: eq(characters.isBooster, true),
+  });
+
+  const charactersWithSnapshots = await attachLatestSnapshots(boosterCharacters);
+  const playerIds = [...new Set(boosterCharacters.map((character) => character.playerId))];
+  const playerRows = playerIds.length
+    ? await db.select().from(players).where(inArray(players.id, playerIds))
+    : [];
+  const ownerById = new Map(playerRows.map((player) => [player.id, player]));
+
+  return charactersWithSnapshots
+    .map((character) => {
+      const owner = ownerById.get(character.playerId);
+      const snapshot = character.snapshot;
+
+      return {
+        _id: character._id,
+        playerId: character.playerId,
+        name: character.name,
+        realm: character.realm,
+        region: character.region,
+        class: character.class,
+        faction: character.faction,
+        isBooster: character.isBooster ?? false,
+        nonTradeableSlots: character.nonTradeableSlots ?? [],
+        ownerBattleTag: owner?.battleTag ?? null,
+        ownerDiscordUserId: owner?.discordUserId ?? null,
+        snapshot: snapshot
+          ? {
+              spec: snapshot.spec,
+              role: snapshot.role,
+              mythicPlusScore: snapshot.mythicPlusScore,
+              itemLevel: snapshot.itemLevel,
+              takenAt: snapshot.takenAt,
+              ownedKeystone: snapshot.ownedKeystone ?? null,
+            }
+          : null,
+      };
+    })
+    .sort((left, right) => {
+      if (left.snapshot && !right.snapshot) return -1;
+      if (!left.snapshot && right.snapshot) return 1;
+
+      const roleDiff = getRoleSortRank(left.snapshot?.role) - getRoleSortRank(right.snapshot?.role);
+      if (roleDiff !== 0) return roleDiff;
+
+      const scoreDiff =
+        (right.snapshot?.mythicPlusScore ?? -1) - (left.snapshot?.mythicPlusScore ?? -1);
+      if (scoreDiff !== 0) return scoreDiff;
+
+      return left.name.localeCompare(right.name);
+    });
 }

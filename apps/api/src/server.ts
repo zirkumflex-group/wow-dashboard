@@ -3,9 +3,13 @@ import { eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import {
+  addonIngestBodySchema,
+  characterRouteParamsSchema,
   charactersLatestQuerySchema,
   loginCodeTtlSeconds,
   playerRouteParamsSchema,
+  updateCharacterBoosterBodySchema,
+  updateCharacterSlotsBodySchema,
   updatePlayerDiscordBodySchema,
 } from "@wow-dashboard/api-schema";
 import { players } from "@wow-dashboard/db";
@@ -13,9 +17,17 @@ import { env } from "@wow-dashboard/env/server";
 import { auth, type ApiAuthSession, type ApiAuthUser } from "./auth";
 import { db } from "./db";
 import { createLoginCode, redeemLoginCode } from "./lib/loginCodes";
+import { AddonIngestServiceError, ingestAddonData } from "./services/addonIngest";
 import {
+  readBoosterCharactersForExport,
   readCharactersWithLatestSnapshot,
+  readMyCharactersWithSnapshot,
+  readPlayerScoreboard,
   readPlayerCharacters,
+  readScoreboardCharacters,
+  requestCharacterResync,
+  updateCharacterBoosterStatus,
+  updateCharacterNonTradeableSlots,
 } from "./services/characters";
 import { updatePlayerDiscordUserId } from "./services/players";
 
@@ -439,6 +451,97 @@ app.get("/api/characters/latest", async (c) => {
   return c.json(await readCharactersWithLatestSnapshot(parsedQuery.data.characterId));
 });
 
+app.get("/api/characters", async (c) => {
+  const session = c.get("session");
+  const user = c.get("user");
+
+  if (!session || !user) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  return c.json(await readMyCharactersWithSnapshot(user.id));
+});
+
+app.get("/api/characters/scoreboard", async (c) => {
+  const session = c.get("session");
+  const user = c.get("user");
+
+  if (!session || !user) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  return c.json(await readScoreboardCharacters());
+});
+
+app.get("/api/scoreboard/players", async (c) => {
+  const session = c.get("session");
+  const user = c.get("user");
+
+  if (!session || !user) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  return c.json(await readPlayerScoreboard());
+});
+
+app.get("/api/characters/boosters/export", async (c) => {
+  const session = c.get("session");
+  const user = c.get("user");
+
+  if (!session || !user) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  return c.json(await readBoosterCharactersForExport());
+});
+
+app.post("/api/characters/resync", async (c) => {
+  const session = c.get("session");
+  const user = c.get("user");
+
+  if (!session || !user) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  return c.json(await requestCharacterResync(user.id));
+});
+
+app.post("/api/addon/ingest", async (c) => {
+  const session = c.get("session");
+  const user = c.get("user");
+
+  if (!session || !user) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "Invalid request body" }, 400);
+  }
+
+  const parsedBody = addonIngestBodySchema.safeParse(body);
+  if (!parsedBody.success) {
+    return c.json({ error: formatValidationError(parsedBody.error.issues) }, 400);
+  }
+
+  try {
+    return c.json(await ingestAddonData(user.id, parsedBody.data.characters));
+  } catch (error) {
+    if (error instanceof AddonIngestServiceError) {
+      return c.json({ error: error.message }, { status: error.status as 400 | 401 | 404 | 409 | 429 });
+    }
+
+    return c.json(
+      {
+        error: error instanceof Error ? error.message : String(error),
+      },
+      500,
+    );
+  }
+});
+
 app.get("/api/players/:id/characters", async (c) => {
   const session = c.get("session");
   const user = c.get("user");
@@ -499,6 +602,80 @@ app.patch("/api/players/:id/discord", async (c) => {
       400,
     );
   }
+});
+
+app.patch("/api/characters/:id/booster", async (c) => {
+  const session = c.get("session");
+  const user = c.get("user");
+
+  if (!session || !user) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const parsedParams = characterRouteParamsSchema.safeParse(c.req.param());
+  if (!parsedParams.success) {
+    return c.json({ error: formatValidationError(parsedParams.error.issues) }, 400);
+  }
+
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "Invalid request body" }, 400);
+  }
+
+  const parsedBody = updateCharacterBoosterBodySchema.safeParse(body);
+  if (!parsedBody.success) {
+    return c.json({ error: formatValidationError(parsedBody.error.issues) }, 400);
+  }
+
+  const result = await updateCharacterBoosterStatus(
+    parsedParams.data.id,
+    parsedBody.data.isBooster,
+  );
+
+  if (!result) {
+    return c.json({ error: "Character not found." }, 404);
+  }
+
+  return c.json(result);
+});
+
+app.patch("/api/characters/:id/slots", async (c) => {
+  const session = c.get("session");
+  const user = c.get("user");
+
+  if (!session || !user) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const parsedParams = characterRouteParamsSchema.safeParse(c.req.param());
+  if (!parsedParams.success) {
+    return c.json({ error: formatValidationError(parsedParams.error.issues) }, 400);
+  }
+
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "Invalid request body" }, 400);
+  }
+
+  const parsedBody = updateCharacterSlotsBodySchema.safeParse(body);
+  if (!parsedBody.success) {
+    return c.json({ error: formatValidationError(parsedBody.error.issues) }, 400);
+  }
+
+  const result = await updateCharacterNonTradeableSlots(
+    parsedParams.data.id,
+    parsedBody.data.nonTradeableSlots,
+  );
+
+  if (!result) {
+    return c.json({ error: "Character not found." }, 404);
+  }
+
+  return c.json(result);
 });
 
 function getPort() {
