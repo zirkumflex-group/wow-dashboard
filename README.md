@@ -1,93 +1,139 @@
 # wow-dashboard
 
-This project was created with [Better-T-Stack](https://github.com/AmanVarshney01/create-better-t-stack), a modern TypeScript stack that combines React, TanStack Start, Convex, and more.
+WoW Dashboard is a self-hosted WoW character dashboard with:
 
-## Features
+- `apps/web` for the browser UI
+- `apps/app` for the Electron desktop client
+- `apps/addon` for snapshot generation inside WoW
+- `apps/api` + `apps/worker` for the self-hosted backend
+- Postgres + Redis for persistence, jobs, and rate limiting
 
-- **TypeScript** - For type safety and improved developer experience
-- **TanStack Start** - SSR framework with TanStack Router
-- **TailwindCSS** - Utility-first CSS for rapid UI development
-- **Shared UI package** - shadcn/ui primitives live in `packages/ui`
-- **Convex** - Reactive backend-as-a-service platform
-- **Authentication** - Better-Auth
-- **Oxlint** - Oxlint + Oxfmt (linting & formatting)
-- **Turborepo** - Optimized monorepo build system
+The active backend path is now the self-hosted stack. `packages/backend` still exists as legacy Convex migration code, but it is no longer the primary runtime path for staging.
 
-## Getting Started
+## Current Status
 
-First, install the dependencies:
+- Staging stack is running at `https://wow-staging.zirkumflex.io`
+- Battle.net auth works on staging
+- The production Convex export has been imported into the staging Postgres database
+- The remaining work is mainly desktop/addon validation, deploy hardening, and final cutover prep
+
+## Repository Layout
+
+```text
+wow-dashboard/
+├── apps/
+│   ├── api/      # Hono API + Better Auth + import tooling
+│   ├── app/      # Electron desktop app
+│   ├── web/      # TanStack Start web app
+│   ├── worker/   # pg-boss worker
+│   └── addon/    # WoW addon
+├── packages/
+│   ├── api-client/
+│   ├── api-schema/
+│   ├── db/
+│   ├── env/
+│   ├── ui/
+│   └── backend/  # legacy Convex migration code
+└── deploy/
+    ├── docker-compose.dev.yml
+    ├── docker-compose.prod.yml
+    ├── Dockerfile.api
+    ├── Dockerfile.worker
+    ├── Dockerfile.web
+    └── Caddyfile
+```
+
+## Local Development
+
+Install dependencies:
 
 ```bash
 pnpm install
 ```
 
-## Convex Setup
-
-This project uses Convex as a backend. You'll need to set up Convex before running the app:
+Create local env from the repo root:
 
 ```bash
-pnpm run dev:setup
+cp .env.example .env.local
 ```
 
-Follow the prompts to create a new Convex project and connect it to your application.
-
-Copy environment variables from `packages/backend/.env.local` to `apps/*/.env`.
-
-Then, run the development server:
+Start local Postgres + Redis:
 
 ```bash
-pnpm run dev
+docker compose -f deploy/docker-compose.dev.yml up -d postgres redis
 ```
 
-Open [http://localhost:3001](http://localhost:3001) in your browser to see the web application.
-Your app will connect to the Convex cloud backend automatically.
-
-## UI Customization
-
-React web apps in this stack share shadcn/ui primitives through `packages/ui`.
-
-- Change design tokens and global styles in `packages/ui/src/styles/globals.css`
-- Update shared primitives in `packages/ui/src/components/*`
-- Adjust shadcn aliases or style config in `packages/ui/components.json` and `apps/web/components.json`
-
-### Add more shared components
-
-Run this from the project root to add more primitives to the shared UI package:
+Apply migrations:
 
 ```bash
-npx shadcn@latest add accordion dialog popover sheet table -c packages/ui
+pnpm -F @wow-dashboard/db migrate
 ```
 
-Import shared components like this:
+Run the core services:
 
-```tsx
-import { Button } from "@wow-dashboard/ui/components/button";
+```bash
+pnpm -F @wow-dashboard/api dev
+pnpm -F @wow-dashboard/worker dev
+pnpm -F web dev
 ```
 
-### Add app-specific blocks
+Optional desktop app dev:
 
-If you want to add app-specific blocks instead of shared primitives, run the shadcn CLI from `apps/web`.
-
-## Git Hooks and Formatting
-
-- Format and lint fix: `pnpm run check`
-
-## Project Structure
-
-```
-wow-dashboard/
-├── apps/
-│   ├── web/         # Frontend application (React + TanStack Start)
-├── packages/
-│   ├── ui/          # Shared shadcn/ui components and styles
-│   ├── backend/     # Convex backend functions and schema
+```bash
+pnpm -F app dev
 ```
 
-## Available Scripts
+Useful local URLs:
 
-- `pnpm run dev`: Start all applications in development mode
-- `pnpm run build`: Build all applications
-- `pnpm run dev:web`: Start only the web application
-- `pnpm run dev:setup`: Setup and configure your Convex project
-- `pnpm run check-types`: Check TypeScript types across all apps
-- `pnpm run check`: Run Oxlint and Oxfmt
+- Web: `http://localhost:3001`
+- API: `http://localhost:3000`
+- Auth probe: `http://localhost:3000/dev/auth`
+
+## Electron Against Staging
+
+For a staging desktop smoke test, run the Electron app with staging env overrides:
+
+```bash
+SITE_URL=https://wow-staging.zirkumflex.io \
+API_URL=https://wow-staging.zirkumflex.io/api \
+BETTER_AUTH_URL=https://wow-staging.zirkumflex.io \
+VITE_SITE_URL=https://wow-staging.zirkumflex.io \
+VITE_API_URL=https://wow-staging.zirkumflex.io/api \
+pnpm -F app dev
+```
+
+## VPS / Staging Deploy
+
+Use the deploy guide in [deploy/README.md](/home/yungtristxn/VibeCoding/wow-dashboard/deploy/README.md:1).
+
+The current production-shaped stack is:
+
+- `caddy`
+- `web`
+- `api`
+- `worker`
+- `postgres`
+- `redis`
+
+Bring it up on the VPS with:
+
+```bash
+docker compose --profile edge --env-file deploy/.env.staging -f deploy/docker-compose.prod.yml up -d --build
+```
+
+## Convex Import
+
+The one-shot importer is bundled into the API image and can be rerun safely:
+
+```bash
+docker compose --profile edge --env-file deploy/.env.staging -f deploy/docker-compose.prod.yml exec -T api \
+  node apps/api/dist/importConvexExport.cjs \
+  /tmp/<convex-export>.zip \
+  --apply
+```
+
+## Checks
+
+- Lint + format: `pnpm check`
+- Typecheck: `pnpm check-types`
+- API typecheck only: `pnpm -F @wow-dashboard/api check-types`
