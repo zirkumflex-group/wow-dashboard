@@ -201,6 +201,53 @@ async function seedSnapshot(input: {
   });
 }
 
+async function seedMythicPlusRun(input: {
+  characterId: string;
+  observedAt: string;
+  level: number;
+  mapChallengeModeId?: number;
+  mapName?: string;
+  runScore?: number;
+  durationMs?: number;
+  completedAt?: string;
+  startDate?: string;
+  status?: "active" | "completed" | "abandoned";
+  fingerprint?: string;
+}) {
+  await db.insert(mythicPlusRuns).values({
+    id: randomUUID(),
+    characterId: input.characterId,
+    fingerprint: input.fingerprint ?? `fp-${randomUUID()}`,
+    attemptId: null,
+    canonicalKey: null,
+    observedAt: new Date(input.observedAt),
+    seasonId: 14,
+    mapChallengeModeId: input.mapChallengeModeId ?? null,
+    mapName: input.mapName ?? null,
+    level: input.level,
+    status: input.status ?? "completed",
+    completed: input.status === "abandoned" ? false : true,
+    completedInTime: true,
+    durationMs: input.durationMs ?? 1_800_000,
+    runScore: input.runScore ?? 250,
+    startDate: input.startDate ? new Date(input.startDate) : null,
+    completedAt: input.completedAt ? new Date(input.completedAt) : null,
+    endedAt: input.completedAt ? new Date(input.completedAt) : null,
+    abandonedAt: null,
+    abandonReason: null,
+    thisWeek: false,
+    members: [
+      {
+        name: "Runner",
+        realm: "Tarren Mill",
+        classTag: "paladin",
+        role: "tank",
+      },
+    ],
+    legacyConvexId: null,
+  });
+}
+
 function authHeaders(token: string): HeadersInit {
   return {
     authorization: `Bearer ${token}`,
@@ -453,6 +500,273 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
       role: "healer",
       spec: "Holy",
     });
+  });
+
+  it("returns a character page payload with header, core timeline, and mythic plus data", async () => {
+    const auth = await seedAuthenticatedUser();
+    const playerId = await seedPlayer(auth.userId, "Page#1111");
+    const characterId = await seedCharacter({
+      playerId,
+      name: "PageHero",
+      realm: "Tarren Mill",
+      className: "Paladin",
+      race: "Human",
+      faction: "alliance",
+    });
+
+    await seedSnapshot({
+      characterId,
+      takenAt: "2026-04-21T12:00:00.000Z",
+      level: 80,
+      spec: "Protection",
+      role: "tank",
+      itemLevel: 730.5,
+      gold: 4200,
+      playtimeSeconds: 11_000,
+      mythicPlusScore: 3250,
+      ownedKeystone: {
+        level: 17,
+        mapChallengeModeID: 375,
+        mapName: "Mists of Tirna Scithe",
+      },
+    });
+
+    const response = await app.request(
+      `http://localhost/api/characters/${characterId}/page?timeFrame=all&includeStats=false`,
+      {
+        headers: authHeaders(auth.token),
+      },
+    );
+
+    assert.equal(response.status, 200);
+    const payload = (await response.json()) as {
+      header: {
+        character: { _id: string; name: string; nonTradeableSlots: string[] | null };
+        owner: { playerId: string; battleTag: string } | null;
+        latestSnapshot: { itemLevel: number; mythicPlusScore: number } | null;
+        firstSnapshotAt: number | null;
+      };
+      coreTimeline: { snapshots: Array<{ takenAt: number; itemLevel: number; currencies: object }> };
+      statsTimeline: null | { snapshots: Array<unknown> };
+      mythicPlus: { totalRunCount: number; runs: Array<unknown>; summary: { currentScore: number | null } };
+    } | null;
+
+    assert.ok(payload);
+    assert.equal(payload.header.character._id, characterId);
+    assert.equal(payload.header.character.name, "PageHero");
+    assert.equal(payload.header.owner?.playerId, playerId);
+    assert.equal(payload.header.owner?.battleTag, "Page#1111");
+    assert.equal(payload.header.latestSnapshot?.itemLevel, 730.5);
+    assert.equal(payload.header.latestSnapshot?.mythicPlusScore, 3250);
+    assert.equal(payload.header.firstSnapshotAt, 1_776_772_800);
+    assert.equal(payload.coreTimeline.snapshots.length, 1);
+    assert.equal(payload.coreTimeline.snapshots[0]?.takenAt, 1_776_772_800);
+    assert.equal(payload.coreTimeline.snapshots[0]?.itemLevel, 730.5);
+    assert.equal(payload.statsTimeline, null);
+    assert.equal(payload.mythicPlus.totalRunCount, 0);
+    assert.equal(payload.mythicPlus.summary.currentScore, 3250);
+  });
+
+  it("returns a stats detail timeline for a character", async () => {
+    const auth = await seedAuthenticatedUser();
+    const playerId = await seedPlayer(auth.userId, "Stats#1111");
+    const characterId = await seedCharacter({
+      playerId,
+      name: "StatHero",
+      realm: "Tarren Mill",
+      className: "Paladin",
+      race: "Human",
+      faction: "alliance",
+    });
+
+    await seedSnapshot({
+      characterId,
+      takenAt: "2026-04-20T12:00:00.000Z",
+      level: 80,
+      spec: "Protection",
+      role: "tank",
+      itemLevel: 725,
+      gold: 1000,
+      playtimeSeconds: 8000,
+      mythicPlusScore: 3100,
+    });
+    await seedSnapshot({
+      characterId,
+      takenAt: "2026-04-21T12:00:00.000Z",
+      level: 80,
+      spec: "Protection",
+      role: "tank",
+      itemLevel: 729,
+      gold: 1200,
+      playtimeSeconds: 8600,
+      mythicPlusScore: 3180,
+    });
+
+    const response = await app.request(
+      `http://localhost/api/characters/${characterId}/detail-timeline?timeFrame=all&metric=stats`,
+      {
+        headers: authHeaders(auth.token),
+      },
+    );
+
+    assert.equal(response.status, 200);
+    const payload = (await response.json()) as {
+      metric: "stats";
+      snapshots: Array<{ takenAt: number; stats: { stamina: number; versatilityPercent: number } }>;
+    } | null;
+
+    assert.ok(payload);
+    assert.equal(payload.metric, "stats");
+    assert.equal(payload.snapshots.length, 2);
+    assert.equal(payload.snapshots[0]?.takenAt, 1_776_686_400);
+    assert.equal(payload.snapshots[1]?.takenAt, 1_776_772_800);
+  });
+
+  it("returns snapshot timeline data for compare charts", async () => {
+    const auth = await seedAuthenticatedUser();
+    const playerId = await seedPlayer(auth.userId, "Compare#1111");
+    const characterId = await seedCharacter({
+      playerId,
+      name: "CompareHero",
+      realm: "Tarren Mill",
+      className: "Paladin",
+      race: "Human",
+      faction: "alliance",
+    });
+
+    await seedSnapshot({
+      characterId,
+      takenAt: "2026-04-18T12:00:00.000Z",
+      level: 80,
+      spec: "Protection",
+      role: "tank",
+      itemLevel: 720,
+      gold: 900,
+      playtimeSeconds: 7000,
+      mythicPlusScore: 3000,
+      ownedKeystone: {
+        level: 14,
+        mapChallengeModeID: 244,
+        mapName: "The MOTHERLODE!!",
+      },
+    });
+    await seedSnapshot({
+      characterId,
+      takenAt: "2026-04-21T12:00:00.000Z",
+      level: 80,
+      spec: "Protection",
+      role: "tank",
+      itemLevel: 728,
+      gold: 1400,
+      playtimeSeconds: 8900,
+      mythicPlusScore: 3210,
+      ownedKeystone: {
+        level: 16,
+        mapChallengeModeID: 375,
+        mapName: "Mists of Tirna Scithe",
+      },
+    });
+
+    const response = await app.request(
+      `http://localhost/api/characters/${characterId}/snapshot-timeline?timeFrame=all`,
+      {
+        headers: authHeaders(auth.token),
+      },
+    );
+
+    assert.equal(response.status, 200);
+    const payload = (await response.json()) as {
+      snapshots: Array<{
+        takenAt: number;
+        itemLevel: number;
+        mythicPlusScore: number;
+        playtimeSeconds: number;
+        ownedKeystone?: { level: number; mapChallengeModeID?: number; mapName?: string };
+      }>;
+    } | null;
+
+    assert.ok(payload);
+    assert.equal(payload.snapshots.length, 2);
+    assert.equal(payload.snapshots[0]?.itemLevel, 720);
+    assert.equal(payload.snapshots[1]?.mythicPlusScore, 3210);
+    assert.deepEqual(payload.snapshots[1]?.ownedKeystone, {
+      level: 16,
+      mapChallengeModeID: 375,
+      mapName: "Mists of Tirna Scithe",
+    });
+  });
+
+  it("returns full mythic plus payloads for the character detail page", async () => {
+    const auth = await seedAuthenticatedUser();
+    const playerId = await seedPlayer(auth.userId, "Runs#1111");
+    const characterId = await seedCharacter({
+      playerId,
+      name: "Runner",
+      realm: "Tarren Mill",
+      className: "Paladin",
+      race: "Human",
+      faction: "alliance",
+    });
+
+    await seedSnapshot({
+      characterId,
+      takenAt: "2026-04-21T12:00:00.000Z",
+      level: 80,
+      spec: "Protection",
+      role: "tank",
+      itemLevel: 731,
+      gold: 1800,
+      playtimeSeconds: 9200,
+      mythicPlusScore: 3333,
+    });
+
+    await seedMythicPlusRun({
+      characterId,
+      observedAt: "2026-04-20T12:05:00.000Z",
+      startDate: "2026-04-20T11:35:00.000Z",
+      completedAt: "2026-04-20T12:05:00.000Z",
+      level: 15,
+      mapChallengeModeId: 244,
+      mapName: "The MOTHERLODE!!",
+      runScore: 210,
+      fingerprint: "run-one",
+    });
+    await seedMythicPlusRun({
+      characterId,
+      observedAt: "2026-04-21T12:10:00.000Z",
+      startDate: "2026-04-21T11:38:00.000Z",
+      completedAt: "2026-04-21T12:10:00.000Z",
+      level: 17,
+      mapChallengeModeId: 375,
+      mapName: "Mists of Tirna Scithe",
+      runScore: 265,
+      fingerprint: "run-two",
+    });
+
+    const response = await app.request(
+      `http://localhost/api/characters/${characterId}/mythic-plus?includeAllRuns=true`,
+      {
+        headers: authHeaders(auth.token),
+      },
+    );
+
+    assert.equal(response.status, 200);
+    const payload = (await response.json()) as {
+      totalRunCount: number;
+      isPreview: boolean;
+      runs: Array<{ mapName?: string; level?: number; runScore?: number }>;
+      summary: { currentScore: number | null; overall: { totalRuns: number; bestLevel: number | null } };
+    } | null;
+
+    assert.ok(payload);
+    assert.equal(payload.totalRunCount, 2);
+    assert.equal(payload.isPreview, false);
+    assert.equal(payload.runs.length, 2);
+    assert.equal(payload.runs[0]?.mapName, "Mists of Tirna Scithe");
+    assert.equal(payload.runs[0]?.level, 17);
+    assert.equal(payload.summary.currentScore, 3333);
+    assert.equal(payload.summary.overall.totalRuns, 2);
+    assert.equal(payload.summary.overall.bestLevel, 17);
   });
 
   it("returns character scoreboard rows sorted by mythic plus score", async () => {

@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ConvexReactClient, ConvexProviderWithAuth, useMutation, useQuery } from "convex/react";
-import { api } from "@wow-dashboard/backend/convex/_generated/api";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { env } from "@wow-dashboard/env/app";
 import type {
   AddonUpdateCheckResult,
@@ -8,6 +7,7 @@ import type {
   AppInstallUpdateResult,
   AppUpdateState,
 } from "../../shared/update";
+import { apiClient, apiQueryKeys, apiQueryOptions } from "./lib/api-client";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -214,14 +214,6 @@ async function _fetchToken(): Promise<string | null> {
 // Kick off initial token fetch as soon as the module loads
 _fetchToken();
 
-// ---------------------------------------------------------------------------
-// Convex client
-// ---------------------------------------------------------------------------
-const client = new ConvexReactClient(env.VITE_CONVEX_URL);
-
-// ---------------------------------------------------------------------------
-// Custom useAuth hook for ConvexProviderWithAuth
-// ---------------------------------------------------------------------------
 function useElectronAuth() {
   const [, forceUpdate] = useState(0);
 
@@ -233,22 +225,12 @@ function useElectronAuth() {
     };
   }, []);
 
-  const fetchAccessToken = useCallback(
-    async ({ forceRefreshToken = false } = {}): Promise<string | null> => {
-      if (!forceRefreshToken && _token) return _token;
-      return _fetchToken();
-    },
-    [],
-  );
-
   return useMemo(
     () => ({
       isLoading: _token === undefined,
       isAuthenticated: _token !== null && _token !== undefined,
-      fetchAccessToken,
     }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [_token, fetchAccessToken],
+    [_token],
   );
 }
 
@@ -434,9 +416,17 @@ function SwitchRow({ checked, onChange, label }: Toggle) {
 }
 
 function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
-  const uploadAddon = useMutation(api.addonIngest.ingestAddonData);
-  const resync = useMutation(api.characters.resyncCharacters);
-  const characters = useQuery(api.characters.getMyCharactersWithSnapshot);
+  const queryClient = useQueryClient();
+  const uploadAddon = useMutation({
+    mutationFn: (input: { characters: CharacterData[] }) =>
+      apiClient.ingestAddonData({
+        characters: input.characters as Parameters<typeof apiClient.ingestAddonData>[0]["characters"],
+      }),
+  });
+  const resync = useMutation({
+    mutationFn: () => apiClient.resyncCharacters(),
+  });
+  const characters = useQuery(apiQueryOptions.myCharacters()).data;
 
   const [syncing, setSyncing] = useState(false);
   const [retailPath, setRetailPath] = useState<string | null>(null);
@@ -789,8 +779,8 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
             .filter((c) => c.snapshots.length > 0 || c.mythicPlusRuns.length > 0);
 
           if (pendingChars.length > 0) {
-            const result = await uploadAddon({
-              characters: pendingChars as Parameters<typeof uploadAddon>[0]["characters"],
+            const result = await uploadAddon.mutateAsync({
+              characters: pendingChars,
             });
             setLastUploadResult({
               newChars: result.newChars,
@@ -811,7 +801,10 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
       }
 
       // Resync from Battle.net
-      await resync();
+      await resync.mutateAsync();
+      await queryClient.invalidateQueries({
+        queryKey: apiQueryKeys.myCharacters(),
+      });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (msg.includes("RateLimited") || msg.includes("Too many")) {
@@ -1221,21 +1214,25 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
 // Root App
 // ---------------------------------------------------------------------------
 export default function App() {
+  const queryClient = useQueryClient();
+
   async function handleLogin() {
     await window.electron.auth.login();
     await _fetchToken();
+    await queryClient.invalidateQueries();
   }
 
   async function handleLogout() {
     await window.electron.auth.logout();
     _token = null;
     _notify();
+    queryClient.clear();
   }
 
   const authState = useElectronAuth();
 
   return (
-    <ConvexProviderWithAuth client={client} useAuth={useElectronAuth}>
+    <>
       {authState.isLoading ? (
         <LoadingScreen />
       ) : authState.isAuthenticated ? (
@@ -1248,6 +1245,6 @@ export default function App() {
           DEV
         </div>
       )}
-    </ConvexProviderWithAuth>
+    </>
   );
 }

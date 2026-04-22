@@ -116,51 +116,6 @@ function saveSessionToken(token: string | null): void {
   }
 }
 
-function getJwtExpirationMs(token: string): number | null {
-  const parts = token.split(".");
-  if (parts.length !== 3) return null;
-  const payloadPart = parts[1];
-  if (!payloadPart) return null;
-  try {
-    const payload = JSON.parse(Buffer.from(payloadPart, "base64url").toString("utf8")) as {
-      exp?: number;
-    };
-    return typeof payload.exp === "number" ? payload.exp * 1000 : null;
-  } catch {
-    return null;
-  }
-}
-
-function isJwtExpired(token: string, nowMs = Date.now(), skewMs = 60_000): boolean {
-  const exp = getJwtExpirationMs(token);
-  if (!exp) return true;
-  return nowMs >= exp - skewMs;
-}
-
-async function fetchFreshConvexToken(): Promise<string | null> {
-  if (!storedSessionToken) return null;
-  try {
-    const resp = await net.fetch(`${SITE_URL}/api/auth/convex/token`, {
-      headers: {
-        Origin: SITE_URL,
-        Authorization: `Bearer ${storedSessionToken}`,
-      },
-    });
-    if (!resp.ok) {
-      if (resp.status === 401 || resp.status === 403) {
-        storedSessionToken = null;
-        saveSessionToken(null);
-      }
-      return null;
-    }
-    const data = (await resp.json()) as { token?: string };
-    cachedElectronToken = data?.token ?? null;
-    return cachedElectronToken;
-  } catch {
-    return null;
-  }
-}
-
 async function loadTrayIcon(): Promise<Electron.NativeImage> {
   try {
     if (process.platform === "win32") {
@@ -2505,10 +2460,6 @@ function createWindow(): void {
   });
 }
 
-// Build-time constants from .env — never read from renderer input.
-const CONVEX_SITE_URL: string = (import.meta as unknown as { env: Record<string, string> }).env
-  .VITE_CONVEX_SITE_URL ?? "";
-
 function handleDeepLink(url: string): void {
   try {
     const parsed = new URL(url);
@@ -2520,9 +2471,9 @@ function handleDeepLink(url: string): void {
         pendingLoginResolve = null;
         pendingLoginReject = null;
 
-        // Exchange the one-time code for the actual token via the Convex HTTP action.
+        // Exchange the one-time code for the long-lived API bearer token.
         net
-          .fetch(`${CONVEX_SITE_URL}/api/auth/redeem-code`, {
+          .fetch(`${SITE_URL}/api/auth/redeem-code`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ code }),
@@ -2579,24 +2530,12 @@ ipcMain.handle("auth:login", () => {
 });
 
 ipcMain.handle("auth:getToken", async () => {
-  if (cachedElectronToken && !isJwtExpired(cachedElectronToken)) return cachedElectronToken;
-
-  const refreshed = await fetchFreshConvexToken();
-  if (refreshed) return refreshed;
-
-  // Fallback: fetch from session cookies (legacy / future in-app flows).
-  try {
-    const resp = await session.defaultSession.fetch(`${SITE_URL}/api/auth/convex/token`, {
-      headers: { Origin: SITE_URL },
-    });
-    if (!resp.ok) return null;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const data: any = await resp.json();
-    cachedElectronToken = data?.token ?? null;
+  if (cachedElectronToken) return cachedElectronToken;
+  if (storedSessionToken) {
+    cachedElectronToken = storedSessionToken;
     return cachedElectronToken;
-  } catch {
-    return null;
   }
+  return null;
 });
 
 ipcMain.handle("auth:getSession", async () => {

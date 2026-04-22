@@ -12,22 +12,20 @@
     "package": "electron-builder --win"
   },
   "dependencies": {
+    "@tanstack/react-query": "^5.90.21",
+    "@wow-dashboard/api-client": "workspace:*",
     "electron-updater": "^6.8.3",
     "unzipper": "^0.12.3"
   },
   "devDependencies": {
-    "@convex-dev/better-auth": "catalog:",
     "@tailwindcss/vite": "^4.1.18",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
     "@types/unzipper": "^0.10.11",
     "@vitejs/plugin-react": "^4.5.2",
-    "@wow-dashboard/backend": "workspace:*",
     "@wow-dashboard/config": "workspace:*",
     "@wow-dashboard/env": "workspace:*",
     "@wow-dashboard/ui": "workspace:*",
-    "better-auth": "catalog:",
-    "convex": "catalog:",
     "dotenv": "catalog:",
     "electron": "^41.0.2",
     "electron-builder": "^25.1.8",

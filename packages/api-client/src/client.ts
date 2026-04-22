@@ -4,7 +4,15 @@ import {
   addonIngestResponseSchema,
   apiErrorResponseSchema,
   boosterCharactersExportResponseSchema,
+  characterDetailTimelineQuerySchema,
+  characterDetailTimelineResultSchema,
+  characterMythicPlusQuerySchema,
+  characterMythicPlusResultSchema,
+  characterPageQuerySchema,
+  characterPageResultSchema,
   characterRouteParamsSchema,
+  characterSnapshotTimelineQuerySchema,
+  characterSnapshotTimelineResultSchema,
   charactersLatestQuerySchema,
   charactersLatestResponseSchema,
   charactersScoreboardResponseSchema,
@@ -25,7 +33,15 @@ import {
   updatePlayerDiscordResponseSchema,
   type AddonIngestBody,
   type AddonIngestResponse,
+  type CharacterDetailTimelineQuery,
+  type CharacterDetailTimelineResponse,
   type CharacterBoosterExportEntry,
+  type CharacterMythicPlusQuery,
+  type CharacterMythicPlusResponse,
+  type CharacterPageQuery,
+  type CharacterPageResponse,
+  type CharacterSnapshotTimelineQuery,
+  type CharacterSnapshotTimelineResponse,
   type CharactersLatestQuery,
   type LoginCodeResponse,
   type MeResponse,
@@ -290,6 +306,76 @@ export function createApiClient(config: ApiClientConfig) {
         method: "GET",
         path: `/players/${id}/characters`,
         outputSchema: playerCharactersResultSchema,
+      });
+    },
+
+    getCharacterPage(
+      characterId: string,
+      input: CharacterPageQuery,
+    ): Promise<CharacterPageResponse | null> {
+      const { id } = characterRouteParamsSchema.parse({ id: characterId });
+      const parsedQuery = characterPageQuerySchema.parse(input);
+      return requestJson({
+        method: "GET",
+        path: `/characters/${id}/page`,
+        query: {
+          timeFrame: parsedQuery.timeFrame,
+          ...(parsedQuery.includeStats !== undefined
+            ? { includeStats: parsedQuery.includeStats }
+            : {}),
+        },
+        outputSchema: characterPageResultSchema,
+      });
+    },
+
+    getCharacterDetailTimeline(
+      characterId: string,
+      input: CharacterDetailTimelineQuery,
+    ): Promise<CharacterDetailTimelineResponse | null> {
+      const { id } = characterRouteParamsSchema.parse({ id: characterId });
+      const parsedQuery = characterDetailTimelineQuerySchema.parse(input);
+      return requestJson({
+        method: "GET",
+        path: `/characters/${id}/detail-timeline`,
+        query: {
+          timeFrame: parsedQuery.timeFrame,
+          metric: parsedQuery.metric,
+        },
+        outputSchema: characterDetailTimelineResultSchema,
+      });
+    },
+
+    getCharacterSnapshotTimeline(
+      characterId: string,
+      input: CharacterSnapshotTimelineQuery,
+    ): Promise<CharacterSnapshotTimelineResponse | null> {
+      const { id } = characterRouteParamsSchema.parse({ id: characterId });
+      const parsedQuery = characterSnapshotTimelineQuerySchema.parse(input);
+      return requestJson({
+        method: "GET",
+        path: `/characters/${id}/snapshot-timeline`,
+        query: {
+          timeFrame: parsedQuery.timeFrame,
+        },
+        outputSchema: characterSnapshotTimelineResultSchema,
+      });
+    },
+
+    getCharacterMythicPlus(
+      characterId: string,
+      input: CharacterMythicPlusQuery = {},
+    ): Promise<CharacterMythicPlusResponse | null> {
+      const { id } = characterRouteParamsSchema.parse({ id: characterId });
+      const parsedQuery = characterMythicPlusQuerySchema.parse(input);
+      return requestJson({
+        method: "GET",
+        path: `/characters/${id}/mythic-plus`,
+        query: {
+          ...(parsedQuery.includeAllRuns !== undefined
+            ? { includeAllRuns: parsedQuery.includeAllRuns }
+            : {}),
+        },
+        outputSchema: characterMythicPlusResultSchema,
       });
     },
 

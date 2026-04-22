@@ -1,7 +1,15 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray } from "drizzle-orm";
+import type {
+  CharacterDetailTimelineResponse,
+  CharacterMythicPlusResponse,
+  CharacterPageResponse,
+  CharacterSnapshotTimelineResponse,
+} from "@wow-dashboard/api-schema";
 import {
   account,
+  characterDailySnapshots,
   characters,
+  mythicPlusRuns,
   players,
   snapshots,
   type CharacterFaction,
@@ -17,8 +25,16 @@ import { db } from "../db";
 import { insertAuditEvent } from "../lib/audit";
 import { enqueueSyncCharactersJob } from "../lib/queue";
 import { limitBattleNetSync } from "../lib/rateLimit";
+import {
+  buildMythicPlusSummary,
+  buildRecentRuns,
+  dedupeMythicPlusRuns,
+  type MythicPlusRunDocument,
+} from "./mythicPlus";
 
 type CharacterRecord = typeof characters.$inferSelect;
+type CharacterDailySnapshotRecord = typeof characterDailySnapshots.$inferSelect;
+type MythicPlusRunRecord = typeof mythicPlusRuns.$inferSelect;
 type SnapshotRecord = typeof snapshots.$inferSelect;
 
 type SerializedCharacter = {
@@ -136,6 +152,9 @@ export type CharacterBoosterExportEntry = {
   } | null;
 };
 
+type SnapshotTimeFrame = "7d" | "30d" | "90d" | "all";
+type CharacterDetailMetric = "stats" | "currencies";
+
 function toUnixSeconds(value: Date | number | null | undefined): number | null {
   if (value === null || value === undefined) {
     return null;
@@ -226,6 +245,168 @@ function serializeSnapshotRow(snapshot: SnapshotRecord): LatestSnapshotSummary {
       : {}),
     mythicPlusScore: snapshot.mythicPlusScore,
     ...(ownedKeystone ? { ownedKeystone } : {}),
+  };
+}
+
+function serializeSnapshotDetailsRow(snapshot: SnapshotRecord): LatestSnapshotDetails {
+  return {
+    ...serializeSnapshotRow(snapshot),
+    currencies: snapshot.currencies,
+    stats: snapshot.stats,
+  };
+}
+
+function serializeMythicPlusRunRow(run: MythicPlusRunRecord): MythicPlusRunDocument {
+  return {
+    _id: run.id,
+    fingerprint: run.fingerprint,
+    ...(run.attemptId ? { attemptId: run.attemptId } : {}),
+    ...(run.canonicalKey ? { canonicalKey: run.canonicalKey } : {}),
+    observedAt: toUnixSeconds(run.observedAt) ?? 0,
+    ...(run.seasonId !== null ? { seasonID: run.seasonId } : {}),
+    ...(run.mapChallengeModeId !== null ? { mapChallengeModeID: run.mapChallengeModeId } : {}),
+    ...(run.mapName ? { mapName: run.mapName } : {}),
+    ...(run.level !== null ? { level: run.level } : {}),
+    ...(run.status ? { status: run.status } : {}),
+    ...(run.completed !== null ? { completed: run.completed } : {}),
+    ...(run.completedInTime !== null ? { completedInTime: run.completedInTime } : {}),
+    ...(run.durationMs !== null ? { durationMs: run.durationMs } : {}),
+    ...(run.runScore !== null ? { runScore: run.runScore } : {}),
+    ...(run.startDate ? { startDate: toUnixSeconds(run.startDate)! } : {}),
+    ...(run.completedAt ? { completedAt: toUnixSeconds(run.completedAt)! } : {}),
+    ...(run.endedAt ? { endedAt: toUnixSeconds(run.endedAt)! } : {}),
+    ...(run.abandonedAt ? { abandonedAt: toUnixSeconds(run.abandonedAt)! } : {}),
+    ...(run.abandonReason ? { abandonReason: run.abandonReason } : {}),
+    ...(run.thisWeek !== null ? { thisWeek: run.thisWeek } : {}),
+    ...(run.members ? { members: run.members } : {}),
+  };
+}
+
+function getSnapshotCompletenessScore(snapshot: SnapshotRecord) {
+  let score = 0;
+
+  if (snapshot.playtimeSeconds > 0) score += 1;
+  if (snapshot.playtimeThisLevelSeconds !== null) score += 1;
+  if (snapshot.ownedKeystone) score += 1;
+  if (snapshot.stats.speedPercent !== undefined) score += 2;
+  if (snapshot.stats.leechPercent !== undefined) score += 2;
+  if (snapshot.stats.avoidancePercent !== undefined) score += 2;
+
+  return score;
+}
+
+function shouldReplaceSnapshot(currentSnapshot: SnapshotRecord | undefined, candidateSnapshot: SnapshotRecord) {
+  if (!currentSnapshot) return true;
+
+  const currentScore = getSnapshotCompletenessScore(currentSnapshot);
+  const candidateScore = getSnapshotCompletenessScore(candidateSnapshot);
+  if (candidateScore !== currentScore) {
+    return candidateScore > currentScore;
+  }
+
+  return candidateSnapshot.takenAt.getTime() > currentSnapshot.takenAt.getTime();
+}
+
+function getSnapshotTimeFrameCutoffSeconds(timeFrame: SnapshotTimeFrame) {
+  if (timeFrame === "all") return null;
+
+  const daysByTimeFrame: Record<Exclude<SnapshotTimeFrame, "all">, number> = {
+    "7d": 7,
+    "30d": 30,
+    "90d": 90,
+  };
+
+  return Math.floor(Date.now() / 1000) - daysByTimeFrame[timeFrame] * 86400;
+}
+
+function getSnapshotBucketTargetPointCount(timeFrame: SnapshotTimeFrame) {
+  if (timeFrame === "7d") return 7;
+  if (timeFrame === "30d") return 30;
+  if (timeFrame === "90d") return 45;
+  return 60;
+}
+
+const snapshotBucketSpanOptionsSeconds = [
+  60 * 60,
+  2 * 60 * 60,
+  4 * 60 * 60,
+  6 * 60 * 60,
+  12 * 60 * 60,
+  24 * 60 * 60,
+  2 * 24 * 60 * 60,
+  3 * 24 * 60 * 60,
+  7 * 24 * 60 * 60,
+  14 * 24 * 60 * 60,
+  30 * 24 * 60 * 60,
+] as const;
+
+function getSnapshotBucketSpanSeconds(
+  timeFrame: SnapshotTimeFrame,
+  rangeStartAt: number,
+  rangeEndAt: number,
+) {
+  const rangeSeconds = Math.max(0, rangeEndAt - rangeStartAt);
+  if (rangeSeconds <= 0) {
+    return snapshotBucketSpanOptionsSeconds[0];
+  }
+
+  const targetPointCount = Math.max(getSnapshotBucketTargetPointCount(timeFrame) - 1, 1);
+  const rawBucketSpanSeconds = Math.max(
+    snapshotBucketSpanOptionsSeconds[0],
+    Math.ceil(rangeSeconds / targetPointCount),
+  );
+
+  return (
+    snapshotBucketSpanOptionsSeconds.find((value) => value >= rawBucketSpanSeconds) ??
+    Math.ceil(rawBucketSpanSeconds / 86400) * 86400
+  );
+}
+
+function projectCharacterHeaderCharacter(character: CharacterRecord) {
+  return {
+    _id: character.id,
+    name: character.name,
+    realm: character.realm,
+    region: character.region,
+    class: character.class,
+    race: character.race,
+    faction: character.faction,
+    isBooster: character.isBooster ?? null,
+    nonTradeableSlots: character.nonTradeableSlots ?? null,
+  };
+}
+
+function projectCoreTimelineSnapshot(snapshot: SnapshotRecord | CharacterDailySnapshotRecord) {
+  return {
+    takenAt: toUnixSeconds("lastTakenAt" in snapshot ? snapshot.lastTakenAt : snapshot.takenAt)!,
+    itemLevel: snapshot.itemLevel,
+    gold: snapshot.gold,
+    playtimeSeconds: snapshot.playtimeSeconds,
+    mythicPlusScore: snapshot.mythicPlusScore,
+    currencies: snapshot.currencies ?? {
+      adventurerDawncrest: 0,
+      veteranDawncrest: 0,
+      championDawncrest: 0,
+      heroDawncrest: 0,
+      mythDawncrest: 0,
+      radiantSparkDust: 0,
+    },
+  };
+}
+
+function projectStatsTimelineSnapshot(snapshot: SnapshotRecord | CharacterDailySnapshotRecord) {
+  return {
+    takenAt: toUnixSeconds("lastTakenAt" in snapshot ? snapshot.lastTakenAt : snapshot.takenAt)!,
+    stats: snapshot.stats ?? {
+      stamina: 0,
+      strength: 0,
+      agility: 0,
+      intellect: 0,
+      critPercent: 0,
+      hastePercent: 0,
+      masteryPercent: 0,
+      versatilityPercent: 0,
+    },
   };
 }
 
@@ -327,6 +508,369 @@ async function readCharacterById(characterId: string) {
   return await db.query.characters.findFirst({
     where: eq(characters.id, characterId),
   });
+}
+
+async function readCharacterOwner(character: CharacterRecord) {
+  return await db.query.players.findFirst({
+    where: eq(players.id, character.playerId),
+  });
+}
+
+async function readFirstSnapshotAtForCharacter(character: CharacterRecord) {
+  if (character.firstSnapshotAt) {
+    return toUnixSeconds(character.firstSnapshotAt);
+  }
+
+  const [firstSnapshot] = await db
+    .select({ takenAt: snapshots.takenAt })
+    .from(snapshots)
+    .where(eq(snapshots.characterId, character.id))
+    .orderBy(asc(snapshots.takenAt))
+    .limit(1);
+
+  return firstSnapshot ? toUnixSeconds(firstSnapshot.takenAt) : null;
+}
+
+async function readLatestSnapshotDetailsForCharacter(
+  character: CharacterRecord,
+): Promise<LatestSnapshotDetails | null> {
+  if (character.latestSnapshotDetails) {
+    return serializeSnapshotDetails(character.latestSnapshotDetails);
+  }
+
+  const [snapshot] = await db
+    .select()
+    .from(snapshots)
+    .where(eq(snapshots.characterId, character.id))
+    .orderBy(desc(snapshots.takenAt))
+    .limit(1);
+
+  return snapshot ? serializeSnapshotDetailsRow(snapshot) : null;
+}
+
+function getSnapshotBucketDaySpan(bucketSpanSeconds: number) {
+  return Math.max(1, Math.ceil(bucketSpanSeconds / 86400));
+}
+
+function hasCharacterDailySnapshotCurrencies(
+  snapshot: CharacterDailySnapshotRecord,
+): snapshot is CharacterDailySnapshotRecord & {
+  currencies: NonNullable<CharacterDailySnapshotRecord["currencies"]>;
+} {
+  return snapshot.currencies !== null && snapshot.currencies !== undefined;
+}
+
+function hasCharacterDailySnapshotStats(
+  snapshot: CharacterDailySnapshotRecord,
+): snapshot is CharacterDailySnapshotRecord & {
+  stats: NonNullable<CharacterDailySnapshotRecord["stats"]>;
+} {
+  return snapshot.stats !== null && snapshot.stats !== undefined;
+}
+
+function bucketDailySnapshotsBySpan(snapshotsByDay: CharacterDailySnapshotRecord[], daySpan: number) {
+  if (daySpan <= 1) {
+    return snapshotsByDay;
+  }
+
+  const bucketed = new Map<number, CharacterDailySnapshotRecord>();
+  for (const snapshot of snapshotsByDay) {
+    const dayStartAt = toUnixSeconds(snapshot.dayStartAt)!;
+    const bucketKey = Math.floor(dayStartAt / (daySpan * 86400));
+    const current = bucketed.get(bucketKey);
+    if (!current || snapshot.lastTakenAt.getTime() >= current.lastTakenAt.getTime()) {
+      bucketed.set(bucketKey, snapshot);
+    }
+  }
+
+  return Array.from(bucketed.values()).sort(
+    (left, right) => left.dayStartAt.getTime() - right.dayStartAt.getTime(),
+  );
+}
+
+function shouldReplaceBucketSnapshot(currentSnapshot: SnapshotRecord | undefined, candidateSnapshot: SnapshotRecord) {
+  if (!currentSnapshot) return true;
+  if (candidateSnapshot.takenAt.getTime() !== currentSnapshot.takenAt.getTime()) {
+    return candidateSnapshot.takenAt.getTime() > currentSnapshot.takenAt.getTime();
+  }
+
+  return shouldReplaceSnapshot(currentSnapshot, candidateSnapshot);
+}
+
+async function readBucketedRawSnapshotsForCharacter(
+  character: CharacterRecord,
+  timeFrame: SnapshotTimeFrame,
+) {
+  const cutoffSeconds = getSnapshotTimeFrameCutoffSeconds(timeFrame);
+  const whereClause =
+    cutoffSeconds === null
+      ? eq(snapshots.characterId, character.id)
+      : and(
+          eq(snapshots.characterId, character.id),
+          gte(snapshots.takenAt, new Date(cutoffSeconds * 1000)),
+        );
+
+  const rawSnapshots = await db
+    .select()
+    .from(snapshots)
+    .where(whereClause)
+    .orderBy(asc(snapshots.takenAt));
+
+  if (rawSnapshots.length === 0) {
+    return [];
+  }
+
+  const rangeStartAt = cutoffSeconds ?? toUnixSeconds(rawSnapshots[0]!.takenAt)!;
+  const rangeEndAt = toUnixSeconds(rawSnapshots[rawSnapshots.length - 1]!.takenAt)!;
+  const bucketSpanSeconds = getSnapshotBucketSpanSeconds(timeFrame, rangeStartAt, rangeEndAt);
+  const bucketed = new Map<number, SnapshotRecord>();
+
+  for (const snapshot of rawSnapshots) {
+    const bucketStartAt =
+      Math.floor((toUnixSeconds(snapshot.takenAt) ?? 0) / bucketSpanSeconds) * bucketSpanSeconds;
+    const current = bucketed.get(bucketStartAt);
+    if (shouldReplaceBucketSnapshot(current, snapshot)) {
+      bucketed.set(bucketStartAt, snapshot);
+    }
+  }
+
+  return Array.from(bucketed.values()).sort(
+    (left, right) => left.takenAt.getTime() - right.takenAt.getTime(),
+  );
+}
+
+async function readTimelinePayloadForCharacter(
+  character: CharacterRecord,
+  timeFrame: SnapshotTimeFrame,
+  includeStats: boolean,
+) {
+  const cutoffSeconds = getSnapshotTimeFrameCutoffSeconds(timeFrame);
+  const dailyWhereClause =
+    cutoffSeconds === null
+      ? eq(characterDailySnapshots.characterId, character.id)
+      : and(
+          eq(characterDailySnapshots.characterId, character.id),
+          gte(
+            characterDailySnapshots.dayStartAt,
+            new Date(Math.floor(cutoffSeconds / 86400) * 86400 * 1000),
+          ),
+        );
+
+  const dailySnapshots = await db
+    .select()
+    .from(characterDailySnapshots)
+    .where(dailyWhereClause)
+    .orderBy(asc(characterDailySnapshots.dayStartAt));
+
+  if (dailySnapshots.length > 0) {
+    const rangeStartAt = cutoffSeconds ?? toUnixSeconds(dailySnapshots[0]!.dayStartAt)!;
+    const rangeEndAt = toUnixSeconds(dailySnapshots[dailySnapshots.length - 1]!.lastTakenAt)!;
+    const bucketSpanSeconds = getSnapshotBucketSpanSeconds(timeFrame, rangeStartAt, rangeEndAt);
+    const canUseDailyCore =
+      bucketSpanSeconds >= 86400 && dailySnapshots.every(hasCharacterDailySnapshotCurrencies);
+    const canUseDailyStats =
+      includeStats &&
+      bucketSpanSeconds >= 86400 &&
+      dailySnapshots.every(hasCharacterDailySnapshotStats);
+
+    if (canUseDailyCore && (!includeStats || canUseDailyStats)) {
+      const bucketDaySpan = getSnapshotBucketDaySpan(bucketSpanSeconds);
+      const bucketedDailySnapshots = bucketDailySnapshotsBySpan(dailySnapshots, bucketDaySpan);
+
+      return {
+        coreSnapshots: bucketedDailySnapshots.map((snapshot) => projectCoreTimelineSnapshot(snapshot)),
+        statsSnapshots: includeStats
+          ? bucketedDailySnapshots.map((snapshot) => projectStatsTimelineSnapshot(snapshot))
+          : null,
+      };
+    }
+  }
+
+  const bucketedRawSnapshots = await readBucketedRawSnapshotsForCharacter(character, timeFrame);
+  return {
+    coreSnapshots: bucketedRawSnapshots.map((snapshot) => projectCoreTimelineSnapshot(snapshot)),
+    statsSnapshots: includeStats
+      ? bucketedRawSnapshots.map((snapshot) => projectStatsTimelineSnapshot(snapshot))
+      : null,
+  };
+}
+
+function buildCharacterMythicPlusData(
+  summary: MythicPlusSummary,
+  runs: MythicPlusRecentRunPreview[],
+  totalRunCount: number,
+  includeAllRuns: boolean,
+): CharacterMythicPlusResponse {
+  const visibleRuns = includeAllRuns ? runs : runs.slice(0, 20);
+
+  return {
+    summary,
+    runs: visibleRuns,
+    totalRunCount,
+    isPreview: totalRunCount > visibleRuns.length,
+  };
+}
+
+function getStoredCharacterMythicPlusData(
+  character: CharacterRecord,
+  includeAllRuns: boolean,
+): CharacterMythicPlusResponse | null {
+  const summary = character.mythicPlusSummary ?? null;
+  const runs = character.mythicPlusRecentRunsPreview ?? null;
+  const totalRunCount = character.mythicPlusRunCount ?? null;
+  if (!summary || !runs || totalRunCount === null) {
+    return null;
+  }
+
+  if (includeAllRuns && totalRunCount > runs.length) {
+    return null;
+  }
+
+  return buildCharacterMythicPlusData(summary, runs, totalRunCount, includeAllRuns);
+}
+
+async function readCharacterMythicPlusData(
+  character: CharacterRecord,
+  includeAllRuns: boolean,
+  currentScoreOverride?: number | null,
+): Promise<CharacterMythicPlusResponse> {
+  const storedData = getStoredCharacterMythicPlusData(character, includeAllRuns);
+  if (storedData) {
+    return storedData;
+  }
+
+  const currentScore =
+    currentScoreOverride ??
+    character.latestSnapshot?.mythicPlusScore ??
+    character.latestSnapshotDetails?.mythicPlusScore ??
+    (await readLatestSnapshotSummaryForCharacter(character))?.mythicPlusScore ??
+    null;
+
+  const runRows = await db
+    .select()
+    .from(mythicPlusRuns)
+    .where(eq(mythicPlusRuns.characterId, character.id))
+    .orderBy(desc(mythicPlusRuns.observedAt));
+
+  const dedupedRuns = dedupeMythicPlusRuns(runRows.map((run) => serializeMythicPlusRunRow(run)));
+  const projectedRuns = buildRecentRuns(dedupedRuns);
+
+  return buildCharacterMythicPlusData(
+    buildMythicPlusSummary(dedupedRuns, currentScore),
+    projectedRuns,
+    projectedRuns.length,
+    includeAllRuns,
+  );
+}
+
+export async function readCharacterPage(
+  characterId: string,
+  timeFrame: SnapshotTimeFrame,
+  includeStats: boolean,
+): Promise<CharacterPageResponse | null> {
+  const character = await readCharacterById(characterId);
+  if (!character) {
+    return null;
+  }
+
+  const [owner, latestSnapshot, firstSnapshotAt, timelinePayload] = await Promise.all([
+    readCharacterOwner(character),
+    readLatestSnapshotDetailsForCharacter(character),
+    readFirstSnapshotAtForCharacter(character),
+    readTimelinePayloadForCharacter(character, timeFrame, includeStats),
+  ]);
+
+  return {
+    header: {
+      character: projectCharacterHeaderCharacter(character),
+      owner: owner
+        ? {
+            playerId: owner.id,
+            battleTag: owner.battleTag,
+            discordUserId: owner.discordUserId ?? null,
+          }
+        : null,
+      latestSnapshot,
+      firstSnapshotAt,
+      snapshotCount: character.snapshotCount ?? null,
+    },
+    coreTimeline: {
+      snapshots: timelinePayload.coreSnapshots,
+    },
+    statsTimeline: includeStats
+      ? {
+          metric: "stats",
+          snapshots: timelinePayload.statsSnapshots ?? [],
+        }
+      : null,
+    mythicPlus: await readCharacterMythicPlusData(
+      character,
+      false,
+      latestSnapshot?.mythicPlusScore ?? null,
+    ),
+  };
+}
+
+export async function readCharacterDetailTimeline(
+  characterId: string,
+  timeFrame: SnapshotTimeFrame,
+  metric: CharacterDetailMetric,
+): Promise<CharacterDetailTimelineResponse | null> {
+  const character = await readCharacterById(characterId);
+  if (!character) {
+    return null;
+  }
+
+  const timelinePayload = await readTimelinePayloadForCharacter(character, timeFrame, metric === "stats");
+  if (metric === "stats") {
+    return {
+      metric,
+      snapshots: timelinePayload.statsSnapshots ?? [],
+    };
+  }
+
+  return {
+    metric,
+    snapshots: timelinePayload.coreSnapshots.map((snapshot) => ({
+      takenAt: snapshot.takenAt,
+      currencies: snapshot.currencies,
+    })),
+  };
+}
+
+export async function readCharacterSnapshotTimeline(
+  characterId: string,
+  timeFrame: SnapshotTimeFrame,
+): Promise<CharacterSnapshotTimelineResponse | null> {
+  const character = await readCharacterById(characterId);
+  if (!character) {
+    return null;
+  }
+
+  const bucketedSnapshots = await readBucketedRawSnapshotsForCharacter(character, timeFrame);
+  return {
+    snapshots: bucketedSnapshots.map((snapshot) => ({
+      takenAt: toUnixSeconds(snapshot.takenAt)!,
+      itemLevel: snapshot.itemLevel,
+      mythicPlusScore: snapshot.mythicPlusScore,
+      playtimeSeconds: snapshot.playtimeSeconds,
+      ...(normalizeOwnedKeystone(snapshot.ownedKeystone)
+        ? { ownedKeystone: normalizeOwnedKeystone(snapshot.ownedKeystone) }
+        : {}),
+    })),
+  };
+}
+
+export async function readCharacterMythicPlus(
+  characterId: string,
+  includeAllRuns: boolean,
+): Promise<CharacterMythicPlusResponse | null> {
+  const character = await readCharacterById(characterId);
+  if (!character) {
+    return null;
+  }
+
+  return await readCharacterMythicPlusData(character, includeAllRuns);
 }
 
 export async function readCharactersWithLatestSnapshot(

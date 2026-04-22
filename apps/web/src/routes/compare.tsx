@@ -1,6 +1,5 @@
+import { useQueries, useQuery } from "@tanstack/react-query";
 import { createFileRoute, redirect } from "@tanstack/react-router";
-import { api } from "@wow-dashboard/backend/convex/_generated/api";
-import type { Id } from "@wow-dashboard/backend/convex/_generated/dataModel";
 import { Button } from "@wow-dashboard/ui/components/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@wow-dashboard/ui/components/card";
 import {
@@ -11,10 +10,10 @@ import {
   ChartTooltipContent,
   type ChartConfig,
 } from "@wow-dashboard/ui/components/chart";
-import { useQuery } from "convex/react";
 import { Scale } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
+import { apiQueryOptions } from "@/lib/api-client";
 import { getClassTextColor } from "../lib/class-colors";
 
 export const Route = createFileRoute("/compare")({
@@ -274,36 +273,18 @@ function CompareChart({
 }
 
 function RouteComponent() {
-  const scoreboard = useQuery(api.characters.getScoreboard);
-  const scoreboardEntries = scoreboard ?? [];
+  const scoreboardQuery = useQuery(apiQueryOptions.scoreboardCharacters());
+  const scoreboardEntries = scoreboardQuery.data ?? [];
 
   const [selectedCharacterIds, setSelectedCharacterIds] = useState<string[]>([]);
   const [selectedStat, setSelectedStat] = useState<StatKey>("mythicPlusScore");
   const [timeFrame, setTimeFrame] = useState<TimeFrame>("30d");
 
-  const characterId0 = selectedCharacterIds[0] ?? null;
-  const characterId1 = selectedCharacterIds[1] ?? null;
-  const characterId2 = selectedCharacterIds[2] ?? null;
-  const characterId3 = selectedCharacterIds[3] ?? null;
-
-  const snapshots0 = useQuery(
-    api.characters.getCharacterSnapshotTimeline,
-    characterId0 ? { characterId: characterId0 as Id<"characters">, timeFrame } : "skip",
-  );
-  const snapshots1 = useQuery(
-    api.characters.getCharacterSnapshotTimeline,
-    characterId1 ? { characterId: characterId1 as Id<"characters">, timeFrame } : "skip",
-  );
-  const snapshots2 = useQuery(
-    api.characters.getCharacterSnapshotTimeline,
-    characterId2 ? { characterId: characterId2 as Id<"characters">, timeFrame } : "skip",
-  );
-  const snapshots3 = useQuery(
-    api.characters.getCharacterSnapshotTimeline,
-    characterId3 ? { characterId: characterId3 as Id<"characters">, timeFrame } : "skip",
-  );
-
-  const snapshotResults = [snapshots0, snapshots1, snapshots2, snapshots3];
+  const snapshotQueries = useQueries({
+    queries: selectedCharacterIds.map((characterId) =>
+      apiQueryOptions.characterSnapshotTimeline(characterId, { timeFrame }),
+    ),
+  });
 
   function toggleCharacter(characterId: string) {
     if (selectedCharacterIds.includes(characterId)) {
@@ -316,7 +297,7 @@ function RouteComponent() {
 
   const characterTimelines: CharacterTimeline[] = selectedCharacterIds
     .map((characterId, index) => {
-      const result = snapshotResults[index];
+      const result = snapshotQueries[index]?.data;
       if (!result) return null;
 
       const entry = scoreboardEntries.find((candidate) => candidate.characterId === characterId);
@@ -348,9 +329,7 @@ function RouteComponent() {
     document.title = `${compactLabel}${overflowLabel} | Compare | ${appTitle}`;
   }, [scoreboardEntries, selectedCharacterIds]);
 
-  const isLoadingSnapshots = selectedCharacterIds.some(
-    (_, index) => snapshotResults[index] === undefined,
-  );
+  const isLoadingSnapshots = snapshotQueries.some((query) => query.data === undefined);
   const hasEnoughCharacters = characterTimelines.length >= 2;
 
   return (
@@ -375,7 +354,7 @@ function RouteComponent() {
           </CardTitle>
         </CardHeader>
         <CardContent className="pt-4">
-          {scoreboard === undefined ? (
+          {scoreboardQuery.data === undefined ? (
             <div className="flex flex-wrap gap-2">
               {Array.from({ length: 6 }).map((_, index) => (
                 <div key={index} className="h-8 w-28 animate-pulse rounded-md bg-muted" />

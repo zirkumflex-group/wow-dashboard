@@ -4,7 +4,11 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import {
   addonIngestBodySchema,
+  characterDetailTimelineQuerySchema,
+  characterMythicPlusQuerySchema,
+  characterPageQuerySchema,
   characterRouteParamsSchema,
+  characterSnapshotTimelineQuerySchema,
   charactersLatestQuerySchema,
   loginCodeTtlSeconds,
   playerRouteParamsSchema,
@@ -20,6 +24,10 @@ import { createLoginCode, redeemLoginCode } from "./lib/loginCodes";
 import { AddonIngestServiceError, ingestAddonData } from "./services/addonIngest";
 import {
   readBoosterCharactersForExport,
+  readCharacterDetailTimeline,
+  readCharacterMythicPlus,
+  readCharacterPage,
+  readCharacterSnapshotTimeline,
   readCharactersWithLatestSnapshot,
   readMyCharactersWithSnapshot,
   readPlayerScoreboard,
@@ -301,6 +309,12 @@ function formatValidationError(issues: { message: string }[]): string {
   return issues[0]?.message ?? "Invalid request";
 }
 
+function parseBooleanQueryValue(value: string | null) {
+  if (value === "true") return true;
+  if (value === "false") return false;
+  return value;
+}
+
 app.use(
   "/api/*",
   cors({
@@ -460,6 +474,123 @@ app.get("/api/characters", async (c) => {
   }
 
   return c.json(await readMyCharactersWithSnapshot(user.id));
+});
+
+app.get("/api/characters/:id/page", async (c) => {
+  const session = c.get("session");
+  const user = c.get("user");
+
+  if (!session || !user) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const parsedParams = characterRouteParamsSchema.safeParse(c.req.param());
+  if (!parsedParams.success) {
+    return c.json({ error: formatValidationError(parsedParams.error.issues) }, 400);
+  }
+
+  const searchParams = new URL(c.req.url).searchParams;
+  const parsedQuery = characterPageQuerySchema.safeParse({
+    timeFrame: searchParams.get("timeFrame"),
+    includeStats: parseBooleanQueryValue(searchParams.get("includeStats")),
+  });
+  if (!parsedQuery.success) {
+    return c.json({ error: formatValidationError(parsedQuery.error.issues) }, 400);
+  }
+
+  return c.json(
+    await readCharacterPage(
+      parsedParams.data.id,
+      parsedQuery.data.timeFrame,
+      parsedQuery.data.includeStats === true,
+    ),
+  );
+});
+
+app.get("/api/characters/:id/detail-timeline", async (c) => {
+  const session = c.get("session");
+  const user = c.get("user");
+
+  if (!session || !user) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const parsedParams = characterRouteParamsSchema.safeParse(c.req.param());
+  if (!parsedParams.success) {
+    return c.json({ error: formatValidationError(parsedParams.error.issues) }, 400);
+  }
+
+  const searchParams = new URL(c.req.url).searchParams;
+  const parsedQuery = characterDetailTimelineQuerySchema.safeParse({
+    timeFrame: searchParams.get("timeFrame"),
+    metric: searchParams.get("metric"),
+  });
+  if (!parsedQuery.success) {
+    return c.json({ error: formatValidationError(parsedQuery.error.issues) }, 400);
+  }
+
+  return c.json(
+    await readCharacterDetailTimeline(
+      parsedParams.data.id,
+      parsedQuery.data.timeFrame,
+      parsedQuery.data.metric,
+    ),
+  );
+});
+
+app.get("/api/characters/:id/snapshot-timeline", async (c) => {
+  const session = c.get("session");
+  const user = c.get("user");
+
+  if (!session || !user) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const parsedParams = characterRouteParamsSchema.safeParse(c.req.param());
+  if (!parsedParams.success) {
+    return c.json({ error: formatValidationError(parsedParams.error.issues) }, 400);
+  }
+
+  const searchParams = new URL(c.req.url).searchParams;
+  const parsedQuery = characterSnapshotTimelineQuerySchema.safeParse({
+    timeFrame: searchParams.get("timeFrame"),
+  });
+  if (!parsedQuery.success) {
+    return c.json({ error: formatValidationError(parsedQuery.error.issues) }, 400);
+  }
+
+  return c.json(
+    await readCharacterSnapshotTimeline(parsedParams.data.id, parsedQuery.data.timeFrame),
+  );
+});
+
+app.get("/api/characters/:id/mythic-plus", async (c) => {
+  const session = c.get("session");
+  const user = c.get("user");
+
+  if (!session || !user) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const parsedParams = characterRouteParamsSchema.safeParse(c.req.param());
+  if (!parsedParams.success) {
+    return c.json({ error: formatValidationError(parsedParams.error.issues) }, 400);
+  }
+
+  const searchParams = new URL(c.req.url).searchParams;
+  const parsedQuery = characterMythicPlusQuerySchema.safeParse({
+    includeAllRuns: parseBooleanQueryValue(searchParams.get("includeAllRuns")),
+  });
+  if (!parsedQuery.success) {
+    return c.json({ error: formatValidationError(parsedQuery.error.issues) }, 400);
+  }
+
+  return c.json(
+    await readCharacterMythicPlus(
+      parsedParams.data.id,
+      parsedQuery.data.includeAllRuns === true,
+    ),
+  );
 });
 
 app.get("/api/characters/scoreboard", async (c) => {

@@ -1,8 +1,5 @@
-import { convexQuery } from "@convex-dev/react-query";
-import { useQuery as useTanStackQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
-import { api } from "@wow-dashboard/backend/convex/_generated/api";
-import type { Id } from "@wow-dashboard/backend/convex/_generated/dataModel";
 import {
   getMythicPlusDungeonMeta,
   getMythicPlusDungeonTimerMs,
@@ -32,7 +29,6 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "@wow-dashboard/ui/components/sheet";
-import { useMutation, useQuery as useConvexQuery } from "convex/react";
 import {
   Calculator,
   Clock,
@@ -74,12 +70,12 @@ import {
   toggleTradeSlotGroup,
   type TradeSlotKey,
 } from "../lib/trade-slots";
+import { apiClient, apiQueryKeys, apiQueryOptions } from "@/lib/api-client";
 
 const DEFAULT_TIME_FRAME = "all" as const;
 
-function getCharacterPageQueryOptions(characterId: Id<"characters">, timeFrame: TimeFrame) {
-  return convexQuery(api.characters.getCharacterPage, {
-    characterId,
+function getCharacterPageQueryOptions(characterId: string, timeFrame: TimeFrame) {
+  return apiQueryOptions.characterPage(characterId, {
     timeFrame,
     includeStats: false,
   });
@@ -94,7 +90,7 @@ const LazyMythicPlannerPanel = lazy(() =>
 export const Route = createFileRoute("/character/$characterId")({
   loader: ({ context, params }) =>
     context.queryClient.ensureQueryData(
-      getCharacterPageQueryOptions(params.characterId as Id<"characters">, DEFAULT_TIME_FRAME),
+      getCharacterPageQueryOptions(params.characterId, DEFAULT_TIME_FRAME),
     ),
   component: RouteComponent,
 });
@@ -1695,7 +1691,7 @@ type MythicPlusRunMember = {
 };
 
 type MythicPlusRun = {
-  _id?: Id<"mythicPlusRuns">;
+  _id?: string;
   rowKey?: string;
   fingerprint: string;
   attemptId?: string;
@@ -3219,8 +3215,8 @@ const CharacterPageContent = memo(function CharacterPageContent({
 });
 
 function RouteComponent() {
+  const queryClient = useQueryClient();
   const { characterId } = Route.useParams();
-  const characterRecordId = characterId as Id<"characters">;
   const [timeFrame, setTimeFrame] = useState<TimeFrame>(DEFAULT_TIME_FRAME);
   const { pinnedCharacterIdSet, togglePinnedCharacter } = usePinnedCharacters();
   const [discordUserIdInput, setDiscordUserIdInput] = useState("");
@@ -3238,37 +3234,24 @@ function RouteComponent() {
       return "overview";
     }
   });
-  const characterPageQuery = useTanStackQuery(getCharacterPageQueryOptions(characterRecordId, timeFrame));
+  const characterPageQuery = useQuery(getCharacterPageQueryOptions(characterId, timeFrame));
   const characterPage = characterPageQuery.data;
   const pageHeader = characterPage?.header;
-  const mythicPlusAllRuns = useConvexQuery(
-    api.characters.getCharacterMythicPlus,
-    shouldLoadFullMythicPlusRuns
-      ? {
-          characterId: characterRecordId,
-          includeAllRuns: true,
-        }
-      : "skip",
-  );
-  const setCharacterBoosterStatus = useMutation((api as any).characters.setCharacterBoosterStatus);
-  const setCharacterNonTradeableSlots = useMutation(
-    (api as any).characters.setCharacterNonTradeableSlots,
-  );
-  const setPlayerDiscordUserId = useMutation((api as any).players.setPlayerDiscordUserId);
+  const mythicPlusAllRuns = useQuery({
+    ...apiQueryOptions.characterMythicPlus(characterId, { includeAllRuns: true }),
+    enabled: shouldLoadFullMythicPlusRuns,
+  }).data;
   const needsStatsTimeline =
     layoutMode === "timeline" || (layoutMode === "focus" && focusMetric === "stats");
   const needsCurrencyTimeline =
     layoutMode === "timeline" || (layoutMode === "focus" && focusMetric === "currencies");
-  const statsTimeline = useConvexQuery(
-    api.characters.getCharacterDetailTimeline,
-    needsStatsTimeline
-      ? {
-          characterId: characterRecordId,
-          timeFrame,
-          metric: "stats",
-        }
-      : "skip",
-  );
+  const statsTimeline = useQuery({
+    ...apiQueryOptions.characterDetailTimeline(characterId, {
+      timeFrame,
+      metric: "stats",
+    }),
+    enabled: needsStatsTimeline,
+  }).data;
 
   useEffect(() => {
     setDiscordUserIdInput(pageHeader?.owner?.discordUserId ?? "");
@@ -3365,6 +3348,73 @@ function RouteComponent() {
   const hasTradeSlotChanges =
     JSON.stringify(nonTradeableSlotsDraft) !== JSON.stringify(nonTradeableSlots);
 
+  const invalidateCharacterPageQueries = useCallback(async () => {
+    await queryClient.invalidateQueries({
+      queryKey: ["api", "characters", characterId, "page"],
+    });
+  }, [characterId, queryClient]);
+
+  const invalidateBoosterExportQueries = useCallback(async () => {
+    await queryClient.invalidateQueries({
+      queryKey: apiQueryKeys.boosterCharactersForExport(),
+    });
+  }, [queryClient]);
+
+  const invalidateOwnerQueries = useCallback(async () => {
+    const ownerPlayerId = characterPage?.header.owner?.playerId;
+    if (!ownerPlayerId) {
+      return;
+    }
+    await queryClient.invalidateQueries({
+      queryKey: apiQueryKeys.playerCharacters(ownerPlayerId),
+    });
+  }, [characterPage?.header.owner?.playerId, queryClient]);
+
+  const setCharacterBoosterStatus = useMutation({
+    mutationFn: (isBooster: boolean) =>
+      apiClient.updateCharacterBoosterStatus(characterId, {
+        isBooster,
+      }),
+    onSuccess: async () => {
+      await Promise.all([
+        invalidateCharacterPageQueries(),
+        invalidateBoosterExportQueries(),
+        queryClient.invalidateQueries({ queryKey: apiQueryKeys.myCharacters() }),
+      ]);
+    },
+  });
+
+  const setCharacterNonTradeableSlots = useMutation({
+    mutationFn: (draftSlots: TradeSlotKey[]) =>
+      apiClient.updateCharacterNonTradeableSlots(characterId, {
+        nonTradeableSlots: draftSlots,
+      }),
+    onSuccess: async () => {
+      await Promise.all([
+        invalidateCharacterPageQueries(),
+        invalidateBoosterExportQueries(),
+        invalidateOwnerQueries(),
+      ]);
+    },
+  });
+
+  const setPlayerDiscordUserId = useMutation({
+    mutationFn: ({
+      playerId,
+      discordUserId,
+    }: {
+      playerId: string;
+      discordUserId: string | null;
+    }) => apiClient.updatePlayerDiscordUserId(playerId, { discordUserId }),
+    onSuccess: async () => {
+      await Promise.all([
+        invalidateCharacterPageQueries(),
+        invalidateBoosterExportQueries(),
+        invalidateOwnerQueries(),
+      ]);
+    },
+  });
+
   const latest = (latestSnapshot as Snapshot | null) ?? null;
   const coreSnapshots = (coreTimeline?.snapshots ?? []) as CoreChartSnapshot[];
   const statsSnapshots =
@@ -3382,10 +3432,7 @@ function RouteComponent() {
 
     setIsUpdatingBooster(true);
     try {
-      await setCharacterBoosterStatus({
-        characterId: characterId as Id<"characters">,
-        isBooster: !isBoosterCharacter,
-      });
+      await setCharacterBoosterStatus.mutateAsync(!isBoosterCharacter);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not update booster flag.");
     } finally {
@@ -3400,7 +3447,7 @@ function RouteComponent() {
 
     setIsSavingDiscordUserId(true);
     try {
-      await setPlayerDiscordUserId({
+      await setPlayerDiscordUserId.mutateAsync({
         playerId: owner.playerId,
         discordUserId: normalizedDiscordUserIdInput === "" ? null : normalizedDiscordUserIdInput,
       });
@@ -3424,10 +3471,7 @@ function RouteComponent() {
 
     setIsSavingTradeSlots(true);
     try {
-      await setCharacterNonTradeableSlots({
-        characterId: characterId as Id<"characters">,
-        nonTradeableSlots: nonTradeableSlotsDraft,
-      });
+      await setCharacterNonTradeableSlots.mutateAsync(nonTradeableSlotsDraft);
       toast.success(
         nonTradeableSlotsDraft.length === 0
           ? "All slots marked tradeable."

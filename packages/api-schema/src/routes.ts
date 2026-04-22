@@ -22,6 +22,8 @@ export const nonTradeableSlotValues = [
 export const characterRegionValues = ["us", "eu", "kr", "tw"] as const;
 export const characterFactionValues = ["alliance", "horde"] as const;
 export const snapshotRoleValues = ["tank", "healer", "dps"] as const;
+export const snapshotTimeFrameValues = ["7d", "30d", "90d", "all"] as const;
+export const characterDetailMetricValues = ["stats", "currencies"] as const;
 export const mythicPlusRunStatusValues = ["active", "completed", "abandoned"] as const;
 export const mythicPlusAbandonReasonValues = [
   "challenge_mode_reset",
@@ -36,6 +38,8 @@ export const nonTradeableSlotSchema = z.enum(nonTradeableSlotValues);
 export const characterRegionSchema = z.enum(characterRegionValues);
 export const characterFactionSchema = z.enum(characterFactionValues);
 export const snapshotRoleSchema = z.enum(snapshotRoleValues);
+export const snapshotTimeFrameSchema = z.enum(snapshotTimeFrameValues);
+export const characterDetailMetricSchema = z.enum(characterDetailMetricValues);
 export const mythicPlusRunStatusSchema = z.enum(mythicPlusRunStatusValues);
 export const mythicPlusAbandonReasonSchema = z.enum(mythicPlusAbandonReasonValues);
 
@@ -136,6 +140,24 @@ export const characterRouteParamsSchema = z.object({
   id: z.string().uuid(),
 });
 
+export const characterPageQuerySchema = z.object({
+  timeFrame: snapshotTimeFrameSchema,
+  includeStats: z.boolean().optional(),
+});
+
+export const characterDetailTimelineQuerySchema = z.object({
+  timeFrame: snapshotTimeFrameSchema,
+  metric: characterDetailMetricSchema,
+});
+
+export const characterSnapshotTimelineQuerySchema = z.object({
+  timeFrame: snapshotTimeFrameSchema,
+});
+
+export const characterMythicPlusQuerySchema = z.object({
+  includeAllRuns: z.boolean().optional(),
+});
+
 export const updatePlayerDiscordBodySchema = z.object({
   discordUserId: z.string().nullable(),
 });
@@ -155,6 +177,10 @@ export const addonIngestBodySchema = z.object({
 export type CharactersLatestQuery = z.infer<typeof charactersLatestQuerySchema>;
 export type PlayerRouteParams = z.infer<typeof playerRouteParamsSchema>;
 export type CharacterRouteParams = z.infer<typeof characterRouteParamsSchema>;
+export type CharacterPageQuery = z.infer<typeof characterPageQuerySchema>;
+export type CharacterDetailTimelineQuery = z.infer<typeof characterDetailTimelineQuerySchema>;
+export type CharacterSnapshotTimelineQuery = z.infer<typeof characterSnapshotTimelineQuerySchema>;
+export type CharacterMythicPlusQuery = z.infer<typeof characterMythicPlusQuerySchema>;
 export type UpdatePlayerDiscordBody = z.infer<typeof updatePlayerDiscordBodySchema>;
 export type UpdateCharacterBoosterBody = z.infer<typeof updateCharacterBoosterBodySchema>;
 export type UpdateCharacterSlotsBody = z.infer<typeof updateCharacterSlotsBodySchema>;

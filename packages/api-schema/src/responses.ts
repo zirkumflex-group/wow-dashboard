@@ -241,6 +241,95 @@ export const playerCharactersResponseSchema = z.object({
   characters: z.array(serializedDashboardCharacterSchema),
 });
 
+export const characterHeaderCharacterSchema = z.object({
+  _id: z.string().uuid(),
+  name: z.string(),
+  realm: z.string(),
+  region: characterRegionSchema,
+  class: z.string(),
+  race: z.string(),
+  faction: characterFactionSchema,
+  isBooster: z.boolean().nullable(),
+  nonTradeableSlots: z.array(nonTradeableSlotSchema).nullable(),
+});
+
+export const characterHeaderOwnerSchema = z.object({
+  playerId: z.string().uuid(),
+  battleTag: z.string(),
+  discordUserId: z.string().nullable(),
+});
+
+export const characterHeaderResponseSchema = z.object({
+  character: characterHeaderCharacterSchema,
+  owner: characterHeaderOwnerSchema.nullable(),
+  latestSnapshot: latestSnapshotDetailsSchema.nullable(),
+  firstSnapshotAt: z.number().nullable(),
+  snapshotCount: z.number().nullable(),
+});
+
+export const characterCoreTimelineSnapshotSchema = z.object({
+  takenAt: z.number(),
+  itemLevel: z.number(),
+  gold: z.number(),
+  playtimeSeconds: z.number(),
+  mythicPlusScore: z.number(),
+  currencies: currenciesSchema,
+});
+
+export const characterStatsTimelineSnapshotSchema = z.object({
+  takenAt: z.number(),
+  stats: statsSchema,
+});
+
+export const characterCurrenciesTimelineSnapshotSchema = z.object({
+  takenAt: z.number(),
+  currencies: currenciesSchema,
+});
+
+export const characterMythicPlusResponseSchema = z.object({
+  summary: mythicPlusSummarySchema,
+  runs: z.array(mythicPlusRecentRunPreviewSchema),
+  totalRunCount: z.number(),
+  isPreview: z.boolean(),
+});
+
+export const characterPageResponseSchema = z.object({
+  header: characterHeaderResponseSchema,
+  coreTimeline: z.object({
+    snapshots: z.array(characterCoreTimelineSnapshotSchema),
+  }),
+  statsTimeline: z
+    .object({
+      metric: z.literal("stats"),
+      snapshots: z.array(characterStatsTimelineSnapshotSchema),
+    })
+    .nullable(),
+  mythicPlus: characterMythicPlusResponseSchema,
+});
+
+export const characterDetailTimelineResponseSchema = z.union([
+  z.object({
+    metric: z.literal("stats"),
+    snapshots: z.array(characterStatsTimelineSnapshotSchema),
+  }),
+  z.object({
+    metric: z.literal("currencies"),
+    snapshots: z.array(characterCurrenciesTimelineSnapshotSchema),
+  }),
+]);
+
+export const characterSnapshotTimelineResponseSchema = z.object({
+  snapshots: z.array(
+    z.object({
+      takenAt: z.number(),
+      itemLevel: z.number(),
+      mythicPlusScore: z.number(),
+      playtimeSeconds: z.number(),
+      ownedKeystone: ownedKeystoneSchema.optional(),
+    }),
+  ),
+});
+
 export const characterBoosterExportEntrySchema = z.object({
   _id: z.string().uuid(),
   playerId: z.string().uuid(),
@@ -298,6 +387,10 @@ export const charactersScoreboardResponseSchema = z.array(scoreboardCharacterEnt
 export const playerScoreboardResponseSchema = z.array(playerScoreboardEntrySchema);
 export const boosterCharactersExportResponseSchema = z.array(characterBoosterExportEntrySchema);
 export const playerCharactersResultSchema = playerCharactersResponseSchema.nullable();
+export const characterPageResultSchema = characterPageResponseSchema.nullable();
+export const characterDetailTimelineResultSchema = characterDetailTimelineResponseSchema.nullable();
+export const characterSnapshotTimelineResultSchema = characterSnapshotTimelineResponseSchema.nullable();
+export const characterMythicPlusResultSchema = characterMythicPlusResponseSchema.nullable();
 
 export type ApiErrorResponse = z.infer<typeof apiErrorResponseSchema>;
 export type MeResponse = z.infer<typeof meResponseSchema>;
@@ -314,6 +407,20 @@ export type SerializedPinnedCharacter = z.infer<typeof serializedPinnedCharacter
 export type ScoreboardCharacterEntry = z.infer<typeof scoreboardCharacterEntrySchema>;
 export type PlayerScoreboardEntry = z.infer<typeof playerScoreboardEntrySchema>;
 export type PlayerCharactersResponse = z.infer<typeof playerCharactersResponseSchema>;
+export type CharacterHeaderResponse = z.infer<typeof characterHeaderResponseSchema>;
+export type CharacterCoreTimelineSnapshot = z.infer<typeof characterCoreTimelineSnapshotSchema>;
+export type CharacterStatsTimelineSnapshot = z.infer<typeof characterStatsTimelineSnapshotSchema>;
+export type CharacterCurrenciesTimelineSnapshot = z.infer<
+  typeof characterCurrenciesTimelineSnapshotSchema
+>;
+export type CharacterPageResponse = z.infer<typeof characterPageResponseSchema>;
+export type CharacterDetailTimelineResponse = z.infer<
+  typeof characterDetailTimelineResponseSchema
+>;
+export type CharacterSnapshotTimelineResponse = z.infer<
+  typeof characterSnapshotTimelineResponseSchema
+>;
+export type CharacterMythicPlusResponse = z.infer<typeof characterMythicPlusResponseSchema>;
 export type CharacterBoosterExportEntry = z.infer<typeof characterBoosterExportEntrySchema>;
 export type ResyncCharactersResponse = z.infer<typeof resyncCharactersResponseSchema>;
 export type UpdateCharacterBoosterResponse = z.infer<typeof updateCharacterBoosterResponseSchema>;

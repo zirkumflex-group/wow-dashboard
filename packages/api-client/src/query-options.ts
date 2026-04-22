@@ -1,5 +1,13 @@
 import type {
+  CharacterDetailTimelineQuery,
+  CharacterDetailTimelineResponse,
   CharactersLatestQuery,
+  CharacterMythicPlusQuery,
+  CharacterMythicPlusResponse,
+  CharacterPageQuery,
+  CharacterPageResponse,
+  CharacterSnapshotTimelineQuery,
+  CharacterSnapshotTimelineResponse,
   PlayerCharactersResponse,
   PlayerScoreboardEntry,
   ScoreboardCharacterEntry,
@@ -32,6 +40,27 @@ export const apiQueryKeys = {
   scoreboardCharacters: () => ["api", "characters", "scoreboard"] as const,
   playerScoreboard: () => ["api", "scoreboard", "players"] as const,
   playerCharacters: (playerId: string) => ["api", "players", playerId, "characters"] as const,
+  characterPage: (characterId: string, input: CharacterPageQuery) =>
+    [
+      "api",
+      "characters",
+      characterId,
+      "page",
+      input.timeFrame,
+      input.includeStats === true ? "stats" : "core",
+    ] as const,
+  characterDetailTimeline: (characterId: string, input: CharacterDetailTimelineQuery) =>
+    ["api", "characters", characterId, "detail-timeline", input.timeFrame, input.metric] as const,
+  characterSnapshotTimeline: (characterId: string, input: CharacterSnapshotTimelineQuery) =>
+    ["api", "characters", characterId, "snapshot-timeline", input.timeFrame] as const,
+  characterMythicPlus: (characterId: string, input: CharacterMythicPlusQuery) =>
+    [
+      "api",
+      "characters",
+      characterId,
+      "mythic-plus",
+      input.includeAllRuns === true ? "all" : "preview",
+    ] as const,
   boosterCharactersForExport: () => ["api", "characters", "boosters", "export"] as const,
 };
 
@@ -95,6 +124,58 @@ export function createApiQueryOptions(client: ApiClient) {
       return {
         queryKey: apiQueryKeys.playerCharacters(playerId),
         queryFn: () => client.getPlayerCharacters(playerId),
+      };
+    },
+
+    characterPage(
+      characterId: string,
+      input: CharacterPageQuery,
+    ): ApiQueryOptions<
+      CharacterPageResponse | null,
+      ReturnType<typeof apiQueryKeys.characterPage>
+    > {
+      return {
+        queryKey: apiQueryKeys.characterPage(characterId, input),
+        queryFn: () => client.getCharacterPage(characterId, input),
+      };
+    },
+
+    characterDetailTimeline(
+      characterId: string,
+      input: CharacterDetailTimelineQuery,
+    ): ApiQueryOptions<
+      CharacterDetailTimelineResponse | null,
+      ReturnType<typeof apiQueryKeys.characterDetailTimeline>
+    > {
+      return {
+        queryKey: apiQueryKeys.characterDetailTimeline(characterId, input),
+        queryFn: () => client.getCharacterDetailTimeline(characterId, input),
+      };
+    },
+
+    characterSnapshotTimeline(
+      characterId: string,
+      input: CharacterSnapshotTimelineQuery,
+    ): ApiQueryOptions<
+      CharacterSnapshotTimelineResponse | null,
+      ReturnType<typeof apiQueryKeys.characterSnapshotTimeline>
+    > {
+      return {
+        queryKey: apiQueryKeys.characterSnapshotTimeline(characterId, input),
+        queryFn: () => client.getCharacterSnapshotTimeline(characterId, input),
+      };
+    },
+
+    characterMythicPlus(
+      characterId: string,
+      input: CharacterMythicPlusQuery = {},
+    ): ApiQueryOptions<
+      CharacterMythicPlusResponse | null,
+      ReturnType<typeof apiQueryKeys.characterMythicPlus>
+    > {
+      return {
+        queryKey: apiQueryKeys.characterMythicPlus(characterId, input),
+        queryFn: () => client.getCharacterMythicPlus(characterId, input),
       };
     },
 
