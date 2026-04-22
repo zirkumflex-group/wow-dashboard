@@ -929,6 +929,7 @@ const ITEM_LEVEL_AUTO_SCALE: YScaleOptions = {
   stepFloor: 0.5,
 };
 const MPLUS_AUTO_SCALE: YScaleOptions = {
+  includeZero: true,
   minSpan: 150,
   minPadding: 40,
   padRatio: 0.16,
@@ -1016,6 +1017,27 @@ function getAdaptiveYDomain(
   return [domainMin, domainMax];
 }
 
+function getYAxisWidth(
+  domain: [number, number],
+  valueFormatter?: (value: number) => string,
+  minWidth = 52,
+) {
+  const labelCandidates = Array.from(
+    new Set(
+      [domain[0], domain[1], 0].filter(
+        (value): value is number => typeof value === "number" && Number.isFinite(value),
+      ),
+    ),
+  );
+
+  const maxLabelLength = labelCandidates.reduce((longest, value) => {
+    const label = valueFormatter?.(value) ?? value.toLocaleString();
+    return Math.max(longest, label.length);
+  }, 0);
+
+  return Math.min(96, Math.max(minWidth, Math.ceil(maxLabelLength * 7.5 + 12)));
+}
+
 function getPrimaryLineKey(
   lines: SnapshotLineSeries[],
   latestDatum?: Record<string, number | undefined>,
@@ -1050,6 +1072,7 @@ function SnapshotLineChart({
   timeFrame,
   lineEmphasis = "primary",
   showLatestValue,
+  yAxisWidth,
 }: {
   data: Record<string, number | undefined>[];
   lines: SnapshotLineSeries[];
@@ -1062,6 +1085,7 @@ function SnapshotLineChart({
   timeFrame?: TimeFrame;
   lineEmphasis?: LineEmphasisMode;
   showLatestValue?: boolean;
+  yAxisWidth?: number;
 }) {
   if (data.length < 2) {
     return (
@@ -1080,6 +1104,7 @@ function SnapshotLineChart({
     .filter((v): v is number => typeof v === "number" && !Number.isNaN(v));
   const yDomain: [number, number] =
     yDomainOverride ?? getAdaptiveYDomain(allValues, data.length, yScaleOptions);
+  const resolvedYAxisWidth = yAxisWidth ?? getYAxisWidth(yDomain, valueFormatter);
 
   const renderEndpointMarker =
     ({
@@ -1181,7 +1206,7 @@ function SnapshotLineChart({
             fillOpacity: 0.75,
           }}
           tickFormatter={valueFormatter}
-          width={52}
+          width={resolvedYAxisWidth}
           domain={yDomain}
           tickCount={yScaleOptions?.tickCount ?? 5}
           allowDataOverflow={!!yDomainOverride}
