@@ -4,7 +4,7 @@ FROM node:20-slim AS base
 ENV PNPM_HOME=/pnpm
 ENV PATH="${PNPM_HOME}:${PATH}"
 
-RUN corepack enable && corepack prepare pnpm@10.11.0 --activate
+RUN corepack enable && corepack prepare pnpm@10.33.1 --activate
 
 WORKDIR /app
 
@@ -13,7 +13,7 @@ FROM base AS pruner
 COPY . .
 
 RUN --mount=type=cache,id=wowdash-pnpm-store,target=/pnpm/store,sharing=locked \
-  pnpm dlx turbo@2.8.20 prune --docker web --out-dir /pruned
+  pnpm dlx turbo@2.9.6 prune --docker web --out-dir /pruned
 
 FROM base AS deps
 

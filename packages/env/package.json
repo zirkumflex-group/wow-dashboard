@@ -9,12 +9,12 @@
     "./server": "./src/server.ts"
   },
   "dependencies": {
-    "@t3-oss/env-core": "^0.13.1",
+    "@t3-oss/env-core": "^0.13.11",
     "dotenv": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {
     "@wow-dashboard/config": "workspace:*",
-    "typescript": "^5"
+    "typescript": "^6.0.3"
   }
 }

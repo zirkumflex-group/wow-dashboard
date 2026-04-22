@@ -8,14 +8,14 @@ WoW Dashboard is a self-hosted WoW character dashboard with:
 - `apps/api` + `apps/worker` for the self-hosted backend
 - Postgres + Redis for persistence, jobs, and rate limiting
 
-The active backend path is now the self-hosted stack. `packages/backend` still exists as legacy Convex migration code, but it is no longer the primary runtime path for staging.
+The legacy Convex runtime has been removed from the active workspace. The remaining Convex-related code is the one-shot importer plus `legacy_convex_id` mapping retained for historical backfills.
 
 ## Current Status
 
 - Staging stack is running at `https://wow-staging.zirkumflex.io`
 - Battle.net auth works on staging
 - The production Convex export has been imported into the staging Postgres database
-- The remaining work is mainly desktop/addon validation, deploy hardening, and final cutover prep
+- The remaining work is mainly desktop/addon validation and deploy hardening
 
 ## Repository Layout
 
@@ -32,8 +32,7 @@ wow-dashboard/
 │   ├── api-schema/
 │   ├── db/
 │   ├── env/
-│   ├── ui/
-│   └── backend/  # legacy Convex migration code
+│   └── ui/
 └── deploy/
     ├── docker-compose.dev.yml
     ├── docker-compose.prod.yml

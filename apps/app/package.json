@@ -12,30 +12,31 @@
     "package": "electron-builder --win"
   },
   "dependencies": {
-    "@tanstack/react-query": "^5.90.21",
+    "@tanstack/react-query": "^5.99.2",
     "@wow-dashboard/api-client": "workspace:*",
     "electron-updater": "^6.8.3",
     "unzipper": "^0.12.3"
   },
   "devDependencies": {
-    "@tailwindcss/vite": "^4.1.18",
+    "@tailwindcss/vite": "^4.2.4",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
     "@types/unzipper": "^0.10.11",
-    "@vitejs/plugin-react": "^4.5.2",
+    "@vitejs/plugin-react": "^6.0.1",
     "@wow-dashboard/config": "workspace:*",
     "@wow-dashboard/env": "workspace:*",
     "@wow-dashboard/ui": "workspace:*",
     "dotenv": "catalog:",
-    "electron": "^41.0.2",
-    "electron-builder": "^25.1.8",
+    "electron": "^41.2.2",
+    "electron-builder": "^26.8.1",
+    "electron-builder-squirrel-windows": "^26.8.1",
     "electron-vite": "^5.0.0",
     "lucide-react": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",
     "tailwindcss": "catalog:",
-    "typescript": "^5",
-    "vite": "^7.0.0",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.9",
     "zod": "catalog:"
   },
   "build": {

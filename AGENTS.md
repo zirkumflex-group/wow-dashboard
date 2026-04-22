@@ -1,12 +1,13 @@
 # AGENTS
 
-This repo is mid-migration from Convex to a self-hosted backend.
+This repo has moved to a self-hosted backend.
 
 ## Current Truth
 
 - The active backend path is `apps/api` + `apps/worker` + Postgres + Redis.
 - `apps/web` and `apps/app` should be treated as self-hosted clients first.
-- `packages/backend` is legacy migration code. Do not assume it is the primary runtime path.
+- The legacy Convex runtime has been removed from the active workspace.
+- The remaining Convex-related code is the importer path plus `legacy_convex_id` fields used for historical backfills.
 - Staging is live at `https://wow-staging.zirkumflex.io`.
 
 ## Important Paths
@@ -19,7 +20,6 @@ This repo is mid-migration from Convex to a self-hosted backend.
 ## Working Rules
 
 - Prefer changing the self-hosted path unless the task is explicitly about legacy Convex cleanup.
-- If you touch `packages/backend`, read [packages/backend/AGENTS.md](/home/yungtristxn/VibeCoding/wow-dashboard/packages/backend/AGENTS.md:1) first.
 - Do not rely on files under `temp/` for durable project state. `temp/` is ignored.
 - Keep the migration plan only under `temp/MIGRATION_PLAN.md`. It is intentionally untracked.
 - For desktop staging tests, point Electron at staging with:

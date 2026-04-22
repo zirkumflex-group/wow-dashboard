@@ -49,6 +49,11 @@ async function truncateTables() {
   `));
 }
 
+async function resetQueueSchema() {
+  await closeQueue();
+  await db.execute(sql.raw(`drop schema if exists pgboss cascade`));
+}
+
 async function seedAuthenticatedUser() {
   const userId = `user-${randomUUID()}`;
   const token = `session-token-${randomUUID()}`;
@@ -256,14 +261,15 @@ function authHeaders(token: string): HeadersInit {
 
 describe("Phase 5 API routes", { concurrency: false }, () => {
   beforeEach(async () => {
+    await resetQueueSchema();
     await truncateTables();
     const redis = await ensureRedis();
     await redis.flushdb();
   });
 
   after(async () => {
+    await resetQueueSchema();
     await truncateTables();
-    await closeQueue();
     await closeRedis();
     await databaseConnection.client.end({ timeout: 1 });
   });

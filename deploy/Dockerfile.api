@@ -4,7 +4,7 @@ FROM node:20-slim AS base
 ENV PNPM_HOME=/pnpm
 ENV PATH="${PNPM_HOME}:${PATH}"
 
-RUN corepack enable && corepack prepare pnpm@10.11.0 --activate
+RUN corepack enable && corepack prepare pnpm@10.33.1 --activate
 
 WORKDIR /app
 
@@ -13,23 +13,14 @@ FROM base AS pruner
 COPY . .
 
 RUN --mount=type=cache,id=wowdash-pnpm-store,target=/pnpm/store,sharing=locked \
-  pnpm dlx turbo@2.8.20 prune --docker @wow-dashboard/api @wow-dashboard/worker --out-dir /pruned
+  pnpm dlx turbo@2.9.6 prune --docker @wow-dashboard/api @wow-dashboard/worker --out-dir /pruned
 
 FROM base AS deps
 
 COPY --from=pruner /pruned/json/ .
 
 RUN --mount=type=cache,id=wowdash-pnpm-store,target=/pnpm/store,sharing=locked \
-  pnpm install --frozen-lockfile \
-  && pnpm add -Dw \
-    @esbuild/linux-x64@0.27.4 \
-    @esbuild/linux-arm64@0.27.4 \
-  && mkdir -p node_modules/.pnpm/node_modules/@esbuild \
-  && rm -f node_modules/.pnpm/node_modules/@esbuild/linux-x64 \
-  && rm -f node_modules/.pnpm/node_modules/@esbuild/linux-arm64 \
-  && ln -s ../../@esbuild+linux-x64@0.27.4/node_modules/@esbuild/linux-x64 node_modules/.pnpm/node_modules/@esbuild/linux-x64 \
-  && ln -s ../../@esbuild+linux-arm64@0.27.4/node_modules/@esbuild/linux-arm64 node_modules/.pnpm/node_modules/@esbuild/linux-arm64 \
-  && pnpm rebuild esbuild
+  pnpm install --frozen-lockfile
 
 FROM deps AS source
 

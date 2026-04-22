@@ -11,8 +11,6 @@
     "build": "turbo build",
     "check-types": "turbo check-types",
     "dev:web": "turbo -F web dev",
-    "dev:server": "turbo -F @wow-dashboard/backend dev",
-    "dev:setup": "turbo -F @wow-dashboard/backend dev:setup",
     "check": "oxlint && oxfmt --write ."
   },
   "dependencies": {
@@ -22,13 +20,13 @@
   },
   "devDependencies": {
     "@wow-dashboard/config": "workspace:*",
-    "lefthook": "^2.0.13",
-    "oxfmt": "^0.26.0",
-    "oxlint": "^1.41.0",
-    "turbo": "^2.8.20",
-    "typescript": "^5"
+    "lefthook": "^2.1.6",
+    "oxfmt": "^0.46.0",
+    "oxlint": "^1.61.0",
+    "turbo": "^2.9.6",
+    "typescript": "^6.0.3"
   },
-  "packageManager": "pnpm@10.11.0",
+  "packageManager": "pnpm@10.33.1",
   "pnpm": {
     "overrides": {
       "tar": ">=7.5.11"

@@ -17,10 +17,10 @@
     "pg-boss": "catalog:"
   },
   "devDependencies": {
-    "@types/node": "^24.3.0",
+    "@types/node": "^25.6.0",
     "@wow-dashboard/config": "workspace:*",
-    "esbuild": "^0.27.4",
-    "tsx": "^4.20.5",
-    "typescript": "^5"
+    "esbuild": "^0.28.0",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3"
   }
 }
