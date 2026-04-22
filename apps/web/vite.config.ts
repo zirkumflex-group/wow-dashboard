@@ -14,6 +14,11 @@ export default defineConfig({
     nitro(),
   ],
   resolve: {
+    alias: {
+      // Nitro SSR was bundling the UMD tslib entry through the Radix dialog stack,
+      // which crashes server startup when the shared Sheet component is loaded.
+      tslib: "tslib/tslib.es6.mjs",
+    },
     tsconfigPaths: true,
   },
   server: {
