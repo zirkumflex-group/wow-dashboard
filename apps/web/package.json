@@ -20,7 +20,6 @@
     "@tanstack/react-start": "^1.141.1",
     "@tanstack/router-plugin": "^1.141.1",
     "@wow-dashboard/api-client": "workspace:*",
-    "@wow-dashboard/backend": "workspace:*",
     "@wow-dashboard/env": "workspace:*",
     "@wow-dashboard/ui": "workspace:*",
     "better-auth": "catalog:",

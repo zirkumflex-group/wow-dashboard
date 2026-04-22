@@ -47,7 +47,7 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.api
-      target: runtime
+      target: runtime-api
     restart: unless-stopped
     env_file:
       - .env.staging
@@ -81,7 +81,8 @@ services:
   worker:
     build:
       context: ..
-      dockerfile: deploy/Dockerfile.worker
+      dockerfile: deploy/Dockerfile.api
+      target: runtime-worker
     restart: unless-stopped
     env_file:
       - .env.staging

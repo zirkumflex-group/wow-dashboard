@@ -264,9 +264,6 @@ importers:
       '@wow-dashboard/api-client':
         specifier: workspace:*
         version: link:../../packages/api-client
-      '@wow-dashboard/backend':
-        specifier: workspace:*
-        version: file:packages/backend(@better-auth/core@1.4.9(@better-auth/utils@0.3.0)(@better-fetch/fetch@1.1.21)(better-call@1.1.7(zod@4.3.6))(jose@6.2.1)(kysely@0.28.12)(nanostores@1.2.0))(@better-auth/utils@0.3.0)(@standard-schema/spec@1.1.0)(@tanstack/react-start@1.166.11(crossws@0.4.4(srvx@0.11.9))(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(vite@7.3.1(@types/node@25.5.0)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)))(better-call@1.1.7(zod@4.3.6))(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(kysely@0.28.12)(pg@8.20.0)(postgres@3.4.9))(hono@4.12.8)(nanostores@1.2.0)(pg@8.20.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3)
       '@wow-dashboard/env':
         specifier: workspace:*
         version: link:../../packages/env
@@ -3045,9 +3042,6 @@ packages:
     engines: {node: ^20.19.0 || >=22.12.0}
     peerDependencies:
       vite: ^4.2.0 || ^5.0.0 || ^6.0.0 || ^7.0.0 || ^8.0.0
-
-  '@wow-dashboard/backend@file:packages/backend':
-    resolution: {directory: packages/backend, type: directory}
 
   '@wow-dashboard/ui@file:packages/ui':
     resolution: {directory: packages/ui, type: directory}
@@ -8047,7 +8041,7 @@ snapshots:
 
   '@radix-ui/rect@1.1.1': {}
 
-  '@reduxjs/toolkit@2.11.2(react-redux@9.2.0(@types/react@19.2.14)(react@19.2.4)(redux@5.0.1))(react@19.2.4)':
+  '@reduxjs/toolkit@2.11.2(react-redux@9.2.0(@types/react@19.2.14)(react@19.2.4))(react@19.2.4)':
     dependencies:
       '@standard-schema/spec': 1.1.0
       '@standard-schema/utils': 0.3.0
@@ -8814,45 +8808,6 @@ snapshots:
       vite: 7.3.1(@types/node@25.5.0)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)
     transitivePeerDependencies:
       - supports-color
-
-  '@wow-dashboard/backend@file:packages/backend(@better-auth/core@1.4.9(@better-auth/utils@0.3.0)(@better-fetch/fetch@1.1.21)(better-call@1.1.7(zod@4.3.6))(jose@6.2.1)(kysely@0.28.12)(nanostores@1.2.0))(@better-auth/utils@0.3.0)(@standard-schema/spec@1.1.0)(@tanstack/react-start@1.166.11(crossws@0.4.4(srvx@0.11.9))(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(vite@7.3.1(@types/node@25.5.0)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)))(better-call@1.1.7(zod@4.3.6))(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(kysely@0.28.12)(pg@8.20.0)(postgres@3.4.9))(hono@4.12.8)(nanostores@1.2.0)(pg@8.20.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3)':
-    dependencies:
-      '@convex-dev/better-auth': 0.10.13(@better-auth/core@1.4.9(@better-auth/utils@0.3.0)(@better-fetch/fetch@1.1.21)(better-call@1.1.7(zod@4.3.6))(jose@6.2.1)(kysely@0.28.12)(nanostores@1.2.0))(@better-auth/utils@0.3.0)(@standard-schema/spec@1.1.0)(better-auth@1.4.9(@tanstack/react-start@1.166.11(crossws@0.4.4(srvx@0.11.9))(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(vite@7.3.1(@types/node@25.5.0)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)))(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(kysely@0.28.12)(pg@8.20.0)(postgres@3.4.9))(pg@8.20.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(better-call@1.1.7(zod@4.3.6))(convex@1.34.0(react@19.2.4))(hono@4.12.8)(nanostores@1.2.0)(react@19.2.4)(typescript@5.9.3)
-      '@convex-dev/rate-limiter': 0.3.2(convex@1.34.0(react@19.2.4))(react@19.2.4)
-      better-auth: 1.4.9(@tanstack/react-start@1.166.11(crossws@0.4.4(srvx@0.11.9))(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(vite@7.3.1(@types/node@25.5.0)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)))(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(kysely@0.28.12)(pg@8.20.0)(postgres@3.4.9))(pg@8.20.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
-      convex: 1.34.0(react@19.2.4)
-      dotenv: 17.3.1
-      zod: 4.3.6
-    transitivePeerDependencies:
-      - '@auth0/auth0-react'
-      - '@better-auth/core'
-      - '@better-auth/utils'
-      - '@clerk/clerk-react'
-      - '@lynx-js/react'
-      - '@prisma/client'
-      - '@standard-schema/spec'
-      - '@sveltejs/kit'
-      - '@tanstack/react-start'
-      - better-call
-      - better-sqlite3
-      - bufferutil
-      - drizzle-kit
-      - drizzle-orm
-      - hono
-      - mongodb
-      - mysql2
-      - nanostores
-      - next
-      - pg
-      - prisma
-      - react
-      - react-dom
-      - solid-js
-      - svelte
-      - typescript
-      - utf-8-validate
-      - vitest
-      - vue
 
   '@wow-dashboard/ui@file:packages/ui(@types/node@25.5.0)(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-is@18.3.1)(redux@5.0.1)(typescript@5.9.3)':
     dependencies:
@@ -11514,7 +11469,7 @@ snapshots:
 
   recharts@3.8.0(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react-is@18.3.1)(react@19.2.4)(redux@5.0.1):
     dependencies:
-      '@reduxjs/toolkit': 2.11.2(react-redux@9.2.0(@types/react@19.2.14)(react@19.2.4)(redux@5.0.1))(react@19.2.4)
+      '@reduxjs/toolkit': 2.11.2(react-redux@9.2.0(@types/react@19.2.14)(react@19.2.4))(react@19.2.4)
       clsx: 2.1.1
       decimal.js-light: 2.5.1
       es-toolkit: 1.45.1

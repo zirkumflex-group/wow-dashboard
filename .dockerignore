@@ -24,6 +24,16 @@ backup.json
 temp
 tmp
 
+# ---- local tooling / docs not needed for image builds ----
+.agents
+.claude
+.github
+docs
+scripts
+apps/addon
+apps/app
+packages/backend
+
 # ---- editor / OS noise ----
 .vscode
 .idea

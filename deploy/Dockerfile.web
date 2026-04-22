@@ -8,44 +8,25 @@ RUN corepack enable && corepack prepare pnpm@10.11.0 --activate
 
 WORKDIR /app
 
+FROM base AS pruner
+
+COPY . .
+
+RUN --mount=type=cache,id=wowdash-pnpm-store,target=/pnpm/store,sharing=locked \
+  pnpm dlx turbo@2.8.20 prune --docker web --out-dir /pruned
+
 FROM base AS deps
 
-COPY .npmrc package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json tsconfig.json ./
-COPY apps/api/package.json apps/api/package.json
-COPY apps/app/package.json apps/app/package.json
-COPY apps/web/package.json apps/web/package.json
-COPY apps/worker/package.json apps/worker/package.json
-COPY packages/api-client/package.json packages/api-client/package.json
-COPY packages/api-schema/package.json packages/api-schema/package.json
-COPY packages/backend/package.json packages/backend/package.json
-COPY packages/config/package.json packages/config/package.json
-COPY packages/db/package.json packages/db/package.json
-COPY packages/env/package.json packages/env/package.json
-COPY packages/ui/package.json packages/ui/package.json
+COPY --from=pruner /pruned/json/ .
 
-RUN --mount=type=cache,id=wowdash-pnpm-store,target=/pnpm/store \
-  pnpm install --frozen-lockfile --filter web...
+RUN --mount=type=cache,id=wowdash-pnpm-store,target=/pnpm/store,sharing=locked \
+  pnpm install --frozen-lockfile
 
 FROM deps AS build
 
 ARG VITE_API_URL
 
-COPY . .
-
-RUN --mount=type=cache,id=wowdash-pnpm-store,target=/pnpm/store \
-  pnpm add -Dw \
-    @rollup/rollup-linux-x64-gnu@4.59.0 \
-    @rollup/rollup-linux-arm64-gnu@4.59.0 \
-    @esbuild/linux-x64@0.27.4 \
-    @esbuild/linux-arm64@0.27.4 \
-    lightningcss-linux-x64-gnu@1.31.1 \
-    lightningcss-linux-arm64-gnu@1.31.1 \
-  && mkdir -p node_modules/.pnpm/node_modules/@esbuild \
-  && rm -f node_modules/.pnpm/node_modules/@esbuild/linux-x64 \
-  && rm -f node_modules/.pnpm/node_modules/@esbuild/linux-arm64 \
-  && ln -s ../../@esbuild+linux-x64@0.27.4/node_modules/@esbuild/linux-x64 node_modules/.pnpm/node_modules/@esbuild/linux-x64 \
-  && ln -s ../../@esbuild+linux-arm64@0.27.4/node_modules/@esbuild/linux-arm64 node_modules/.pnpm/node_modules/@esbuild/linux-arm64 \
-  && pnpm rebuild esbuild
+COPY --from=pruner /pruned/full/ .
 
 ENV VITE_API_URL="${VITE_API_URL}"
 

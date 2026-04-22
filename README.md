@@ -37,8 +37,7 @@ wow-dashboard/
 └── deploy/
     ├── docker-compose.dev.yml
     ├── docker-compose.prod.yml
-    ├── Dockerfile.api
-    ├── Dockerfile.worker
+    ├── Dockerfile.api   # shared api/worker/migrate build
     ├── Dockerfile.web
     └── Caddyfile
 ```
