@@ -5,6 +5,7 @@
   "scripts": {
     "build": "vite build",
     "serve": "vite preview",
+    "start": "node .output/server/index.mjs",
     "dev": "vite dev"
   },
   "dependencies": {

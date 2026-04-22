@@ -886,13 +886,20 @@ function getPort() {
   return Number.isFinite(parsedPort) ? parsedPort : 3000;
 }
 
+function getHost() {
+  const host = process.env.HOST?.trim();
+  return host && host.length > 0 ? host : "0.0.0.0";
+}
+
 if (import.meta.main) {
   const port = getPort();
+  const host = getHost();
 
   serve({
     fetch: app.fetch,
     port,
+    hostname: host,
   });
 
-  console.log(`[api] listening on http://localhost:${port}`);
+  console.log(`[api] listening on http://${host}:${port}`);
 }
