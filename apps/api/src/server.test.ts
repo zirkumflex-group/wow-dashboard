@@ -1422,6 +1422,136 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     assert.equal(storedRuns.length, 1);
   });
 
+  it("merges more complete snapshot fields into an existing snapshot with the same natural key", async () => {
+    const auth = await seedAuthenticatedUser();
+    const playerId = await seedPlayer(auth.userId, "Syncer#7777");
+    const characterId = await seedCharacter({
+      playerId,
+      name: "Syncadin",
+      realm: "Tarren Mill",
+      className: "Paladin",
+      race: "Human",
+      faction: "alliance",
+    });
+    const takenAt = 1_776_772_800;
+
+    const partialPayload = {
+      characters: [
+        {
+          name: "Syncadin",
+          realm: "Tarren Mill",
+          region: "eu",
+          class: "Paladin",
+          race: "Human",
+          faction: "alliance",
+          snapshots: [
+            {
+              takenAt,
+              level: 80,
+              spec: "Holy",
+              role: "healer",
+              itemLevel: 724.6,
+              gold: 2100,
+              playtimeSeconds: 8200,
+              mythicPlusScore: 2988.4,
+              currencies: {
+                adventurerDawncrest: 1,
+                veteranDawncrest: 2,
+                championDawncrest: 3,
+                heroDawncrest: 4,
+                mythDawncrest: 5,
+                radiantSparkDust: 6,
+              },
+              stats: {
+                stamina: 10,
+                strength: 11,
+                agility: 12,
+                intellect: 13,
+                critPercent: 14,
+                hastePercent: 15,
+                masteryPercent: 16,
+                versatilityPercent: 17,
+              },
+            },
+          ],
+          mythicPlusRuns: [],
+        },
+      ],
+    };
+    const partialCharacter = partialPayload.characters[0]!;
+    const partialSnapshot = partialCharacter.snapshots[0]!;
+
+    const completePayload = {
+      characters: [
+        {
+          ...partialCharacter,
+          snapshots: [
+            {
+              ...partialSnapshot,
+              playtimeThisLevelSeconds: 1200,
+              ownedKeystone: {
+                level: 15,
+                mapChallengeModeID: 375,
+                mapName: "Mists of Tirna Scithe",
+              },
+              stats: {
+                ...partialSnapshot.stats,
+                speedPercent: 18,
+                leechPercent: 19,
+                avoidancePercent: 20,
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    const partialResponse = await app.request("http://localhost/api/addon/ingest", {
+      method: "POST",
+      headers: {
+        ...authHeaders(auth.token),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(partialPayload),
+    });
+    const completeResponse = await app.request("http://localhost/api/addon/ingest", {
+      method: "POST",
+      headers: {
+        ...authHeaders(auth.token),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(completePayload),
+    });
+
+    assert.equal(partialResponse.status, 200);
+    assert.equal(completeResponse.status, 200);
+
+    const partialResult = (await partialResponse.json()) as {
+      newSnapshots: number;
+    };
+    const completeResult = (await completeResponse.json()) as {
+      newSnapshots: number;
+    };
+    assert.deepEqual(
+      [partialResult.newSnapshots, completeResult.newSnapshots].sort((a, b) => a - b),
+      [0, 1],
+    );
+
+    const storedSnapshots = await db.query.snapshots.findMany({
+      where: eq(snapshots.characterId, characterId),
+    });
+    assert.equal(storedSnapshots.length, 1);
+    assert.equal(storedSnapshots[0]?.playtimeThisLevelSeconds, 1200);
+    assert.deepEqual(storedSnapshots[0]?.ownedKeystone, {
+      level: 15,
+      mapChallengeModeID: 375,
+      mapName: "Mists of Tirna Scithe",
+    });
+    assert.equal(storedSnapshots[0]?.stats.speedPercent, 18);
+    assert.equal(storedSnapshots[0]?.stats.leechPercent, 19);
+    assert.equal(storedSnapshots[0]?.stats.avoidancePercent, 20);
+  });
+
   it("returns a clear error when addon ingest runs before the player profile exists", async () => {
     const auth = await seedAuthenticatedUser();
 

@@ -2,7 +2,6 @@ import { z } from "zod";
 
 export const queueNames = {
   syncCharacters: "sync-characters",
-  deduplicateSnapshots: "deduplicate-snapshots",
 } as const;
 
 export const loginCodeTtlSeconds = 60;

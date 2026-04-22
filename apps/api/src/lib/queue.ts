@@ -22,7 +22,6 @@ async function createQueue(): Promise<PgBoss> {
 
   await queue.start();
   await ensureQueue(queue, queueNames.syncCharacters);
-  await ensureQueue(queue, queueNames.deduplicateSnapshots);
   return queue;
 }
 
@@ -41,11 +40,6 @@ export async function enqueueSyncCharactersJob(payload: SyncCharactersJobPayload
   const queue = await getQueue();
   const data = syncCharactersJobPayloadSchema.parse(payload);
   await queue.send(queueNames.syncCharacters, data);
-}
-
-export async function enqueueDeduplicateSnapshotsJob(): Promise<void> {
-  const queue = await getQueue();
-  await queue.send(queueNames.deduplicateSnapshots, {});
 }
 
 export async function closeQueue(): Promise<void> {

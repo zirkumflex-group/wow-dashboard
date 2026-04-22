@@ -6,10 +6,7 @@ import {
 } from "@wow-dashboard/api-schema";
 import { env } from "@wow-dashboard/env/server";
 import { closeWorkerDatabase } from "./db";
-import { deduplicateSnapshots } from "./jobs/deduplicateSnapshots";
 import { syncCharacters } from "./jobs/syncCharacters";
-
-const deduplicateSnapshotsCron = "0 5 * * *";
 
 async function ensureQueue(boss: PgBoss, name: string): Promise<void> {
   const existingQueue = await boss.getQueue(name);
@@ -25,24 +22,12 @@ export async function startWorker() {
 
   await boss.start();
   await ensureQueue(boss, queueNames.syncCharacters);
-  await ensureQueue(boss, queueNames.deduplicateSnapshots);
-  await boss.schedule(queueNames.deduplicateSnapshots, deduplicateSnapshotsCron, {});
 
   await boss.work(queueNames.syncCharacters, async (jobs: Job<SyncCharactersJobPayload>[]) => {
     for (const job of jobs) {
       const payload = syncCharactersJobPayloadSchema.parse(job.data);
       const result = await syncCharacters(payload);
       console.log("[worker] syncCharacters completed", {
-        jobId: job.id,
-        ...result,
-      });
-    }
-  });
-
-  await boss.work(queueNames.deduplicateSnapshots, async (jobs: Job<Record<string, never>>[]) => {
-    for (const job of jobs) {
-      const result = await deduplicateSnapshots();
-      console.log("[worker] deduplicateSnapshots completed", {
         jobId: job.id,
         ...result,
       });

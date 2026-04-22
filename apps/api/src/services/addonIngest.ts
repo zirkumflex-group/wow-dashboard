@@ -102,15 +102,6 @@ export class AddonIngestServiceError extends Error {
   }
 }
 
-function isUniqueConstraintViolation(error: unknown): error is { code: string } {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error as { code?: unknown }).code === "23505"
-  );
-}
-
 function normalizeSnapshotSpec(value: string): SnapshotSpec | null {
   const normalized = value.trim();
   if (normalized === "" || normalized === "Unknown") {
@@ -935,8 +926,17 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
         let dailySnapshotSource: SnapshotFields | null = null;
 
         if (!existingSnapshotRow) {
-          try {
-            await tx.insert(snapshots).values(snapshotFieldsToInsert(characterId, nextSnapshot));
+          const [insertedSnapshot] = await tx
+            .insert(snapshots)
+            .values(snapshotFieldsToInsert(characterId, nextSnapshot))
+            .onConflictDoNothing({
+              target: [snapshots.characterId, snapshots.takenAt],
+            })
+            .returning({
+              id: snapshots.id,
+            });
+
+          if (insertedSnapshot) {
             newSnapshots += 1;
             latestSnapshotCandidate = toCharacterLatestSnapshot(nextSnapshot);
             latestSnapshotDetailsCandidate = toCharacterLatestSnapshotDetails(nextSnapshot);
@@ -947,17 +947,13 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
                 : Math.min(nextCharacterFirstSnapshotAt, nextSnapshot.takenAt);
             nextCharacterSnapshotCount = (nextCharacterSnapshotCount ?? 0) + 1;
             shouldPersistSnapshotMetadata = true;
-          } catch (error) {
-            if (!isUniqueConstraintViolation(error)) {
-              throw error;
-            }
-
+          } else {
             existingSnapshotRow = await tx.query.snapshots.findFirst({
               where: and(eq(snapshots.characterId, characterId), eq(snapshots.takenAt, takenAt)),
             });
 
             if (!existingSnapshotRow) {
-              throw error;
+              throw new Error("Snapshot insert did not return a row and the conflicting row could not be reloaded.");
             }
           }
         }
