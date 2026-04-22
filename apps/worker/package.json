@@ -1,0 +1,17 @@
+{
+  "name": "@wow-dashboard/worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "check-types": "tsc --noEmit --project tsconfig.json",
+    "dev": "tsx watch src/worker.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "@wow-dashboard/config": "workspace:*",
+    "tsx": "^4.20.5",
+    "typescript": "^5"
+  }
+}

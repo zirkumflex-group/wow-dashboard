@@ -1,0 +1,25 @@
+{
+  "name": "@wow-dashboard/db",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "check-types": "tsc --noEmit --project tsconfig.json",
+    "generate": "drizzle-kit generate --config drizzle.config.ts --name init",
+    "migrate": "drizzle-kit migrate --config drizzle.config.ts"
+  },
+  "dependencies": {
+    "drizzle-orm": "catalog:",
+    "postgres": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "@wow-dashboard/config": "workspace:*",
+    "drizzle-kit": "catalog:",
+    "typescript": "^5"
+  }
+}

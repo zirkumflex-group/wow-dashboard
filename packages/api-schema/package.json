@@ -1,19 +1,20 @@
 {
-  "name": "@wow-dashboard/env",
+  "name": "@wow-dashboard/api-schema",
   "version": "0.0.0",
   "private": true,
   "type": "module",
   "exports": {
-    "./web": "./src/web.ts",
-    "./app": "./src/app.ts",
-    "./server": "./src/server.ts"
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "check-types": "tsc --noEmit --project tsconfig.json"
   },
   "dependencies": {
-    "@t3-oss/env-core": "^0.13.1",
-    "dotenv": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@types/node": "^24.3.0",
     "@wow-dashboard/config": "workspace:*",
     "typescript": "^5"
   }
