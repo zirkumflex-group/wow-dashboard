@@ -10,9 +10,6 @@ export default defineConfig({
     tanstackStart(),
     viteReact({
       exclude: ["./src/routes/__root.tsx"],
-      babel: {
-        compact: true,
-      },
     }),
     nitro(),
   ],

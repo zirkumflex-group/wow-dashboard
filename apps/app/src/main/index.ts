@@ -91,7 +91,7 @@ function persistDesktopSessionToken(token: string): void {
   saveSessionToken(token);
 }
 
-function runOpenCommand(command: string, args: string[]): Promise<void> {
+function runOpenCommand(command: string, args: readonly string[]): Promise<void> {
   return new Promise((resolvePromise, rejectPromise) => {
     execFile(command, args, { windowsHide: true }, (error) => {
       if (error) {

@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
+    "check-types": "tsc --noEmit --project tsconfig.node.json && tsc --noEmit --project tsconfig.web.json",
     "start": "electron-vite preview",
     "package": "electron-builder --win"
   },
@@ -22,7 +23,7 @@
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
     "@types/unzipper": "^0.10.11",
-    "@vitejs/plugin-react": "^6.0.1",
+    "@vitejs/plugin-react": "^5.2.0",
     "@wow-dashboard/config": "workspace:*",
     "@wow-dashboard/env": "workspace:*",
     "@wow-dashboard/ui": "workspace:*",
@@ -36,7 +37,7 @@
     "react-dom": "catalog:",
     "tailwindcss": "catalog:",
     "typescript": "^6.0.3",
-    "vite": "^8.0.9",
+    "vite": "^7.3.2",
     "zod": "catalog:"
   },
   "build": {

@@ -7,6 +7,14 @@ on:
     paths:
       - "apps/app/**"
       - "apps/addon/**"
+      - "packages/api-client/**"
+      - "packages/api-schema/**"
+      - "packages/config/**"
+      - "packages/env/**"
+      - "packages/ui/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
 
 permissions:
   contents: write
@@ -47,6 +55,14 @@ jobs:
           filters: |
             app:
               - 'apps/app/**'
+              - 'packages/api-client/**'
+              - 'packages/api-schema/**'
+              - 'packages/config/**'
+              - 'packages/env/**'
+              - 'packages/ui/**'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
             addon:
               - 'apps/addon/**'
 
@@ -100,7 +116,7 @@ jobs:
 
           if [ "$APP_CHANGED" = "true" ]; then
             CURRENT=$(node -p "require('./apps/app/package.json').version")
-            APP_VERSION=$(bump_semver "$CURRENT" "apps/app/ packages/ui/ packages/env/ packages/config/" "app-v*")
+            APP_VERSION=$(bump_semver "$CURRENT" "apps/app/ packages/api-client/ packages/api-schema/ packages/config/ packages/env/ packages/ui/ package.json pnpm-lock.yaml pnpm-workspace.yaml" "app-v*")
             # Update package.json version
             node -e "
               const fs = require('fs');
