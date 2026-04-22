@@ -787,11 +787,20 @@ export async function readCharacterPage(
     return null;
   }
 
-  const [owner, latestSnapshot, firstSnapshotAt, timelinePayload] = await Promise.all([
-    readCharacterOwner(character),
-    readLatestSnapshotDetailsForCharacter(character),
-    readFirstSnapshotAtForCharacter(character),
-    readTimelinePayloadForCharacter(character, timeFrame, includeStats),
+  const ownerPromise = readCharacterOwner(character);
+  const latestSnapshotPromise = readLatestSnapshotDetailsForCharacter(character);
+  const firstSnapshotAtPromise = readFirstSnapshotAtForCharacter(character);
+  const timelinePayloadPromise = readTimelinePayloadForCharacter(character, timeFrame, includeStats);
+  const mythicPlusPromise = latestSnapshotPromise.then((latestSnapshot) =>
+    readCharacterMythicPlusData(character, false, latestSnapshot?.mythicPlusScore ?? null),
+  );
+
+  const [owner, latestSnapshot, firstSnapshotAt, timelinePayload, mythicPlus] = await Promise.all([
+    ownerPromise,
+    latestSnapshotPromise,
+    firstSnapshotAtPromise,
+    timelinePayloadPromise,
+    mythicPlusPromise,
   ]);
 
   return {
@@ -817,11 +826,7 @@ export async function readCharacterPage(
           snapshots: timelinePayload.statsSnapshots ?? [],
         }
       : null,
-    mythicPlus: await readCharacterMythicPlusData(
-      character,
-      false,
-      latestSnapshot?.mythicPlusScore ?? null,
-    ),
+    mythicPlus,
   };
 }
 
