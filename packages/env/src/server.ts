@@ -2,6 +2,24 @@ import "./load";
 import { createEnv } from "@t3-oss/env-core";
 import { z } from "zod";
 
+const placeholderBetterAuthSecret = "development-only-better-auth-secret-change-me";
+const placeholderBattleNetClientId = "replace-with-battlenet-client-id";
+const placeholderBattleNetClientSecret = "replace-with-battlenet-client-secret";
+const runtimeNodeEnv = process.env.NODE_ENV ?? "development";
+const isProduction = runtimeNodeEnv === "production";
+
+function requiredEnvStringInProduction(placeholder: string, minimumLength = 1) {
+  const schema = z.string().min(minimumLength);
+
+  if (!isProduction) {
+    return schema.default(placeholder);
+  }
+
+  return schema.refine((value) => value !== placeholder, {
+    message: "Must be set to a non-placeholder value in production.",
+  });
+}
+
 export const env = createEnv({
   server: {
     PORT: z.string().default("3000"),
@@ -10,12 +28,9 @@ export const env = createEnv({
     SITE_URL: z.url().default("http://localhost:3001"),
     API_URL: z.url().default("http://localhost:3000/api"),
     BETTER_AUTH_URL: z.url().default("http://localhost:3000"),
-    BETTER_AUTH_SECRET: z
-      .string()
-      .min(32)
-      .default("development-only-better-auth-secret-change-me"),
-    BATTLENET_CLIENT_ID: z.string().min(1).default("replace-with-battlenet-client-id"),
-    BATTLENET_CLIENT_SECRET: z.string().min(1).default("replace-with-battlenet-client-secret"),
+    BETTER_AUTH_SECRET: requiredEnvStringInProduction(placeholderBetterAuthSecret, 32),
+    BATTLENET_CLIENT_ID: requiredEnvStringInProduction(placeholderBattleNetClientId),
+    BATTLENET_CLIENT_SECRET: requiredEnvStringInProduction(placeholderBattleNetClientSecret),
     NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
     LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("debug"),
   },

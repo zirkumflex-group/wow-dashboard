@@ -4,29 +4,40 @@ import { db } from "../db";
 
 const deleteChunkSize = 500;
 
-function snapshotKey(snapshot: typeof snapshots.$inferSelect): string {
+function snapshotIdentityKey(snapshot: typeof snapshots.$inferSelect): string {
   return JSON.stringify({
     characterId: snapshot.characterId,
-    level: snapshot.level,
-    spec: snapshot.spec,
-    role: snapshot.role,
-    itemLevel: snapshot.itemLevel,
-    gold: snapshot.gold,
-    playtimeSeconds: snapshot.playtimeSeconds,
-    ...(snapshot.playtimeThisLevelSeconds != null
-      ? {
-          playtimeThisLevelSeconds: snapshot.playtimeThisLevelSeconds,
-        }
-      : {}),
-    mythicPlusScore: snapshot.mythicPlusScore,
-    ...(snapshot.ownedKeystone
-      ? {
-          ownedKeystone: snapshot.ownedKeystone,
-        }
-      : {}),
-    currencies: snapshot.currencies,
-    stats: snapshot.stats,
+    takenAt: snapshot.takenAt.toISOString(),
   });
+}
+
+function snapshotCompletenessScore(snapshot: typeof snapshots.$inferSelect): number {
+  let score = 0;
+
+  if (snapshot.playtimeThisLevelSeconds !== null) score += 1;
+  if (snapshot.ownedKeystone) score += 1;
+  if (snapshot.stats.speedPercent !== undefined) score += 2;
+  if (snapshot.stats.leechPercent !== undefined) score += 2;
+  if (snapshot.stats.avoidancePercent !== undefined) score += 2;
+
+  return score;
+}
+
+function shouldReplaceSnapshot(
+  currentSnapshot: typeof snapshots.$inferSelect | undefined,
+  candidateSnapshot: typeof snapshots.$inferSelect,
+): boolean {
+  if (!currentSnapshot) {
+    return true;
+  }
+
+  const currentScore = snapshotCompletenessScore(currentSnapshot);
+  const candidateScore = snapshotCompletenessScore(candidateSnapshot);
+  if (candidateScore !== currentScore) {
+    return candidateScore > currentScore;
+  }
+
+  return candidateSnapshot.id.localeCompare(currentSnapshot.id) < 0;
 }
 
 function chunk<T>(values: T[], size: number): T[][] {
@@ -41,21 +52,24 @@ function chunk<T>(values: T[], size: number): T[][] {
 
 export async function deduplicateSnapshots() {
   const allSnapshots = await db.query.snapshots.findMany();
-  const sortedSnapshots = allSnapshots
-    .slice()
-    .sort((left, right) => left.takenAt.getTime() - right.takenAt.getTime());
-
-  const seen = new Map<string, string>();
+  const keptByIdentity = new Map<string, typeof snapshots.$inferSelect>();
   const duplicateIds: string[] = [];
 
-  for (const snapshot of sortedSnapshots) {
-    const key = snapshotKey(snapshot);
-    if (seen.has(key)) {
-      duplicateIds.push(snapshot.id);
+  for (const snapshot of allSnapshots) {
+    const identityKey = snapshotIdentityKey(snapshot);
+    const currentSnapshot = keptByIdentity.get(identityKey);
+    if (!currentSnapshot) {
+      keptByIdentity.set(identityKey, snapshot);
       continue;
     }
 
-    seen.set(key, snapshot.id);
+    if (shouldReplaceSnapshot(currentSnapshot, snapshot)) {
+      duplicateIds.push(currentSnapshot.id);
+      keptByIdentity.set(identityKey, snapshot);
+      continue;
+    }
+
+    duplicateIds.push(snapshot.id);
   }
 
   for (const ids of chunk(duplicateIds, deleteChunkSize)) {

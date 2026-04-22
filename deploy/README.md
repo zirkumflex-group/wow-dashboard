@@ -76,13 +76,13 @@ Then SSH into the VPS and deploy:
 ```bash
 ssh vps
 cd ~/wow-dashboard
-docker compose --profile edge --env-file deploy/.env.staging -f deploy/docker-compose.prod.yml up -d --build
+docker compose --env-file deploy/.env.staging -f deploy/docker-compose.prod.yml up -d --build
 ```
 
 If you want to run the Convex import after deploy:
 
 ```bash
-docker compose --profile edge --env-file deploy/.env.staging -f deploy/docker-compose.prod.yml exec -T api \
+docker compose --env-file deploy/.env.staging -f deploy/docker-compose.prod.yml exec -T api \
   node apps/api/dist/importConvexExport.cjs \
   /tmp/<convex-export>.zip \
   --apply
@@ -91,7 +91,7 @@ docker compose --profile edge --env-file deploy/.env.staging -f deploy/docker-co
 Copy the ZIP into the `api` container first:
 
 ```bash
-api_container=$(docker compose --profile edge --env-file deploy/.env.staging -f deploy/docker-compose.prod.yml ps -q api)
+api_container=$(docker compose --env-file deploy/.env.staging -f deploy/docker-compose.prod.yml ps -q api)
 docker cp .imports/<convex-export>.zip "$api_container:/tmp/<convex-export>.zip"
 ```
 
@@ -117,6 +117,7 @@ docker compose --env-file deploy/.env.staging -f deploy/docker-compose.prod.yml 
 
 ## Notes
 
+- `docker-compose.prod.yml` now starts Caddy by default, so the main deploy command brings up the full public stack.
 - Only Caddy publishes ports to the internet. Postgres and Redis stay internal to Docker.
 - `api` and `worker` are bundled during the image build and run with plain `node` at runtime.
 - The one-shot Convex importer is bundled into the API image from `apps/api/src/importConvexExport.ts` and is safe to rerun.

@@ -20,6 +20,7 @@ import { env } from "@wow-dashboard/env/server";
 import { auth, type ApiAuthSession, type ApiAuthUser } from "./auth";
 import { db } from "./db";
 import { createLoginCode, redeemLoginCode } from "./lib/loginCodes";
+import { ensureRedis } from "./lib/redis";
 import { AddonIngestServiceError, ingestAddonData } from "./services/addonIngest";
 import {
   readBoosterCharactersForExport,
@@ -426,7 +427,13 @@ app.use("/api/*", async (c, next) => {
 app.get("/healthz", (c) => c.json({ ok: true }));
 app.get("/readyz", async (c) => {
   try {
-    await db.execute(sql`select 1`);
+    const redis = await ensureRedis();
+    const [, redisStatus] = await Promise.all([db.execute(sql`select 1`), redis.ping()]);
+
+    if (redisStatus !== "PONG") {
+      throw new Error("Redis ping failed");
+    }
+
     return c.json({ ok: true });
   } catch {
     return c.json({ ok: false }, 503);

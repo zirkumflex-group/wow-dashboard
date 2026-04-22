@@ -103,6 +103,15 @@ export class AddonIngestServiceError extends Error {
   }
 }
 
+function isUniqueConstraintViolation(error: unknown): error is { code: string } {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "23505"
+  );
+}
+
 function normalizeSnapshotSpec(value: string): SnapshotSpec | null {
   const normalized = value.trim();
   if (normalized === "" || normalized === "Unknown") {
@@ -914,30 +923,47 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
           stats: snapshotInput.stats,
         };
 
-        const existingSnapshotRow = await tx.query.snapshots.findFirst({
+        const takenAt = fromUnixSeconds(snapshotInput.takenAt);
+        let existingSnapshotRow = await tx.query.snapshots.findFirst({
           where: and(
             eq(snapshots.characterId, characterId),
-            eq(snapshots.takenAt, fromUnixSeconds(snapshotInput.takenAt)),
+            eq(snapshots.takenAt, takenAt),
           ),
         });
 
-        let latestSnapshotCandidate: LatestSnapshotSummary;
-        let latestSnapshotDetailsCandidate: LatestSnapshotDetails;
-        let dailySnapshotSource: SnapshotFields;
+        let latestSnapshotCandidate: LatestSnapshotSummary | null = null;
+        let latestSnapshotDetailsCandidate: LatestSnapshotDetails | null = null;
+        let dailySnapshotSource: SnapshotFields | null = null;
 
         if (!existingSnapshotRow) {
-          await tx.insert(snapshots).values(snapshotFieldsToInsert(characterId, nextSnapshot));
-          newSnapshots += 1;
-          latestSnapshotCandidate = toCharacterLatestSnapshot(nextSnapshot);
-          latestSnapshotDetailsCandidate = toCharacterLatestSnapshotDetails(nextSnapshot);
-          dailySnapshotSource = nextSnapshot;
-          nextCharacterFirstSnapshotAt =
-            nextCharacterFirstSnapshotAt === null
-              ? nextSnapshot.takenAt
-              : Math.min(nextCharacterFirstSnapshotAt, nextSnapshot.takenAt);
-          nextCharacterSnapshotCount = (nextCharacterSnapshotCount ?? 0) + 1;
-          shouldPersistSnapshotMetadata = true;
-        } else {
+          try {
+            await tx.insert(snapshots).values(snapshotFieldsToInsert(characterId, nextSnapshot));
+            newSnapshots += 1;
+            latestSnapshotCandidate = toCharacterLatestSnapshot(nextSnapshot);
+            latestSnapshotDetailsCandidate = toCharacterLatestSnapshotDetails(nextSnapshot);
+            dailySnapshotSource = nextSnapshot;
+            nextCharacterFirstSnapshotAt =
+              nextCharacterFirstSnapshotAt === null
+                ? nextSnapshot.takenAt
+                : Math.min(nextCharacterFirstSnapshotAt, nextSnapshot.takenAt);
+            nextCharacterSnapshotCount = (nextCharacterSnapshotCount ?? 0) + 1;
+            shouldPersistSnapshotMetadata = true;
+          } catch (error) {
+            if (!isUniqueConstraintViolation(error)) {
+              throw error;
+            }
+
+            existingSnapshotRow = await tx.query.snapshots.findFirst({
+              where: and(eq(snapshots.characterId, characterId), eq(snapshots.takenAt, takenAt)),
+            });
+
+            if (!existingSnapshotRow) {
+              throw error;
+            }
+          }
+        }
+
+        if (existingSnapshotRow) {
           const existingSnapshotFields = snapshotRowToFields(existingSnapshotRow);
           const mergedSnapshot = mergeSnapshotFields(existingSnapshotFields, nextSnapshot);
 
@@ -954,6 +980,10 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
             latestSnapshotDetailsCandidate = toCharacterLatestSnapshotDetails(existingSnapshotFields);
             dailySnapshotSource = existingSnapshotFields;
           }
+        }
+
+        if (!latestSnapshotCandidate || !latestSnapshotDetailsCandidate || !dailySnapshotSource) {
+          throw new Error("Snapshot ingest did not produce a resolved snapshot state.");
         }
 
         const dayStartAt = getSnapshotDayStart(dailySnapshotSource.takenAt);

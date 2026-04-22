@@ -116,7 +116,7 @@ The current production-shaped stack is:
 Bring it up on the VPS with:
 
 ```bash
-docker compose --profile edge --env-file deploy/.env.staging -f deploy/docker-compose.prod.yml up -d --build
+docker compose --env-file deploy/.env.staging -f deploy/docker-compose.prod.yml up -d --build
 ```
 
 ## Convex Import
@@ -124,7 +124,7 @@ docker compose --profile edge --env-file deploy/.env.staging -f deploy/docker-co
 The one-shot importer is bundled into the API image and can be rerun safely:
 
 ```bash
-docker compose --profile edge --env-file deploy/.env.staging -f deploy/docker-compose.prod.yml exec -T api \
+docker compose --env-file deploy/.env.staging -f deploy/docker-compose.prod.yml exec -T api \
   node apps/api/dist/importConvexExport.cjs \
   /tmp/<convex-export>.zip \
   --apply

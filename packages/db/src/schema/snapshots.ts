@@ -46,6 +46,10 @@ export const snapshots = pgTable(
   },
   (table) => ({
     legacyConvexIdIdx: uniqueIndex("snapshots_legacy_convex_id_uidx").on(table.legacyConvexId),
+    byCharacterAndTakenAtUniqueIdx: uniqueIndex("snapshots_character_id_taken_at_uidx").on(
+      table.characterId,
+      table.takenAt,
+    ),
     byCharacterIdx: index("snapshots_character_id_idx").on(table.characterId),
     byCharacterAndTimeIdx: index("snapshots_character_id_taken_at_idx").on(
       table.characterId,
