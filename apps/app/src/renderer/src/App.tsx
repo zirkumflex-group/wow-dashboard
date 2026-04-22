@@ -351,6 +351,7 @@ function LoadingScreen() {
 function LoginScreen({ onLogin }: { onLogin: () => Promise<void> }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const loginUrl = new URL("/auth/electron-login", env.VITE_SITE_URL).toString();
 
   async function handleLogin() {
     setLoading(true);
@@ -381,6 +382,17 @@ function LoginScreen({ onLogin }: { onLogin: () => Promise<void> }) {
         </button>
 
         {error && <p className="text-sm text-red-400">{error}</p>}
+
+        {(error || !loading) && (
+          <div className="space-y-2">
+            <p className="text-xs text-gray-500">
+              If your browser doesn&apos;t open automatically, open this URL manually:
+            </p>
+            <p className="rounded-md border border-gray-800 bg-gray-900 px-3 py-2 text-left font-mono text-xs text-gray-300 select-text break-all">
+              {loginUrl}
+            </p>
+          </div>
+        )}
 
         <p className="text-xs text-gray-600">Requires the web app running on {env.VITE_SITE_URL}</p>
       </div>

@@ -12,6 +12,8 @@ import {
   nativeImage,
 } from "electron";
 import { autoUpdater } from "electron-updater";
+import { env as serverEnv } from "@wow-dashboard/env/server";
+import { execFile } from "node:child_process";
 import * as fs from "fs";
 import * as path from "path";
 import { join, resolve, sep } from "path";
@@ -71,6 +73,93 @@ const addonUpdateState: AddonUpdateState = {
   error: null,
   lastCheckedAt: null,
 };
+const SITE_URL = serverEnv.SITE_URL;
+const API_URL = serverEnv.API_URL;
+
+function getElectronLoginUrl(): string {
+  return new URL("/auth/electron-login", SITE_URL).toString();
+}
+
+function buildElectronLoginAttemptUrl(attemptId: string): string {
+  const url = new URL(getElectronLoginUrl());
+  url.searchParams.set("attemptId", attemptId);
+  return url.toString();
+}
+
+function getDesktopLoginPollUrl(attemptId: string): string {
+  const url = new URL("auth/desktop-login", API_URL.endsWith("/") ? API_URL : `${API_URL}/`);
+  url.searchParams.set("attemptId", attemptId);
+  return url.toString();
+}
+
+function getApiAuthUrl(pathname: string): string {
+  return new URL(pathname.replace(/^\//, ""), API_URL.endsWith("/") ? API_URL : `${API_URL}/`).toString();
+}
+
+function persistDesktopSessionToken(token: string): void {
+  storedSessionToken = token;
+  cachedElectronToken = null;
+  saveSessionToken(token);
+}
+
+function runOpenCommand(command: string, args: string[]): Promise<void> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    execFile(command, args, { windowsHide: true }, (error) => {
+      if (error) {
+        rejectPromise(error);
+        return;
+      }
+      resolvePromise();
+    });
+  });
+}
+
+async function openUrlInExternalBrowser(url: string): Promise<void> {
+  try {
+    await shell.openExternal(url);
+    return;
+  } catch (error) {
+    console.warn("[wow-dashboard] shell.openExternal failed:", error);
+  }
+
+  if (process.platform === "linux") {
+    for (const [command, args] of [
+      ["xdg-open", [url]],
+      ["gio", ["open", url]],
+    ] as const) {
+      try {
+        await runOpenCommand(command, args);
+        return;
+      } catch (error) {
+        console.warn(`[wow-dashboard] ${command} failed:`, error);
+      }
+    }
+  }
+
+  throw new Error(`Could not open your browser automatically. Open ${url} manually.`);
+}
+
+async function pollDesktopLoginAttempt(attemptId: string): Promise<string | null> {
+  const response = await net.fetch(getDesktopLoginPollUrl(attemptId), {
+    headers: {
+      Accept: "application/json",
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Desktop login poll failed: ${response.status}`);
+  }
+
+  const payload = (await response.json()) as
+    | { status: "pending" }
+    | { status: "complete"; token?: string };
+
+  if (payload.status !== "complete" || !payload.token) {
+    return null;
+  }
+
+  return payload.token;
+}
 
 // ─── Token persistence via OS keychain (safeStorage) ──────────────────────────
 
@@ -2473,7 +2562,7 @@ function handleDeepLink(url: string): void {
 
         // Exchange the one-time code for the long-lived API bearer token.
         net
-          .fetch(`${SITE_URL}/api/auth/redeem-code`, {
+          .fetch(getApiAuthUrl("/auth/redeem-code"), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ code }),
@@ -2499,33 +2588,76 @@ function handleDeepLink(url: string): void {
 
 // ─── IPC handlers ─────────────────────────────────────────────────────────────
 
-// Trusted site URL — read from build-time env, never from renderer input.
-const SITE_URL: string = (import.meta as unknown as { env: Record<string, string> }).env
-  .VITE_SITE_URL ?? "";
-
 // Auth
 ipcMain.handle("auth:login", () => {
   return new Promise<boolean>((resolve, reject) => {
-    // Set up pending deep-link resolution with a 10-minute timeout.
-    const timeout = setTimeout(() => {
-      pendingLoginReject?.(new Error("Login timed out"));
+    const attemptId = crypto.randomUUID();
+    const loginUrl = buildElectronLoginAttemptUrl(attemptId);
+    let settled = false;
+
+    const finalizeSuccess = (token?: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
       pendingLoginResolve = null;
       pendingLoginReject = null;
-    }, 10 * 60 * 1000);
-
-    pendingLoginResolve = (_token: string) => {
-      clearTimeout(timeout);
+      if (token) {
+        persistDesktopSessionToken(token);
+      }
+      if (mainWindow) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.focus();
+      }
       resolve(true);
     };
-    pendingLoginReject = (err: Error) => {
+
+    const finalizeError = (error: Error) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timeout);
-      reject(err);
+      pendingLoginResolve = null;
+      pendingLoginReject = null;
+      reject(error);
+    };
+
+    // Set up pending deep-link resolution with a 10-minute timeout.
+    const timeout = setTimeout(() => {
+      finalizeError(new Error("Login timed out"));
+    }, 10 * 60 * 1000);
+
+    pendingLoginResolve = (token: string) => {
+      finalizeSuccess(token);
+    };
+    pendingLoginReject = (err: Error) => {
+      finalizeError(err);
+    };
+
+    const poll = async () => {
+      if (settled) return;
+
+      try {
+        const token = await pollDesktopLoginAttempt(attemptId);
+        if (token) {
+          finalizeSuccess(token);
+          return;
+        }
+      } catch (error) {
+        finalizeError(error instanceof Error ? error : new Error(String(error)));
+        return;
+      }
+
+      setTimeout(() => {
+        void poll();
+      }, 1000);
     };
 
     // Open the login page in the browser. The browser initiates the OAuth flow so the
     // state cookie lands in the browser session (not Electron's), which means better-auth
     // can validate the callback and honour the callbackURL → /auth/electron-callback.
-    void shell.openExternal(`${SITE_URL}/auth/electron-login`);
+    void openUrlInExternalBrowser(loginUrl).catch((error: Error) => {
+      finalizeError(error);
+    });
+    void poll();
   });
 });
 
@@ -2540,7 +2672,7 @@ ipcMain.handle("auth:getToken", async () => {
 
 ipcMain.handle("auth:getSession", async () => {
   try {
-    const resp = await session.defaultSession.fetch(`${SITE_URL}/api/auth/get-session`, {
+    const resp = await session.defaultSession.fetch(getApiAuthUrl("/auth/get-session"), {
       headers: {
         Origin: SITE_URL,
         ...(storedSessionToken ? { Authorization: `Bearer ${storedSessionToken}` } : {}),
@@ -2559,7 +2691,7 @@ ipcMain.handle("auth:logout", async () => {
   storedSessionToken = null;
   saveSessionToken(null);
   try {
-    await session.defaultSession.fetch(`${SITE_URL}/api/auth/sign-out`, {
+    await session.defaultSession.fetch(getApiAuthUrl("/auth/sign-out"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

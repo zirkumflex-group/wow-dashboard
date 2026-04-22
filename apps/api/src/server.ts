@@ -20,7 +20,12 @@ import { players } from "@wow-dashboard/db";
 import { env } from "@wow-dashboard/env/server";
 import { auth, type ApiAuthSession, type ApiAuthUser } from "./auth";
 import { db } from "./db";
-import { createLoginCode, redeemLoginCode } from "./lib/loginCodes";
+import {
+  completeDesktopLoginAttempt,
+  consumeDesktopLoginAttempt,
+  createLoginCode,
+  redeemLoginCode,
+} from "./lib/loginCodes";
 import { AddonIngestServiceError, ingestAddonData } from "./services/addonIngest";
 import {
   readBoosterCharactersForExport,
@@ -374,6 +379,52 @@ app.post("/api/auth/login-code", async (c) => {
   return c.json({
     code,
     expiresIn: loginCodeTtlSeconds,
+  });
+});
+
+app.post("/api/auth/desktop-login/complete", async (c) => {
+  const session = c.get("session");
+  const user = c.get("user");
+
+  if (!session || !user) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  let body: { attemptId?: unknown };
+  try {
+    body = (await c.req.json()) as { attemptId?: unknown };
+  } catch {
+    return c.json({ error: "Invalid request body" }, 400);
+  }
+
+  const attemptId = typeof body.attemptId === "string" ? body.attemptId : "";
+  if (!attemptId) {
+    return c.json({ error: "attemptId is required" }, 400);
+  }
+
+  await completeDesktopLoginAttempt({
+    attemptId,
+    token: session.token,
+    userId: user.id,
+  });
+
+  return c.json({ ok: true, expiresIn: loginCodeTtlSeconds });
+});
+
+app.get("/api/auth/desktop-login", async (c) => {
+  const attemptId = c.req.query("attemptId") ?? "";
+  if (!attemptId) {
+    return c.json({ error: "attemptId is required" }, 400);
+  }
+
+  const token = await consumeDesktopLoginAttempt(attemptId);
+  if (!token) {
+    return c.json({ status: "pending" as const });
+  }
+
+  return c.json({
+    status: "complete" as const,
+    token,
   });
 });
 
