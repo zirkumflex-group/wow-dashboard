@@ -382,6 +382,13 @@ importers:
         version: 5.9.3
 
   packages/api-client:
+    dependencies:
+      '@wow-dashboard/api-schema':
+        specifier: workspace:*
+        version: link:../api-schema
+      zod:
+        specifier: 'catalog:'
+        version: 4.3.6
     devDependencies:
       '@types/node':
         specifier: ^24.3.0

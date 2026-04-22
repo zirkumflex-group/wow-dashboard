@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-const nonTradeableSlotValues = [
+export const nonTradeableSlotValues = [
   "head",
   "shoulders",
   "chest",
@@ -19,11 +19,11 @@ const nonTradeableSlotValues = [
   "offHand",
 ] as const;
 
-const characterRegionValues = ["us", "eu", "kr", "tw"] as const;
-const characterFactionValues = ["alliance", "horde"] as const;
-const snapshotRoleValues = ["tank", "healer", "dps"] as const;
-const mythicPlusRunStatusValues = ["active", "completed", "abandoned"] as const;
-const mythicPlusAbandonReasonValues = [
+export const characterRegionValues = ["us", "eu", "kr", "tw"] as const;
+export const characterFactionValues = ["alliance", "horde"] as const;
+export const snapshotRoleValues = ["tank", "healer", "dps"] as const;
+export const mythicPlusRunStatusValues = ["active", "completed", "abandoned"] as const;
+export const mythicPlusAbandonReasonValues = [
   "challenge_mode_reset",
   "left_instance",
   "leaver_timer",
@@ -32,7 +32,14 @@ const mythicPlusAbandonReasonValues = [
   "unknown",
 ] as const;
 
-const currenciesSchema = z.object({
+export const nonTradeableSlotSchema = z.enum(nonTradeableSlotValues);
+export const characterRegionSchema = z.enum(characterRegionValues);
+export const characterFactionSchema = z.enum(characterFactionValues);
+export const snapshotRoleSchema = z.enum(snapshotRoleValues);
+export const mythicPlusRunStatusSchema = z.enum(mythicPlusRunStatusValues);
+export const mythicPlusAbandonReasonSchema = z.enum(mythicPlusAbandonReasonValues);
+
+export const currenciesSchema = z.object({
   adventurerDawncrest: z.number(),
   veteranDawncrest: z.number(),
   championDawncrest: z.number(),
@@ -41,7 +48,7 @@ const currenciesSchema = z.object({
   radiantSparkDust: z.number(),
 });
 
-const statsSchema = z.object({
+export const statsSchema = z.object({
   stamina: z.number(),
   strength: z.number(),
   agility: z.number(),
@@ -55,17 +62,17 @@ const statsSchema = z.object({
   avoidancePercent: z.number().optional(),
 });
 
-const ownedKeystoneSchema = z.object({
+export const ownedKeystoneSchema = z.object({
   level: z.number(),
   mapChallengeModeID: z.number().optional(),
   mapName: z.string().optional(),
 });
 
-const addonSnapshotSchema = z.object({
+export const addonSnapshotSchema = z.object({
   takenAt: z.number(),
   level: z.number(),
   spec: z.string(),
-  role: z.enum(snapshotRoleValues),
+  role: snapshotRoleSchema,
   itemLevel: z.number(),
   gold: z.number(),
   playtimeSeconds: z.number(),
@@ -76,14 +83,14 @@ const addonSnapshotSchema = z.object({
   stats: statsSchema,
 });
 
-const addonMythicPlusRunMemberSchema = z.object({
+export const addonMythicPlusRunMemberSchema = z.object({
   name: z.string(),
   realm: z.string().optional(),
   classTag: z.string().optional(),
-  role: z.enum(snapshotRoleValues).optional(),
+  role: snapshotRoleSchema.optional(),
 });
 
-const addonMythicPlusRunSchema = z.object({
+export const addonMythicPlusRunSchema = z.object({
   fingerprint: z.string(),
   attemptId: z.string().optional(),
   canonicalKey: z.string().optional(),
@@ -92,7 +99,7 @@ const addonMythicPlusRunSchema = z.object({
   mapChallengeModeID: z.number().optional(),
   mapName: z.string().optional(),
   level: z.number().optional(),
-  status: z.enum(mythicPlusRunStatusValues).optional(),
+  status: mythicPlusRunStatusSchema.optional(),
   completed: z.boolean().optional(),
   completedInTime: z.boolean().optional(),
   durationMs: z.number().optional(),
@@ -101,18 +108,18 @@ const addonMythicPlusRunSchema = z.object({
   completedAt: z.number().optional(),
   endedAt: z.number().optional(),
   abandonedAt: z.number().optional(),
-  abandonReason: z.enum(mythicPlusAbandonReasonValues).optional(),
+  abandonReason: mythicPlusAbandonReasonSchema.optional(),
   thisWeek: z.boolean().optional(),
   members: z.array(addonMythicPlusRunMemberSchema).optional(),
 });
 
-const addonCharacterSchema = z.object({
+export const addonCharacterSchema = z.object({
   name: z.string(),
   realm: z.string(),
-  region: z.enum(characterRegionValues),
+  region: characterRegionSchema,
   class: z.string(),
   race: z.string(),
-  faction: z.enum(characterFactionValues),
+  faction: characterFactionSchema,
   snapshots: z.array(addonSnapshotSchema),
   mythicPlusRuns: z.array(addonMythicPlusRunSchema).optional(),
 });
@@ -138,7 +145,7 @@ export const updateCharacterBoosterBodySchema = z.object({
 });
 
 export const updateCharacterSlotsBodySchema = z.object({
-  nonTradeableSlots: z.array(z.enum(nonTradeableSlotValues)),
+  nonTradeableSlots: z.array(nonTradeableSlotSchema),
 });
 
 export const addonIngestBodySchema = z.object({
