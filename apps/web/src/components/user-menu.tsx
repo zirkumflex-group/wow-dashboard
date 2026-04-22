@@ -1,4 +1,3 @@
-import { api } from "@wow-dashboard/backend/convex/_generated/api";
 import { Button } from "@wow-dashboard/ui/components/button";
 import {
   DropdownMenu,
@@ -9,12 +8,12 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@wow-dashboard/ui/components/dropdown-menu";
-import { useQuery } from "convex/react";
 
 import { authClient } from "@/lib/auth-client";
 
 export default function UserMenu() {
-  const user = useQuery(api.auth.getCurrentUser);
+  const session = authClient.useSession();
+  const user = session.data?.user;
 
   return (
     <DropdownMenu>

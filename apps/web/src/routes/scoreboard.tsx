@@ -1,5 +1,5 @@
+import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, redirect } from "@tanstack/react-router";
-import { api } from "@wow-dashboard/backend/convex/_generated/api";
 import { Badge } from "@wow-dashboard/ui/components/badge";
 import { Card, CardContent } from "@wow-dashboard/ui/components/card";
 import { Checkbox } from "@wow-dashboard/ui/components/checkbox";
@@ -14,9 +14,9 @@ import {
   TableRow,
 } from "@wow-dashboard/ui/components/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@wow-dashboard/ui/components/tabs";
-import { useQuery } from "convex/react";
 import { ArrowDown, ArrowUp, ArrowUpDown, Trophy, Users } from "lucide-react";
 import { useEffect, useState } from "react";
+import { apiQueryOptions } from "@/lib/api-client";
 import { getClassTextColor } from "../lib/class-colors";
 import { getMythicPlusDungeonMeta, getRaiderIoScoreColor } from "../lib/mythic-plus-static";
 
@@ -147,7 +147,7 @@ type CharacterSort = "mplus" | "ilvl" | "key" | "playtime";
 type PlayerSort = "mplus" | "playtime" | "gold";
 
 function CharactersTab() {
-  const entries = useQuery(api.characters.getScoreboard);
+  const entries = useQuery(apiQueryOptions.scoreboardCharacters()).data;
   const [sort, setSort] = useState<CharacterSort>("mplus");
   const [dir, setDir] = useState<SortDir>("desc");
   const [hideBelow90, setHideBelow90] = useState<boolean>(() => readHideBelow90());
@@ -396,7 +396,7 @@ function CharactersTab() {
 }
 
 function PlayersTab() {
-  const entries = useQuery(api.characters.getPlayerScoreboard);
+  const entries = useQuery(apiQueryOptions.playerScoreboard()).data;
   const [sort, setSort] = useState<PlayerSort>("mplus");
   const [dir, setDir] = useState<SortDir>("desc");
 

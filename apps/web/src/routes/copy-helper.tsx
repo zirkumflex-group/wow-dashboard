@@ -1,6 +1,6 @@
+import { apiQueryKeys } from "@wow-dashboard/api-client";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, redirect } from "@tanstack/react-router";
-import { api } from "@wow-dashboard/backend/convex/_generated/api";
-import type { Id } from "@wow-dashboard/backend/convex/_generated/dataModel";
 import { Badge } from "@wow-dashboard/ui/components/badge";
 import { Button } from "@wow-dashboard/ui/components/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@wow-dashboard/ui/components/card";
@@ -15,11 +15,11 @@ import {
   SheetTrigger,
 } from "@wow-dashboard/ui/components/sheet";
 import { Skeleton } from "@wow-dashboard/ui/components/skeleton";
-import { useMutation, useQuery } from "convex/react";
 import { Check, Copy, Users, Zap } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
+import { apiClient, apiQueryOptions } from "@/lib/api-client";
 import { getClassTextColor } from "../lib/class-colors";
 import { getMythicPlusDungeonMeta } from "../lib/mythic-plus-static";
 import {
@@ -305,12 +305,22 @@ function getEquippedKeystoneExportLabel(
 }
 
 function RouteComponent() {
-  const boosterCharacters = useQuery(
-    (api as any).characters.getBoosterCharactersForExport,
-  ) as BoosterCharacter[] | null | undefined;
-  const setCharacterNonTradeableSlots = useMutation(
-    (api as any).characters.setCharacterNonTradeableSlots,
-  );
+  const queryClient = useQueryClient();
+  const boosterCharacters = useQuery(apiQueryOptions.boosterCharactersForExport()).data;
+  const setCharacterNonTradeableSlots = useMutation({
+    mutationFn: ({
+      characterId,
+      nonTradeableSlots,
+    }: {
+      characterId: string;
+      nonTradeableSlots: TradeSlotKey[];
+    }) => apiClient.updateCharacterNonTradeableSlots(characterId, { nonTradeableSlots }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({
+        queryKey: apiQueryKeys.boosterCharactersForExport(),
+      });
+    },
+  });
   const [selectedCharacterIds, setSelectedCharacterIds] = useState<string[]>([]);
   const [tradeLockDrafts, setTradeLockDrafts] = useState<Record<string, TradeSlotKey[]>>({});
   const [savingTradeLockCharacterIds, setSavingTradeLockCharacterIds] = useState<string[]>([]);
@@ -346,15 +356,18 @@ function RouteComponent() {
     );
   }, [boosterCharacters]);
 
-  const selectableCharacters = useMemo(
-    () => boosterCharacters?.filter(hasSnapshot) ?? [],
+  const selectableCharacters = useMemo<ReadyBoosterCharacter[]>(
+    () =>
+      (boosterCharacters ?? []).flatMap((character) =>
+        hasSnapshot(character) ? [character] : [],
+      ),
     [boosterCharacters],
   );
   const selectedCharacterIdSet = useMemo(
     () => new Set(selectedCharacterIds),
     [selectedCharacterIds],
   );
-  const selectedCharacters = useMemo(
+  const selectedCharacters = useMemo<ReadyBoosterCharacter[]>(
     () =>
       selectableCharacters.filter((character) =>
         selectedCharacterIdSet.has(String(character._id)),
@@ -456,8 +469,8 @@ function RouteComponent() {
 
     setSavingTradeLockCharacterIds((currentCharacterIds) => [...currentCharacterIds, characterId]);
     try {
-      await setCharacterNonTradeableSlots({
-        characterId: character._id as Id<"characters">,
+      await setCharacterNonTradeableSlots.mutateAsync({
+        characterId: character._id,
         nonTradeableSlots: draftSlots,
       });
       toast.success(
@@ -515,18 +528,6 @@ function RouteComponent() {
             </Card>
           </div>
         </div>
-      </div>
-    );
-  }
-
-  if (boosterCharacters === null) {
-    return (
-      <div className="w-full px-4 py-6 sm:px-6 lg:px-8">
-        <Card className="border-dashed">
-          <CardContent className="py-12 text-center">
-            <p className="text-sm text-muted-foreground">You need to be signed in to use this page.</p>
-          </CardContent>
-        </Card>
       </div>
     );
   }

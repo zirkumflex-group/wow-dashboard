@@ -19,7 +19,6 @@ import { Route as PlayersPlayerIdRouteImport } from './routes/players.$playerId'
 import { Route as CharacterCharacterIdRouteImport } from './routes/character.$characterId'
 import { Route as AuthElectronLoginRouteImport } from './routes/auth/electron-login'
 import { Route as AuthElectronCallbackRouteImport } from './routes/auth/electron-callback'
-import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
@@ -71,11 +70,6 @@ const AuthElectronCallbackRoute = AuthElectronCallbackRouteImport.update({
   path: '/auth/electron-callback',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
-  id: '/api/auth/$',
-  path: '/api/auth/$',
-  getParentRoute: () => rootRouteImport,
-} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -88,7 +82,6 @@ export interface FileRoutesByFullPath {
   '/auth/electron-login': typeof AuthElectronLoginRoute
   '/character/$characterId': typeof CharacterCharacterIdRoute
   '/players/$playerId': typeof PlayersPlayerIdRoute
-  '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -101,7 +94,6 @@ export interface FileRoutesByTo {
   '/auth/electron-login': typeof AuthElectronLoginRoute
   '/character/$characterId': typeof CharacterCharacterIdRoute
   '/players/$playerId': typeof PlayersPlayerIdRoute
-  '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -115,7 +107,6 @@ export interface FileRoutesById {
   '/auth/electron-login': typeof AuthElectronLoginRoute
   '/character/$characterId': typeof CharacterCharacterIdRoute
   '/players/$playerId': typeof PlayersPlayerIdRoute
-  '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -130,7 +121,6 @@ export interface FileRouteTypes {
     | '/auth/electron-login'
     | '/character/$characterId'
     | '/players/$playerId'
-    | '/api/auth/$'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -143,7 +133,6 @@ export interface FileRouteTypes {
     | '/auth/electron-login'
     | '/character/$characterId'
     | '/players/$playerId'
-    | '/api/auth/$'
   id:
     | '__root__'
     | '/'
@@ -156,7 +145,6 @@ export interface FileRouteTypes {
     | '/auth/electron-login'
     | '/character/$characterId'
     | '/players/$playerId'
-    | '/api/auth/$'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -170,7 +158,6 @@ export interface RootRouteChildren {
   AuthElectronLoginRoute: typeof AuthElectronLoginRoute
   CharacterCharacterIdRoute: typeof CharacterCharacterIdRoute
   PlayersPlayerIdRoute: typeof PlayersPlayerIdRoute
-  ApiAuthSplatRoute: typeof ApiAuthSplatRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -245,13 +232,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthElectronCallbackRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/api/auth/$': {
-      id: '/api/auth/$'
-      path: '/api/auth/$'
-      fullPath: '/api/auth/$'
-      preLoaderRoute: typeof ApiAuthSplatRouteImport
-      parentRoute: typeof rootRouteImport
-    }
   }
 }
 
@@ -266,7 +246,6 @@ const rootRouteChildren: RootRouteChildren = {
   AuthElectronLoginRoute: AuthElectronLoginRoute,
   CharacterCharacterIdRoute: CharacterCharacterIdRoute,
   PlayersPlayerIdRoute: PlayersPlayerIdRoute,
-  ApiAuthSplatRoute: ApiAuthSplatRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

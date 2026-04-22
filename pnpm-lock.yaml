@@ -264,6 +264,9 @@ importers:
       '@tanstack/router-plugin':
         specifier: ^1.141.1
         version: 1.166.9(@tanstack/react-router@1.167.0(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(vite@7.3.1(@types/node@25.5.0)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0))
+      '@wow-dashboard/api-client':
+        specifier: workspace:*
+        version: link:../../packages/api-client
       '@wow-dashboard/backend':
         specifier: workspace:*
         version: file:packages/backend(@better-auth/core@1.4.9(@better-auth/utils@0.3.0)(@better-fetch/fetch@1.1.21)(better-call@1.1.7(zod@4.3.6))(jose@6.2.1)(kysely@0.28.12)(nanostores@1.2.0))(@better-auth/utils@0.3.0)(@standard-schema/spec@1.1.0)(@tanstack/react-start@1.166.11(crossws@0.4.4(srvx@0.11.9))(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(vite@7.3.1(@types/node@25.5.0)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)))(better-call@1.1.7(zod@4.3.6))(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(kysely@0.28.12)(pg@8.20.0)(postgres@3.4.9))(hono@4.12.8)(nanostores@1.2.0)(pg@8.20.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3)

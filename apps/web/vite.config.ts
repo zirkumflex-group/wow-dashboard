@@ -22,9 +22,6 @@ export default defineConfig({
   server: {
     port: 3001,
   },
-  ssr: {
-    noExternal: ["@convex-dev/better-auth"],
-  },
   build: {
     chunkSizeWarningLimit: 5000,
   },

@@ -1,6 +1,5 @@
+import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, redirect } from "@tanstack/react-router";
-import { api } from "@wow-dashboard/backend/convex/_generated/api";
-import type { Id } from "@wow-dashboard/backend/convex/_generated/dataModel";
 import { Card, CardContent, CardHeader, CardTitle } from "@wow-dashboard/ui/components/card";
 import { Skeleton } from "@wow-dashboard/ui/components/skeleton";
 import {
@@ -11,9 +10,9 @@ import {
   TableHeader,
   TableRow,
 } from "@wow-dashboard/ui/components/table";
-import { useQuery } from "convex/react";
 import { ArrowLeft } from "lucide-react";
 import { useEffect } from "react";
+import { apiQueryOptions } from "@/lib/api-client";
 import { getClassTextColor } from "../lib/class-colors";
 import { getMythicPlusDungeonMeta } from "../lib/mythic-plus-static";
 
@@ -103,9 +102,7 @@ function StatCard({
 
 function RouteComponent() {
   const { playerId } = Route.useParams();
-  const data = useQuery(api.characters.getPlayerCharacters, {
-    playerId: playerId as Id<"players">,
-  });
+  const data = useQuery(apiQueryOptions.playerCharacters(playerId)).data;
 
   useEffect(() => {
     const appTitle = "WoW Dashboard";

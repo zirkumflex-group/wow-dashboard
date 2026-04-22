@@ -1,5 +1,4 @@
-import { api } from "@wow-dashboard/backend/convex/_generated/api";
-import type { Id } from "@wow-dashboard/backend/convex/_generated/dataModel";
+import { useQuery } from "@tanstack/react-query";
 import {
   Sidebar,
   SidebarContent,
@@ -25,12 +24,11 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@wow-dashboard/ui/components/dropdown-menu";
-import { Authenticated } from "convex/react";
-import { useQuery } from "convex/react";
 import { ArrowDown, ArrowUp, ChevronUp, Copy, LayoutDashboard, Scale, Settings, Star, Trophy } from "lucide-react";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { useMemo } from "react";
 
+import { apiQueryOptions } from "@/lib/api-client";
 import { authClient } from "@/lib/auth-client";
 import { getClassTextColor } from "@/lib/class-colors";
 import { usePinnedCharacters } from "@/lib/pinned-characters";
@@ -45,7 +43,8 @@ const navItems = [
 const bottomNavItems = [{ to: "/settings" as const, label: "Settings", icon: Settings }];
 
 function NavUser() {
-  const user = useQuery(api.auth.getCurrentUser);
+  const session = authClient.useSession();
+  const user = session.data?.user;
   const { isMobile } = useSidebar();
 
   return (
@@ -98,15 +97,15 @@ function NavUser() {
 }
 
 export function AppSidebar() {
+  const session = authClient.useSession();
   const router = useRouterState();
   const pathname = router.location.pathname;
   const { pinnedCharacterIds, movePinnedCharacter } = usePinnedCharacters();
-  const characters = useQuery(
-    api.characters.getCharactersWithLatestSnapshot,
-    pinnedCharacterIds.length > 0
-      ? { characterIds: pinnedCharacterIds as Id<"characters">[] }
-      : "skip",
-  );
+  const charactersQuery = useQuery({
+    ...apiQueryOptions.charactersLatest({ characterId: pinnedCharacterIds }),
+    enabled: pinnedCharacterIds.length > 0,
+  });
+  const characters = charactersQuery.data;
   const quickAccessCharacters = useMemo(() => {
     if (characters === undefined || characters === null || pinnedCharacterIds.length === 0) {
       return [];
@@ -262,9 +261,9 @@ export function AppSidebar() {
       </SidebarContent>
 
       <SidebarFooter>
-        <Authenticated>
+        {session.data ? (
           <NavUser />
-        </Authenticated>
+        ) : null}
       </SidebarFooter>
 
       <SidebarRail />

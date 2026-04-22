@@ -11,7 +11,7 @@ function ElectronLogin() {
   useEffect(() => {
     void authClient.signIn.social({
       provider: "battlenet",
-      callbackURL: "/auth/electron-callback",
+      callbackURL: new URL("/auth/electron-callback", window.location.origin).toString(),
     });
   }, []);
 
