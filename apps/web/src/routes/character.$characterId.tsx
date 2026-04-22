@@ -693,13 +693,13 @@ type MythicPlusData = {
 // ── Chart palette ─────────────────────────────────────────────────────────────
 
 const C = {
-  blue: "oklch(0.72 0.20 245)",
-  red: "oklch(0.72 0.22 20)",
-  gold: "oklch(0.84 0.18 80)",
-  purple: "oklch(0.73 0.20 295)",
-  teal: "oklch(0.75 0.18 190)",
-  green: "oklch(0.76 0.18 155)",
-  pink: "oklch(0.75 0.18 330)",
+  blue: "oklch(0.74 0.14 245)",
+  red: "oklch(0.71 0.16 25)",
+  gold: "oklch(0.82 0.14 82)",
+  purple: "oklch(0.72 0.14 295)",
+  teal: "oklch(0.74 0.13 190)",
+  green: "oklch(0.75 0.13 155)",
+  pink: "oklch(0.74 0.14 330)",
 } as const;
 
 const ilvlConfig: ChartConfig = { itemLevel: { label: "Item Level", color: C.blue } };
@@ -932,8 +932,9 @@ function SnapshotLineChart({
           : null;
       const showLabelBelow = cy < 28;
       const markerOpacity = variant === "primary" ? 1 : variant === "equal" ? 0.9 : 0.65;
-      const markerRadius = variant === "primary" ? 4.5 : variant === "equal" ? 3.5 : 3;
-      const markerStrokeWidth = variant === "primary" ? 2.5 : 2;
+      const markerRadius = variant === "primary" ? 4 : variant === "equal" ? 3.5 : 3;
+      const markerStrokeWidth = variant === "primary" ? 2 : 1.5;
+      const markerGlow = variant === "primary" ? 4 : variant === "equal" ? 3 : 2;
 
       return (
         <g opacity={markerOpacity}>
@@ -944,6 +945,7 @@ function SnapshotLineChart({
             fill={color}
             stroke="var(--card)"
             strokeWidth={markerStrokeWidth}
+            style={{ filter: `drop-shadow(0 0 ${markerGlow}px ${color})` }}
           />
           {label ? (
             <text
@@ -957,7 +959,8 @@ function SnapshotLineChart({
               letterSpacing="0.01em"
               paintOrder="stroke"
               stroke="var(--card)"
-              strokeWidth={4}
+              strokeWidth={3}
+              style={{ fontVariantNumeric: "tabular-nums" }}
             >
               {label}
             </text>
@@ -966,19 +969,30 @@ function SnapshotLineChart({
       );
     };
 
+  // Sparse data reads crisper as straight segments; dense data benefits from smoothing.
+  const curveType: "linear" | "monotone" = data.length <= 20 ? "linear" : "monotone";
+
   return (
-    <ChartContainer config={config} className={`w-full ${className ?? "h-[200px]"}`}>
+    <ChartContainer
+      config={config}
+      className={`w-full [&_text]:tabular-nums ${className ?? "h-[200px]"}`}
+    >
       <LineChart data={data} margin={{ top: 16, right: 12, left: 4, bottom: 8 }}>
-        <CartesianGrid vertical={false} stroke="var(--border)" strokeOpacity={0.14} />
+        <CartesianGrid
+          vertical={false}
+          stroke="var(--border)"
+          strokeOpacity={0.45}
+          strokeDasharray="3 3"
+        />
         <XAxis
           dataKey="date"
           tickLine={false}
           axisLine={false}
-          tickMargin={6}
+          tickMargin={8}
           tick={{
-            fontSize: 10,
+            fontSize: 11,
             fill: "var(--muted-foreground)",
-            fillOpacity: 0.7,
+            fillOpacity: 0.75,
           }}
           ticks={xAxisTicks}
           interval={0}
@@ -988,11 +1002,11 @@ function SnapshotLineChart({
         <YAxis
           tickLine={false}
           axisLine={false}
-          tickMargin={4}
+          tickMargin={6}
           tick={{
-            fontSize: 10,
+            fontSize: 11,
             fill: "var(--muted-foreground)",
-            fillOpacity: 0.7,
+            fillOpacity: 0.75,
           }}
           tickFormatter={valueFormatter}
           width={52}
@@ -1031,27 +1045,20 @@ function SnapshotLineChart({
           return (
             <Line
               key={key}
-              type="monotone"
+              type={curveType}
               dataKey={key}
               stroke={color}
-              strokeWidth={lineVariant === "primary" ? 3.2 : lineVariant === "equal" ? 2.45 : 2}
-              strokeOpacity={lineVariant === "primary" ? 1 : lineVariant === "equal" ? 0.96 : 0.58}
+              strokeWidth={lineVariant === "primary" ? 2 : lineVariant === "equal" ? 1.75 : 1.5}
+              strokeOpacity={lineVariant === "primary" ? 1 : lineVariant === "equal" ? 0.9 : 0.5}
               strokeLinecap="round"
-              style={{
-                filter:
-                  lineVariant === "primary"
-                    ? `drop-shadow(0 0 3px ${color})`
-                    : lineVariant === "equal"
-                      ? `drop-shadow(0 0 2px ${color})`
-                      : `drop-shadow(0 0 1.5px ${color})`,
-              }}
+              strokeLinejoin="round"
               dot={renderEndpointMarker({
                 color,
                 variant: lineVariant,
                 showLabel: shouldShowLatestValue && isPrimaryLine,
               })}
               activeDot={{
-                r: lineVariant === "primary" ? 5.5 : lineVariant === "equal" ? 5 : 4.5,
+                r: lineVariant === "primary" ? 5 : 4,
                 fill: color,
                 stroke: "var(--card)",
                 strokeWidth: 2,
@@ -1337,12 +1344,12 @@ function SecondaryStatsChartCard({
   ];
   return (
     <Card className={className}>
-      <CardHeader className="pb-0">
-        <CardTitle className="text-sm font-medium flex items-center gap-1.5">
+      <CardHeader className="px-4 pb-0 pt-4">
+        <CardTitle className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
           <Zap size={14} className="text-muted-foreground" /> Secondary Stats
         </CardTitle>
       </CardHeader>
-      <CardContent>
+      <CardContent className="px-4 pb-4 pt-2">
         <SnapshotLineChart
           data={data}
           lines={lines}
@@ -1413,12 +1420,12 @@ function PlaytimeChartCard({
   const lines = [{ key: "playtimeHours", color: C.purple }];
   return (
     <Card className={className}>
-      <CardHeader className="pb-0">
-        <CardTitle className="text-sm font-medium flex items-center gap-1.5">
+      <CardHeader className="px-4 pb-0 pt-4">
+        <CardTitle className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
           <Clock size={14} className="text-muted-foreground" /> Playtime
         </CardTitle>
       </CardHeader>
-      <CardContent>
+      <CardContent className="px-4 pb-4 pt-2">
         <SnapshotLineChart
           data={data}
           lines={lines}
