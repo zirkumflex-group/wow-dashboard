@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "esbuild src/start.ts --bundle --platform=node --target=node20 --format=cjs --outfile=dist/start.cjs --sourcemap --alias:@wow-dashboard/api-schema=../../packages/api-schema/src/index.ts --alias:@wow-dashboard/db=../../packages/db/src/index.ts --alias:@wow-dashboard/env/server=../../packages/env/src/server.ts",
+    "build": "esbuild src/start.ts --bundle --platform=node --target=node20 --format=cjs --outdir=dist --outbase=src --entry-names=[name] --out-extension:.js=.cjs --sourcemap --alias:@wow-dashboard/api-schema=../../packages/api-schema/src/index.ts --alias:@wow-dashboard/db=../../packages/db/src/index.ts --alias:@wow-dashboard/env/server=../../packages/env/src/server.ts",
     "check-types": "tsc --noEmit --project tsconfig.json",
     "dev": "tsx watch src/start.ts",
     "start": "node dist/start.cjs"

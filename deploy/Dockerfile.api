@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 FROM node:20-slim AS base
 
 ENV PNPM_HOME=/pnpm
@@ -7,12 +8,30 @@ RUN corepack enable && corepack prepare pnpm@10.11.0 --activate
 
 WORKDIR /app
 
-FROM base AS build
+FROM base AS deps
+
+COPY .npmrc package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json tsconfig.json ./
+COPY apps/api/package.json apps/api/package.json
+COPY apps/app/package.json apps/app/package.json
+COPY apps/web/package.json apps/web/package.json
+COPY apps/worker/package.json apps/worker/package.json
+COPY packages/api-client/package.json packages/api-client/package.json
+COPY packages/api-schema/package.json packages/api-schema/package.json
+COPY packages/backend/package.json packages/backend/package.json
+COPY packages/config/package.json packages/config/package.json
+COPY packages/db/package.json packages/db/package.json
+COPY packages/env/package.json packages/env/package.json
+COPY packages/ui/package.json packages/ui/package.json
+
+RUN --mount=type=cache,id=wowdash-pnpm-store,target=/pnpm/store \
+  pnpm install --frozen-lockfile --filter @wow-dashboard/api...
+
+FROM deps AS build
 
 COPY . .
 
-RUN pnpm install --frozen-lockfile
-RUN pnpm add -Dw \
+RUN --mount=type=cache,id=wowdash-pnpm-store,target=/pnpm/store \
+  pnpm add -Dw \
     @esbuild/linux-x64@0.27.4 \
     @esbuild/linux-arm64@0.27.4 \
   && mkdir -p node_modules/.pnpm/node_modules/@esbuild \
@@ -24,6 +43,10 @@ RUN pnpm add -Dw \
 RUN pnpm -F @wow-dashboard/api check-types
 RUN pnpm -F @wow-dashboard/api build
 
+FROM build AS migrate
+
+CMD ["pnpm", "-F", "@wow-dashboard/db", "migrate"]
+
 FROM node:20-slim AS runtime
 
 ENV NODE_ENV=production
@@ -32,9 +55,7 @@ WORKDIR /app
 RUN apt-get update \
   && apt-get install -y --no-install-recommends unzip \
   && rm -rf /var/lib/apt/lists/*
-RUN npm install --global pnpm@10.11.0
-
-COPY --from=build --chown=node:node /app /app
+COPY --from=build --chown=node:node /app/apps/api/dist /app/apps/api/dist
 
 USER node
 

@@ -534,18 +534,22 @@ async function main() {
         row,
       ]),
     );
+    const targetUserIdByLegacyConvexUserId = new Map<string, string>();
+    const resolveTargetUserId = (legacyUserId: string | null | undefined) => {
+      if (!legacyUserId) {
+        return null;
+      }
+
+      return (
+        targetUserIdByLegacyConvexUserId.get(legacyUserId) ??
+        usersById.get(legacyUserId)?.id ??
+        null
+      );
+    };
 
     for (const exported of exportedUsers) {
       const byId = usersById.get(exported._id);
       const byEmail = usersByEmail.get(exported.email);
-      if (!byId && byEmail && byEmail.id !== exported._id) {
-        summary.users.skipped += 1;
-        summary.warnings.push(
-          `Skipped user ${exported.email}: target DB already has email on different ID ${byEmail.id}.`,
-        );
-        continue;
-      }
-
       const existing = byId ?? byEmail ?? null;
       const createdAt = dateFromMilliseconds(exported.createdAt)!;
       const updatedAt = dateFromMilliseconds(exported.updatedAt)!;
@@ -568,6 +572,7 @@ async function main() {
 
         usersById.set(inserted.id, inserted);
         usersByEmail.set(inserted.email, inserted);
+        targetUserIdByLegacyConvexUserId.set(exported._id, inserted.id);
         summary.users.inserted += 1;
         continue;
       }
@@ -591,6 +596,7 @@ async function main() {
 
       usersById.set(updated.id, updated);
       usersByEmail.set(updated.email, updated);
+      targetUserIdByLegacyConvexUserId.set(exported._id, updated.id);
       summary.users.updated += 1;
     }
 
@@ -599,8 +605,9 @@ async function main() {
       const existing = accountsByProviderAccount.get(key) ?? null;
       const createdAt = dateFromMilliseconds(exported.createdAt)!;
       const updatedAt = dateFromMilliseconds(exported.updatedAt)!;
+      const targetUserId = resolveTargetUserId(exported.userId);
 
-      if (!usersById.has(exported.userId)) {
+      if (!targetUserId) {
         summary.accounts.skipped += 1;
         summary.warnings.push(
           `Skipped account ${key}: user ${exported.userId} was not imported into target DB.`,
@@ -616,7 +623,7 @@ async function main() {
             id: exported._id,
             accountId: exported.accountId,
             providerId: exported.providerId,
-            userId: exported.userId,
+            userId: targetUserId,
             accessToken: exported.accessToken ?? null,
             refreshToken: exported.refreshToken ?? null,
             idToken: exported.idToken ?? null,
@@ -644,7 +651,7 @@ async function main() {
         await db
         .update(authAccount)
         .set({
-          userId: exported.userId,
+          userId: targetUserId,
           accessToken: exportIsNewer ? exported.accessToken ?? null : existing.accessToken,
           refreshToken: exportIsNewer ? exported.refreshToken ?? null : existing.refreshToken,
           idToken: exportIsNewer ? exported.idToken ?? null : existing.idToken,
@@ -665,6 +672,7 @@ async function main() {
 
       accountsByProviderAccount.set(key, updated);
       if (updated.providerId === "battlenet") {
+        accountsByUserId.delete(existing.userId);
         accountsByUserId.set(updated.userId, updated);
       }
       summary.accounts.updated += 1;
@@ -675,8 +683,9 @@ async function main() {
         const existing = sessionsByToken.get(exported.token) ?? null;
         const createdAt = dateFromMilliseconds(exported.createdAt)!;
         const updatedAt = dateFromMilliseconds(exported.updatedAt)!;
+        const targetUserId = resolveTargetUserId(exported.userId);
 
-        if (!usersById.has(exported.userId)) {
+        if (!targetUserId) {
           summary.sessions.skipped += 1;
           summary.warnings.push(
             `Skipped session ${exported._id}: user ${exported.userId} was not imported into target DB.`,
@@ -696,7 +705,7 @@ async function main() {
               updatedAt,
               ipAddress: exported.ipAddress ?? null,
               userAgent: exported.userAgent ?? null,
-              userId: exported.userId,
+              userId: targetUserId,
             })
             .returning(),
             `insert session ${exported._id}`,
@@ -717,7 +726,7 @@ async function main() {
             updatedAt: maxDate(existing.updatedAt, updatedAt)!,
             ipAddress: exportIsNewer ? exported.ipAddress ?? null : existing.ipAddress,
             userAgent: exportIsNewer ? exported.userAgent ?? null : existing.userAgent,
-            userId: exported.userId,
+            userId: targetUserId,
           })
           .where(eq(authSession.id, existing.id))
           .returning(),
@@ -731,7 +740,8 @@ async function main() {
 
     const targetPlayerIdByLegacyConvexPlayerId = new Map<string, string>();
     for (const exported of exportedPlayers) {
-      const battlenetAccount = accountsByUserId.get(exported.userId);
+      const targetUserId = resolveTargetUserId(exported.userId);
+      const battlenetAccount = targetUserId ? accountsByUserId.get(targetUserId) : null;
       if (!battlenetAccount) {
         summary.players.skipped += 1;
         summary.warnings.push(
@@ -743,13 +753,13 @@ async function main() {
       const existing =
         playersByLegacy.get(exported._id) ??
         playersByBattlenetAccountId.get(battlenetAccount.accountId) ??
-        playersByUserId.get(exported.userId) ??
+        (targetUserId ? playersByUserId.get(targetUserId) : null) ??
         null;
 
       const values = {
         legacyConvexId: exported._id,
         battlenetAccountId: battlenetAccount.accountId,
-        userId: exported.userId,
+        userId: targetUserId,
         battleTag: exported.battleTag,
         discordUserId: normalizeDiscordUserId(exported.discordUserId),
       };
@@ -787,6 +797,9 @@ async function main() {
       playersByLegacy.set(updated.legacyConvexId ?? exported._id, updated);
       playersByBattlenetAccountId.set(updated.battlenetAccountId, updated);
       if (updated.userId) {
+        if (existing.userId && existing.userId !== updated.userId) {
+          playersByUserId.delete(existing.userId);
+        }
         playersByUserId.set(updated.userId, updated);
       }
       targetPlayerIdByLegacyConvexPlayerId.set(exported._id, updated.id);
@@ -1132,11 +1145,15 @@ async function main() {
     }
 
     for (const exported of exportedAuditLog) {
-      const naturalKey = auditNaturalKey(exported);
+      const targetUserId = resolveTargetUserId(exported.userId) ?? exported.userId ?? undefined;
+      const naturalKey = auditNaturalKey({
+        ...exported,
+        userId: targetUserId,
+      });
       const existing = auditByLegacy.get(exported._id) ?? auditByNatural.get(naturalKey) ?? null;
       const values = {
         legacyConvexId: exported._id,
-        userId: exported.userId ?? null,
+        userId: targetUserId ?? null,
         event: exported.event,
         metadata: exported.metadata ?? null,
         error: exported.error ?? null,

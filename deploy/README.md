@@ -83,7 +83,7 @@ If you want to run the Convex import after deploy:
 
 ```bash
 docker compose --profile edge --env-file deploy/.env.staging -f deploy/docker-compose.prod.yml exec -T api \
-  pnpm -F @wow-dashboard/api import-convex-export \
+  node apps/api/dist/importConvexExport.cjs \
   /tmp/<convex-export>.zip \
   --apply
 ```
@@ -119,4 +119,4 @@ docker compose --env-file deploy/.env.staging -f deploy/docker-compose.prod.yml 
 
 - Only Caddy publishes ports to the internet. Postgres and Redis stay internal to Docker.
 - `api` and `worker` are bundled during the image build and run with plain `node` at runtime.
-- The one-shot Convex importer lives in `apps/api/src/importConvexExport.ts` and is safe to rerun.
+- The one-shot Convex importer is bundled into the API image from `apps/api/src/importConvexExport.ts` and is safe to rerun.

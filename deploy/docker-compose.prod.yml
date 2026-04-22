@@ -32,6 +32,7 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.api
+      target: migrate
     restart: "no"
     env_file:
       - .env.staging
@@ -41,12 +42,12 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    command: ["pnpm", "-F", "@wow-dashboard/db", "migrate"]
 
   api:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.api
+      target: runtime
     restart: unless-stopped
     env_file:
       - .env.staging

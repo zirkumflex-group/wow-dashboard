@@ -7,6 +7,9 @@ node_modules
 **/.tanstack
 **/.turbo
 .turbo
+.pnpm-store
+.tmp
+backup.json
 
 # ---- git ----
 .git
