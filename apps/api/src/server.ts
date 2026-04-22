@@ -1,7 +1,8 @@
 import { serve } from "@hono/node-server";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { players } from "@wow-dashboard/db";
 import { env } from "@wow-dashboard/env/server";
 import { auth, type ApiAuthSession, type ApiAuthUser } from "./auth";
 import { db } from "./db";
@@ -14,6 +15,263 @@ type AppBindings = {
 };
 
 export const app = new Hono<AppBindings>();
+
+function serializeSession(session: ApiAuthSession) {
+  return {
+    id: session.id,
+    userId: session.userId,
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt,
+    expiresAt: session.expiresAt,
+  };
+}
+
+function serializeUser(user: ApiAuthUser) {
+  return {
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    emailVerified: user.emailVerified,
+    image: user.image ?? null,
+    createdAt: user.createdAt,
+    updatedAt: user.updatedAt,
+  };
+}
+
+async function readPlayerBinding(userId: string) {
+  return db.query.players.findFirst({
+    where: eq(players.userId, userId),
+  });
+}
+
+function renderDevAuthPage(callbackUrl: string) {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WoW Dashboard Auth Probe</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+        background:
+          radial-gradient(circle at top left, #ffe4b8 0%, rgba(255, 228, 184, 0) 36%),
+          linear-gradient(180deg, #faf7f1 0%, #efe9dd 100%);
+        color: #1d1a15;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+      }
+      main {
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 48px 24px 64px;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: clamp(2rem, 4vw, 3.25rem);
+        line-height: 1;
+      }
+      p {
+        max-width: 70ch;
+        color: #4e4538;
+      }
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin: 24px 0 32px;
+      }
+      button {
+        border: 0;
+        border-radius: 999px;
+        padding: 12px 18px;
+        font: inherit;
+        font-weight: 600;
+        color: #fff8ee;
+        background: #8b4513;
+        cursor: pointer;
+      }
+      button.secondary {
+        color: #2c2419;
+        background: #d9c7aa;
+      }
+      button:disabled {
+        cursor: wait;
+        opacity: 0.7;
+      }
+      .grid {
+        display: grid;
+        gap: 16px;
+      }
+      @media (min-width: 860px) {
+        .grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+      section {
+        border: 1px solid rgba(79, 56, 34, 0.12);
+        border-radius: 20px;
+        padding: 20px;
+        background: rgba(255, 250, 241, 0.84);
+        box-shadow: 0 18px 48px rgba(69, 45, 20, 0.08);
+        backdrop-filter: blur(8px);
+      }
+      h2 {
+        margin: 0 0 12px;
+        font-size: 1rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+      pre {
+        margin: 0;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-size: 0.925rem;
+        line-height: 1.5;
+      }
+      code {
+        font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
+      }
+      .hint {
+        margin-top: 24px;
+        font-size: 0.925rem;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Battle.net Auth Probe</h1>
+      <p>
+        Development-only page for proving the Better Auth round-trip before the web and
+        Electron clients are migrated. It signs in with Battle.net, checks the rebound
+        <code>players</code> row, and exercises bearer auth against <code>/api/me</code>.
+      </p>
+      <div class="actions">
+        <button id="signin">Sign In With Battle.net</button>
+        <button id="refresh" class="secondary">Refresh Session</button>
+        <button id="bearer" class="secondary">Call /api/me With Bearer</button>
+      </div>
+      <div class="grid">
+        <section>
+          <h2>Session Probe</h2>
+          <pre id="session-output">Loading session state...</pre>
+        </section>
+        <section>
+          <h2>Bearer Check</h2>
+          <pre id="bearer-output">Bearer flow has not been exercised yet.</pre>
+        </section>
+      </div>
+      <p class="hint">
+        Expected Battle.net callback URI:
+        <code>${callbackUrl}</code>
+      </p>
+    </main>
+    <script>
+      const signinButton = document.getElementById("signin");
+      const refreshButton = document.getElementById("refresh");
+      const bearerButton = document.getElementById("bearer");
+      const sessionOutput = document.getElementById("session-output");
+      const bearerOutput = document.getElementById("bearer-output");
+
+      let currentState = null;
+
+      async function fetchJson(url, init) {
+        const response = await fetch(url, {
+          credentials: "include",
+          ...init,
+          headers: {
+            "content-type": "application/json",
+            ...(init && init.headers ? init.headers : {}),
+          },
+        });
+
+        let data = null;
+        try {
+          data = await response.json();
+        } catch {
+          data = null;
+        }
+
+        if (!response.ok) {
+          throw new Error(JSON.stringify(data ?? { status: response.status }, null, 2));
+        }
+
+        return data;
+      }
+
+      async function loadSessionState() {
+        sessionOutput.textContent = "Loading session state...";
+
+        try {
+          currentState = await fetchJson("/api/dev/session", { method: "GET" });
+          sessionOutput.textContent = JSON.stringify(currentState, null, 2);
+        } catch (error) {
+          currentState = null;
+          sessionOutput.textContent = String(error.message ?? error);
+        }
+      }
+
+      async function startOAuth() {
+        signinButton.disabled = true;
+
+        try {
+          const data = await fetchJson("/api/auth/sign-in/oauth2", {
+            method: "POST",
+            body: JSON.stringify({
+              providerId: "battlenet",
+              callbackURL: window.location.href,
+            }),
+          });
+
+          window.location.assign(data.url);
+        } catch (error) {
+          signinButton.disabled = false;
+          bearerOutput.textContent = String(error.message ?? error);
+        }
+      }
+
+      async function runBearerCheck() {
+        if (!currentState?.bearerToken) {
+          bearerOutput.textContent = "No bearer token is available. Sign in first.";
+          return;
+        }
+
+        bearerOutput.textContent = "Calling /api/me with Authorization: Bearer ...";
+
+        try {
+          const response = await fetch("/api/me", {
+            method: "GET",
+            headers: {
+              authorization: "Bearer " + currentState.bearerToken,
+            },
+          });
+
+          const data = await response.json();
+          bearerOutput.textContent = JSON.stringify(
+            {
+              status: response.status,
+              data,
+            },
+            null,
+            2,
+          );
+        } catch (error) {
+          bearerOutput.textContent = String(error.message ?? error);
+        }
+      }
+
+      signinButton.addEventListener("click", startOAuth);
+      refreshButton.addEventListener("click", loadSessionState);
+      bearerButton.addEventListener("click", runBearerCheck);
+
+      loadSessionState();
+    </script>
+  </body>
+</html>`;
+}
 
 app.use(
   "/api/*",
@@ -48,7 +306,48 @@ app.get("/readyz", async (c) => {
   }
 });
 
+app.get("/dev/auth", (c) => {
+  if (env.NODE_ENV !== "development") {
+    return c.text("Not found", 404);
+  }
+
+  const callbackUrl = new URL("/api/auth/oauth2/callback/battlenet", env.BETTER_AUTH_URL).toString();
+
+  return c.html(renderDevAuthPage(callbackUrl));
+});
+
 app.on(["GET", "POST"], "/api/auth/*", (c) => auth.handler(c.req.raw));
+
+app.get("/api/dev/session", async (c) => {
+  if (env.NODE_ENV !== "development") {
+    return c.json({ error: "Not found" }, 404);
+  }
+
+  const session = c.get("session");
+  const user = c.get("user");
+
+  if (!session || !user) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const player = await readPlayerBinding(user.id);
+
+  return c.json({
+    session: serializeSession(session),
+    user: serializeUser(user),
+    bearerToken: session.token,
+    player: player
+      ? {
+          id: player.id,
+          userId: player.userId,
+          battlenetAccountId: player.battlenetAccountId,
+          battleTag: player.battleTag,
+          discordUserId: player.discordUserId,
+          legacyConvexId: player.legacyConvexId,
+        }
+      : null,
+  });
+});
 
 app.get("/api/me", (c) => {
   const session = c.get("session");
@@ -59,8 +358,8 @@ app.get("/api/me", (c) => {
   }
 
   return c.json({
-    session,
-    user,
+    session: serializeSession(session),
+    user: serializeUser(user),
   });
 });
 
