@@ -53,6 +53,27 @@ type AppBindings = {
 
 export const app = new Hono<AppBindings>();
 
+function isAllowedApiOrigin(origin: string) {
+  if (!origin) {
+    return false;
+  }
+
+  if (origin === env.SITE_URL || origin === "null") {
+    return true;
+  }
+
+  try {
+    const url = new URL(origin);
+    if ((url.hostname === "localhost" || url.hostname === "127.0.0.1") && url.protocol === "http:") {
+      return true;
+    }
+  } catch {
+    return false;
+  }
+
+  return false;
+}
+
 function serializeSession(session: ApiAuthSession) {
   return {
     id: session.id,
@@ -323,7 +344,7 @@ function parseBooleanQueryValue(value: string | null) {
 app.use(
   "/api/*",
   cors({
-    origin: env.SITE_URL,
+    origin: (origin) => (isAllowedApiOrigin(origin) ? origin : null),
     allowHeaders: ["Content-Type", "Authorization"],
     allowMethods: ["GET", "POST", "PATCH", "OPTIONS"],
     exposeHeaders: ["Content-Length", "set-auth-token"],
