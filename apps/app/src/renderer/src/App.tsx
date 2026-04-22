@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ApiClientError } from "@wow-dashboard/api-client";
 import { env } from "@wow-dashboard/env/app";
 import type {
   AddonUpdateCheckResult,
@@ -198,9 +199,31 @@ function _notify() {
   _listeners.forEach((fn) => fn());
 }
 
+async function _clearToken(): Promise<void> {
+  try {
+    await window.electron.auth.logout();
+  } catch {
+    // Best effort; local auth state is still cleared below.
+  }
+  _token = null;
+  _notify();
+}
+
 async function _fetchToken(): Promise<string | null> {
   try {
     const t = await window.electron.auth.getToken();
+    if (!t) {
+      _token = null;
+      _notify();
+      return null;
+    }
+
+    const session = await window.electron.auth.getSession();
+    if (!session) {
+      await _clearToken();
+      return null;
+    }
+
     _token = t;
     _notify();
     return t;
@@ -818,6 +841,12 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
         queryKey: apiQueryKeys.myCharacters(),
       });
     } catch (e) {
+      if (e instanceof ApiClientError && e.status === 401) {
+        await _clearToken();
+        queryClient.clear();
+        setUploadError("Session expired — please sign in again.");
+        return;
+      }
       const msg = e instanceof Error ? e.message : String(e);
       if (msg.includes("RateLimited") || msg.includes("Too many")) {
         setUploadError("Too many requests — please wait a moment before trying again.");
@@ -1235,9 +1264,7 @@ export default function App() {
   }
 
   async function handleLogout() {
-    await window.electron.auth.logout();
-    _token = null;
-    _notify();
+    await _clearToken();
     queryClient.clear();
   }
 

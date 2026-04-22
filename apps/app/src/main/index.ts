@@ -2671,6 +2671,10 @@ ipcMain.handle("auth:getToken", async () => {
 });
 
 ipcMain.handle("auth:getSession", async () => {
+  if (!storedSessionToken) {
+    return null;
+  }
+
   try {
     const resp = await session.defaultSession.fetch(getApiAuthUrl("/auth/get-session"), {
       headers: {
@@ -2678,7 +2682,13 @@ ipcMain.handle("auth:getSession", async () => {
         ...(storedSessionToken ? { Authorization: `Bearer ${storedSessionToken}` } : {}),
       },
     });
-    if (!resp.ok) return null;
+    if (!resp.ok) {
+      if (resp.status === 401) {
+        cachedElectronToken = null;
+        saveSessionToken(null);
+      }
+      return null;
+    }
     return await resp.json();
   } catch {
     return null;
