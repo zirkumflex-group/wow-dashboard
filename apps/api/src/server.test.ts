@@ -322,48 +322,50 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     assert.equal(desktopSessionResponse.status, 200);
   });
 
-  it("creates a dedicated desktop session for the browser callback handoff", async () => {
-    const auth = await seedAuthenticatedUser();
-    const attemptId = randomUUID();
-
-    const completeResponse = await app.request("http://localhost/api/auth/desktop-login/complete", {
-      method: "POST",
+  it("allows desktop null-origin preflights only for bearer-authenticated API requests", async () => {
+    const webPreflightResponse = await app.request("http://localhost/api/me", {
+      method: "OPTIONS",
       headers: {
-        ...authHeaders(auth.token),
-        "content-type": "application/json",
+        Origin: process.env.SITE_URL!,
+        "Access-Control-Request-Method": "GET",
+        "Access-Control-Request-Headers": "authorization",
       },
-      body: JSON.stringify({ attemptId }),
     });
 
-    assert.equal(completeResponse.status, 200);
+    assert.equal(webPreflightResponse.status, 204);
+    assert.equal(webPreflightResponse.headers.get("Access-Control-Allow-Origin"), process.env.SITE_URL);
+    assert.equal(webPreflightResponse.headers.get("Access-Control-Allow-Credentials"), "true");
 
-    const desktopLoginResponse = await app.request(
-      `http://localhost/api/auth/desktop-login?attemptId=${attemptId}`,
+    const desktopPreflightResponse = await app.request("http://localhost/api/me", {
+      method: "OPTIONS",
+      headers: {
+        Origin: "null",
+        "Access-Control-Request-Method": "GET",
+        "Access-Control-Request-Headers": "authorization",
+      },
+    });
+
+    assert.equal(desktopPreflightResponse.status, 204);
+    assert.equal(desktopPreflightResponse.headers.get("Access-Control-Allow-Origin"), "null");
+    assert.equal(desktopPreflightResponse.headers.get("Access-Control-Allow-Credentials"), null);
+    assert.ok(
+      desktopPreflightResponse
+        .headers.get("Access-Control-Allow-Headers")
+        ?.toLowerCase()
+        .includes("authorization"),
     );
 
-    assert.equal(desktopLoginResponse.status, 200);
-    const desktopLoginPayload = (await desktopLoginResponse.json()) as
-      | { status: "pending" }
-      | { status: "complete"; token: string };
+    const rejectedNullOriginResponse = await app.request("http://localhost/api/me", {
+      method: "OPTIONS",
+      headers: {
+        Origin: "null",
+        "Access-Control-Request-Method": "GET",
+      },
+    });
 
-    assert.equal(desktopLoginPayload.status, "complete");
-    if (desktopLoginPayload.status !== "complete") {
-      throw new Error("Expected desktop login attempt to complete");
-    }
-
-    assert.notEqual(desktopLoginPayload.token, auth.token);
-
-    const [browserSessionResponse, desktopSessionResponse] = await Promise.all([
-      app.request("http://localhost/api/me", {
-        headers: authHeaders(auth.token),
-      }),
-      app.request("http://localhost/api/me", {
-        headers: authHeaders(desktopLoginPayload.token),
-      }),
-    ]);
-
-    assert.equal(browserSessionResponse.status, 200);
-    assert.equal(desktopSessionResponse.status, 200);
+    assert.equal(rejectedNullOriginResponse.status, 204);
+    assert.equal(rejectedNullOriginResponse.headers.get("Access-Control-Allow-Origin"), null);
+    assert.equal(rejectedNullOriginResponse.headers.get("Access-Control-Allow-Credentials"), null);
   });
 
   it("returns latest pinned character snapshots in request order", async () => {
@@ -1469,5 +1471,84 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     });
 
     assert.equal(player?.discordUserId, "123456789");
+  });
+
+  it("rejects cross-user writes to player and character mutation endpoints", async () => {
+    const ownerAuth = await seedAuthenticatedUser();
+    const attackerAuth = await seedAuthenticatedUser();
+    const ownerPlayerId = await seedPlayer(ownerAuth.userId);
+    const ownerCharacterId = await seedCharacter({
+      playerId: ownerPlayerId,
+      name: "Protected",
+      realm: "Tarren Mill",
+      className: "Paladin",
+      race: "Human",
+      faction: "alliance",
+    });
+
+    await db
+      .update(players)
+      .set({
+        discordUserId: "123456789",
+      })
+      .where(eq(players.id, ownerPlayerId));
+
+    await db
+      .update(characters)
+      .set({
+        isBooster: false,
+        nonTradeableSlots: ["head"],
+      })
+      .where(eq(characters.id, ownerCharacterId));
+
+    const [discordResponse, boosterResponse, slotsResponse] = await Promise.all([
+      app.request(`http://localhost/api/players/${ownerPlayerId}/discord`, {
+        method: "PATCH",
+        headers: {
+          ...authHeaders(attackerAuth.token),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          discordUserId: "999999999",
+        }),
+      }),
+      app.request(`http://localhost/api/characters/${ownerCharacterId}/booster`, {
+        method: "PATCH",
+        headers: {
+          ...authHeaders(attackerAuth.token),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          isBooster: true,
+        }),
+      }),
+      app.request(`http://localhost/api/characters/${ownerCharacterId}/slots`, {
+        method: "PATCH",
+        headers: {
+          ...authHeaders(attackerAuth.token),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          nonTradeableSlots: ["trinket1", "trinket2"],
+        }),
+      }),
+    ]);
+
+    assert.equal(discordResponse.status, 404);
+    assert.equal(boosterResponse.status, 404);
+    assert.equal(slotsResponse.status, 404);
+
+    const [player, character] = await Promise.all([
+      db.query.players.findFirst({
+        where: eq(players.id, ownerPlayerId),
+      }),
+      db.query.characters.findFirst({
+        where: eq(characters.id, ownerCharacterId),
+      }),
+    ]);
+
+    assert.equal(player?.discordUserId, "123456789");
+    assert.equal(character?.isBooster, false);
+    assert.deepEqual(character?.nonTradeableSlots, ["head"]);
   });
 });

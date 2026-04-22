@@ -1,4 +1,5 @@
 import { createAuthClient } from "better-auth/react";
+import { genericOAuthClient } from "better-auth/client/plugins";
 import { env } from "@wow-dashboard/env/web";
 
 function getAuthBaseUrl(apiUrl: string) {
@@ -10,4 +11,5 @@ function getAuthBaseUrl(apiUrl: string) {
 export const authClient = createAuthClient({
   baseURL: getAuthBaseUrl(env.VITE_API_URL),
   credentials: "include",
+  plugins: [genericOAuthClient()],
 });

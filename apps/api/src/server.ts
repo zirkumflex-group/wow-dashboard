@@ -1,7 +1,6 @@
 import { serve } from "@hono/node-server";
 import { eq, sql } from "drizzle-orm";
-import { Hono } from "hono";
-import { cors } from "hono/cors";
+import { Hono, type Context } from "hono";
 import {
   addonIngestBodySchema,
   characterDetailTimelineQuerySchema,
@@ -20,12 +19,7 @@ import { players } from "@wow-dashboard/db";
 import { env } from "@wow-dashboard/env/server";
 import { auth, type ApiAuthSession, type ApiAuthUser } from "./auth";
 import { db } from "./db";
-import {
-  completeDesktopLoginAttempt,
-  consumeDesktopLoginAttempt,
-  createLoginCode,
-  redeemLoginCode,
-} from "./lib/loginCodes";
+import { createLoginCode, redeemLoginCode } from "./lib/loginCodes";
 import { AddonIngestServiceError, ingestAddonData } from "./services/addonIngest";
 import {
   readBoosterCharactersForExport,
@@ -58,7 +52,7 @@ function isAllowedApiOrigin(origin: string) {
     return false;
   }
 
-  if (origin === env.SITE_URL || origin === "null") {
+  if (origin === env.SITE_URL) {
     return true;
   }
 
@@ -72,6 +66,47 @@ function isAllowedApiOrigin(origin: string) {
   }
 
   return false;
+}
+
+function hasAuthorizationHeader(value: string | null | undefined) {
+  return typeof value === "string" && value.trim() !== "";
+}
+
+function requestsAuthorizationHeader(value: string | null | undefined) {
+  if (!value) {
+    return false;
+  }
+
+  return value
+    .split(",")
+    .some((headerName) => headerName.trim().toLowerCase() === "authorization");
+}
+
+function resolveApiCorsPolicy(c: Context<AppBindings>) {
+  const origin = c.req.header("origin") ?? "";
+  if (!origin) {
+    return null;
+  }
+
+  if (isAllowedApiOrigin(origin)) {
+    return {
+      origin,
+      allowCredentials: true,
+    };
+  }
+
+  if (
+    origin === "null" &&
+    (hasAuthorizationHeader(c.req.header("authorization")) ||
+      requestsAuthorizationHeader(c.req.header("Access-Control-Request-Headers")))
+  ) {
+    return {
+      origin,
+      allowCredentials: false,
+    };
+  }
+
+  return null;
 }
 
 function serializeSession(session: ApiAuthSession) {
@@ -341,17 +376,41 @@ function parseBooleanQueryValue(value: string | null) {
   return value;
 }
 
-app.use(
-  "/api/*",
-  cors({
-    origin: (origin) => (isAllowedApiOrigin(origin) ? origin : null),
-    allowHeaders: ["Content-Type", "Authorization"],
-    allowMethods: ["GET", "POST", "PATCH", "OPTIONS"],
-    exposeHeaders: ["Content-Length", "set-auth-token"],
-    maxAge: 600,
-    credentials: true,
-  }),
-);
+app.use("/api/*", async (c, next) => {
+  const corsPolicy = resolveApiCorsPolicy(c);
+
+  if (corsPolicy) {
+    c.header("Access-Control-Allow-Origin", corsPolicy.origin);
+    if (corsPolicy.allowCredentials) {
+      c.header("Access-Control-Allow-Credentials", "true");
+    }
+  }
+
+  c.header("Access-Control-Expose-Headers", "Content-Length,set-auth-token");
+
+  if (c.req.method === "OPTIONS") {
+    c.header("Access-Control-Max-Age", "600");
+    c.header("Access-Control-Allow-Methods", "GET,POST,PATCH,OPTIONS");
+
+    const requestHeaders = c.req.header("Access-Control-Request-Headers");
+    if (requestHeaders) {
+      c.header("Access-Control-Allow-Headers", requestHeaders);
+      c.header("Vary", "Access-Control-Request-Headers", { append: true });
+    } else {
+      c.header("Access-Control-Allow-Headers", "Content-Type,Authorization");
+    }
+
+    c.header("Vary", "Origin", { append: true });
+    return new Response(null, {
+      status: 204,
+      statusText: "No Content",
+      headers: c.res.headers,
+    });
+  }
+
+  await next();
+  c.header("Vary", "Origin", { append: true });
+});
 
 app.use("/api/*", async (c, next) => {
   const session = await auth.api.getSession({
@@ -398,50 +457,6 @@ app.post("/api/auth/login-code", async (c) => {
   return c.json({
     code,
     expiresIn: loginCodeTtlSeconds,
-  });
-});
-
-app.post("/api/auth/desktop-login/complete", async (c) => {
-  const user = c.get("user");
-
-  if (!user) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
-
-  let body: { attemptId?: unknown };
-  try {
-    body = (await c.req.json()) as { attemptId?: unknown };
-  } catch {
-    return c.json({ error: "Invalid request body" }, 400);
-  }
-
-  const attemptId = typeof body.attemptId === "string" ? body.attemptId : "";
-  if (!attemptId) {
-    return c.json({ error: "attemptId is required" }, 400);
-  }
-
-  await completeDesktopLoginAttempt({
-    attemptId,
-    userId: user.id,
-  });
-
-  return c.json({ ok: true, expiresIn: loginCodeTtlSeconds });
-});
-
-app.get("/api/auth/desktop-login", async (c) => {
-  const attemptId = c.req.query("attemptId") ?? "";
-  if (!attemptId) {
-    return c.json({ error: "attemptId is required" }, 400);
-  }
-
-  const token = await consumeDesktopLoginAttempt(attemptId);
-  if (!token) {
-    return c.json({ status: "pending" as const });
-  }
-
-  return c.json({
-    status: "complete" as const,
-    token,
   });
 });
 
@@ -785,6 +800,7 @@ app.patch("/api/players/:id/discord", async (c) => {
   try {
     const result = await updatePlayerDiscordUserId(
       parsedParams.data.id,
+      user.id,
       parsedBody.data.discordUserId,
     );
 
@@ -830,6 +846,7 @@ app.patch("/api/characters/:id/booster", async (c) => {
 
   const result = await updateCharacterBoosterStatus(
     parsedParams.data.id,
+    user.id,
     parsedBody.data.isBooster,
   );
 
@@ -867,6 +884,7 @@ app.patch("/api/characters/:id/slots", async (c) => {
 
   const result = await updateCharacterNonTradeableSlots(
     parsedParams.data.id,
+    user.id,
     parsedBody.data.nonTradeableSlots,
   );
 

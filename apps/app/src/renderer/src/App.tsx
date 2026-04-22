@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiClientError } from "@wow-dashboard/api-client";
 import { env } from "@wow-dashboard/env/app";
+import type { DesktopAuthSessionState } from "../../shared/auth";
 import type {
   AddonUpdateCheckResult,
   AddonUpdateState,
@@ -142,7 +143,7 @@ declare global {
       auth: {
         login: () => Promise<boolean>;
         getToken: () => Promise<string | null>;
-        getSession: () => Promise<unknown>;
+        getSession: () => Promise<DesktopAuthSessionState>;
         logout: () => Promise<boolean>;
       };
       wow: {
@@ -210,27 +211,31 @@ async function _clearToken(): Promise<void> {
 }
 
 async function _fetchToken(): Promise<string | null> {
+  let token: string | null = null;
+
   try {
-    const t = await window.electron.auth.getToken();
-    if (!t) {
+    token = await window.electron.auth.getToken();
+    if (!token) {
       _token = null;
       _notify();
       return null;
     }
 
-    const session = await window.electron.auth.getSession();
-    if (!session) {
+    const sessionState = await window.electron.auth.getSession();
+    if (sessionState.status === "unauthenticated") {
       await _clearToken();
       return null;
     }
 
-    _token = t;
+    _token = token;
     _notify();
-    return t;
+    return token;
   } catch {
-    _token = null;
+    // Preserve the local token on transient validation failures. The API client
+    // will still surface request-level auth errors if the session has actually expired.
+    _token = token;
     _notify();
-    return null;
+    return token;
   }
 }
 

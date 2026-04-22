@@ -13,12 +13,7 @@ function getOAuthBootstrapUrl() {
 }
 
 function buildElectronCallbackUrl() {
-  const callbackUrl = new URL("/auth/electron-callback", window.location.origin);
-  const attemptId = new URLSearchParams(window.location.search).get("attemptId");
-  if (attemptId) {
-    callbackUrl.searchParams.set("attemptId", attemptId);
-  }
-  return callbackUrl.toString();
+  return new URL("/auth/electron-callback", window.location.origin).toString();
 }
 
 function ElectronLogin() {

@@ -332,7 +332,7 @@ function auditNaturalKey(log: Pick<ConvexAuditLog, "event" | "timestamp" | "user
 
 function normalizePreviewRuns(
   value: MythicPlusRecentRunPreview[] | null | undefined,
-  characterId: string,
+  characterId?: string | null,
 ) {
   if (!value || value.length === 0) {
     return null;
@@ -340,7 +340,7 @@ function normalizePreviewRuns(
 
   return value.map((run) => ({
     ...run,
-    characterId,
+    ...(characterId ? { characterId } : {}),
   }));
 }
 

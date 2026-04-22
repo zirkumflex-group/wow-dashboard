@@ -510,6 +510,19 @@ async function readCharacterById(characterId: string) {
   });
 }
 
+async function readOwnedCharacterId(characterId: string, userId: string): Promise<string | null> {
+  const [ownedCharacter] = await db
+    .select({
+      id: characters.id,
+    })
+    .from(characters)
+    .innerJoin(players, eq(players.id, characters.playerId))
+    .where(and(eq(characters.id, characterId), eq(players.userId, userId)))
+    .limit(1);
+
+  return ownedCharacter?.id ?? null;
+}
+
 async function readCharacterOwner(character: CharacterRecord) {
   return await db.query.players.findFirst({
     where: eq(players.id, character.playerId),
@@ -1208,10 +1221,11 @@ export async function requestCharacterResync(
 
 export async function updateCharacterBoosterStatus(
   characterId: string,
+  userId: string,
   isBooster: boolean,
 ): Promise<{ characterId: string; isBooster: boolean } | null> {
-  const character = await readCharacterById(characterId);
-  if (!character) {
+  const ownedCharacterId = await readOwnedCharacterId(characterId, userId);
+  if (!ownedCharacterId) {
     return null;
   }
 
@@ -1220,20 +1234,21 @@ export async function updateCharacterBoosterStatus(
     .set({
       isBooster,
     })
-    .where(eq(characters.id, characterId));
+    .where(eq(characters.id, ownedCharacterId));
 
   return {
-    characterId,
+    characterId: ownedCharacterId,
     isBooster,
   };
 }
 
 export async function updateCharacterNonTradeableSlots(
   characterId: string,
+  userId: string,
   nonTradeableSlots: readonly NonTradeableSlot[],
 ): Promise<{ characterId: string; nonTradeableSlots: NonTradeableSlot[] } | null> {
-  const character = await readCharacterById(characterId);
-  if (!character) {
+  const ownedCharacterId = await readOwnedCharacterId(characterId, userId);
+  if (!ownedCharacterId) {
     return null;
   }
 
@@ -1244,10 +1259,10 @@ export async function updateCharacterNonTradeableSlots(
     .set({
       nonTradeableSlots: normalizedSlots.length > 0 ? normalizedSlots : null,
     })
-    .where(eq(characters.id, characterId));
+    .where(eq(characters.id, ownedCharacterId));
 
   return {
-    characterId,
+    characterId: ownedCharacterId,
     nonTradeableSlots: normalizedSlots,
   };
 }

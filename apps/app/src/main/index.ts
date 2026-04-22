@@ -12,7 +12,7 @@ import {
   nativeImage,
 } from "electron";
 import { autoUpdater } from "electron-updater";
-import { env as serverEnv } from "@wow-dashboard/env/server";
+import { env as appEnv } from "@wow-dashboard/env/app";
 import { execFile } from "node:child_process";
 import * as fs from "fs";
 import * as path from "path";
@@ -27,6 +27,7 @@ import type {
   AppInstallUpdateResult,
   AppUpdateState,
 } from "../shared/update";
+import type { DesktopAuthSessionState } from "../shared/auth";
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -73,23 +74,11 @@ const addonUpdateState: AddonUpdateState = {
   error: null,
   lastCheckedAt: null,
 };
-const SITE_URL = serverEnv.SITE_URL;
-const API_URL = serverEnv.API_URL;
+const SITE_URL = appEnv.VITE_SITE_URL;
+const API_URL = appEnv.VITE_API_URL;
 
 function getElectronLoginUrl(): string {
   return new URL("/auth/electron-login", SITE_URL).toString();
-}
-
-function buildElectronLoginAttemptUrl(attemptId: string): string {
-  const url = new URL(getElectronLoginUrl());
-  url.searchParams.set("attemptId", attemptId);
-  return url.toString();
-}
-
-function getDesktopLoginPollUrl(attemptId: string): string {
-  const url = new URL("auth/desktop-login", API_URL.endsWith("/") ? API_URL : `${API_URL}/`);
-  url.searchParams.set("attemptId", attemptId);
-  return url.toString();
 }
 
 function getApiAuthUrl(pathname: string): string {
@@ -137,28 +126,6 @@ async function openUrlInExternalBrowser(url: string): Promise<void> {
   }
 
   throw new Error(`Could not open your browser automatically. Open ${url} manually.`);
-}
-
-async function pollDesktopLoginAttempt(attemptId: string): Promise<string | null> {
-  const response = await net.fetch(getDesktopLoginPollUrl(attemptId), {
-    headers: {
-      Accept: "application/json",
-    },
-  });
-
-  if (!response.ok) {
-    throw new Error(`Desktop login poll failed: ${response.status}`);
-  }
-
-  const payload = (await response.json()) as
-    | { status: "pending" }
-    | { status: "complete"; token?: string };
-
-  if (payload.status !== "complete" || !payload.token) {
-    return null;
-  }
-
-  return payload.token;
 }
 
 // ─── Token persistence via OS keychain (safeStorage) ──────────────────────────
@@ -2591,8 +2558,7 @@ function handleDeepLink(url: string): void {
 // Auth
 ipcMain.handle("auth:login", () => {
   return new Promise<boolean>((resolve, reject) => {
-    const attemptId = crypto.randomUUID();
-    const loginUrl = buildElectronLoginAttemptUrl(attemptId);
+    const loginUrl = getElectronLoginUrl();
     let settled = false;
 
     const finalizeSuccess = (token?: string) => {
@@ -2632,32 +2598,12 @@ ipcMain.handle("auth:login", () => {
       finalizeError(err);
     };
 
-    const poll = async () => {
-      if (settled) return;
-
-      try {
-        const token = await pollDesktopLoginAttempt(attemptId);
-        if (token) {
-          finalizeSuccess(token);
-          return;
-        }
-      } catch (error) {
-        finalizeError(error instanceof Error ? error : new Error(String(error)));
-        return;
-      }
-
-      setTimeout(() => {
-        void poll();
-      }, 1000);
-    };
-
     // Open the login page in the browser. The browser initiates the OAuth flow so the
     // state cookie lands in the browser session (not Electron's), which means better-auth
     // can validate the callback and honour the callbackURL → /auth/electron-callback.
     void openUrlInExternalBrowser(loginUrl).catch((error: Error) => {
       finalizeError(error);
     });
-    void poll();
   });
 });
 
@@ -2672,7 +2618,9 @@ ipcMain.handle("auth:getToken", async () => {
 
 ipcMain.handle("auth:getSession", async () => {
   if (!storedSessionToken) {
-    return null;
+    return {
+      status: "unauthenticated",
+    } satisfies DesktopAuthSessionState;
   }
 
   try {
@@ -2686,12 +2634,22 @@ ipcMain.handle("auth:getSession", async () => {
       if (resp.status === 401) {
         cachedElectronToken = null;
         saveSessionToken(null);
+        return {
+          status: "unauthenticated",
+        } satisfies DesktopAuthSessionState;
       }
-      return null;
+      return {
+        status: "unknown",
+      } satisfies DesktopAuthSessionState;
     }
-    return await resp.json();
+    return {
+      status: "valid",
+      session: await resp.json(),
+    } satisfies DesktopAuthSessionState;
   } catch {
-    return null;
+    return {
+      status: "unknown",
+    } satisfies DesktopAuthSessionState;
   }
 });
 

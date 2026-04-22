@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
+import type { DesktopAuthSessionState } from "../shared/auth";
 import type {
   AddonUpdateCheckResult,
   AddonUpdateState,
@@ -25,7 +26,8 @@ contextBridge.exposeInMainWorld("electron", {
   auth: {
     login: () => ipcRenderer.invoke("auth:login"),
     getToken: () => ipcRenderer.invoke("auth:getToken"),
-    getSession: () => ipcRenderer.invoke("auth:getSession"),
+    getSession: () =>
+      ipcRenderer.invoke("auth:getSession") as Promise<DesktopAuthSessionState>,
     logout: () => ipcRenderer.invoke("auth:logout"),
   },
   wow: {

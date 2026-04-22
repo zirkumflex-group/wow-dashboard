@@ -5,7 +5,6 @@ import { insertAuditEvent } from "./audit";
 import { ensureRedis } from "./redis";
 
 const loginCodePrefix = "auth:login-code";
-const desktopLoginAttemptPrefix = "auth:desktop-login-attempt";
 const codeBytes = 32;
 
 type StoredLoginCode = {
@@ -16,10 +15,6 @@ type StoredLoginCode = {
 
 function buildLoginCodeKey(code: string): string {
   return `${loginCodePrefix}:${code}`;
-}
-
-function buildDesktopLoginAttemptKey(attemptId: string): string {
-  return `${desktopLoginAttemptPrefix}:${attemptId}`;
 }
 
 function createRandomCode(): string {
@@ -93,68 +88,6 @@ export async function redeemLoginCode(code: string): Promise<string | null> {
   await insertAuditEvent("auth.code.redeemed", {
     userId: payload.userId,
     metadata: {
-      expiresInSeconds: loginCodeTtlSeconds,
-    },
-  });
-
-  return payload.token;
-}
-
-export async function completeDesktopLoginAttempt(input: {
-  attemptId: string;
-  userId: string;
-}): Promise<void> {
-  const attemptId = input.attemptId.trim();
-  if (!attemptId) {
-    throw new Error("attemptId is required");
-  }
-
-  const redis = await ensureRedis();
-  const token = await createDesktopSessionToken(input.userId);
-  const payload: StoredLoginCode = {
-    token,
-    userId: input.userId,
-    createdAt: new Date().toISOString(),
-  };
-
-  await redis.set(
-    buildDesktopLoginAttemptKey(attemptId),
-    JSON.stringify(payload),
-    "EX",
-    loginCodeTtlSeconds,
-  );
-
-  await insertAuditEvent("auth.desktop.completed", {
-    userId: input.userId,
-    metadata: {
-      attemptId,
-      expiresInSeconds: loginCodeTtlSeconds,
-    },
-  });
-}
-
-export async function consumeDesktopLoginAttempt(attemptId: string): Promise<string | null> {
-  const normalizedAttemptId = attemptId.trim();
-  if (!normalizedAttemptId) return null;
-
-  const redis = await ensureRedis();
-  const rawValue = (await redis.call(
-    "GETDEL",
-    buildDesktopLoginAttemptKey(normalizedAttemptId),
-  )) as string | null;
-  if (!rawValue) return null;
-
-  let payload: StoredLoginCode;
-  try {
-    payload = JSON.parse(rawValue) as StoredLoginCode;
-  } catch {
-    return null;
-  }
-
-  await insertAuditEvent("auth.desktop.consumed", {
-    userId: payload.userId,
-    metadata: {
-      attemptId: normalizedAttemptId,
       expiresInSeconds: loginCodeTtlSeconds,
     },
   });

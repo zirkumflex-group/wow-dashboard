@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { players } from "@wow-dashboard/db";
 import { db } from "../db";
 
@@ -24,27 +24,28 @@ export function normalizeDiscordUserId(discordUserId: string | null): string | n
 
 export async function updatePlayerDiscordUserId(
   playerId: string,
+  userId: string,
   discordUserId: string | null,
 ): Promise<{ playerId: string; discordUserId: string | null } | null> {
-  const player = await db.query.players.findFirst({
-    where: eq(players.id, playerId),
-  });
-
-  if (!player) {
-    return null;
-  }
-
   const normalizedDiscordUserId = normalizeDiscordUserId(discordUserId);
 
-  await db
+  const [updatedPlayer] = await db
     .update(players)
     .set({
       discordUserId: normalizedDiscordUserId,
     })
-    .where(eq(players.id, playerId));
+    .where(and(eq(players.id, playerId), eq(players.userId, userId)))
+    .returning({
+      id: players.id,
+      discordUserId: players.discordUserId,
+    });
+
+  if (!updatedPlayer) {
+    return null;
+  }
 
   return {
-    playerId,
-    discordUserId: normalizedDiscordUserId,
+    playerId: updatedPlayer.id,
+    discordUserId: updatedPlayer.discordUserId,
   };
 }

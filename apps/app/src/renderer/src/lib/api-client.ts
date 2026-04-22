@@ -3,6 +3,7 @@ import { env } from "@wow-dashboard/env/app";
 
 export const apiClient = createApiClient({
   baseUrl: env.VITE_API_URL,
+  credentials: "omit",
   getAccessToken: () => window.electron.auth.getToken(),
 });
 

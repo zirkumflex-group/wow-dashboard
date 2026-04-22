@@ -42,8 +42,8 @@ function HomeComponent() {
       <Button
         size="lg"
         onClick={() =>
-          authClient.signIn.social({
-            provider: "battlenet",
+          authClient.signIn.oauth2({
+            providerId: "battlenet",
             callbackURL: new URL("/dashboard", window.location.origin).toString(),
           })
         }
