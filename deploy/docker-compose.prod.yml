@@ -55,6 +55,8 @@ services:
       REDIS_URL: redis://redis:6379
       PORT: 3000
       HOST: 0.0.0.0
+    ports:
+      - "${API_HOST_BIND:-127.0.0.1}:${API_HOST_PORT:-3000}:3000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -103,6 +105,8 @@ services:
     environment:
       PORT: 3001
       HOST: 0.0.0.0
+    ports:
+      - "${WEB_HOST_BIND:-127.0.0.1}:${WEB_HOST_PORT:-3001}:3001"
     depends_on:
       api:
         condition: service_healthy
@@ -121,6 +125,7 @@ services:
 
   caddy:
     image: caddy:2-alpine
+    profiles: ["edge"]
     restart: unless-stopped
     env_file:
       - .env.staging

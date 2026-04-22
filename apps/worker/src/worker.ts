@@ -14,7 +14,7 @@ async function ensureQueue(boss: PgBoss, name: string): Promise<void> {
   }
 }
 
-async function startWorker() {
+export async function startWorker() {
   const boss = new PgBoss({
     connectionString: env.DATABASE_URL,
   });
@@ -49,7 +49,7 @@ async function startWorker() {
   return boss;
 }
 
-async function shutdown(boss: PgBoss, signal: string) {
+export async function shutdownWorker(boss: PgBoss, signal: string) {
   console.log(`[worker] shutting down on ${signal}`);
   await boss.stop();
   await closeWorkerDatabase();
@@ -59,7 +59,7 @@ if (import.meta.main) {
   const boss = await startWorker();
 
   const handleSignal = (signal: string) => {
-    void shutdown(boss, signal).finally(() => {
+    void shutdownWorker(boss, signal).finally(() => {
       process.exit(0);
     });
   };

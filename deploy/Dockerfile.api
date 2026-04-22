@@ -3,7 +3,7 @@ FROM node:20-slim AS base
 ENV PNPM_HOME=/pnpm
 ENV PATH="${PNPM_HOME}:${PATH}"
 
-RUN corepack enable
+RUN corepack enable && corepack prepare pnpm@10.11.0 --activate
 
 WORKDIR /app
 
@@ -12,6 +12,14 @@ FROM base AS build
 COPY . .
 
 RUN pnpm install --frozen-lockfile
+RUN pnpm add -Dw \
+    @esbuild/linux-x64@0.27.4 \
+    @esbuild/linux-arm64@0.27.4 \
+  && rm -f node_modules/.pnpm/node_modules/@esbuild/linux-x64 \
+  && rm -f node_modules/.pnpm/node_modules/@esbuild/linux-arm64 \
+  && ln -s ../../@esbuild+linux-x64@0.27.4/node_modules/@esbuild/linux-x64 node_modules/.pnpm/node_modules/@esbuild/linux-x64 \
+  && ln -s ../../@esbuild+linux-arm64@0.27.4/node_modules/@esbuild/linux-arm64 node_modules/.pnpm/node_modules/@esbuild/linux-arm64 \
+  && pnpm rebuild esbuild
 RUN pnpm -F @wow-dashboard/api check-types
 
 FROM base AS runtime

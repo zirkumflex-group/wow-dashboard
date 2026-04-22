@@ -891,7 +891,7 @@ function getHost() {
   return host && host.length > 0 ? host : "0.0.0.0";
 }
 
-if (import.meta.main) {
+export function startApi() {
   const port = getPort();
   const host = getHost();
 
@@ -902,4 +902,8 @@ if (import.meta.main) {
   });
 
   console.log(`[api] listening on http://${host}:${port}`);
+}
+
+if (import.meta.main) {
+  startApi();
 }

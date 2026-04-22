@@ -8,7 +8,7 @@
     "check-types": "tsc --noEmit --project tsconfig.json",
     "dev": "tsx watch src/server.ts",
     "test": "tsx --test src/**/*.test.ts",
-    "start": "tsx src/server.ts"
+    "start": "tsx src/start.ts"
   },
   "dependencies": {
     "@wow-dashboard/api-schema": "workspace:*",
