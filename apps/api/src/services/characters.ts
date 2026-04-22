@@ -5,6 +5,7 @@ import type {
   CharacterPageResponse,
   CharacterSnapshotTimelineResponse,
 } from "@wow-dashboard/api-schema";
+import { mythicPlusPreviewRunLimit } from "@wow-dashboard/api-schema";
 import {
   account,
   characterDailySnapshots,
@@ -320,10 +321,10 @@ function getSnapshotTimeFrameCutoffSeconds(timeFrame: SnapshotTimeFrame) {
 }
 
 function getSnapshotBucketTargetPointCount(timeFrame: SnapshotTimeFrame) {
-  if (timeFrame === "7d") return 7;
-  if (timeFrame === "30d") return 30;
-  if (timeFrame === "90d") return 45;
-  return 60;
+  if (timeFrame === "7d") return 30;
+  if (timeFrame === "30d") return 72;
+  if (timeFrame === "90d") return 120;
+  return 180;
 }
 
 const snapshotBucketSpanOptionsSeconds = [
@@ -714,7 +715,7 @@ function buildCharacterMythicPlusData(
   totalRunCount: number,
   includeAllRuns: boolean,
 ): CharacterMythicPlusResponse {
-  const visibleRuns = includeAllRuns ? runs : runs.slice(0, 20);
+  const visibleRuns = includeAllRuns ? runs : runs.slice(0, mythicPlusPreviewRunLimit);
 
   return {
     summary,

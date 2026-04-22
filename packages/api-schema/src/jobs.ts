@@ -6,6 +6,7 @@ export const queueNames = {
 } as const;
 
 export const loginCodeTtlSeconds = 60;
+export const mythicPlusPreviewRunLimit = 50;
 
 export const syncCharactersJobPayloadSchema = z.object({
   userId: z.string().min(1),

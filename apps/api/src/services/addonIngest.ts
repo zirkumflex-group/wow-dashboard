@@ -1,5 +1,5 @@
 import { and, eq } from "drizzle-orm";
-import type { AddonCharacterInput } from "@wow-dashboard/api-schema";
+import { mythicPlusPreviewRunLimit, type AddonCharacterInput } from "@wow-dashboard/api-schema";
 import {
   characterDailySnapshots,
   characters,
@@ -90,7 +90,6 @@ const MAX_FUTURE_MS = 5 * 60 * 1000;
 const MAX_PAST_MS = 30 * 24 * 60 * 60 * 1000;
 const LEGACY_DST_SHIFT_SECONDS = 60 * 60;
 const LEGACY_DST_SHIFT_TOLERANCE_SECONDS = 2 * 60;
-const MYTHIC_PLUS_PREVIEW_RUN_LIMIT = 20;
 const validSnapshotSpecNames = new Set<string>(snapshotSpecs);
 
 export class AddonIngestServiceError extends Error {
@@ -1168,7 +1167,7 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
       const mythicPlusSummary = buildMythicPlusSummary(dedupedRuns, currentScore);
       const mythicPlusRecentRunsPreview = recentRuns.slice(
         0,
-        MYTHIC_PLUS_PREVIEW_RUN_LIMIT,
+        mythicPlusPreviewRunLimit,
       ) as MythicPlusRecentRunPreview[];
       const mythicPlusRunCount = recentRuns.length;
 
