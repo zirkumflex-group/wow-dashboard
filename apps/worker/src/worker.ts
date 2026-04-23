@@ -1,4 +1,4 @@
-import { PgBoss, type Job } from "pg-boss";
+import PgBoss from "pg-boss";
 import {
   queueNames,
   syncCharactersJobPayloadSchema,
@@ -23,16 +23,19 @@ export async function startWorker() {
   await boss.start();
   await ensureQueue(boss, queueNames.syncCharacters);
 
-  await boss.work(queueNames.syncCharacters, async (jobs: Job<SyncCharactersJobPayload>[]) => {
-    for (const job of jobs) {
-      const payload = syncCharactersJobPayloadSchema.parse(job.data);
-      const result = await syncCharacters(payload);
-      console.log("[worker] syncCharacters completed", {
-        jobId: job.id,
-        ...result,
-      });
-    }
-  });
+  await boss.work(
+    queueNames.syncCharacters,
+    async (jobs: PgBoss.Job<SyncCharactersJobPayload>[]) => {
+      for (const job of jobs) {
+        const payload = syncCharactersJobPayloadSchema.parse(job.data);
+        const result = await syncCharacters(payload);
+        console.log("[worker] syncCharacters completed", {
+          jobId: job.id,
+          ...result,
+        });
+      }
+    },
+  );
 
   console.log("[worker] listening for jobs");
   return boss;

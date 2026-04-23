@@ -8,7 +8,7 @@ import { config as loadDotenv } from "dotenv";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dockerCommand = process.platform === "win32" ? "docker.exe" : "docker";
-const pnpmCommand = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+const pnpmInvocation = resolvePnpmInvocation();
 const composeArgs = ["compose", "-f", "deploy/docker-compose.dev.yml"];
 const trackedServices = [
   { service: "postgres", container: "wow-dashboard-postgres-dev" },
@@ -69,7 +69,12 @@ try {
   }
 
   console.log("[dev] applying database migrations");
-  await runChecked(pnpmCommand, ["-F", "@wow-dashboard/db", "migrate"]);
+  await runChecked(pnpmInvocation.command, [
+    ...pnpmInvocation.args,
+    "-F",
+    "@wow-dashboard/db",
+    "migrate",
+  ]);
 
   console.log("[dev] starting API, worker, web, and Electron");
   startService("@wow-dashboard/api", ["-F", "@wow-dashboard/api", "dev"], process.env);
@@ -91,6 +96,22 @@ function loadRootEnv() {
     if (!existsSync(path)) continue;
     loadDotenv({ path, override: false });
   }
+}
+
+function resolvePnpmInvocation() {
+  if (process.platform !== "win32") {
+    return { command: "pnpm", args: [] };
+  }
+
+  const appDataPnpm = process.env.APPDATA
+    ? resolve(process.env.APPDATA, "npm", "node_modules", "pnpm", "bin", "pnpm.cjs")
+    : null;
+
+  if (appDataPnpm && existsSync(appDataPnpm)) {
+    return { command: process.execPath, args: [appDataPnpm] };
+  }
+
+  return { command: "cmd.exe", args: ["/d", "/s", "/c", "pnpm.cmd"] };
 }
 
 function resolvePort(directEnvKeys, urlEnvKeys, fallbackPort) {
@@ -293,7 +314,7 @@ function runCaptured(command, args, options = {}) {
 }
 
 function startService(name, args, env) {
-  const child = spawn(pnpmCommand, args, {
+  const child = spawn(pnpmInvocation.command, [...pnpmInvocation.args, ...args], {
     cwd: repoRoot,
     env,
     stdio: "inherit",
