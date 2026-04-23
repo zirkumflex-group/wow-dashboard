@@ -8,7 +8,7 @@
     "check-types": "tsc --noEmit --project tsconfig.json",
     "dev": "tsx watch src/start.ts",
     "import-convex-export": "tsx src/importConvexExport.ts",
-    "test": "tsx --test src/**/*.test.ts",
+    "test": "tsx --test src/server.test.ts",
     "start": "node dist/start.cjs"
   },
   "dependencies": {

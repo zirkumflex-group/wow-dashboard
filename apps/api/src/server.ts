@@ -110,6 +110,46 @@ function resolveApiCorsPolicy(c: Context<AppBindings>) {
   return null;
 }
 
+function appendVaryHeader(headers: Headers, value: string) {
+  const existing = headers.get("Vary");
+  if (!existing) {
+    headers.set("Vary", value);
+    return;
+  }
+
+  const values = existing.split(",").map((entry) => entry.trim().toLowerCase());
+  if (!values.includes(value.toLowerCase())) {
+    headers.set("Vary", `${existing}, ${value}`);
+  }
+}
+
+function applyApiCorsHeaders(c: Context<AppBindings>, headers: Headers) {
+  const corsPolicy = resolveApiCorsPolicy(c);
+
+  if (corsPolicy) {
+    headers.set("Access-Control-Allow-Origin", corsPolicy.origin);
+    if (corsPolicy.allowCredentials) {
+      headers.set("Access-Control-Allow-Credentials", "true");
+    } else {
+      headers.delete("Access-Control-Allow-Credentials");
+    }
+  }
+
+  headers.set("Access-Control-Expose-Headers", "Content-Length,set-auth-token");
+  appendVaryHeader(headers, "Origin");
+}
+
+function withApiCorsHeaders(c: Context<AppBindings>, response: Response) {
+  const headers = new Headers(response.headers);
+  applyApiCorsHeaders(c, headers);
+
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 function serializeSession(session: ApiAuthSession) {
   return {
     id: session.id,
@@ -410,7 +450,7 @@ app.use("/api/*", async (c, next) => {
   }
 
   await next();
-  c.header("Vary", "Origin", { append: true });
+  appendVaryHeader(c.res.headers, "Origin");
 });
 
 app.use("/api/*", async (c, next) => {
@@ -488,7 +528,9 @@ app.post("/api/auth/redeem-code", async (c) => {
   return c.json({ token });
 });
 
-app.on(["GET", "POST"], "/api/auth/*", (c) => auth.handler(c.req.raw));
+app.on(["GET", "POST"], "/api/auth/*", async (c) =>
+  withApiCorsHeaders(c, await auth.handler(c.req.raw)),
+);
 
 app.get("/api/dev/session", async (c) => {
   if (env.NODE_ENV !== "development") {

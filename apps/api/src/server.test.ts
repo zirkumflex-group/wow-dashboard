@@ -374,6 +374,17 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     assert.equal(rejectedNullOriginResponse.headers.get("Access-Control-Allow-Credentials"), null);
   });
 
+  it("preserves CORS headers on Better Auth handler responses", async () => {
+    const response = await app.request("http://localhost/api/auth/get-session", {
+      headers: {
+        Origin: process.env.SITE_URL!,
+      },
+    });
+
+    assert.equal(response.headers.get("Access-Control-Allow-Origin"), process.env.SITE_URL);
+    assert.equal(response.headers.get("Access-Control-Allow-Credentials"), "true");
+  });
+
   it("returns latest pinned character snapshots in request order", async () => {
     const auth = await seedAuthenticatedUser();
     const playerId = await seedPlayer(auth.userId);
