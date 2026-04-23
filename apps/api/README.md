@@ -1,6 +1,6 @@
 # `@wow-dashboard/api`
 
-Self-hosted Hono API for the migration target.
+Self-hosted Hono API for the active backend.
 
 ## Local auth verification
 

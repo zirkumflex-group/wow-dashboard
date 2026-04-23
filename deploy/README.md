@@ -57,12 +57,14 @@ rsync -az --progress \
   --exclude '.env.local' \
   --exclude 'deploy/.env.staging' \
   --exclude '.imports/' \
+  --exclude '.tmp/' \
   --exclude 'temp/' \
   --exclude 'tmp/' \
+  --exclude 'packages/backend/' \
   ./ vps:~/wow-dashboard/
 ```
 
-If you also want to move the current Convex export ZIP:
+If you also want to move a historical Convex export ZIP for a backfill:
 
 ```bash
 ssh vps 'mkdir -p ~/wow-dashboard/.imports'
@@ -79,7 +81,7 @@ cd ~/wow-dashboard
 docker compose --env-file deploy/.env.staging -f deploy/docker-compose.prod.yml up -d --build
 ```
 
-If you want to run the Convex import after deploy:
+If you want to run the historical Convex import after deploy:
 
 ```bash
 docker compose --env-file deploy/.env.staging -f deploy/docker-compose.prod.yml exec -T api \
@@ -120,4 +122,4 @@ docker compose --env-file deploy/.env.staging -f deploy/docker-compose.prod.yml 
 - `docker-compose.prod.yml` now starts Caddy by default, so the main deploy command brings up the full public stack.
 - Only Caddy publishes ports to the internet. Postgres and Redis stay internal to Docker.
 - `api` and `worker` are bundled during the image build and run with plain `node` at runtime.
-- The one-shot Convex importer is bundled into the API image from `apps/api/src/importConvexExport.ts` and is safe to rerun.
+- The one-shot Convex importer is bundled into the API image from `apps/api/src/importConvexExport.ts` and is safe to rerun for historical backfills.

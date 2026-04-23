@@ -54,6 +54,7 @@ coverage
 tmp
 temp
 .tmp
+packages/backend/
 
 # Codex local environment metadata
 .codex/environments/environment.toml
