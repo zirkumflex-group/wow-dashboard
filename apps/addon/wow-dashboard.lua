@@ -353,6 +353,7 @@ local timerLabel = nil
 local refreshBtn = nil
 local minimapToggle = nil
 local RefreshLog = nil  -- assigned after Snapshots panel is built
+local RefreshOverviewPanel = nil
 local StartSnapshotTicker = nil
 
 local function GetCharKey()
@@ -3452,6 +3453,9 @@ local function CommitSnapshot(totalSeconds, thisLevelSeconds)
     if RefreshLog then
         RefreshLog()
     end
+    if RefreshOverviewPanel then
+        RefreshOverviewPanel()
+    end
 end
 
 local function CollectSnapshot(forceFresh)
@@ -3520,7 +3524,7 @@ end
 -- Main Window
 -- ============================================================
 
-local LEFT_W, RIGHT_W, HEIGHT = 206, 500, 450
+local LEFT_W, RIGHT_W, HEIGHT = 220, 560, 500
 
 local MainFrame = CreateFrame("Frame", "WowDashboardFrame", UIParent)
 MainFrame:SetSize(LEFT_W + RIGHT_W, HEIGHT)
@@ -3712,18 +3716,271 @@ end
 local snapshotsPanel = nil
 
 do
+addon.gui = addon.gui or {}
+local gui = addon.gui
+
+gui.CreatePanelFill = function(parent, r, g, b, a)
+    local tex = parent:CreateTexture(nil, "BACKGROUND")
+    tex:SetAllPoints(parent)
+    tex:SetColorTexture(r, g, b, a)
+    return tex
+end
+
+gui.CreatePanelLine = function(parent, anchor, r, g, b, a)
+    local line = parent:CreateTexture(nil, "BORDER")
+    line:SetHeight(1)
+    line:SetPoint("LEFT", parent, "LEFT", 8, 0)
+    line:SetPoint("RIGHT", parent, "RIGHT", -8, 0)
+    line:SetPoint(anchor, parent, anchor)
+    line:SetColorTexture(r, g, b, a)
+    return line
+end
+
+gui.CreateDashboardCard = function(parent, width, height)
+    local card = CreateFrame("Frame", nil, parent)
+    card:SetSize(width, height)
+    gui.CreatePanelFill(card, 0.055, 0.044, 0.032, 0.92)
+    gui.CreatePanelLine(card, "TOP", 1, 0.82, 0, 0.28)
+    gui.CreatePanelLine(card, "BOTTOM", 0, 0, 0, 0.45)
+    return card
+end
+
+gui.CreateSmallLabel = function(parent, text)
+    local label = parent:CreateFontString(nil, "OVERLAY")
+    label:SetFont(FONT_BOLD, 9, "")
+    label:SetTextColor(0.58, 0.52, 0.44)
+    label:SetText(text)
+    return label
+end
+
+gui.CreateValueText = function(parent, size)
+    local text = parent:CreateFontString(nil, "OVERLAY")
+    text:SetFont(FONT_BOLD, size or 15, "")
+    text:SetTextColor(1, 0.86, 0.36)
+    return text
+end
+
+gui.StyleDashboardButton = function(button)
+    button:GetFontString():SetFont(FONT_BOLD, 11, "")
+    button:SetFrameLevel(button:GetParent():GetFrameLevel() + 3)
+end
+
+gui.FormatGoldAmount = function(value)
+    local gold = tonumber(value) or 0
+    if gold >= 1000000 then
+        return string.format("%.1fm", gold / 1000000)
+    end
+    if gold >= 10000 then
+        return string.format("%.1fk", gold / 1000)
+    end
+    return tostring(math.floor(gold))
+end
+
+gui.FormatShortAge = function(timestamp)
+    if type(timestamp) ~= "number" or timestamp <= 0 then
+        return "never"
+    end
+
+    local seconds = math.max(0, time() - timestamp)
+    if seconds < 60 then
+        return "just now"
+    end
+    if seconds < 3600 then
+        return tostring(math.floor(seconds / 60)) .. "m ago"
+    end
+    if seconds < 86400 then
+        return tostring(math.floor(seconds / 3600)) .. "h ago"
+    end
+    return tostring(math.floor(seconds / 86400)) .. "d ago"
+end
+
+gui.GetCurrentDashboardEntry = function()
+    if not IsLoggedIn() then
+        return nil, nil, nil, nil
+    end
+
+    local name, realm = UnitFullName("player")
+    if type(name) ~= "string" or name == "" then
+        return nil, nil, nil, nil
+    end
+
+    realm = (realm and realm ~= "") and realm or GetRealmName()
+    local key = name .. "-" .. realm
+    local characters = WowDashboardDB and WowDashboardDB.characters
+    local entry = type(characters) == "table" and characters[key] or nil
+    return key, name, realm, entry
+end
+
+gui.GetLatestSnapshot = function(entry)
+    local snapshots = type(entry) == "table" and entry.snapshots or nil
+    if type(snapshots) ~= "table" or #snapshots == 0 then
+        return nil, 0
+    end
+    return snapshots[#snapshots], #snapshots
+end
+
+gui.overviewWidgets = gui.overviewWidgets or {}
+gui.metricCards = gui.metricCards or {}
+local overviewWidgets = gui.overviewWidgets
+local metricCards = gui.metricCards
+
+gui.SetMetric = function(index, value, detail)
+    local card = metricCards[index]
+    if not card then
+        return
+    end
+    card.value:SetText(value)
+    card.detail:SetText(detail or "")
+end
+
+RefreshOverviewPanel = function()
+    if not overviewWidgets.title then
+        return
+    end
+
+    local key, name, realm, entry = gui.GetCurrentDashboardEntry()
+    local latest, snapshotCount = gui.GetLatestSnapshot(entry)
+
+    if name then
+        overviewWidgets.title:SetText(name)
+        overviewWidgets.meta:SetText((realm or "Unknown Realm") .. "  |  " .. GetRegion():upper())
+        local _, classTag = UnitClass("player")
+        local classColor = RAID_CLASS_COLORS and classTag and RAID_CLASS_COLORS[classTag] or nil
+        if classColor then
+            overviewWidgets.title:SetTextColor(classColor.r, classColor.g, classColor.b)
+        else
+            overviewWidgets.title:SetTextColor(1, 0.86, 0.36)
+        end
+    else
+        overviewWidgets.title:SetText("Character not ready")
+        overviewWidgets.meta:SetText("Enter the world to start collecting data")
+        overviewWidgets.title:SetTextColor(1, 0.86, 0.36)
+    end
+
+    if latest then
+        local spec = type(latest.spec) == "string" and latest.spec or "Unknown spec"
+        local role = type(latest.role) == "string" and latest.role or "dps"
+        overviewWidgets.snapshotStatus:SetText("Last snapshot " .. gui.FormatShortAge(latest.takenAt))
+        overviewWidgets.snapshotDetail:SetText("Lv " .. tostring(tonumber(latest.level) or UnitLevel("player") or 0)
+            .. " " .. spec .. "  |  " .. string.upper(role))
+        gui.SetMetric(1, string.format("%.1f", tonumber(latest.itemLevel) or 0), "Equipped item level")
+        gui.SetMetric(2, gui.FormatGoldAmount(latest.gold), "Gold saved locally")
+        gui.SetMetric(3, tostring(math.floor(tonumber(latest.mythicPlusScore) or 0)), "Mythic+ rating")
+        gui.SetMetric(4, tostring(snapshotCount), "Snapshots for this character")
+    else
+        overviewWidgets.snapshotStatus:SetText("No saved snapshot")
+        overviewWidgets.snapshotDetail:SetText("Use Save Snapshot after logging in")
+        gui.SetMetric(1, "--", "Equipped item level")
+        gui.SetMetric(2, "--", "Gold saved locally")
+        gui.SetMetric(3, "--", "Mythic+ rating")
+        gui.SetMetric(4, tostring(snapshotCount), "Snapshots for this character")
+    end
+
+    if overviewWidgets.sidebarStatus then
+        local label = key and (tostring(snapshotCount) .. " local snapshots") or "Waiting for player"
+        overviewWidgets.sidebarStatus:SetText(label)
+    end
+
+    if overviewWidgets.scheduleDetail then
+        if pendingSnapshot then
+            overviewWidgets.scheduleDetail:SetText("Saving current character state")
+        elseif latest then
+            overviewWidgets.scheduleDetail:SetText("Latest: " .. date("%m/%d %H:%M", latest.takenAt))
+        else
+            overviewWidgets.scheduleDetail:SetText("Automatic capture starts after login")
+        end
+    end
+end
+
+end
+
+do
+local gui = addon.gui
+local overviewWidgets = gui.overviewWidgets
+local metricCards = gui.metricCards
 local LeftSection = BuildSection(MainFrame, LEFT_W, HEIGHT, false)
 LeftSection:SetPoint("TOPLEFT", MainFrame, "TOPLEFT")
 
-BuildCategoryBar(LeftSection, "Information", 38)
-BuildInfoRow(LeftSection, "Version",    ADDON_VERSION,   78)
-BuildInfoRow(LeftSection, "Author",     "wow-dashboard", 96)
-BuildInfoRow(LeftSection, "Interface",  ADDON_INTERFACE, 114)
-BuildInfoRow(LeftSection, "Expansion",  ADDON_EXPANSION, 132)
+do
+local brandIcon = LeftSection:CreateTexture(nil, "ARTWORK")
+brandIcon:SetSize(42, 42)
+brandIcon:SetTexture(MINIMAP_ICON)
+brandIcon:SetPoint("TOPLEFT", LeftSection, "TOPLEFT", 24, -42)
 
-BuildCategoryBar(LeftSection, "Commands", 158)
-BuildInfoRow(LeftSection, "/wowdashboard", "open/help", 198)
-BuildInfoRow(LeftSection, "/wd",           "toggle",    216)
+local brandTitle = LeftSection:CreateFontString(nil, "OVERLAY")
+brandTitle:SetFont(FONT_BOLD, 16, "")
+brandTitle:SetTextColor(1, 0.86, 0.36)
+brandTitle:SetPoint("TOPLEFT", brandIcon, "TOPRIGHT", 10, -3)
+brandTitle:SetText("WoW Dashboard")
+
+local brandSub = LeftSection:CreateFontString(nil, "OVERLAY")
+brandSub:SetFont(FONT_BOLD, 9, "")
+brandSub:SetTextColor(0.62, 0.56, 0.46)
+brandSub:SetPoint("TOPLEFT", brandTitle, "BOTTOMLEFT", 0, -4)
+brandSub:SetText("Addon capture")
+end
+
+BuildCategoryBar(LeftSection, "Navigation", 104)
+
+local navOverview = CreateFrame("Button", nil, LeftSection)
+local navSnapshots = CreateFrame("Button", nil, LeftSection)
+
+local function SetupNavButton(button, label, yOffset)
+    button:SetSize(168, 30)
+    button:SetPoint("TOP", LeftSection, "TOP", 0, -yOffset)
+    button.bg = button:CreateTexture(nil, "BACKGROUND")
+    button.bg:SetAllPoints(button)
+    button.lbl = button:CreateFontString(nil, "OVERLAY")
+    button.lbl:SetFont(FONT_BOLD, 11, "")
+    button.lbl:SetPoint("LEFT", button, "LEFT", 12, 0)
+    button.lbl:SetText(label)
+end
+
+local currentTab = "overview"
+local overviewPanel = nil
+
+local function UpdateTabVisuals()
+    local function Apply(button, active)
+        button.bg:SetColorTexture(active and 0.22 or 0.09, active and 0.15 or 0.07, active and 0.05 or 0.04, active and 0.92 or 0.75)
+        button.lbl:SetTextColor(active and 1 or 0.78, active and 0.86 or 0.68, active and 0.36 or 0.50)
+    end
+    Apply(navOverview, currentTab == "overview")
+    Apply(navSnapshots, currentTab == "snapshots")
+end
+
+local function SelectTab(which)
+    currentTab = which
+    UpdateTabVisuals()
+    overviewPanel:SetShown(which == "overview")
+    snapshotsPanel:SetShown(which == "snapshots")
+    if which == "overview" and RefreshOverviewPanel then RefreshOverviewPanel() end
+    if which == "snapshots" and RefreshLog then RefreshLog() end
+end
+
+SetupNavButton(navOverview, "Overview", 140)
+SetupNavButton(navSnapshots, "Snapshots", 176)
+navOverview:SetScript("OnClick", function() SelectTab("overview") end)
+navSnapshots:SetScript("OnClick", function() SelectTab("snapshots") end)
+
+do
+BuildCategoryBar(LeftSection, "Addon", 224)
+BuildInfoRow(LeftSection, "Version",    ADDON_VERSION,   264)
+BuildInfoRow(LeftSection, "Interface",  ADDON_INTERFACE, 282)
+BuildInfoRow(LeftSection, "Expansion",  ADDON_EXPANSION, 300)
+
+BuildCategoryBar(LeftSection, "Local State", 340)
+overviewWidgets.sidebarStatus = LeftSection:CreateFontString(nil, "OVERLAY")
+overviewWidgets.sidebarStatus:SetFont(FONT_BOLD, 11, "")
+overviewWidgets.sidebarStatus:SetTextColor(0.80, 0.80, 0.80)
+overviewWidgets.sidebarStatus:SetPoint("TOPLEFT", LeftSection, "TOPLEFT", 24, -380)
+overviewWidgets.sidebarStatus:SetText("Waiting for player")
+
+local slashHint = LeftSection:CreateFontString(nil, "OVERLAY")
+slashHint:SetFont(FONT_BOLD, 10, "")
+slashHint:SetTextColor(0.58, 0.52, 0.44)
+slashHint:SetPoint("TOPLEFT", overviewWidgets.sidebarStatus, "BOTTOMLEFT", 0, -10)
+slashHint:SetText("/wd toggles the window")
+end
 
 -- ============================================================
 -- Right Section
@@ -3740,12 +3997,31 @@ RightSection.NineSlice.CloseButton:SetScript("OnClick", function()
     SetDashboardShown(false)
 end)
 
+do
 -- Header title
 local headerTitle = RightSection:CreateFontString(nil, "OVERLAY")
-headerTitle:SetFont(FONT_BOLD, 18, "")
+headerTitle:SetFont(FONT_BOLD, 19, "")
 headerTitle:SetTextColor(1, 0.82, 0)
 headerTitle:SetPoint("TOPLEFT", RightSection, "TOPLEFT", 36, -36)
-headerTitle:SetText("WoW Dashboard")
+headerTitle:SetText("Character Capture")
+
+local headerSub = RightSection:CreateFontString(nil, "OVERLAY")
+headerSub:SetFont(FONT_BOLD, 10, "")
+headerSub:SetTextColor(0.62, 0.56, 0.46)
+headerSub:SetPoint("TOPLEFT", headerTitle, "BOTTOMLEFT", 0, -5)
+headerSub:SetText("Snapshots, currencies, stats, and Mythic+ run history")
+
+local cadencePill = CreateFrame("Frame", nil, RightSection)
+cadencePill:SetSize(150, 24)
+cadencePill:SetPoint("TOPRIGHT", RightSection, "TOPRIGHT", -40, -39)
+gui.CreatePanelFill(cadencePill, 0.12, 0.09, 0.05, 0.85)
+
+local cadenceText = cadencePill:CreateFontString(nil, "OVERLAY")
+cadenceText:SetFont(FONT_BOLD, 9, "")
+cadenceText:SetTextColor(1, 0.86, 0.36)
+cadenceText:SetPoint("CENTER", cadencePill, "CENTER")
+cadenceText:SetText("15 min autosave")
+end
 
 -- Divider below header
 -- Divider frame is 4px tall, anchored at y=-66 → bottom edge at y=-68
@@ -3754,93 +4030,85 @@ div:SetPoint("LEFT",  RightSection, "LEFT",  36, -66)
 div:SetPoint("RIGHT", RightSection, "RIGHT", -36, -66)
 
 -- ============================================================
--- Tab Bar  (positioned 8px below divider bottom → y=-78 from top)
--- Tabs are 26px tall, so content area starts at y=-108
+-- Content area
 -- ============================================================
 
 -- Content panels share the same anchor (one shown at a time)
-local overviewPanel = CreateFrame("Frame", nil, RightSection)
-overviewPanel:SetPoint("TOPLEFT",     RightSection, "TOPLEFT",     36, -108)
+overviewPanel = CreateFrame("Frame", nil, RightSection)
+overviewPanel:SetPoint("TOPLEFT",     RightSection, "TOPLEFT",     36, -92)
 overviewPanel:SetPoint("BOTTOMRIGHT", RightSection, "BOTTOMRIGHT", -36, 30)
 
 snapshotsPanel = CreateFrame("Frame", nil, RightSection)
-snapshotsPanel:SetPoint("TOPLEFT",     RightSection, "TOPLEFT",     36, -108)
+snapshotsPanel:SetPoint("TOPLEFT",     RightSection, "TOPLEFT",     36, -92)
 snapshotsPanel:SetPoint("BOTTOMRIGHT", RightSection, "BOTTOMRIGHT", -36, 30)
 snapshotsPanel:Hide()
 
--- Tab state
-local currentTab = "overview"
-
-local tabBtnOverview  = CreateFrame("Button", nil, RightSection)
-local tabBtnSnapshots = CreateFrame("Button", nil, RightSection)
-
-local function UpdateTabVisuals()
-    if currentTab == "overview" then
-        tabBtnOverview.lbl:SetTextColor(1, 1, 1)
-        tabBtnOverview.bar:Show()
-        tabBtnSnapshots.lbl:SetTextColor(1, 0.82, 0)
-        tabBtnSnapshots.bar:Hide()
-    else
-        tabBtnOverview.lbl:SetTextColor(1, 0.82, 0)
-        tabBtnOverview.bar:Hide()
-        tabBtnSnapshots.lbl:SetTextColor(1, 1, 1)
-        tabBtnSnapshots.bar:Show()
-    end
-end
-
-local function SelectTab(which)
-    currentTab = which
-    UpdateTabVisuals()
-    overviewPanel:SetShown(which == "overview")
-    snapshotsPanel:SetShown(which == "snapshots")
-    if which == "snapshots" and RefreshLog then RefreshLog() end
-end
-
-local function SetupTabButton(btn, label, xOffset)
-    btn:SetSize(110, 26)
-    btn:SetPoint("TOPLEFT", RightSection, "TOPLEFT", xOffset, -78)
-
-    btn.lbl = btn:CreateFontString(nil, "OVERLAY")
-    btn.lbl:SetFont(FONT_BOLD, 12, "")
-    btn.lbl:SetTextColor(1, 0.82, 0)
-    btn.lbl:SetPoint("CENTER", btn, "CENTER", 0, 1)
-    btn.lbl:SetText(label)
-
-    -- Active-tab underline bar
-    btn.bar = btn:CreateTexture(nil, "BORDER")
-    btn.bar:SetSize(90, 2)
-    btn.bar:SetPoint("BOTTOM", btn, "BOTTOM", 0, 2)
-    btn.bar:SetColorTexture(1, 1, 1, 0.85)
-    btn.bar:Hide()
-
-    btn:SetScript("OnEnter", function(self) self.lbl:SetTextColor(1, 1, 1) end)
-    btn:SetScript("OnLeave", function() UpdateTabVisuals() end)
-end
-
-SetupTabButton(tabBtnOverview,  "Overview",  36)
-SetupTabButton(tabBtnSnapshots, "Snapshots", 148)
-tabBtnOverview:SetScript("OnClick",  function() SelectTab("overview")   end)
-tabBtnSnapshots:SetScript("OnClick", function() SelectTab("snapshots")  end)
-UpdateTabVisuals()
-
 -- ============================================================
--- Overview Panel — existing content + timer + force-refresh
+-- Overview Panel
 -- ============================================================
 
--- Timer countdown
-timerLabel = overviewPanel:CreateFontString(nil, "OVERLAY")
-timerLabel:SetFont(FONT_BOLD, 13, "")
-timerLabel:SetTextColor(0.804, 0.667, 0.498)
-timerLabel:SetPoint("CENTER", overviewPanel, "CENTER", 0, 16)
-timerLabel:SetText("Next snapshot in  --:--")
+local hero = gui.CreateDashboardCard(overviewPanel, RIGHT_W - 72, 92)
+hero:SetPoint("TOPLEFT", overviewPanel, "TOPLEFT", 0, 0)
+
+overviewWidgets.title = gui.CreateValueText(hero, 22)
+overviewWidgets.title:SetPoint("TOPLEFT", hero, "TOPLEFT", 18, -16)
+overviewWidgets.title:SetText("Character not ready")
+
+overviewWidgets.meta = gui.CreateSmallLabel(hero, "Enter the world to start collecting data")
+overviewWidgets.meta:SetPoint("TOPLEFT", overviewWidgets.title, "BOTTOMLEFT", 1, -5)
+
+overviewWidgets.snapshotStatus = gui.CreateValueText(hero, 12)
+overviewWidgets.snapshotStatus:SetPoint("TOPRIGHT", hero, "TOPRIGHT", -18, -20)
+overviewWidgets.snapshotStatus:SetJustifyH("RIGHT")
+overviewWidgets.snapshotStatus:SetText("No saved snapshot")
+
+overviewWidgets.snapshotDetail = gui.CreateSmallLabel(hero, "")
+overviewWidgets.snapshotDetail:SetPoint("TOPRIGHT", overviewWidgets.snapshotStatus, "BOTTOMRIGHT", 0, -7)
+overviewWidgets.snapshotDetail:SetJustifyH("RIGHT")
+
+local function BuildMetricCard(index, label, xOffset)
+    local card = gui.CreateDashboardCard(overviewPanel, 116, 74)
+    card:SetPoint("TOPLEFT", overviewPanel, "TOPLEFT", xOffset, -108)
+    card.label = gui.CreateSmallLabel(card, label)
+    card.label:SetPoint("TOPLEFT", card, "TOPLEFT", 12, -10)
+    card.value = gui.CreateValueText(card, 20)
+    card.value:SetPoint("TOPLEFT", card.label, "BOTTOMLEFT", 0, -8)
+    card.value:SetText("--")
+    card.detail = gui.CreateSmallLabel(card, "")
+    card.detail:SetPoint("BOTTOMLEFT", card, "BOTTOMLEFT", 12, 9)
+    metricCards[index] = card
+end
+
+BuildMetricCard(1, "ITEM LEVEL", 0)
+BuildMetricCard(2, "GOLD", 124)
+BuildMetricCard(3, "MYTHIC+", 248)
+BuildMetricCard(4, "SAVED", 372)
+
+local scheduleCard = gui.CreateDashboardCard(overviewPanel, 240, 100)
+scheduleCard:SetPoint("TOPLEFT", overviewPanel, "TOPLEFT", 0, -198)
+
+local scheduleLabel = gui.CreateSmallLabel(scheduleCard, "SNAPSHOT SCHEDULE")
+scheduleLabel:SetPoint("TOPLEFT", scheduleCard, "TOPLEFT", 14, -12)
+
+timerLabel = gui.CreateValueText(scheduleCard, 18)
+timerLabel:SetPoint("TOPLEFT", scheduleLabel, "BOTTOMLEFT", 0, -10)
+timerLabel:SetText("Next snapshot  --:--")
+
+overviewWidgets.scheduleDetail = gui.CreateSmallLabel(scheduleCard, "Automatic capture starts after login")
+overviewWidgets.scheduleDetail:SetPoint("TOPLEFT", timerLabel, "BOTTOMLEFT", 0, -10)
+
+local actionCard = gui.CreateDashboardCard(overviewPanel, 240, 100)
+actionCard:SetPoint("TOPLEFT", overviewPanel, "TOPLEFT", 248, -198)
+
+local actionLabel = gui.CreateSmallLabel(actionCard, "ACTIONS")
+actionLabel:SetPoint("TOPLEFT", actionCard, "TOPLEFT", 14, -12)
 
 -- Force-snapshot button (15-second cooldown)
-refreshBtn = CreateFrame("Button", nil, overviewPanel, "UIPanelButtonTemplate")
-refreshBtn:SetSize(160, 30)
-refreshBtn:SetPoint("TOP", timerLabel, "BOTTOM", 0, -14)
+refreshBtn = CreateFrame("Button", nil, actionCard, "UIPanelButtonTemplate")
+refreshBtn:SetSize(102, 28)
+refreshBtn:SetPoint("TOPLEFT", actionCard, "TOPLEFT", 14, -38)
 refreshBtn:SetText("Force Snapshot")
-refreshBtn:GetFontString():SetFont(FONT_BOLD, 11, "")
-refreshBtn:SetFrameLevel(overviewPanel:GetFrameLevel() + 2)
+gui.StyleDashboardButton(refreshBtn)
 refreshBtn:SetScript("OnClick", function()
     if GetTime() < refreshCooldownUntil then return end
     refreshCooldownUntil = GetTime() + 15
@@ -3848,20 +4116,19 @@ refreshBtn:SetScript("OnClick", function()
 end)
 
 -- Manual snapshot button
-local uploadBtn = CreateFrame("Button", nil, overviewPanel, "UIPanelButtonTemplate")
-uploadBtn:SetSize(160, 30)
-uploadBtn:SetPoint("TOP", refreshBtn, "BOTTOM", 0, -10)
+local uploadBtn = CreateFrame("Button", nil, actionCard, "UIPanelButtonTemplate")
+uploadBtn:SetSize(102, 28)
+uploadBtn:SetPoint("LEFT", refreshBtn, "RIGHT", 8, 0)
 uploadBtn:SetText("Save Snapshot")
-uploadBtn:GetFontString():SetFont(FONT_BOLD, 11, "")
-uploadBtn:SetFrameLevel(overviewPanel:GetFrameLevel() + 2)
+gui.StyleDashboardButton(uploadBtn)
 uploadBtn:SetScript("OnClick", function()
     RequestFreshSnapshot()
 end)
 
-minimapToggle = CreateFrame("CheckButton", nil, overviewPanel, "UICheckButtonTemplate")
-minimapToggle:SetPoint("TOPLEFT", uploadBtn, "BOTTOMLEFT", 0, -18)
+minimapToggle = CreateFrame("CheckButton", nil, actionCard, "UICheckButtonTemplate")
+minimapToggle:SetPoint("TOPLEFT", refreshBtn, "BOTTOMLEFT", -4, -14)
 minimapToggle:SetSize(24, 24)
-minimapToggle.Label = overviewPanel:CreateFontString(nil, "OVERLAY")
+minimapToggle.Label = actionCard:CreateFontString(nil, "OVERLAY")
 minimapToggle.Label:SetFont(FONT_BOLD, 11, "")
 minimapToggle.Label:SetTextColor(0.80, 0.80, 0.80)
 minimapToggle.Label:SetPoint("LEFT", minimapToggle, "RIGHT", 4, 0)
@@ -3872,18 +4139,21 @@ minimapToggle:SetScript("OnClick", function(self)
     WowDashboardDB.minimap.hide = not self:GetChecked()
     RefreshMinimapButton()
 end)
+
+UpdateTabVisuals()
+RefreshOverviewPanel()
 end
 
 -- ============================================================
 -- Snapshots Panel — scrollable log of saved snapshots
 -- ============================================================
 
-local LOG_ROW_H     = 20
+do
+local LOG_ROW_H     = 24
 local LOG_ROW_GAP   = 2
--- Content panel dimensions: RIGHT_W(500) - 72 margin = 428; height = 450 - 108 - 30 = 312
-local SCROLL_W      = RIGHT_W - 72 - 8   -- 420, leaves 4px each side inside panel
-local COL_CHAR_W    = 138
-local COL_TIME_W    = 88
+local SCROLL_W      = RIGHT_W - 72 - 8
+local COL_CHAR_W    = 154
+local COL_TIME_W    = 96
 
 local scrollFrame = CreateFrame("ScrollFrame", nil, snapshotsPanel)
 scrollFrame:SetPoint("TOPLEFT",     snapshotsPanel, "TOPLEFT",     4, -4)
@@ -3903,10 +4173,16 @@ scrollFrame:SetScrollChild(scrollChild)
 -- Column header
 local logHeader = scrollChild:CreateFontString(nil, "OVERLAY")
 logHeader:SetFont(FONT_BOLD, 9, "")
-logHeader:SetTextColor(0.6, 0.5, 0.3)
+logHeader:SetTextColor(0.78, 0.68, 0.46)
 logHeader:SetJustifyH("LEFT")
-logHeader:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 4, -3)
-logHeader:SetText("CHARACTER              DATE/TIME        LV   ILVL    GOLD    M+")
+logHeader:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 8, -5)
+logHeader:SetText("CHARACTER                  DATE/TIME         LEVEL   ILVL     GOLD      M+")
+
+local emptyState = snapshotsPanel:CreateFontString(nil, "OVERLAY")
+emptyState:SetFont(FONT_BOLD, 12, "")
+emptyState:SetTextColor(0.62, 0.56, 0.46)
+emptyState:SetPoint("CENTER", snapshotsPanel, "CENTER", 0, 4)
+emptyState:SetText("No local snapshots yet")
 
 -- Row pool
 local rowPool  = {}
@@ -3918,14 +4194,14 @@ local function GetRow(i)
     local row = CreateFrame("Frame", nil, scrollChild)
     local rowW = SCROLL_W - 8
     row:SetSize(rowW, LOG_ROW_H)
-    row:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 4, -(14 + (i - 1) * (LOG_ROW_H + LOG_ROW_GAP)))
+    row:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 4, -(22 + (i - 1) * (LOG_ROW_H + LOG_ROW_GAP)))
 
     local bg = row:CreateTexture(nil, "BACKGROUND")
     bg:SetAllPoints(row)
     if i % 2 == 0 then
-        bg:SetColorTexture(0.10, 0.07, 0.04, 0.35)
+        bg:SetColorTexture(0.11, 0.08, 0.045, 0.50)
     else
-        bg:SetColorTexture(0.06, 0.04, 0.02, 0.15)
+        bg:SetColorTexture(0.055, 0.044, 0.032, 0.38)
     end
 
     row.charText = row:CreateFontString(nil, "OVERLAY")
@@ -3933,14 +4209,14 @@ local function GetRow(i)
     row.charText:SetTextColor(1, 0.82, 0)
     row.charText:SetWidth(COL_CHAR_W)
     row.charText:SetJustifyH("LEFT")
-    row.charText:SetPoint("LEFT", row, "LEFT", 4, 0)
+    row.charText:SetPoint("LEFT", row, "LEFT", 8, 0)
 
     row.timeText = row:CreateFontString(nil, "OVERLAY")
     row.timeText:SetFont(FONT_BOLD, 10, "")
-    row.timeText:SetTextColor(0.55, 0.55, 0.55)
+    row.timeText:SetTextColor(0.66, 0.62, 0.56)
     row.timeText:SetWidth(COL_TIME_W)
     row.timeText:SetJustifyH("LEFT")
-    row.timeText:SetPoint("LEFT", row, "LEFT", COL_CHAR_W + 8, 0)
+    row.timeText:SetPoint("LEFT", row, "LEFT", COL_CHAR_W + 14, 0)
 
     row.statsText = row:CreateFontString(nil, "OVERLAY")
     row.statsText:SetFont(FONT_BOLD, 10, "")
@@ -3989,7 +4265,9 @@ RefreshLog = function()
         row:Show()
     end
 
-    scrollChild:SetHeight(math.max(14 + n * (LOG_ROW_H + LOG_ROW_GAP), 1))
+    emptyState:SetShown(n == 0)
+    scrollChild:SetHeight(math.max(24 + n * (LOG_ROW_H + LOG_ROW_GAP), 1))
+end
 end
 
 -- ============================================================
@@ -3999,12 +4277,12 @@ end
 local function OnSecondTick()
     if timerLabel then
         if pendingSnapshot then
-            timerLabel:SetText("Collecting snapshot...")
+            timerLabel:SetText("Saving snapshot...")
         else
             local remaining = math.max(0, math.ceil(nextSnapshotAt - GetTime()))
             local mm = math.floor(remaining / 60)
             local ss = remaining % 60
-            timerLabel:SetFormattedText("Next snapshot in  |cffffffff%d:%02d|r", mm, ss)
+            timerLabel:SetFormattedText("Next snapshot  |cffffffff%d:%02d|r", mm, ss)
         end
     end
 
@@ -4020,6 +4298,10 @@ local function OnSecondTick()
                 refreshBtn:Enable()
             end
         end
+    end
+
+    if RefreshOverviewPanel then
+        RefreshOverviewPanel()
     end
 end
 
@@ -4102,6 +4384,9 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
 
     elseif event == "PLAYER_ENTERING_WORLD" then
         RefreshMinimapButton()
+        if RefreshOverviewPanel then
+            RefreshOverviewPanel()
+        end
         local enteringContext = GetCurrentActiveMythicPlusRunContext()
         local activeCache = ReconcileActiveMythicPlusMemberCache("player_entering_world")
         if enteringContext ~= nil then
