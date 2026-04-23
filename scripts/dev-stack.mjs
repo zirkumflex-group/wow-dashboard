@@ -52,6 +52,8 @@ try {
     `Web port ${webPort} is already in use. Stop the existing process or override SITE_URL/VITE_SITE_URL before running pnpm dev.`,
   );
 
+  await ensureDockerAvailable();
+
   for (const { service, container } of trackedServices) {
     if (!(await isContainerRunning(container))) {
       servicesStartedByScript.add(service);
@@ -81,12 +83,9 @@ try {
 
 function loadRootEnv() {
   const nodeEnv = process.env.NODE_ENV ?? "development";
-  const envFiles = [
-    `.env.${nodeEnv}.local`,
-    ".env.local",
-    `.env.${nodeEnv}`,
-    ".env",
-  ].map((fileName) => resolve(repoRoot, fileName));
+  const envFiles = [`.env.${nodeEnv}.local`, ".env.local", `.env.${nodeEnv}`, ".env"].map(
+    (fileName) => resolve(repoRoot, fileName),
+  );
 
   for (const path of envFiles) {
     if (!existsSync(path)) continue;
@@ -149,6 +148,44 @@ function ensurePortFree(port, message) {
 
     server.listen(port, "127.0.0.1");
   });
+}
+
+async function ensureDockerAvailable() {
+  let result;
+
+  try {
+    result = await runCaptured(dockerCommand, ["info"], { allowFailure: true });
+  } catch (error) {
+    throw new Error(
+      [
+        "Docker is required to run local Postgres and Redis for pnpm dev, but the Docker CLI could not be started.",
+        process.platform === "win32"
+          ? "Install or repair Docker Desktop, then rerun pnpm dev."
+          : "Install Docker and start the Docker daemon, then rerun pnpm dev.",
+        error instanceof Error ? `Docker error: ${error.message}` : undefined,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    );
+  }
+
+  if (result.code === 0) {
+    return;
+  }
+
+  const dockerError = (result.stderr || result.stdout).trim();
+
+  throw new Error(
+    [
+      "Docker is required to run local Postgres and Redis for pnpm dev, but the Docker daemon is not reachable.",
+      process.platform === "win32"
+        ? "Start Docker Desktop and wait until the engine is running, then rerun pnpm dev."
+        : "Start the Docker daemon, then rerun pnpm dev.",
+      dockerError ? `Docker reported: ${dockerError}` : undefined,
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  );
 }
 
 async function isContainerRunning(containerName) {
@@ -240,7 +277,9 @@ function runCaptured(command, args, options = {}) {
     child.on("error", rejectPromise);
     child.on("exit", (code) => {
       if (!options.allowFailure && code !== 0) {
-        rejectPromise(new Error(stderr.trim() || `${command} ${args.join(" ")} exited with code ${code}.`));
+        rejectPromise(
+          new Error(stderr.trim() || `${command} ${args.join(" ")} exited with code ${code}.`),
+        );
         return;
       }
 

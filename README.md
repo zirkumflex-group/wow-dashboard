@@ -43,6 +43,8 @@ wow-dashboard/
 
 ## Local Development
 
+Prerequisite: Docker Desktop or Docker Engine must be installed and running. The local dev stack uses Docker for Postgres and Redis.
+
 Install dependencies:
 
 ```bash
@@ -84,6 +86,8 @@ pnpm run dev:stop
 ```
 
 If `localhost:3000` or `localhost:3001` is already occupied, `pnpm run dev` will exit early with a clear error so you do not accidentally point the web or desktop client at the wrong service. If you intentionally use a different API port, override `PORT`, `API_URL`, `BETTER_AUTH_URL`, and `VITE_API_URL` together.
+
+If a local Postgres or Redis service already uses the default infrastructure ports, override `POSTGRES_PORT` or `REDIS_PORT` in `.env.local`. Keep `DATABASE_URL` and `REDIS_URL` pointed at the same host ports.
 
 Optional browser-only dev:
 
