@@ -26,19 +26,14 @@
     "@vitejs/plugin-react": "^5.2.0",
     "@wow-dashboard/config": "workspace:*",
     "@wow-dashboard/env": "workspace:*",
-    "@wow-dashboard/ui": "workspace:*",
-    "dotenv": "catalog:",
     "electron": "^41.2.2",
     "electron-builder": "^26.8.1",
-    "electron-builder-squirrel-windows": "^26.8.1",
     "electron-vite": "^5.0.0",
-    "lucide-react": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",
     "tailwindcss": "catalog:",
     "typescript": "^6.0.3",
-    "vite": "^7.3.2",
-    "zod": "catalog:"
+    "vite": "^7.3.2"
   },
   "build": {
     "appId": "com.wow-dashboard.app",

@@ -68,11 +68,11 @@ type SerializedPinnedCharacter = SerializedCharacter & {
   } | null;
 };
 
-export type SerializedDashboardCharacter = SerializedCharacter & {
+type SerializedDashboardCharacter = SerializedCharacter & {
   snapshot: LatestSnapshotSummary | null;
 };
 
-export type ScoreboardCharacterEntry = {
+type ScoreboardCharacterEntry = {
   characterId: string;
   playerId: string;
   name: string;
@@ -93,7 +93,7 @@ export type ScoreboardCharacterEntry = {
   takenAt: number;
 };
 
-export type PlayerScoreboardEntry = {
+type PlayerScoreboardEntry = {
   playerId: string;
   battleTag: string;
   totalPlaytimeSeconds: number;
@@ -108,7 +108,7 @@ export type PlayerScoreboardEntry = {
   latestSnapshotAt: number | null;
 };
 
-export type PlayerCharactersResponse = {
+type PlayerCharactersResponse = {
   player: {
     playerId: string;
     battleTag: string;
@@ -131,7 +131,7 @@ export type PlayerCharactersResponse = {
   characters: SerializedCharacterWithSnapshot[];
 };
 
-export type CharacterBoosterExportEntry = {
+type CharacterBoosterExportEntry = {
   _id: string;
   playerId: string;
   name: string;

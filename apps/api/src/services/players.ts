@@ -2,7 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { players } from "@wow-dashboard/db";
 import { db } from "../db";
 
-export function normalizeDiscordUserId(discordUserId: string | null): string | null {
+function normalizeDiscordUserId(discordUserId: string | null): string | null {
   if (discordUserId === null) {
     return null;
   }

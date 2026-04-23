@@ -1,7 +1,6 @@
 import { eq } from "drizzle-orm";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { betterAuth } from "better-auth";
-import type { GenericEndpointContext } from "better-auth";
 import { bearer } from "better-auth/plugins/bearer";
 import { genericOAuth } from "better-auth/plugins/generic-oauth";
 import { players, schema } from "@wow-dashboard/db";
@@ -229,4 +228,3 @@ export const auth = betterAuth({
 
 export type ApiAuthSession = typeof auth.$Infer.Session.session;
 export type ApiAuthUser = typeof auth.$Infer.Session.user;
-export type ApiAuthContext = GenericEndpointContext | null;

@@ -370,11 +370,10 @@ export function createApiClient(config: ApiClientConfig) {
       return requestJson({
         method: "GET",
         path: `/characters/${id}/mythic-plus`,
-        query: {
-          ...(parsedQuery.includeAllRuns !== undefined
+        query:
+          parsedQuery.includeAllRuns !== undefined
             ? { includeAllRuns: parsedQuery.includeAllRuns }
-            : {}),
-        },
+            : undefined,
         outputSchema: characterMythicPlusResultSchema,
       });
     },

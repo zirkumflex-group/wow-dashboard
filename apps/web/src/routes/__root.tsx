@@ -65,7 +65,7 @@ async function getCachedAuthState() {
   return sessionData;
 }
 
-export interface RouterAppContext {
+interface RouterAppContext {
   queryClient: QueryClient;
 }
 

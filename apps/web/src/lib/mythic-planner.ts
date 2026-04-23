@@ -44,7 +44,7 @@ export type MythicPlannerPlanOption = {
   runs: MythicPlannerRunSuggestion[];
 };
 
-export type MythicPlannerResult = {
+type MythicPlannerResult = {
   currentScore: number;
   targetScore: number | null;
   scoreGap: number;
@@ -121,7 +121,7 @@ export function getMythicPlannerDungeonKey(
   return `name:${dungeon.mapName.trim().toLowerCase()}`;
 }
 
-export function getMythicPlannerBaseScore(level: number) {
+function getMythicPlannerBaseScore(level: number) {
   const normalizedLevel = clamp(Math.floor(level), MIN_KEY_LEVEL, MAX_KEY_LEVEL);
   const explicitScore = LEVEL_BASE_SCORES[normalizedLevel];
   if (explicitScore !== undefined) {

@@ -16,9 +16,7 @@
     "check": "oxlint && oxfmt --write ."
   },
   "dependencies": {
-    "@wow-dashboard/env": "workspace:*",
-    "dotenv": "catalog:",
-    "zod": "catalog:"
+    "dotenv": "catalog:"
   },
   "devDependencies": {
     "@wow-dashboard/config": "workspace:*",

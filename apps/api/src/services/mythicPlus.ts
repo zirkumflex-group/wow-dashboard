@@ -372,7 +372,7 @@ function buildRunFingerprintWithIdentity(
   ].join("|");
 }
 
-export function hasMythicPlusRunCompletionEvidence(run: MythicPlusRunDocument): boolean {
+function hasMythicPlusRunCompletionEvidence(run: MythicPlusRunDocument): boolean {
   return (
     run.completed === true ||
     getSanitizedRunDurationMs(run) !== undefined ||
@@ -444,7 +444,7 @@ function getLikelyPlayedAtTimestamp(run: MythicPlusRunDocument) {
   return primaryTimestamp;
 }
 
-export function getMythicPlusRunSortValue(run: MythicPlusRunDocument) {
+function getMythicPlusRunSortValue(run: MythicPlusRunDocument) {
   return getLikelyPlayedAtTimestamp(run);
 }
 
@@ -537,7 +537,7 @@ export function mergeMythicPlusRunMembers(
   return mergedMembers.length > 0 ? mergedMembers : undefined;
 }
 
-export function getMythicPlusRunTimerMs(
+function getMythicPlusRunTimerMs(
   run: Pick<MythicPlusRunDocument, "mapChallengeModeID" | "mapName"> | string | null | undefined,
 ) {
   if (typeof run === "string") {
@@ -560,7 +560,7 @@ export function getMythicPlusRunTimerMs(
   return MYTHIC_PLUS_TIMER_MS_BY_MAP_NAME.get(normalizeMapName(mapName)) ?? null;
 }
 
-export function getMythicPlusRunUpgradeCount(run: MythicPlusRunDocument): number | null {
+function getMythicPlusRunUpgradeCount(run: MythicPlusRunDocument): number | null {
   const durationMs = getSanitizedRunDurationMs(run);
   const timerMs = getMythicPlusRunTimerMs(run);
   if (timerMs !== null && durationMs !== undefined) {
@@ -577,7 +577,7 @@ export function getMythicPlusRunUpgradeCount(run: MythicPlusRunDocument): number
   return null;
 }
 
-export function getMythicPlusRunTimedState(run: MythicPlusRunDocument): boolean | null {
+function getMythicPlusRunTimedState(run: MythicPlusRunDocument): boolean | null {
   const upgradeCount = getMythicPlusRunUpgradeCount(run);
   if (upgradeCount === null) {
     return null;
@@ -819,7 +819,7 @@ function hasCompatibleLegacyDstShift(a: MythicPlusRunDocument, b: MythicPlusRunD
   return false;
 }
 
-export function canMergeMythicPlusRunsAcrossCanonicalMismatch(
+function canMergeMythicPlusRunsAcrossCanonicalMismatch(
   existingRun: MythicPlusRunDocument,
   candidateRun: MythicPlusRunDocument,
 ): boolean {
@@ -847,7 +847,7 @@ export function canUseMythicPlusRunCompatibilityAliasMatch(
   return hasCompatibleLegacyDstShift(existingRun, candidateRun);
 }
 
-export function getMythicPlusRunCompletenessScore(run: MythicPlusRunDocument) {
+function getMythicPlusRunCompletenessScore(run: MythicPlusRunDocument) {
   let score = 0;
   const status = getMythicPlusRunLifecycleStatus(run);
   const durationMs = getSanitizedRunDurationMs(run);

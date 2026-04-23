@@ -22,7 +22,7 @@ const limiters = {
   }),
 } satisfies Record<RateLimitName, RateLimiterRedis>;
 
-export async function consumeRateLimit(name: RateLimitName, key: string) {
+async function consumeRateLimit(name: RateLimitName, key: string) {
   await ensureRedis();
 
   try {

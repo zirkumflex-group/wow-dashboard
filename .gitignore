@@ -53,6 +53,7 @@ coverage
 .imports
 tmp
 temp
+.tmp
 
 # Codex local environment metadata
 .codex/environments/environment.toml
