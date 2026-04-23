@@ -59,7 +59,10 @@ function isAllowedApiOrigin(origin: string) {
 
   try {
     const url = new URL(origin);
-    if ((url.hostname === "localhost" || url.hostname === "127.0.0.1") && url.protocol === "http:") {
+    if (
+      (url.hostname === "localhost" || url.hostname === "127.0.0.1") &&
+      url.protocol === "http:"
+    ) {
       return true;
     }
   } catch {
@@ -78,9 +81,7 @@ function requestsAuthorizationHeader(value: string | null | undefined) {
     return false;
   }
 
-  return value
-    .split(",")
-    .some((headerName) => headerName.trim().toLowerCase() === "authorization");
+  return value.split(",").some((headerName) => headerName.trim().toLowerCase() === "authorization");
 }
 
 function resolveApiCorsPolicy(c: Context<AppBindings>) {
@@ -485,7 +486,10 @@ app.get("/dev/auth", (c) => {
     return c.text("Not found", 404);
   }
 
-  const callbackUrl = new URL("/api/auth/oauth2/callback/battlenet", env.BETTER_AUTH_URL).toString();
+  const callbackUrl = new URL(
+    "/api/auth/oauth2/callback/battlenet",
+    env.BETTER_AUTH_URL,
+  ).toString();
 
   return c.html(renderDevAuthPage(callbackUrl));
 });
@@ -578,13 +582,6 @@ app.get("/api/me", (c) => {
 });
 
 app.get("/api/characters/latest", async (c) => {
-  const session = c.get("session");
-  const user = c.get("user");
-
-  if (!session || !user) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
-
   const searchParams = new URL(c.req.url).searchParams;
   const parsedQuery = charactersLatestQuerySchema.safeParse({
     characterId: searchParams.getAll("characterId"),
@@ -609,13 +606,6 @@ app.get("/api/characters", async (c) => {
 });
 
 app.get("/api/characters/:id/page", async (c) => {
-  const session = c.get("session");
-  const user = c.get("user");
-
-  if (!session || !user) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
-
   const parsedParams = characterRouteParamsSchema.safeParse(c.req.param());
   if (!parsedParams.success) {
     return c.json({ error: formatValidationError(parsedParams.error.issues) }, 400);
@@ -640,13 +630,6 @@ app.get("/api/characters/:id/page", async (c) => {
 });
 
 app.get("/api/characters/:id/detail-timeline", async (c) => {
-  const session = c.get("session");
-  const user = c.get("user");
-
-  if (!session || !user) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
-
   const parsedParams = characterRouteParamsSchema.safeParse(c.req.param());
   if (!parsedParams.success) {
     return c.json({ error: formatValidationError(parsedParams.error.issues) }, 400);
@@ -671,13 +654,6 @@ app.get("/api/characters/:id/detail-timeline", async (c) => {
 });
 
 app.get("/api/characters/:id/snapshot-timeline", async (c) => {
-  const session = c.get("session");
-  const user = c.get("user");
-
-  if (!session || !user) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
-
   const parsedParams = characterRouteParamsSchema.safeParse(c.req.param());
   if (!parsedParams.success) {
     return c.json({ error: formatValidationError(parsedParams.error.issues) }, 400);
@@ -697,13 +673,6 @@ app.get("/api/characters/:id/snapshot-timeline", async (c) => {
 });
 
 app.get("/api/characters/:id/mythic-plus", async (c) => {
-  const session = c.get("session");
-  const user = c.get("user");
-
-  if (!session || !user) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
-
   const parsedParams = characterRouteParamsSchema.safeParse(c.req.param());
   if (!parsedParams.success) {
     return c.json({ error: formatValidationError(parsedParams.error.issues) }, 400);
@@ -718,32 +687,15 @@ app.get("/api/characters/:id/mythic-plus", async (c) => {
   }
 
   return c.json(
-    await readCharacterMythicPlus(
-      parsedParams.data.id,
-      parsedQuery.data.includeAllRuns === true,
-    ),
+    await readCharacterMythicPlus(parsedParams.data.id, parsedQuery.data.includeAllRuns === true),
   );
 });
 
 app.get("/api/characters/scoreboard", async (c) => {
-  const session = c.get("session");
-  const user = c.get("user");
-
-  if (!session || !user) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
-
   return c.json(await readScoreboardCharacters());
 });
 
 app.get("/api/scoreboard/players", async (c) => {
-  const session = c.get("session");
-  const user = c.get("user");
-
-  if (!session || !user) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
-
   return c.json(await readPlayerScoreboard());
 });
 
@@ -793,7 +745,10 @@ app.post("/api/addon/ingest", async (c) => {
     return c.json(await ingestAddonData(user.id, parsedBody.data.characters));
   } catch (error) {
     if (error instanceof AddonIngestServiceError) {
-      return c.json({ error: error.message }, { status: error.status as 400 | 401 | 404 | 409 | 429 });
+      return c.json(
+        { error: error.message },
+        { status: error.status as 400 | 401 | 404 | 409 | 429 },
+      );
     }
 
     return c.json(
@@ -806,13 +761,6 @@ app.post("/api/addon/ingest", async (c) => {
 });
 
 app.get("/api/players/:id/characters", async (c) => {
-  const session = c.get("session");
-  const user = c.get("user");
-
-  if (!session || !user) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
-
   const parsedParams = playerRouteParamsSchema.safeParse(c.req.param());
   if (!parsedParams.success) {
     return c.json({ error: formatValidationError(parsedParams.error.issues) }, 400);

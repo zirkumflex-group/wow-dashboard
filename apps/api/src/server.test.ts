@@ -442,9 +442,6 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
 
     const response = await app.request(
       `http://localhost/api/characters/latest?characterId=${firstCharacterId}&characterId=${secondCharacterId}&characterId=${firstCharacterId}`,
-      {
-        headers: authHeaders(auth.token),
-      },
     );
 
     assert.equal(response.status, 200);
@@ -509,9 +506,7 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
       mythicPlusScore: 2875,
     });
 
-    const response = await app.request(`http://localhost/api/players/${playerId}/characters`, {
-      headers: authHeaders(auth.token),
-    });
+    const response = await app.request(`http://localhost/api/players/${playerId}/characters`);
 
     assert.equal(response.status, 200);
     const payload = (await response.json()) as {
@@ -693,9 +688,6 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
 
     const response = await app.request(
       `http://localhost/api/characters/${characterId}/page?timeFrame=all&includeStats=false`,
-      {
-        headers: authHeaders(auth.token),
-      },
     );
 
     assert.equal(response.status, 200);
@@ -1054,9 +1046,7 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
       },
     });
 
-    const response = await app.request("http://localhost/api/characters/scoreboard", {
-      headers: authHeaders(auth.token),
-    });
+    const response = await app.request("http://localhost/api/characters/scoreboard");
 
     assert.equal(response.status, 200);
     const payload = (await response.json()) as Array<{
@@ -1156,9 +1146,7 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
       },
     });
 
-    const response = await app.request("http://localhost/api/scoreboard/players", {
-      headers: authHeaders(auth.token),
-    });
+    const response = await app.request("http://localhost/api/scoreboard/players");
 
     assert.equal(response.status, 200);
     const payload = (await response.json()) as Array<{
@@ -1570,6 +1558,52 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     assert.equal(storedRuns.length, 1);
   });
 
+  it("matches addon characters by normalized realm and name", async () => {
+    const auth = await seedAuthenticatedUser();
+    const playerId = await seedPlayer(auth.userId, "CaseSync#7777");
+    await seedCharacter({
+      playerId,
+      name: "syncadin",
+      realm: "tarren mill",
+      className: "Paladin",
+      race: "Human",
+      faction: "alliance",
+    });
+
+    const response = await app.request("http://localhost/api/addon/ingest", {
+      method: "POST",
+      headers: {
+        ...authHeaders(auth.token),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        characters: [
+          {
+            name: "Syncadin",
+            realm: "Tarren Mill",
+            region: "eu",
+            class: "Paladin",
+            race: "Human",
+            faction: "alliance",
+            snapshots: [],
+            mythicPlusRuns: [],
+          },
+        ],
+      }),
+    });
+
+    assert.equal(response.status, 200);
+    const payload = (await response.json()) as { newChars: number };
+    assert.equal(payload.newChars, 0);
+
+    const storedCharacters = await db.query.characters.findMany({
+      where: eq(characters.playerId, playerId),
+    });
+    assert.equal(storedCharacters.length, 1);
+    assert.equal(storedCharacters[0]?.name, "Syncadin");
+    assert.equal(storedCharacters[0]?.realm, "Tarren Mill");
+  });
+
   it("merges more complete snapshot fields into an existing snapshot with the same natural key", async () => {
     const auth = await seedAuthenticatedUser();
     const playerId = await seedPlayer(auth.userId, "Syncer#7777");
@@ -1662,6 +1696,18 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
       },
       body: JSON.stringify(partialPayload),
     });
+    assert.equal(partialResponse.status, 200);
+
+    await db
+      .update(snapshots)
+      .set({ legacyConvexId: "legacy-snapshot-merge-test" })
+      .where(
+        and(
+          eq(snapshots.characterId, characterId),
+          eq(snapshots.takenAt, new Date(takenAt * 1000)),
+        ),
+      );
+
     const completeResponse = await app.request("http://localhost/api/addon/ingest", {
       method: "POST",
       headers: {
@@ -1671,7 +1717,6 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
       body: JSON.stringify(completePayload),
     });
 
-    assert.equal(partialResponse.status, 200);
     assert.equal(completeResponse.status, 200);
 
     const partialResult = (await partialResponse.json()) as {
@@ -1698,6 +1743,7 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     assert.equal(storedSnapshots[0]?.stats.speedPercent, 18);
     assert.equal(storedSnapshots[0]?.stats.leechPercent, 19);
     assert.equal(storedSnapshots[0]?.stats.avoidancePercent, 20);
+    assert.equal(storedSnapshots[0]?.legacyConvexId, "legacy-snapshot-merge-test");
   });
 
   it("returns a clear error when addon ingest runs before the player profile exists", async () => {

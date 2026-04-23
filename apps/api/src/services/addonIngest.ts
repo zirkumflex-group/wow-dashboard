@@ -860,8 +860,8 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
         where: and(
           eq(characters.playerId, player.id),
           eq(characters.region, charData.region),
-          eq(characters.realm, charData.realm),
-          eq(characters.name, charData.name),
+          sql`${characters.normalizedRealm} = lower(${charData.realm})`,
+          sql`${characters.normalizedName} = lower(${charData.name})`,
         ),
       });
 
@@ -882,8 +882,15 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
             legacyConvexId: null,
           })
           .onConflictDoUpdate({
-            target: [characters.playerId, characters.region, characters.realm, characters.name],
+            target: [
+              characters.playerId,
+              characters.region,
+              characters.normalizedRealm,
+              characters.normalizedName,
+            ],
             set: {
+              name: charData.name,
+              realm: charData.realm,
               class: charData.class,
               race: charData.race,
               faction: charData.faction,
@@ -898,6 +905,8 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
         await tx
           .update(characters)
           .set({
+            name: charData.name,
+            realm: charData.realm,
             region: charData.region,
             class: charData.class,
             race: charData.race,
@@ -1035,9 +1044,13 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
           const mergedSnapshot = mergeSnapshotFields(existingSnapshotFields, nextSnapshot);
 
           if (!snapshotFieldsEqual(existingSnapshotFields, mergedSnapshot)) {
+            const { legacyConvexId: _legacyConvexId, ...snapshotPatch } = snapshotFieldsToInsert(
+              characterId,
+              mergedSnapshot,
+            );
             await tx
               .update(snapshots)
-              .set(snapshotFieldsToInsert(characterId, mergedSnapshot))
+              .set(snapshotPatch)
               .where(eq(snapshots.id, existingSnapshotRow.id));
             latestSnapshotCandidate = toCharacterLatestSnapshot(mergedSnapshot);
             latestSnapshotDetailsCandidate = toCharacterLatestSnapshotDetails(mergedSnapshot);

@@ -34,6 +34,13 @@ export const mythicPlusAbandonReasonValues = [
   "unknown",
 ] as const;
 
+export const addonIngestLimits = {
+  maxCharacters: 500,
+  maxSnapshotsPerCharacter: 1_000,
+  maxMythicPlusRunsPerCharacter: 5_000,
+  maxMythicPlusRunMembers: 10,
+} as const;
+
 export const nonTradeableSlotSchema = z.enum(nonTradeableSlotValues);
 export const characterRegionSchema = z.enum(characterRegionValues);
 export const characterFactionSchema = z.enum(characterFactionValues);
@@ -121,7 +128,10 @@ export const addonMythicPlusRunSchema = z.object({
   abandonedAt: z.number().optional(),
   abandonReason: mythicPlusAbandonReasonSchema.optional(),
   thisWeek: z.boolean().optional(),
-  members: z.array(addonMythicPlusRunMemberSchema).optional(),
+  members: z
+    .array(addonMythicPlusRunMemberSchema)
+    .max(addonIngestLimits.maxMythicPlusRunMembers)
+    .optional(),
 });
 
 export const addonCharacterSchema = z.object({
@@ -131,8 +141,11 @@ export const addonCharacterSchema = z.object({
   class: z.string(),
   race: z.string(),
   faction: characterFactionSchema,
-  snapshots: z.array(addonSnapshotSchema),
-  mythicPlusRuns: z.array(addonMythicPlusRunSchema).optional(),
+  snapshots: z.array(addonSnapshotSchema).max(addonIngestLimits.maxSnapshotsPerCharacter),
+  mythicPlusRuns: z
+    .array(addonMythicPlusRunSchema)
+    .max(addonIngestLimits.maxMythicPlusRunsPerCharacter)
+    .optional(),
 });
 
 export const charactersLatestQuerySchema = z.object({
@@ -178,7 +191,7 @@ export const updateCharacterSlotsBodySchema = z.object({
 });
 
 export const addonIngestBodySchema = z.object({
-  characters: z.array(addonCharacterSchema),
+  characters: z.array(addonCharacterSchema).max(addonIngestLimits.maxCharacters),
 });
 
 export type CharactersLatestQuery = z.infer<typeof charactersLatestQuerySchema>;

@@ -22,6 +22,7 @@ import {
   type NonTradeableSlot,
   type OwnedKeystone,
 } from "@wow-dashboard/db";
+import { env } from "@wow-dashboard/env/server";
 import { eq } from "drizzle-orm";
 
 type ConvexBetterAuthUser = {
@@ -308,10 +309,16 @@ function mergeSlots(
   return merged.size > 0 ? Array.from(merged) : null;
 }
 
-function characterNaturalKey(playerId: string, character: Pick<ConvexCharacter, "region" | "realm" | "name">) {
-  return [playerId, character.region, character.realm.toLowerCase(), character.name.toLowerCase()].join(
-    "|",
-  );
+function characterNaturalKey(
+  playerId: string,
+  character: Pick<ConvexCharacter, "region" | "realm" | "name">,
+) {
+  return [
+    playerId,
+    character.region,
+    character.realm.toLowerCase(),
+    character.name.toLowerCase(),
+  ].join("|");
 }
 
 function snapshotNaturalKey(characterId: string, takenAt: Date) {
@@ -324,6 +331,14 @@ function dailyNaturalKey(characterId: string, dayStartAt: Date) {
 
 function mythicRunNaturalKey(characterId: string, fingerprint: string) {
   return `${characterId}|${fingerprint}`;
+}
+
+function mythicRunAttemptKey(characterId: string, attemptId: string) {
+  return `${characterId}|${attemptId}`;
+}
+
+function mythicRunCanonicalKey(characterId: string, canonicalKey: string) {
+  return `${characterId}|${canonicalKey}`;
 }
 
 function auditNaturalKey(log: Pick<ConvexAuditLog, "event" | "timestamp" | "userId">) {
@@ -399,7 +414,10 @@ async function main() {
     zipPath,
     "mythicPlusRuns/documents.jsonl",
   );
-  const exportedAuditLog = readJsonLinesFromZip<ConvexAuditLog>(zipPath, "auditLog/documents.jsonl");
+  const exportedAuditLog = readJsonLinesFromZip<ConvexAuditLog>(
+    zipPath,
+    "auditLog/documents.jsonl",
+  );
 
   console.log("[import-convex-export] loaded export", {
     users: exportedUsers.length,
@@ -421,7 +439,7 @@ async function main() {
   }
 
   const summary = defaultSummary();
-  const connection = createDatabaseConnection();
+  const connection = createDatabaseConnection(env.DATABASE_URL);
   const { db } = connection;
 
   try {
@@ -482,18 +500,15 @@ async function main() {
       existingPlayers.map((row) => [row.battlenetAccountId, row]),
     );
     const playersByUserId = new Map(
-      existingPlayers
-        .filter((row) => row.userId)
-        .map((row) => [row.userId!, row]),
+      existingPlayers.filter((row) => row.userId).map((row) => [row.userId!, row]),
     );
     const charactersByLegacy = new Map(
-      existingCharacters.filter((row) => row.legacyConvexId).map((row) => [row.legacyConvexId!, row]),
+      existingCharacters
+        .filter((row) => row.legacyConvexId)
+        .map((row) => [row.legacyConvexId!, row]),
     );
     const charactersByNatural = new Map(
-      existingCharacters.map((row) => [
-        characterNaturalKey(row.playerId, row),
-        row,
-      ]),
+      existingCharacters.map((row) => [characterNaturalKey(row.playerId, row), row]),
     );
     const snapshotsByLegacy = new Map(
       existingSnapshots
@@ -517,12 +532,23 @@ async function main() {
         .map((row) => [row.legacyConvexId!, row]),
     );
     const mythicRunsByNatural = new Map(
-      existingMythicPlusRuns.map((row) => [mythicRunNaturalKey(row.characterId, row.fingerprint), row]),
+      existingMythicPlusRuns.map((row) => [
+        mythicRunNaturalKey(row.characterId, row.fingerprint),
+        row,
+      ]),
+    );
+    const mythicRunsByAttemptId = new Map(
+      existingMythicPlusRuns
+        .filter((row) => row.attemptId)
+        .map((row) => [mythicRunAttemptKey(row.characterId, row.attemptId!), row]),
+    );
+    const mythicRunsByCanonicalKey = new Map(
+      existingMythicPlusRuns
+        .filter((row) => row.canonicalKey)
+        .map((row) => [mythicRunCanonicalKey(row.characterId, row.canonicalKey!), row]),
     );
     const auditByLegacy = new Map(
-      existingAuditLog
-        .filter((row) => row.legacyConvexId)
-        .map((row) => [row.legacyConvexId!, row]),
+      existingAuditLog.filter((row) => row.legacyConvexId).map((row) => [row.legacyConvexId!, row]),
     );
     const auditByNatural = new Map(
       existingAuditLog.map((row) => [
@@ -556,17 +582,17 @@ async function main() {
       if (!existing) {
         const inserted = expectRow(
           await db
-          .insert(authUser)
-          .values({
-            id: exported._id,
-            name: exported.name,
-            email: exported.email,
-            emailVerified: exported.emailVerified,
-            image: exported.image ?? null,
-            createdAt,
-            updatedAt,
-          })
-          .returning(),
+            .insert(authUser)
+            .values({
+              id: exported._id,
+              name: exported.name,
+              email: exported.email,
+              emailVerified: exported.emailVerified,
+              image: exported.image ?? null,
+              createdAt,
+              updatedAt,
+            })
+            .returning(),
           `insert user ${exported._id}`,
         );
 
@@ -580,17 +606,17 @@ async function main() {
       const exportIsNewer = updatedAt.getTime() >= existing.updatedAt.getTime();
       const updated = expectRow(
         await db
-        .update(authUser)
-        .set({
-          name: exportIsNewer ? exported.name : existing.name,
-          email: existing.email,
-          emailVerified: exportIsNewer ? exported.emailVerified : existing.emailVerified,
-          image: exportIsNewer ? exported.image ?? null : existing.image,
-          createdAt: minDate(existing.createdAt, createdAt)!,
-          updatedAt: maxDate(existing.updatedAt, updatedAt)!,
-        })
-        .where(eq(authUser.id, existing.id))
-        .returning(),
+          .update(authUser)
+          .set({
+            name: exportIsNewer ? exported.name : existing.name,
+            email: existing.email,
+            emailVerified: exportIsNewer ? exported.emailVerified : existing.emailVerified,
+            image: exportIsNewer ? (exported.image ?? null) : existing.image,
+            createdAt: minDate(existing.createdAt, createdAt)!,
+            updatedAt: maxDate(existing.updatedAt, updatedAt)!,
+          })
+          .where(eq(authUser.id, existing.id))
+          .returning(),
         `update user ${existing.id}`,
       );
 
@@ -618,23 +644,23 @@ async function main() {
       if (!existing) {
         const inserted = expectRow(
           await db
-          .insert(authAccount)
-          .values({
-            id: exported._id,
-            accountId: exported.accountId,
-            providerId: exported.providerId,
-            userId: targetUserId,
-            accessToken: exported.accessToken ?? null,
-            refreshToken: exported.refreshToken ?? null,
-            idToken: exported.idToken ?? null,
-            accessTokenExpiresAt: dateFromMilliseconds(exported.accessTokenExpiresAt),
-            refreshTokenExpiresAt: dateFromMilliseconds(exported.refreshTokenExpiresAt),
-            scope: exported.scope ?? null,
-            password: null,
-            createdAt,
-            updatedAt,
-          })
-          .returning(),
+            .insert(authAccount)
+            .values({
+              id: exported._id,
+              accountId: exported.accountId,
+              providerId: exported.providerId,
+              userId: targetUserId,
+              accessToken: exported.accessToken ?? null,
+              refreshToken: exported.refreshToken ?? null,
+              idToken: exported.idToken ?? null,
+              accessTokenExpiresAt: dateFromMilliseconds(exported.accessTokenExpiresAt),
+              refreshTokenExpiresAt: dateFromMilliseconds(exported.refreshTokenExpiresAt),
+              scope: exported.scope ?? null,
+              password: null,
+              createdAt,
+              updatedAt,
+            })
+            .returning(),
           `insert account ${key}`,
         );
 
@@ -649,24 +675,24 @@ async function main() {
       const exportIsNewer = updatedAt.getTime() >= existing.updatedAt.getTime();
       const updated = expectRow(
         await db
-        .update(authAccount)
-        .set({
-          userId: targetUserId,
-          accessToken: exportIsNewer ? exported.accessToken ?? null : existing.accessToken,
-          refreshToken: exportIsNewer ? exported.refreshToken ?? null : existing.refreshToken,
-          idToken: exportIsNewer ? exported.idToken ?? null : existing.idToken,
-          accessTokenExpiresAt: exportIsNewer
-            ? dateFromMilliseconds(exported.accessTokenExpiresAt)
-            : existing.accessTokenExpiresAt,
-          refreshTokenExpiresAt: exportIsNewer
-            ? dateFromMilliseconds(exported.refreshTokenExpiresAt)
-            : existing.refreshTokenExpiresAt,
-          scope: exportIsNewer ? exported.scope ?? null : existing.scope,
-          createdAt: minDate(existing.createdAt, createdAt)!,
-          updatedAt: maxDate(existing.updatedAt, updatedAt)!,
-        })
-        .where(eq(authAccount.id, existing.id))
-        .returning(),
+          .update(authAccount)
+          .set({
+            userId: targetUserId,
+            accessToken: exportIsNewer ? (exported.accessToken ?? null) : existing.accessToken,
+            refreshToken: exportIsNewer ? (exported.refreshToken ?? null) : existing.refreshToken,
+            idToken: exportIsNewer ? (exported.idToken ?? null) : existing.idToken,
+            accessTokenExpiresAt: exportIsNewer
+              ? dateFromMilliseconds(exported.accessTokenExpiresAt)
+              : existing.accessTokenExpiresAt,
+            refreshTokenExpiresAt: exportIsNewer
+              ? dateFromMilliseconds(exported.refreshTokenExpiresAt)
+              : existing.refreshTokenExpiresAt,
+            scope: exportIsNewer ? (exported.scope ?? null) : existing.scope,
+            createdAt: minDate(existing.createdAt, createdAt)!,
+            updatedAt: maxDate(existing.updatedAt, updatedAt)!,
+          })
+          .where(eq(authAccount.id, existing.id))
+          .returning(),
         `update account ${existing.id}`,
       );
 
@@ -696,18 +722,18 @@ async function main() {
         if (!existing) {
           const inserted = expectRow(
             await db
-            .insert(authSession)
-            .values({
-              id: exported._id,
-              expiresAt: dateFromMilliseconds(exported.expiresAt)!,
-              token: exported.token,
-              createdAt,
-              updatedAt,
-              ipAddress: exported.ipAddress ?? null,
-              userAgent: exported.userAgent ?? null,
-              userId: targetUserId,
-            })
-            .returning(),
+              .insert(authSession)
+              .values({
+                id: exported._id,
+                expiresAt: dateFromMilliseconds(exported.expiresAt)!,
+                token: exported.token,
+                createdAt,
+                updatedAt,
+                ipAddress: exported.ipAddress ?? null,
+                userAgent: exported.userAgent ?? null,
+                userId: targetUserId,
+              })
+              .returning(),
             `insert session ${exported._id}`,
           );
 
@@ -719,17 +745,19 @@ async function main() {
         const exportIsNewer = updatedAt.getTime() >= existing.updatedAt.getTime();
         const updated = expectRow(
           await db
-          .update(authSession)
-          .set({
-            expiresAt: exportIsNewer ? dateFromMilliseconds(exported.expiresAt)! : existing.expiresAt,
-            createdAt: minDate(existing.createdAt, createdAt)!,
-            updatedAt: maxDate(existing.updatedAt, updatedAt)!,
-            ipAddress: exportIsNewer ? exported.ipAddress ?? null : existing.ipAddress,
-            userAgent: exportIsNewer ? exported.userAgent ?? null : existing.userAgent,
-            userId: targetUserId,
-          })
-          .where(eq(authSession.id, existing.id))
-          .returning(),
+            .update(authSession)
+            .set({
+              expiresAt: exportIsNewer
+                ? dateFromMilliseconds(exported.expiresAt)!
+                : existing.expiresAt,
+              createdAt: minDate(existing.createdAt, createdAt)!,
+              updatedAt: maxDate(existing.updatedAt, updatedAt)!,
+              ipAddress: exportIsNewer ? (exported.ipAddress ?? null) : existing.ipAddress,
+              userAgent: exportIsNewer ? (exported.userAgent ?? null) : existing.userAgent,
+              userId: targetUserId,
+            })
+            .where(eq(authSession.id, existing.id))
+            .returning(),
           `update session ${existing.id}`,
         );
 
@@ -781,16 +809,16 @@ async function main() {
 
       const updated = expectRow(
         await db
-        .update(players)
-        .set({
-          legacyConvexId: existing.legacyConvexId ?? values.legacyConvexId,
-          battlenetAccountId: values.battlenetAccountId,
-          userId: values.userId,
-          battleTag: values.battleTag || existing.battleTag,
-          discordUserId: values.discordUserId ?? existing.discordUserId,
-        })
-        .where(eq(players.id, existing.id))
-        .returning(),
+          .update(players)
+          .set({
+            legacyConvexId: existing.legacyConvexId ?? values.legacyConvexId,
+            battlenetAccountId: values.battlenetAccountId,
+            userId: values.userId,
+            battleTag: values.battleTag || existing.battleTag,
+            discordUserId: values.discordUserId ?? existing.discordUserId,
+          })
+          .where(eq(players.id, existing.id))
+          .returning(),
         `update player ${existing.id}`,
       );
 
@@ -872,40 +900,38 @@ async function main() {
       const mergedPreview =
         (exportIsNewer ? normalizedPreview : null) ??
         existing.mythicPlusRecentRunsPreview ??
-        (normalizedPreview
-          ? normalizePreviewRuns(normalizedPreview, existing.id)
-          : null);
+        (normalizedPreview ? normalizePreviewRuns(normalizedPreview, existing.id) : null);
 
       const updated = expectRow(
         await db
-        .update(characters)
-        .set({
-          legacyConvexId: existing.legacyConvexId ?? values.legacyConvexId,
-          playerId: values.playerId,
-          name: values.name,
-          realm: values.realm,
-          region: values.region,
-          class: values.class,
-          race: values.race,
-          faction: values.faction,
-          isBooster: values.isBooster ?? existing.isBooster,
-          nonTradeableSlots: mergeSlots(existing.nonTradeableSlots, values.nonTradeableSlots),
-          latestSnapshot: exportIsNewer
-            ? values.latestSnapshot
-            : existing.latestSnapshot ?? values.latestSnapshot,
-          latestSnapshotDetails: exportIsNewer
-            ? values.latestSnapshotDetails
-            : existing.latestSnapshotDetails ?? values.latestSnapshotDetails,
-          mythicPlusSummary: exportIsNewer
-            ? values.mythicPlusSummary ?? existing.mythicPlusSummary
-            : existing.mythicPlusSummary ?? values.mythicPlusSummary,
-          mythicPlusRecentRunsPreview: mergedPreview,
-          mythicPlusRunCount: maxNullable(existing.mythicPlusRunCount, values.mythicPlusRunCount),
-          firstSnapshotAt: minDate(existing.firstSnapshotAt, values.firstSnapshotAt),
-          snapshotCount: maxNullable(existing.snapshotCount, values.snapshotCount),
-        })
-        .where(eq(characters.id, existing.id))
-        .returning(),
+          .update(characters)
+          .set({
+            legacyConvexId: existing.legacyConvexId ?? values.legacyConvexId,
+            playerId: values.playerId,
+            name: values.name,
+            realm: values.realm,
+            region: values.region,
+            class: values.class,
+            race: values.race,
+            faction: values.faction,
+            isBooster: values.isBooster ?? existing.isBooster,
+            nonTradeableSlots: mergeSlots(existing.nonTradeableSlots, values.nonTradeableSlots),
+            latestSnapshot: exportIsNewer
+              ? values.latestSnapshot
+              : (existing.latestSnapshot ?? values.latestSnapshot),
+            latestSnapshotDetails: exportIsNewer
+              ? values.latestSnapshotDetails
+              : (existing.latestSnapshotDetails ?? values.latestSnapshotDetails),
+            mythicPlusSummary: exportIsNewer
+              ? (values.mythicPlusSummary ?? existing.mythicPlusSummary)
+              : (existing.mythicPlusSummary ?? values.mythicPlusSummary),
+            mythicPlusRecentRunsPreview: mergedPreview,
+            mythicPlusRunCount: maxNullable(existing.mythicPlusRunCount, values.mythicPlusRunCount),
+            firstSnapshotAt: minDate(existing.firstSnapshotAt, values.firstSnapshotAt),
+            snapshotCount: maxNullable(existing.snapshotCount, values.snapshotCount),
+          })
+          .where(eq(characters.id, existing.id))
+          .returning(),
         `update character ${existing.id}`,
       );
 
@@ -916,7 +942,9 @@ async function main() {
     }
 
     for (const exported of exportedSnapshots) {
-      const targetCharacterId = targetCharacterIdByLegacyConvexCharacterId.get(exported.characterId);
+      const targetCharacterId = targetCharacterIdByLegacyConvexCharacterId.get(
+        exported.characterId,
+      );
       if (!targetCharacterId) {
         summary.snapshots.skipped += 1;
         summary.warnings.push(
@@ -953,25 +981,28 @@ async function main() {
           `insert snapshot ${exported._id}`,
         );
         snapshotsByLegacy.set(exported._id, inserted);
-        snapshotsByNatural.set(snapshotNaturalKey(inserted.characterId, inserted.takenAt), inserted);
+        snapshotsByNatural.set(
+          snapshotNaturalKey(inserted.characterId, inserted.takenAt),
+          inserted,
+        );
         summary.snapshots.inserted += 1;
         continue;
       }
 
       const updated = expectRow(
         await db
-        .update(snapshots)
-        .set({
-          ...values,
-          legacyConvexId: existing.legacyConvexId ?? values.legacyConvexId,
-        })
-        .where(eq(snapshots.id, existing.id))
-        .returning({
-          id: snapshots.id,
-          legacyConvexId: snapshots.legacyConvexId,
-          characterId: snapshots.characterId,
-          takenAt: snapshots.takenAt,
-        }),
+          .update(snapshots)
+          .set({
+            ...values,
+            legacyConvexId: existing.legacyConvexId ?? values.legacyConvexId,
+          })
+          .where(eq(snapshots.id, existing.id))
+          .returning({
+            id: snapshots.id,
+            legacyConvexId: snapshots.legacyConvexId,
+            characterId: snapshots.characterId,
+            takenAt: snapshots.takenAt,
+          }),
         `update snapshot ${existing.id}`,
       );
 
@@ -981,7 +1012,9 @@ async function main() {
     }
 
     for (const exported of exportedDailySnapshots) {
-      const targetCharacterId = targetCharacterIdByLegacyConvexCharacterId.get(exported.characterId);
+      const targetCharacterId = targetCharacterIdByLegacyConvexCharacterId.get(
+        exported.characterId,
+      );
       if (!targetCharacterId) {
         summary.characterDailySnapshots.skipped += 1;
         summary.warnings.push(
@@ -993,8 +1026,7 @@ async function main() {
       const dayStartAt = dateFromSeconds(exported.dayStartAt)!;
       const lastTakenAt = dateFromSeconds(exported.lastTakenAt)!;
       const naturalKey = dailyNaturalKey(targetCharacterId, dayStartAt);
-      const existing =
-        dailyByLegacy.get(exported._id) ?? dailyByNatural.get(naturalKey) ?? null;
+      const existing = dailyByLegacy.get(exported._id) ?? dailyByNatural.get(naturalKey) ?? null;
 
       const values = {
         legacyConvexId: exported._id,
@@ -1023,21 +1055,23 @@ async function main() {
       const exportIsNewer = lastTakenAt.getTime() >= existing.lastTakenAt.getTime();
       const updated = expectRow(
         await db
-        .update(characterDailySnapshots)
-        .set({
-          legacyConvexId: existing.legacyConvexId ?? values.legacyConvexId,
-          characterId: values.characterId,
-          dayStartAt: values.dayStartAt,
-          lastTakenAt: exportIsNewer ? values.lastTakenAt : existing.lastTakenAt,
-          itemLevel: exportIsNewer ? values.itemLevel : existing.itemLevel,
-          gold: exportIsNewer ? values.gold : existing.gold,
-          playtimeSeconds: exportIsNewer ? values.playtimeSeconds : existing.playtimeSeconds,
-          mythicPlusScore: exportIsNewer ? values.mythicPlusScore : existing.mythicPlusScore,
-          currencies: exportIsNewer ? values.currencies : existing.currencies ?? values.currencies,
-          stats: exportIsNewer ? values.stats : existing.stats ?? values.stats,
-        })
-        .where(eq(characterDailySnapshots.id, existing.id))
-        .returning(),
+          .update(characterDailySnapshots)
+          .set({
+            legacyConvexId: existing.legacyConvexId ?? values.legacyConvexId,
+            characterId: values.characterId,
+            dayStartAt: values.dayStartAt,
+            lastTakenAt: exportIsNewer ? values.lastTakenAt : existing.lastTakenAt,
+            itemLevel: exportIsNewer ? values.itemLevel : existing.itemLevel,
+            gold: exportIsNewer ? values.gold : existing.gold,
+            playtimeSeconds: exportIsNewer ? values.playtimeSeconds : existing.playtimeSeconds,
+            mythicPlusScore: exportIsNewer ? values.mythicPlusScore : existing.mythicPlusScore,
+            currencies: exportIsNewer
+              ? values.currencies
+              : (existing.currencies ?? values.currencies),
+            stats: exportIsNewer ? values.stats : (existing.stats ?? values.stats),
+          })
+          .where(eq(characterDailySnapshots.id, existing.id))
+          .returning(),
         `update daily snapshot ${existing.id}`,
       );
 
@@ -1047,7 +1081,9 @@ async function main() {
     }
 
     for (const exported of exportedMythicPlusRuns) {
-      const targetCharacterId = targetCharacterIdByLegacyConvexCharacterId.get(exported.characterId);
+      const targetCharacterId = targetCharacterIdByLegacyConvexCharacterId.get(
+        exported.characterId,
+      );
       if (!targetCharacterId) {
         summary.mythicPlusRuns.skipped += 1;
         summary.warnings.push(
@@ -1058,7 +1094,17 @@ async function main() {
 
       const naturalKey = mythicRunNaturalKey(targetCharacterId, exported.fingerprint);
       const existing =
-        mythicRunsByLegacy.get(exported._id) ?? mythicRunsByNatural.get(naturalKey) ?? null;
+        mythicRunsByLegacy.get(exported._id) ??
+        mythicRunsByNatural.get(naturalKey) ??
+        (exported.attemptId
+          ? mythicRunsByAttemptId.get(mythicRunAttemptKey(targetCharacterId, exported.attemptId))
+          : undefined) ??
+        (exported.canonicalKey
+          ? mythicRunsByCanonicalKey.get(
+              mythicRunCanonicalKey(targetCharacterId, exported.canonicalKey),
+            )
+          : undefined) ??
+        null;
 
       const values = {
         legacyConvexId: exported._id,
@@ -1091,7 +1137,22 @@ async function main() {
           `insert mythic+ run ${exported._id}`,
         );
         mythicRunsByLegacy.set(exported._id, inserted);
-        mythicRunsByNatural.set(mythicRunNaturalKey(inserted.characterId, inserted.fingerprint), inserted);
+        mythicRunsByNatural.set(
+          mythicRunNaturalKey(inserted.characterId, inserted.fingerprint),
+          inserted,
+        );
+        if (inserted.attemptId) {
+          mythicRunsByAttemptId.set(
+            mythicRunAttemptKey(inserted.characterId, inserted.attemptId),
+            inserted,
+          );
+        }
+        if (inserted.canonicalKey) {
+          mythicRunsByCanonicalKey.set(
+            mythicRunCanonicalKey(inserted.characterId, inserted.canonicalKey),
+            inserted,
+          );
+        }
         summary.mythicPlusRuns.inserted += 1;
         continue;
       }
@@ -1099,48 +1160,74 @@ async function main() {
       const exportIsNewer = values.observedAt.getTime() >= existing.observedAt.getTime();
       const updated = expectRow(
         await db
-        .update(mythicPlusRuns)
-        .set({
-          legacyConvexId: existing.legacyConvexId ?? values.legacyConvexId,
-          characterId: values.characterId,
-          fingerprint: values.fingerprint,
-          attemptId: values.attemptId ?? existing.attemptId,
-          canonicalKey: values.canonicalKey ?? existing.canonicalKey,
-          observedAt: exportIsNewer ? values.observedAt : existing.observedAt,
-          seasonId: exportIsNewer ? values.seasonId : existing.seasonId ?? values.seasonId,
-          mapChallengeModeId: exportIsNewer
-            ? values.mapChallengeModeId
-            : existing.mapChallengeModeId ?? values.mapChallengeModeId,
-          mapName: exportIsNewer ? values.mapName : existing.mapName ?? values.mapName,
-          level: exportIsNewer ? values.level : existing.level ?? values.level,
-          status: exportIsNewer ? values.status : existing.status ?? values.status,
-          completed: exportIsNewer ? values.completed : existing.completed ?? values.completed,
-          completedInTime: exportIsNewer
-            ? values.completedInTime
-            : existing.completedInTime ?? values.completedInTime,
-          durationMs: exportIsNewer ? values.durationMs : existing.durationMs ?? values.durationMs,
-          runScore: exportIsNewer ? values.runScore : existing.runScore ?? values.runScore,
-          startDate: exportIsNewer ? values.startDate : existing.startDate ?? values.startDate,
-          completedAt: exportIsNewer
-            ? values.completedAt
-            : existing.completedAt ?? values.completedAt,
-          endedAt: exportIsNewer ? values.endedAt : existing.endedAt ?? values.endedAt,
-          abandonedAt: exportIsNewer
-            ? values.abandonedAt
-            : existing.abandonedAt ?? values.abandonedAt,
-          abandonReason: exportIsNewer
-            ? values.abandonReason
-            : existing.abandonReason ?? values.abandonReason,
-          thisWeek: exportIsNewer ? values.thisWeek : existing.thisWeek ?? values.thisWeek,
-          members: exportIsNewer ? values.members : existing.members ?? values.members,
-        })
-        .where(eq(mythicPlusRuns.id, existing.id))
-        .returning(),
+          .update(mythicPlusRuns)
+          .set({
+            legacyConvexId: existing.legacyConvexId ?? values.legacyConvexId,
+            characterId: values.characterId,
+            fingerprint: values.fingerprint,
+            attemptId: values.attemptId ?? existing.attemptId,
+            canonicalKey: values.canonicalKey ?? existing.canonicalKey,
+            observedAt: exportIsNewer ? values.observedAt : existing.observedAt,
+            seasonId: exportIsNewer ? values.seasonId : (existing.seasonId ?? values.seasonId),
+            mapChallengeModeId: exportIsNewer
+              ? values.mapChallengeModeId
+              : (existing.mapChallengeModeId ?? values.mapChallengeModeId),
+            mapName: exportIsNewer ? values.mapName : (existing.mapName ?? values.mapName),
+            level: exportIsNewer ? values.level : (existing.level ?? values.level),
+            status: exportIsNewer ? values.status : (existing.status ?? values.status),
+            completed: exportIsNewer ? values.completed : (existing.completed ?? values.completed),
+            completedInTime: exportIsNewer
+              ? values.completedInTime
+              : (existing.completedInTime ?? values.completedInTime),
+            durationMs: exportIsNewer
+              ? values.durationMs
+              : (existing.durationMs ?? values.durationMs),
+            runScore: exportIsNewer ? values.runScore : (existing.runScore ?? values.runScore),
+            startDate: exportIsNewer ? values.startDate : (existing.startDate ?? values.startDate),
+            completedAt: exportIsNewer
+              ? values.completedAt
+              : (existing.completedAt ?? values.completedAt),
+            endedAt: exportIsNewer ? values.endedAt : (existing.endedAt ?? values.endedAt),
+            abandonedAt: exportIsNewer
+              ? values.abandonedAt
+              : (existing.abandonedAt ?? values.abandonedAt),
+            abandonReason: exportIsNewer
+              ? values.abandonReason
+              : (existing.abandonReason ?? values.abandonReason),
+            thisWeek: exportIsNewer ? values.thisWeek : (existing.thisWeek ?? values.thisWeek),
+            members: exportIsNewer ? values.members : (existing.members ?? values.members),
+          })
+          .where(eq(mythicPlusRuns.id, existing.id))
+          .returning(),
         `update mythic+ run ${existing.id}`,
       );
 
       mythicRunsByLegacy.set(updated.legacyConvexId ?? exported._id, updated);
-      mythicRunsByNatural.set(mythicRunNaturalKey(updated.characterId, updated.fingerprint), updated);
+      mythicRunsByNatural.delete(mythicRunNaturalKey(existing.characterId, existing.fingerprint));
+      if (existing.attemptId) {
+        mythicRunsByAttemptId.delete(mythicRunAttemptKey(existing.characterId, existing.attemptId));
+      }
+      if (existing.canonicalKey) {
+        mythicRunsByCanonicalKey.delete(
+          mythicRunCanonicalKey(existing.characterId, existing.canonicalKey),
+        );
+      }
+      mythicRunsByNatural.set(
+        mythicRunNaturalKey(updated.characterId, updated.fingerprint),
+        updated,
+      );
+      if (updated.attemptId) {
+        mythicRunsByAttemptId.set(
+          mythicRunAttemptKey(updated.characterId, updated.attemptId),
+          updated,
+        );
+      }
+      if (updated.canonicalKey) {
+        mythicRunsByCanonicalKey.set(
+          mythicRunCanonicalKey(updated.characterId, updated.canonicalKey),
+          updated,
+        );
+      }
       summary.mythicPlusRuns.updated += 1;
     }
 
@@ -1163,11 +1250,11 @@ async function main() {
       if (!existing) {
         const inserted = expectRow(
           await db.insert(auditLog).values(values).returning({
-          id: auditLog.id,
-          legacyConvexId: auditLog.legacyConvexId,
-          userId: auditLog.userId,
-          event: auditLog.event,
-          timestamp: auditLog.timestamp,
+            id: auditLog.id,
+            legacyConvexId: auditLog.legacyConvexId,
+            userId: auditLog.userId,
+            event: auditLog.event,
+            timestamp: auditLog.timestamp,
           }),
           `insert audit log ${exported._id}`,
         );
@@ -1180,25 +1267,26 @@ async function main() {
 
       const updated = expectRow(
         await db
-        .update(auditLog)
-        .set({
-          legacyConvexId: existing.legacyConvexId ?? values.legacyConvexId,
-          userId: existing.userId ?? values.userId,
-          event: values.event,
-          metadata: values.metadata,
-          error: values.error,
-          timestamp: existing.timestamp.getTime() >= values.timestamp.getTime()
-            ? existing.timestamp
-            : values.timestamp,
-        })
-        .where(eq(auditLog.id, existing.id))
-        .returning({
-          id: auditLog.id,
-          legacyConvexId: auditLog.legacyConvexId,
-          userId: auditLog.userId,
-          event: auditLog.event,
-          timestamp: auditLog.timestamp,
-        }),
+          .update(auditLog)
+          .set({
+            legacyConvexId: existing.legacyConvexId ?? values.legacyConvexId,
+            userId: existing.userId ?? values.userId,
+            event: values.event,
+            metadata: values.metadata,
+            error: values.error,
+            timestamp:
+              existing.timestamp.getTime() >= values.timestamp.getTime()
+                ? existing.timestamp
+                : values.timestamp,
+          })
+          .where(eq(auditLog.id, existing.id))
+          .returning({
+            id: auditLog.id,
+            legacyConvexId: auditLog.legacyConvexId,
+            userId: auditLog.userId,
+            event: auditLog.event,
+            timestamp: auditLog.timestamp,
+          }),
         `update audit log ${existing.id}`,
       );
 

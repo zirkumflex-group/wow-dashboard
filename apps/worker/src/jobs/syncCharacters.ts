@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { characters, players } from "@wow-dashboard/db";
 import type { SyncCharactersJobPayload } from "@wow-dashboard/api-schema";
 import { db } from "../db";
@@ -52,7 +52,9 @@ async function fetchCharactersForRegion(
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error(`[worker] Battle.net WoW profile request failed for region ${region}: ${message}`);
+    console.error(
+      `[worker] Battle.net WoW profile request failed for region ${region}: ${message}`,
+    );
     return null;
   }
 }
@@ -100,8 +102,8 @@ export async function syncCharacters(payload: SyncCharactersJobPayload) {
         where: and(
           eq(characters.playerId, player.id),
           eq(characters.region, result.region),
-          eq(characters.realm, character.realm),
-          eq(characters.name, character.name),
+          sql`${characters.normalizedRealm} = lower(${character.realm})`,
+          sql`${characters.normalizedName} = lower(${character.name})`,
         ),
       });
 
@@ -118,8 +120,15 @@ export async function syncCharacters(payload: SyncCharactersJobPayload) {
             faction: character.faction,
           })
           .onConflictDoUpdate({
-            target: [characters.playerId, characters.region, characters.realm, characters.name],
+            target: [
+              characters.playerId,
+              characters.region,
+              characters.normalizedRealm,
+              characters.normalizedName,
+            ],
             set: {
+              name: character.name,
+              realm: character.realm,
               class: character.class,
               race: character.race,
               faction: character.faction,
@@ -132,6 +141,8 @@ export async function syncCharacters(payload: SyncCharactersJobPayload) {
       await db
         .update(characters)
         .set({
+          name: character.name,
+          realm: character.realm,
           class: character.class,
           race: character.race,
           faction: character.faction,

@@ -1,5 +1,5 @@
 import { useQueries, useQuery } from "@tanstack/react-query";
-import { createFileRoute, redirect } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import { Button } from "@wow-dashboard/ui/components/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@wow-dashboard/ui/components/card";
 import {
@@ -17,9 +17,6 @@ import { apiQueryOptions } from "@/lib/api-client";
 import { getClassTextColor } from "../lib/class-colors";
 
 export const Route = createFileRoute("/compare")({
-  beforeLoad: ({ context }) => {
-    if (!context.isAuthenticated) throw redirect({ to: "/" });
-  },
   component: RouteComponent,
 });
 
@@ -34,7 +31,11 @@ const CHART_COLORS = [
 type StatKey = "mythicPlusScore" | "itemLevel" | "keystoneLevel" | "playtimeHours";
 
 const STAT_OPTIONS: { key: StatKey; label: string; format: (value: number) => string }[] = [
-  { key: "mythicPlusScore", label: "M+ Score", format: (value) => Math.round(value).toLocaleString() },
+  {
+    key: "mythicPlusScore",
+    label: "M+ Score",
+    format: (value) => Math.round(value).toLocaleString(),
+  },
   { key: "itemLevel", label: "Item Level", format: (value) => value.toFixed(1) },
   { key: "keystoneLevel", label: "Keystone Level", format: (value) => `+${Math.round(value)}` },
   {
@@ -310,7 +311,10 @@ function RouteComponent() {
     .filter((timeline): timeline is CharacterTimeline => timeline !== null);
 
   const selectedLabels = selectedCharacterIds
-    .map((characterId) => scoreboardEntries.find((entry) => entry.characterId === characterId)?.name ?? characterId)
+    .map(
+      (characterId) =>
+        scoreboardEntries.find((entry) => entry.characterId === characterId)?.name ?? characterId,
+    )
     .join(", ");
 
   useEffect(() => {

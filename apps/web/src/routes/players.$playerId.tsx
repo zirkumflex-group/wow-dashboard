@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { createFileRoute, Link, redirect } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { Card, CardContent, CardHeader, CardTitle } from "@wow-dashboard/ui/components/card";
 import { Skeleton } from "@wow-dashboard/ui/components/skeleton";
 import {
@@ -17,9 +17,6 @@ import { getClassTextColor } from "../lib/class-colors";
 import { getMythicPlusDungeonMeta } from "../lib/mythic-plus-static";
 
 export const Route = createFileRoute("/players/$playerId")({
-  beforeLoad: ({ context }) => {
-    if (!context.isAuthenticated) throw redirect({ to: "/" });
-  },
   component: RouteComponent,
 });
 
