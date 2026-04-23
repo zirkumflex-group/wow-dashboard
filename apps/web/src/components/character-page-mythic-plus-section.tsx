@@ -1,24 +1,8 @@
 import { Badge } from "@wow-dashboard/ui/components/badge";
 import { Button } from "@wow-dashboard/ui/components/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@wow-dashboard/ui/components/card";
-import {
-  Calculator,
-  Clock,
-  Eye,
-  EyeOff,
-  Flame,
-  History,
-  Sword,
-} from "lucide-react";
-import {
-  Suspense,
-  lazy,
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { Clock, Eye, EyeOff, Flame, History, Sword } from "lucide-react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   getMythicPlusDungeonMeta,
   getMythicPlusDungeonTimerMs,
@@ -133,12 +117,6 @@ type MythicPlusData = {
   totalRunCount: number;
   isPreview: boolean;
 };
-
-const LazyMythicPlannerPanel = lazy(() =>
-  import("./mythic-planner-panel").then((module) => ({
-    default: module.MythicPlannerPanel,
-  })),
-);
 
 function classColor(cls: string) {
   return getClassTextColor(cls);
@@ -835,61 +813,18 @@ function MythicPlusResultBadge({ run }: { run: MythicPlusRun }) {
   return null;
 }
 
-function DeferredMythicPlannerPanel({
-  characterId,
-  characterName,
-  currentScore,
-  dungeons,
-}: {
-  characterId: string;
-  characterName: string;
-  currentScore: number | null;
-  dungeons: MythicPlusSummary["currentSeasonDungeons"];
-}) {
-  return (
-    <Suspense
-      fallback={
-        <Card>
-          <CardHeader className="border-b pb-3">
-            <CardTitle className="flex items-center gap-2 text-lg">
-              <Calculator size={16} className="text-muted-foreground" />
-              Planner
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="pt-4 text-sm text-muted-foreground">
-            Loading planner...
-          </CardContent>
-        </Card>
-      }
-    >
-      <LazyMythicPlannerPanel
-        characterId={characterId}
-        characterName={characterName}
-        currentScore={currentScore}
-        dungeons={dungeons}
-      />
-    </Suspense>
-  );
-}
-
 export function MythicPlusSection({
   data,
   isLoadingAllRuns,
   onRequestAllRuns,
-  characterId,
-  characterName,
   characterRealm,
   characterRegion,
-  currentScore,
 }: {
   data: MythicPlusData | null | undefined;
   isLoadingAllRuns: boolean;
   onRequestAllRuns: () => void;
-  characterId: string;
-  characterName: string;
   characterRealm: string;
   characterRegion: string;
-  currentScore: number | null;
 }) {
   const [visibleRecentRunCount, setVisibleRecentRunCount] = useState(INITIAL_RECENT_RUN_COUNT);
   const {
@@ -961,17 +896,10 @@ export function MythicPlusSection({
           </CardHeader>
           <CardContent className="pt-4">
             <p className="text-sm text-muted-foreground">
-              No Mythic+ run history uploaded for this character yet.
-            </p>
-          </CardContent>
-        </Card>
-
-        <DeferredMythicPlannerPanel
-          characterId={characterId}
-          characterName={characterName}
-          currentScore={currentScore}
-          dungeons={summary.currentSeasonDungeons}
-        />
+            No Mythic+ run history uploaded for this character yet.
+          </p>
+        </CardContent>
+      </Card>
       </div>
     );
   }
@@ -1235,13 +1163,6 @@ export function MythicPlusSection({
           </CardContent>
         </Card>
       </div>
-
-      <DeferredMythicPlannerPanel
-        characterId={characterId}
-        characterName={characterName}
-        currentScore={currentScore}
-        dungeons={summary.currentSeasonDungeons}
-      />
     </div>
   );
 }

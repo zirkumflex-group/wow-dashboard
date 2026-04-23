@@ -7,6 +7,32 @@ import {
 import { env } from "@wow-dashboard/env/server";
 
 let queuePromise: Promise<PgBoss> | null = null;
+let queueIsClosing = false;
+
+function isExpectedQueueShutdownError(error: unknown) {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  const candidate = error as { code?: string; message?: string };
+
+  return (
+    candidate.code === "57P01" ||
+    candidate.code === "57P02" ||
+    candidate.message === "Connection terminated unexpectedly" ||
+    candidate.message === "terminating connection due to administrator command"
+  );
+}
+
+function attachQueueErrorHandler(queue: PgBoss) {
+  queue.on("error", (error) => {
+    if (queueIsClosing && isExpectedQueueShutdownError(error)) {
+      return;
+    }
+
+    console.error("[api] pg-boss error", error);
+  });
+}
 
 async function ensureQueue(queue: PgBoss, name: string): Promise<void> {
   const existingQueue = await queue.getQueue(name);
@@ -19,6 +45,7 @@ async function createQueue(): Promise<PgBoss> {
   const queue = new PgBoss({
     connectionString: env.DATABASE_URL,
   });
+  attachQueueErrorHandler(queue);
 
   await queue.start();
   await ensureQueue(queue, queueNames.syncCharacters);
@@ -49,6 +76,12 @@ export async function closeQueue(): Promise<void> {
   queuePromise = null;
 
   if (queue) {
-    await queue.stop();
+    queueIsClosing = true;
+
+    try {
+      await queue.stop();
+    } finally {
+      queueIsClosing = false;
+    }
   }
 }

@@ -1807,11 +1807,8 @@ function OverviewLayout({
   mythicPlus,
   mythicPlusIsLoadingAllRuns,
   requestAllMythicPlusRuns,
-  characterId,
-  characterName,
   characterRealm,
   characterRegion,
-  currentMythicPlusScore,
   timeFrame,
   setTimeFrame,
 }: LayoutProps) {
@@ -1854,11 +1851,8 @@ function OverviewLayout({
               data={mythicPlus}
               isLoadingAllRuns={mythicPlusIsLoadingAllRuns ?? false}
               onRequestAllRuns={requestAllMythicPlusRuns ?? (() => undefined)}
-              characterId={characterId}
-              characterName={characterName}
               characterRealm={characterRealm}
               characterRegion={characterRegion}
-              currentScore={currentMythicPlusScore}
             />
           </Suspense>
         </div>
@@ -2322,6 +2316,12 @@ const EXTERNAL_LINKS = [
     url: (region: string, realm: string, name: string) =>
       `https://www.warcraftlogs.com/character/${region}/${realm}/${name}`,
   },
+  {
+    label: "Mythic Planner",
+    color: "hover:text-cyan-400",
+    url: (region: string, realm: string, name: string) =>
+      `https://mythicplanner.com/share/${region}/${encodeURIComponent(realm.toLowerCase())}/${encodeURIComponent(name)}/3500?maxKeyLevel=18`,
+  },
 ] as const;
 
 function CharacterLinks({ region, realm, name }: { region: string; realm: string; name: string }) {
@@ -2429,11 +2429,8 @@ const CharacterPageContent = memo(function CharacterPageContent({
             data={mythicPlusData}
             isLoadingAllRuns={isLoadingAllMythicPlusRuns}
             onRequestAllRuns={onRequestAllMythicPlusRuns}
-            characterId={characterId}
-            characterName={characterName}
             characterRealm={characterRealm}
             characterRegion={characterRegion}
-            currentScore={currentMythicPlusScore}
           />
         </Suspense>
       )}
