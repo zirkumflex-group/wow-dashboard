@@ -49,6 +49,36 @@ function readBattleTagFromIdToken(idToken: string | null | undefined): string | 
 async function upsertPlayerBinding(account: BattleNetAccountHook): Promise<void> {
   const battleTag = readBattleTagFromIdToken(account.idToken) ?? account.accountId;
 
+  const [updatedPlayerForBattleNetAccount] = await db
+    .update(players)
+    .set({
+      userId: account.userId,
+      battleTag,
+    })
+    .where(eq(players.battlenetAccountId, account.accountId))
+    .returning({
+      id: players.id,
+    });
+
+  if (updatedPlayerForBattleNetAccount) {
+    return;
+  }
+
+  const [updatedPlayerForUser] = await db
+    .update(players)
+    .set({
+      battlenetAccountId: account.accountId,
+      battleTag,
+    })
+    .where(eq(players.userId, account.userId))
+    .returning({
+      id: players.id,
+    });
+
+  if (updatedPlayerForUser) {
+    return;
+  }
+
   await db
     .insert(players)
     .values({

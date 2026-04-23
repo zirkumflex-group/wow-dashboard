@@ -54,6 +54,12 @@ export const characters = pgTable(
   },
   (table) => ({
     legacyConvexIdIdx: uniqueIndex("characters_legacy_convex_id_uidx").on(table.legacyConvexId),
+    naturalKeyIdx: uniqueIndex("characters_player_id_region_realm_name_uidx").on(
+      table.playerId,
+      table.region,
+      table.realm,
+      table.name,
+    ),
     byPlayerIdx: index("characters_player_id_idx").on(table.playerId),
     byPlayerAndRealmIdx: index("characters_player_id_realm_idx").on(table.playerId, table.realm),
     byBoosterIdx: index("characters_is_booster_idx").on(table.isBooster),

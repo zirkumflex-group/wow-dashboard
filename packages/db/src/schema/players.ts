@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import { pgTable, text, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { user } from "./auth";
 
 export const players = pgTable(
   "players",
@@ -7,7 +8,7 @@ export const players = pgTable(
     id: uuid("id").defaultRandom().primaryKey(),
     legacyConvexId: text("legacy_convex_id"),
     battlenetAccountId: text("battlenet_account_id").notNull(),
-    userId: text("user_id"),
+    userId: text("user_id").references(() => user.id, { onDelete: "set null" }),
     battleTag: text("battle_tag").notNull(),
     discordUserId: text("discord_user_id"),
   },

@@ -13,7 +13,16 @@ const migrationsFolder = resolve(packageRoot, "drizzle");
 
 loadRootEnv();
 
-const databaseUrl = process.env.DATABASE_URL ?? "postgres://wowdash:wowdash@localhost:5432/wowdash";
+const defaultDatabaseUrl = "postgres://wowdash:wowdash@localhost:5432/wowdash";
+const databaseUrl = process.env.DATABASE_URL ?? resolveDevelopmentDatabaseUrl();
+
+if (
+  (process.env.NODE_ENV ?? "development") === "production" &&
+  databaseUrl === defaultDatabaseUrl
+) {
+  console.error("[db] DATABASE_URL must be set to a non-default value when NODE_ENV=production");
+  process.exit(1);
+}
 
 const client = postgres(databaseUrl, {
   max: 1,
@@ -43,4 +52,13 @@ function loadRootEnv() {
     if (!existsSync(path)) continue;
     loadDotenv({ path, override: false });
   }
+}
+
+function resolveDevelopmentDatabaseUrl() {
+  if ((process.env.NODE_ENV ?? "development") === "production") {
+    console.error("[db] DATABASE_URL must be set when NODE_ENV=production");
+    process.exit(1);
+  }
+
+  return defaultDatabaseUrl;
 }

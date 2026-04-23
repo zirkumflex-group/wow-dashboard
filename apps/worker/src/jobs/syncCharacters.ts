@@ -99,21 +99,32 @@ export async function syncCharacters(payload: SyncCharactersJobPayload) {
       const existingCharacter = await db.query.characters.findFirst({
         where: and(
           eq(characters.playerId, player.id),
+          eq(characters.region, result.region),
           eq(characters.realm, character.realm),
           eq(characters.name, character.name),
         ),
       });
 
       if (!existingCharacter) {
-        await db.insert(characters).values({
-          playerId: player.id,
-          name: character.name,
-          realm: character.realm,
-          region: result.region,
-          class: character.class,
-          race: character.race,
-          faction: character.faction,
-        });
+        await db
+          .insert(characters)
+          .values({
+            playerId: player.id,
+            name: character.name,
+            realm: character.realm,
+            region: result.region,
+            class: character.class,
+            race: character.race,
+            faction: character.faction,
+          })
+          .onConflictDoUpdate({
+            target: [characters.playerId, characters.region, characters.realm, characters.name],
+            set: {
+              class: character.class,
+              race: character.race,
+              faction: character.faction,
+            },
+          });
         inserted += 1;
         continue;
       }

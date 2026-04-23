@@ -34,7 +34,9 @@ export const characterDailySnapshots = pgTable(
       table.legacyConvexId,
     ),
     byCharacterIdx: index("character_daily_snapshots_character_id_idx").on(table.characterId),
-    byCharacterAndDayIdx: index("character_daily_snapshots_character_id_day_start_at_idx").on(
+    byCharacterAndDayIdx: uniqueIndex(
+      "character_daily_snapshots_character_id_day_start_at_uidx",
+    ).on(
       table.characterId,
       table.dayStartAt,
     ),

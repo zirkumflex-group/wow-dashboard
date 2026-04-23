@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { mythicPlusPreviewRunLimit, type AddonCharacterInput } from "@wow-dashboard/api-schema";
 import {
   characterDailySnapshots,
@@ -859,6 +859,7 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
       const existingCharacter = await tx.query.characters.findFirst({
         where: and(
           eq(characters.playerId, player.id),
+          eq(characters.region, charData.region),
           eq(characters.realm, charData.realm),
           eq(characters.name, charData.name),
         ),
@@ -880,6 +881,14 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
             faction: charData.faction,
             legacyConvexId: null,
           })
+          .onConflictDoUpdate({
+            target: [characters.playerId, characters.region, characters.realm, characters.name],
+            set: {
+              class: charData.class,
+              race: charData.race,
+              faction: charData.faction,
+            },
+          })
           .returning();
 
         characterId = insertedCharacter!.id;
@@ -900,6 +909,8 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
       if (!characterId) {
         continue;
       }
+
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${characterId}))`);
 
       let nextCharacterLatestSnapshot = currentCharacterRow?.latestSnapshot ?? null;
       let nextCharacterLatestSnapshotDetails = currentCharacterRow?.latestSnapshotDetails ?? null;
@@ -1053,11 +1064,17 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
 
         const nextDailySnapshot = toCharacterDailySnapshotFields(dailySnapshotSource);
         if (!existingDailySnapshot) {
-          await tx.insert(characterDailySnapshots).values({
-            characterId,
-            ...nextDailySnapshot,
-            legacyConvexId: null,
-          });
+          await tx
+            .insert(characterDailySnapshots)
+            .values({
+              characterId,
+              ...nextDailySnapshot,
+              legacyConvexId: null,
+            })
+            .onConflictDoUpdate({
+              target: [characterDailySnapshots.characterId, characterDailySnapshots.dayStartAt],
+              set: nextDailySnapshot,
+            });
         } else if (
           shouldReplaceCharacterDailySnapshot(existingDailySnapshot, dailySnapshotSource)
         ) {
@@ -1185,9 +1202,19 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
 
         const existingRun = findMatchingExistingRunByIdentity(existingRunLookups, nextRun);
         if (!existingRun) {
+          const runInsert = mythicPlusRunDocumentToInsert(characterId, nextRun);
+          const {
+            legacyConvexId: _legacyConvexId,
+            characterId: _characterId,
+            ...runConflictUpdate
+          } = runInsert;
           const [insertedRun] = await tx
             .insert(mythicPlusRuns)
-            .values(mythicPlusRunDocumentToInsert(characterId, nextRun))
+            .values(runInsert)
+            .onConflictDoUpdate({
+              target: [mythicPlusRuns.characterId, mythicPlusRuns.fingerprint],
+              set: runConflictUpdate,
+            })
             .returning();
 
           const insertedDocument = mythicPlusRunRowToDocument(insertedRun!);
