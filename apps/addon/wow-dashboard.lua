@@ -4024,10 +4024,10 @@ cadenceText:SetText("15 min autosave")
 end
 
 -- Divider below header
--- Divider frame is 4px tall, anchored at y=-66 → bottom edge at y=-68
+-- Keep the decorative divider in the header, above the tab content.
 local div = CreateMajorDivider(RightSection)
-div:SetPoint("LEFT",  RightSection, "LEFT",  36, -66)
-div:SetPoint("RIGHT", RightSection, "RIGHT", -36, -66)
+div:SetPoint("TOPLEFT",  RightSection, "TOPLEFT",  36, -72)
+div:SetPoint("TOPRIGHT", RightSection, "TOPRIGHT", -36, -72)
 
 -- ============================================================
 -- Content area
@@ -4103,25 +4103,15 @@ actionCard:SetPoint("TOPLEFT", overviewPanel, "TOPLEFT", 248, -198)
 local actionLabel = gui.CreateSmallLabel(actionCard, "ACTIONS")
 actionLabel:SetPoint("TOPLEFT", actionCard, "TOPLEFT", 14, -12)
 
--- Force-snapshot button (15-second cooldown)
+-- Manual snapshot button (15-second cooldown)
 refreshBtn = CreateFrame("Button", nil, actionCard, "UIPanelButtonTemplate")
-refreshBtn:SetSize(102, 28)
+refreshBtn:SetSize(132, 28)
 refreshBtn:SetPoint("TOPLEFT", actionCard, "TOPLEFT", 14, -38)
-refreshBtn:SetText("Force Snapshot")
+refreshBtn:SetText("Save Snapshot")
 gui.StyleDashboardButton(refreshBtn)
 refreshBtn:SetScript("OnClick", function()
     if GetTime() < refreshCooldownUntil then return end
     refreshCooldownUntil = GetTime() + 15
-    RequestFreshSnapshot()
-end)
-
--- Manual snapshot button
-local uploadBtn = CreateFrame("Button", nil, actionCard, "UIPanelButtonTemplate")
-uploadBtn:SetSize(102, 28)
-uploadBtn:SetPoint("LEFT", refreshBtn, "RIGHT", 8, 0)
-uploadBtn:SetText("Save Snapshot")
-gui.StyleDashboardButton(uploadBtn)
-uploadBtn:SetScript("OnClick", function()
     RequestFreshSnapshot()
 end)
 
@@ -4294,7 +4284,7 @@ local function OnSecondTick()
         else
             local isEnabled = refreshBtn:IsEnabled()
             if isEnabled == false or isEnabled == nil or isEnabled == 0 then
-                refreshBtn:SetText("Force Snapshot")
+                refreshBtn:SetText("Save Snapshot")
                 refreshBtn:Enable()
             end
         end
