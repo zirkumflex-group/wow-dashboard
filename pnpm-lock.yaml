@@ -38,8 +38,8 @@ catalogs:
       specifier: ^0.4.6
       version: 0.4.6
     pg-boss:
-      specifier: ^12.16.0
-      version: 12.16.0
+      specifier: 10.4.2
+      version: 10.4.2
     postgres:
       specifier: ^3.4.5
       version: 3.4.9
@@ -126,7 +126,7 @@ importers:
         version: 5.10.1
       pg-boss:
         specifier: 'catalog:'
-        version: 12.16.0
+        version: 10.4.2
       rate-limiter-flexible:
         specifier: 'catalog:'
         version: 11.0.1
@@ -345,7 +345,7 @@ importers:
         version: 0.45.2(@opentelemetry/api@1.9.1)(kysely@0.28.16)(pg@8.20.0)(postgres@3.4.9)
       pg-boss:
         specifier: 'catalog:'
-        version: 12.16.0
+        version: 10.4.2
     devDependencies:
       '@types/node':
         specifier: ^25.6.0
@@ -3715,9 +3715,9 @@ packages:
   crc@3.8.0:
     resolution: {integrity: sha512-iX3mfgcTMIq3ZKLIsVFAbv7+Mc10kxabAGQb8HvjA1o3T1PIYprbakQ65d3I+2HGHt6nSKkM9PYjgoJO2KcFBQ==}
 
-  cron-parser@5.5.0:
-    resolution: {integrity: sha512-oML4lKUXxizYswqmxuOCpgFS8BNUJpIu6k/2HVHyaL8Ynnf3wdf9tkns0yRdJLSIjkJ+b0DXHMZEHGpMwjnPww==}
-    engines: {node: '>=18'}
+  cron-parser@4.9.0:
+    resolution: {integrity: sha512-p0SaNjrHOnQeR8/VnfGbmg9te2kfyYSQ7Sc/j/6DtPL3JQvKxmjO9TSjNFpujqV3vEYYBvNNvXSxzyksBWAx1Q==}
+    engines: {node: '>=12.0.0'}
 
   cross-dirname@0.1.0:
     resolution: {integrity: sha512-+R08/oI0nl3vfPcqftZRpytksBXDzOUveBq/NBVx0sUp1axwzPQrKinNx5yd5sxPu8j1wIy8AfnVQ+5eFdha6Q==}
@@ -5157,10 +5157,6 @@ packages:
   node-releases@2.0.38:
     resolution: {integrity: sha512-3qT/88Y3FbH/Kx4szpQQ4HzUbVrHPKTLVpVocKiLfoYvw9XSGOX2FmD2d6DrXbVYyAQTF2HeF6My8jmzx7/CRw==}
 
-  non-error@0.1.0:
-    resolution: {integrity: sha512-TMB1uHiGsHRGv1uYclfhivcnf0/PdFp2pNqRxXjncaAsjYMoisaQJI+SSZCqRq+VliwRTC8tsMQfmrWjDMhkPQ==}
-    engines: {node: '>=20'}
-
   nopt@9.0.0:
     resolution: {integrity: sha512-Zhq3a+yFKrYwSBluL4H9XP3m3y5uvQkB/09CwDruCiRmR/UJYnn9W4R48ry0uGC70aeTPKLynBtscP9efFFcPw==}
     engines: {node: ^20.17.0 || >=22.9.0}
@@ -5318,10 +5314,9 @@ packages:
   pend@1.2.0:
     resolution: {integrity: sha512-F3asv42UuXchdzt+xXqfW1OGlVBe+mxa2mqI0pg5yAHZPvFmY3Y6drSf/GQ1A86WgWEN9Kzh/WrgKa6iGcHXLg==}
 
-  pg-boss@12.16.0:
-    resolution: {integrity: sha512-a1DyJjnaUc5Q6t1Rua93oYKoHUUSGPYr1my0/K/2xkdkheQTfxYIvYOSQbi30+byZQ9XW3O58qo3zM5tgE0xqA==}
-    engines: {node: '>=22.12.0'}
-    hasBin: true
+  pg-boss@10.4.2:
+    resolution: {integrity: sha512-AttEWOtSzn53av8OnCMWEanwRBvjkZCE1y5nLrZnwvkkMnlZ5XpWDpZ7sKI/BYjvi2OVieMX37arD2ACgJ750w==}
+    engines: {node: '>=20'}
 
   pg-cloudflare@1.3.0:
     resolution: {integrity: sha512-6lswVVSztmHiRtD6I8hw4qP/nDm1EJbKMRhf3HCYaqud7frGysPv7FYJ5noZQdhQtN2xJnimfMtvQq21pdbzyQ==}
@@ -5705,12 +5700,12 @@ packages:
     resolution: {integrity: sha512-1gnZf7DFcoIcajTjTwjwuDjzuz4PPcY2StKPlsGAQ1+YH20IRVrBaXSWmdjowTJ6u8Rc01PoYOGHXfP1mYcZNQ==}
     engines: {node: '>= 18'}
 
-  serialize-error@13.0.1:
-    resolution: {integrity: sha512-bBZaRwLH9PN5HbLCjPId4dP5bNGEtumcErgOX952IsvOhVPrm3/AeK1y0UHA/QaPG701eg0yEnOKsCOC6X/kaA==}
-    engines: {node: '>=20'}
-
   serialize-error@7.0.1:
     resolution: {integrity: sha512-8I8TjW5KMOKsZQTvoxjuSIa7foAwPWGOts+6o7sgjz41/qMD9VQHEDxi6PBvK2l0MXUmqZyNpUK+T2tQaaElvw==}
+    engines: {node: '>=10'}
+
+  serialize-error@8.1.0:
+    resolution: {integrity: sha512-3NnuWfM6vBYoy5gZFvHiYsVbafvI9vZv/+jlIigFn4oP4zjNPK3LhcY0xSCgeb1a5L8jO71Mit9LlNoi2UfDDQ==}
     engines: {node: '>=10'}
 
   seroval-plugins@1.5.2:
@@ -5979,6 +5974,10 @@ packages:
 
   type-fest@0.13.1:
     resolution: {integrity: sha512-34R7HTnG0XIJcBSn5XhDd7nNFPRcXYRZrBB2O2jdKqYODldSzBAqzsWoZYYvduky73toYS/ESqxPvkDf/F0XMg==}
+    engines: {node: '>=10'}
+
+  type-fest@0.20.2:
+    resolution: {integrity: sha512-Ne+eE4r0/iWnpAxD852z3A+N0Bt5RN//NjJwRd2VFHEmrywxf5vsZlh4R6lixl6B+wz/8d+maTSAkN1FIkI3LQ==}
     engines: {node: '>=10'}
 
   type-fest@5.6.0:
@@ -9123,7 +9122,7 @@ snapshots:
       buffer: 5.7.1
     optional: true
 
-  cron-parser@5.5.0:
+  cron-parser@4.9.0:
     dependencies:
       luxon: 3.7.2
 
@@ -10562,8 +10561,6 @@ snapshots:
 
   node-releases@2.0.38: {}
 
-  non-error@0.1.0: {}
-
   nopt@9.0.0:
     dependencies:
       abbrev: 4.0.0
@@ -10743,11 +10740,11 @@ snapshots:
 
   pend@1.2.0: {}
 
-  pg-boss@12.16.0:
+  pg-boss@10.4.2:
     dependencies:
-      cron-parser: 5.5.0
+      cron-parser: 4.9.0
       pg: 8.20.0
-      serialize-error: 13.0.1
+      serialize-error: 8.1.0
     transitivePeerDependencies:
       - pg-native
 
@@ -11183,15 +11180,14 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  serialize-error@13.0.1:
-    dependencies:
-      non-error: 0.1.0
-      type-fest: 5.6.0
-
   serialize-error@7.0.1:
     dependencies:
       type-fest: 0.13.1
     optional: true
+
+  serialize-error@8.1.0:
+    dependencies:
+      type-fest: 0.20.2
 
   seroval-plugins@1.5.2(seroval@1.5.2):
     dependencies:
@@ -11494,6 +11490,8 @@ snapshots:
 
   type-fest@0.13.1:
     optional: true
+
+  type-fest@0.20.2: {}
 
   type-fest@5.6.0:
     dependencies:
