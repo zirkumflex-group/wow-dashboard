@@ -25,6 +25,7 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "@wow-dashboard/ui/components/sheet";
+import { Skeleton } from "@wow-dashboard/ui/components/skeleton";
 import {
   Clock,
   Coins,
@@ -152,19 +153,15 @@ function TimeFramePicker({
       <span className="text-muted-foreground text-xs">Zoom</span>
       <div className="flex rounded-md border overflow-hidden">
         {TIME_FRAME_OPTIONS.map((opt) => {
-          const isDisabled = opt.value !== "all";
           return (
             <button
               key={opt.value}
               type="button"
-              disabled={isDisabled}
               onClick={() => onChange(opt.value)}
               className={`px-3 py-1 text-xs transition-colors ${
                 value === opt.value
                   ? "bg-primary text-primary-foreground"
-                  : isDisabled
-                    ? "cursor-not-allowed bg-muted/20 text-muted-foreground/50"
-                    : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                  : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
               }`}
             >
               {opt.label}
@@ -291,10 +288,27 @@ function getTickBucketKey(timestamp: number, frame: TimeFrame) {
   return `${year}-${month}-${day}`;
 }
 
-function dedupeTicksByBucket(ticks: number[], frame: TimeFrame) {
-  const seenBuckets = new Set<string>();
+function dedupeTicksByBucket(ticks: number[], frame: TimeFrame, preserveEndpoints = false) {
+  if (preserveEndpoints && ticks.length <= 2) {
+    return ticks;
+  }
 
-  return ticks.filter((timestamp) => {
+  const seenBuckets = new Set<string>();
+  const firstIndex = 0;
+  const lastIndex = ticks.length - 1;
+
+  if (preserveEndpoints) {
+    const firstBucket = getTickBucketKey(ticks[firstIndex]!, frame);
+    const lastBucket = getTickBucketKey(ticks[lastIndex]!, frame);
+    if (firstBucket) seenBuckets.add(firstBucket);
+    if (lastBucket) seenBuckets.add(lastBucket);
+  }
+
+  return ticks.filter((timestamp, index) => {
+    if (preserveEndpoints && (index === firstIndex || index === lastIndex)) {
+      return true;
+    }
+
     const bucketKey = getTickBucketKey(timestamp, frame);
     if (bucketKey === null || seenBuckets.has(bucketKey)) {
       return false;
@@ -317,6 +331,26 @@ function capXAxisTicks(ticks: number[], maxCount: number) {
   }
 
   return Array.from(selectedTicks).sort((a, b) => a - b);
+}
+
+function getXAxisDomain(data: Record<string, number | undefined>[]): [number, number] | undefined {
+  const timestamps = data
+    .map((datum) => normalizeTimestampSeconds(datum.date))
+    .filter((timestamp): timestamp is number => timestamp !== null);
+  const uniqueTimestamps = Array.from(new Set(timestamps)).sort((a, b) => a - b);
+  if (uniqueTimestamps.length < 2) {
+    return undefined;
+  }
+
+  const minTimestamp = uniqueTimestamps[0]!;
+  const maxTimestamp = uniqueTimestamps[uniqueTimestamps.length - 1]!;
+  const span = maxTimestamp - minTimestamp;
+  if (span <= 0) {
+    return undefined;
+  }
+
+  const padding = Math.max(Math.round(span * 0.025), 1);
+  return [minTimestamp - padding, maxTimestamp + padding];
 }
 
 function getXAxisTicks(data: Record<string, number | undefined>[], frame: TimeFrame) {
@@ -349,14 +383,14 @@ function getXAxisTicks(data: Record<string, number | undefined>[], frame: TimeFr
     }
     return date.getDate() === 1;
   });
-  const dedupedImportantTicks = dedupeTicksByBucket(importantTicks, frame);
+  const dedupedImportantTicks = dedupeTicksByBucket(importantTicks, frame, true);
 
   const maxTickCount = frame === "all" ? 8 : frame === "90d" ? 9 : frame === "30d" ? 7 : 8;
   if (dedupedImportantTicks.length >= 3) {
     return capXAxisTicks(dedupedImportantTicks, maxTickCount);
   }
 
-  return capXAxisTicks(dedupeTicksByBucket(uniqueTimestamps, frame), maxTickCount);
+  return capXAxisTicks(dedupeTicksByBucket(uniqueTimestamps, frame, true), maxTickCount);
 }
 
 function xTooltipLabelFormatter(
@@ -901,6 +935,7 @@ const currenciesConfig: ChartConfig = {
 
 type YScaleOptions = {
   includeZero?: boolean;
+  minDomain?: number;
   minSpan?: number;
   minPadding?: number;
   padRatio?: number;
@@ -923,6 +958,7 @@ type EndpointDotProps = {
 };
 
 const ITEM_LEVEL_AUTO_SCALE: YScaleOptions = {
+  minDomain: 0,
   minSpan: 4,
   minPadding: 0.5,
   padRatio: 0.18,
@@ -936,12 +972,14 @@ const MPLUS_AUTO_SCALE: YScaleOptions = {
   stepFloor: 25,
 };
 const GOLD_SCALE: YScaleOptions = {
+  minDomain: 0,
   minSpan: 20,
   minPadding: 2,
   padRatio: 0.2,
   stepFloor: 1,
 };
 const SECONDARY_STATS_SCALE: YScaleOptions = {
+  minDomain: 0,
   minSpan: 6,
   minPadding: 0.4,
   padRatio: 0.14,
@@ -955,6 +993,7 @@ const CURRENCIES_SCALE: YScaleOptions = {
   stepFloor: 5,
 };
 const PLAYTIME_SCALE: YScaleOptions = {
+  minDomain: 0,
   minSpan: 24,
   minPadding: 6,
   padRatio: 0.14,
@@ -1003,6 +1042,9 @@ function getAdaptiveYDomain(
   let domainMin = Math.floor((minValue - padding) / step) * step;
   let domainMax = Math.ceil((maxValue + padding) / step) * step;
 
+  if (options.minDomain !== undefined && domainMin < options.minDomain) {
+    domainMin = options.minDomain;
+  }
   if (options.includeZero && minValue >= 0 && domainMin < 0) {
     domainMin = 0;
   }
@@ -1011,6 +1053,10 @@ function getAdaptiveYDomain(
   }
 
   if (domainMin === domainMax) {
+    if (options.minDomain !== undefined && domainMin <= options.minDomain) {
+      return [options.minDomain, domainMax + step];
+    }
+
     return [domainMin - step, domainMax + step];
   }
 
@@ -1094,6 +1140,7 @@ function SnapshotLineChart({
   }
 
   const xAxisTicks = getXAxisTicks(data, timeFrame ?? "all");
+  const xAxisDomain = getXAxisDomain(data);
   const latestDatum = data[data.length - 1];
   const hasPrimaryEmphasis = lineEmphasis === "primary" && lines.length > 1;
   const primaryLineKey = hasPrimaryEmphasis ? getPrimaryLineKey(lines, latestDatum) : undefined;
@@ -1183,6 +1230,9 @@ function SnapshotLineChart({
         />
         <XAxis
           dataKey="date"
+          type="number"
+          scale="time"
+          domain={xAxisDomain}
           tickLine={false}
           axisLine={false}
           tickMargin={8}
@@ -1222,6 +1272,7 @@ function SnapshotLineChart({
                   payload as ReadonlyArray<ChartTooltipPayloadItem>,
                 )
               }
+              valueFormatter={valueFormatter}
               indicator="dot"
             />
           }
@@ -1286,8 +1337,8 @@ function RadarPanel({ snapshot }: { snapshot: Snapshot }) {
 
   return (
     <div className="space-y-3">
-      <ChartContainer config={radarConfig} className="h-[150px] w-full">
-        <RadarChart data={radarData}>
+      <ChartContainer config={radarConfig} className="h-[170px] w-full">
+        <RadarChart data={radarData} margin={{ top: 14, right: 22, bottom: 14, left: 22 }}>
           <PolarGrid />
           <PolarRadiusAxis axisLine={false} tick={false} domain={[0, radarMax]} />
           <PolarAngleAxis dataKey="stat" tick={{ fontSize: 11 }} />
@@ -1340,8 +1391,8 @@ function RadarStrip({ snapshot }: { snapshot: Snapshot }) {
       <CardContent className="py-4">
         <div className="flex items-center gap-6">
           <div className="shrink-0">
-            <ChartContainer config={radarConfig} className="w-[130px] h-[130px]">
-              <RadarChart data={radarData}>
+            <ChartContainer config={radarConfig} className="h-[150px] w-[150px]">
+              <RadarChart data={radarData} margin={{ top: 12, right: 18, bottom: 12, left: 18 }}>
                 <PolarGrid />
                 <PolarRadiusAxis axisLine={false} tick={false} domain={[0, radarMax]} />
                 <PolarAngleAxis dataKey="stat" tick={{ fontSize: 10 }} />
@@ -2390,6 +2441,41 @@ const CharacterPageContent = memo(function CharacterPageContent({
   );
 });
 
+function CharacterPageState({
+  title,
+  description,
+  isLoading = false,
+}: {
+  title: string;
+  description: string;
+  isLoading?: boolean;
+}) {
+  return (
+    <div className="w-full px-4 py-6 sm:px-6 lg:px-8">
+      <Card className="border-border/60 bg-background">
+        <CardContent className="space-y-4 px-6 py-6">
+          {isLoading ? (
+            <>
+              <Skeleton className="h-8 w-64" />
+              <Skeleton className="h-4 w-full max-w-md" />
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                {Array.from({ length: 4 }).map((_, index) => (
+                  <Skeleton key={index} className="h-24 rounded-md" />
+                ))}
+              </div>
+            </>
+          ) : (
+            <>
+              <CardTitle className="text-xl font-semibold tracking-tight">{title}</CardTitle>
+              <p className="max-w-2xl text-sm text-muted-foreground">{description}</p>
+            </>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
 function RouteComponent() {
   const queryClient = useQueryClient();
   const { characterId } = Route.useParams();
@@ -2511,31 +2597,6 @@ function RouteComponent() {
     };
   }, [baseMythicPlusData, mythicPlusAllRuns]);
 
-  if (characterPage === undefined) {
-    return <div className="w-full px-4 py-6 sm:px-6 lg:px-8" />;
-  }
-
-  if (characterPage === null) {
-    return (
-      <div className="container mx-auto max-w-3xl px-4 py-6">
-        <p className="text-muted-foreground text-sm">Character not found.</p>
-      </div>
-    );
-  }
-
-  const { header, coreTimeline } = characterPage;
-  const { character, latestSnapshot, firstSnapshotAt, snapshotCount } = header;
-  const owner = header.owner;
-  const isPinnedToQuickAccess = pinnedCharacterIdSet.has(characterId);
-  const isBoosterCharacter = character.isBooster === true;
-  const nonTradeableSlots = (character.nonTradeableSlots ?? []) as TradeSlotKey[];
-  const isLoadingAllMythicPlusRuns =
-    shouldLoadFullMythicPlusRuns && mythicPlusAllRuns === undefined;
-  const normalizedDiscordUserIdInput = discordUserIdInput.trim();
-  const hasDiscordUserIdChanges = normalizedDiscordUserIdInput !== (owner?.discordUserId ?? "");
-  const hasTradeSlotChanges =
-    JSON.stringify(nonTradeableSlotsDraft) !== JSON.stringify(nonTradeableSlots);
-
   const invalidateCharacterPageQueries = useCallback(async () => {
     await queryClient.invalidateQueries({
       queryKey: ["api", "characters", characterId, "page"],
@@ -2597,6 +2658,51 @@ function RouteComponent() {
       ]);
     },
   });
+
+  if (characterPageQuery.isError) {
+    return (
+      <CharacterPageState
+        title="Character could not be loaded"
+        description={
+          characterPageQuery.error instanceof Error
+            ? characterPageQuery.error.message
+            : "The character request failed."
+        }
+      />
+    );
+  }
+
+  if (characterPage === undefined) {
+    return (
+      <CharacterPageState
+        title="Loading character"
+        description="Fetching the latest character snapshot."
+        isLoading
+      />
+    );
+  }
+
+  if (characterPage === null) {
+    return (
+      <CharacterPageState
+        title="Character not found"
+        description="This character is no longer available or has not been imported."
+      />
+    );
+  }
+
+  const { header, coreTimeline } = characterPage;
+  const { character, latestSnapshot, firstSnapshotAt, snapshotCount } = header;
+  const owner = header.owner;
+  const isPinnedToQuickAccess = pinnedCharacterIdSet.has(characterId);
+  const isBoosterCharacter = character.isBooster === true;
+  const nonTradeableSlots = (character.nonTradeableSlots ?? []) as TradeSlotKey[];
+  const isLoadingAllMythicPlusRuns =
+    shouldLoadFullMythicPlusRuns && mythicPlusAllRuns === undefined;
+  const normalizedDiscordUserIdInput = discordUserIdInput.trim();
+  const hasDiscordUserIdChanges = normalizedDiscordUserIdInput !== (owner?.discordUserId ?? "");
+  const hasTradeSlotChanges =
+    JSON.stringify(nonTradeableSlotsDraft) !== JSON.stringify(nonTradeableSlots);
 
   const latest = (latestSnapshot as Snapshot | null) ?? null;
   const coreSnapshots = (coreTimeline?.snapshots ?? []) as CoreChartSnapshot[];
@@ -2973,7 +3079,7 @@ function RouteComponent() {
         )}
       </Card>
       {/* Active layout */}
-      {latest && coreSnapshots.length > 0 && (
+      {latest && coreSnapshots.length > 0 ? (
         <CharacterPageContent
           latest={latest}
           coreSnapshots={coreSnapshots}
@@ -2995,6 +3101,17 @@ function RouteComponent() {
           focusMetric={focusMetric}
           onFocusMetricChange={handleFocusMetricChange}
         />
+      ) : (
+        <Card className="border-border/60 bg-background">
+          <CardContent className="px-6 py-6">
+            <CardTitle className="text-lg font-semibold tracking-tight">
+              No snapshots available
+            </CardTitle>
+            <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
+              This character exists, but there is no timeline data to chart yet.
+            </p>
+          </CardContent>
+        </Card>
       )}
     </div>
   );

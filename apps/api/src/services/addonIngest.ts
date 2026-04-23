@@ -296,6 +296,31 @@ function getSnapshotDayStart(takenAt: number) {
   return Math.floor(takenAt / 86400) * 86400;
 }
 
+function getDailySnapshotCompletenessScore(
+  snapshot:
+    | SnapshotFields
+    | Pick<CharacterDailySnapshotRow, "currencies" | "playtimeSeconds" | "stats">,
+) {
+  let score = 0;
+  const stats = snapshot.stats;
+
+  if (snapshot.playtimeSeconds > 0) score += 1;
+  if (snapshot.currencies !== null && snapshot.currencies !== undefined) score += 1;
+  if (snapshot.stats !== null && snapshot.stats !== undefined) score += 1;
+  if (stats?.critRating !== undefined) score += 1;
+  if (stats?.hasteRating !== undefined) score += 1;
+  if (stats?.masteryRating !== undefined) score += 1;
+  if (stats?.versatilityRating !== undefined) score += 1;
+  if (stats?.speedRating !== undefined) score += 1;
+  if (stats?.leechRating !== undefined) score += 1;
+  if (stats?.avoidanceRating !== undefined) score += 1;
+  if (stats?.speedPercent !== undefined) score += 2;
+  if (stats?.leechPercent !== undefined) score += 2;
+  if (stats?.avoidancePercent !== undefined) score += 2;
+
+  return score;
+}
+
 function toCharacterDailySnapshotFields(snapshot: SnapshotFields) {
   return {
     dayStartAt: fromUnixSeconds(getSnapshotDayStart(snapshot.takenAt)),
@@ -310,10 +335,20 @@ function toCharacterDailySnapshotFields(snapshot: SnapshotFields) {
 }
 
 function shouldReplaceCharacterDailySnapshot(
-  currentSnapshot: Pick<CharacterDailySnapshotRow, "lastTakenAt"> | null,
+  currentSnapshot: Pick<
+    CharacterDailySnapshotRow,
+    "currencies" | "lastTakenAt" | "playtimeSeconds" | "stats"
+  > | null,
   nextSnapshot: SnapshotFields,
 ) {
   if (!currentSnapshot) return true;
+
+  const currentScore = getDailySnapshotCompletenessScore(currentSnapshot);
+  const nextScore = getDailySnapshotCompletenessScore(nextSnapshot);
+  if (nextScore !== currentScore) {
+    return nextScore > currentScore;
+  }
+
   return nextSnapshot.takenAt >= toUnixSeconds(currentSnapshot.lastTakenAt)!;
 }
 

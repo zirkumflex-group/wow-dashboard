@@ -1,4 +1,10 @@
+import { existsSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { config as loadDotenv } from "dotenv";
+
 process.env.NODE_ENV = "test";
+loadRootEnv();
 process.env.DATABASE_URL ??= "postgres://wowdash:wowdash@localhost:5432/wowdash";
 process.env.REDIS_URL ??= "redis://localhost:6379";
 process.env.SITE_URL ??= "http://localhost:3001";
@@ -25,15 +31,30 @@ import {
   user as authUsers,
 } from "@wow-dashboard/db";
 
-const [{ app }, { databaseConnection, db }, { closeQueue }, { closeRedis, ensureRedis }] = await Promise.all([
-  import("./server"),
-  import("./db"),
-  import("./lib/queue"),
-  import("./lib/redis"),
-]);
+const [{ app }, { databaseConnection, db }, { closeQueue }, { closeRedis, ensureRedis }] =
+  await Promise.all([
+    import("./server"),
+    import("./db"),
+    import("./lib/queue"),
+    import("./lib/redis"),
+  ]);
+
+function loadRootEnv() {
+  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+  const nodeEnv = process.env.NODE_ENV ?? "test";
+  const envFiles = [`.env.${nodeEnv}.local`, ".env.local", `.env.${nodeEnv}`, ".env"].map(
+    (fileName) => resolve(repoRoot, fileName),
+  );
+
+  for (const path of envFiles) {
+    if (!existsSync(path)) continue;
+    loadDotenv({ path, override: false });
+  }
+}
 
 async function truncateTables() {
-  await db.execute(sql.raw(`
+  await db.execute(
+    sql.raw(`
     truncate table
       "audit_log",
       "mythic_plus_runs",
@@ -46,7 +67,8 @@ async function truncateTables() {
       "verification",
       "user"
     restart identity cascade
-  `));
+  `),
+  );
 }
 
 async function resetQueueSchema() {
@@ -85,10 +107,7 @@ async function seedAuthenticatedUser() {
   };
 }
 
-async function seedBattleNetAccount(input: {
-  userId: string;
-  accessToken?: string | null;
-}) {
+async function seedBattleNetAccount(input: { userId: string; accessToken?: string | null }) {
   await db.insert(authAccounts).values({
     id: `account-${randomUUID()}`,
     accountId: `bnet-${randomUUID()}`,
@@ -164,6 +183,7 @@ async function seedSnapshot(input: {
   itemLevel: number;
   gold: number;
   playtimeSeconds: number;
+  playtimeThisLevelSeconds?: number;
   mythicPlusScore: number;
   ownedKeystone?: {
     level: number;
@@ -181,7 +201,7 @@ async function seedSnapshot(input: {
     itemLevel: input.itemLevel,
     gold: input.gold,
     playtimeSeconds: input.playtimeSeconds,
-    playtimeThisLevelSeconds: null,
+    playtimeThisLevelSeconds: input.playtimeThisLevelSeconds ?? null,
     mythicPlusScore: input.mythicPlusScore,
     ownedKeystone: input.ownedKeystone,
     currencies: {
@@ -339,7 +359,10 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     });
 
     assert.equal(webPreflightResponse.status, 204);
-    assert.equal(webPreflightResponse.headers.get("Access-Control-Allow-Origin"), process.env.SITE_URL);
+    assert.equal(
+      webPreflightResponse.headers.get("Access-Control-Allow-Origin"),
+      process.env.SITE_URL,
+    );
     assert.equal(webPreflightResponse.headers.get("Access-Control-Allow-Credentials"), "true");
 
     const desktopPreflightResponse = await app.request("http://localhost/api/me", {
@@ -355,8 +378,8 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     assert.equal(desktopPreflightResponse.headers.get("Access-Control-Allow-Origin"), "null");
     assert.equal(desktopPreflightResponse.headers.get("Access-Control-Allow-Credentials"), null);
     assert.ok(
-      desktopPreflightResponse
-        .headers.get("Access-Control-Allow-Headers")
+      desktopPreflightResponse.headers
+        .get("Access-Control-Allow-Headers")
         ?.toLowerCase()
         .includes("authorization"),
     );
@@ -486,12 +509,9 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
       mythicPlusScore: 2875,
     });
 
-    const response = await app.request(
-      `http://localhost/api/players/${playerId}/characters`,
-      {
-        headers: authHeaders(auth.token),
-      },
-    );
+    const response = await app.request(`http://localhost/api/players/${playerId}/characters`, {
+      headers: authHeaders(auth.token),
+    });
 
     assert.equal(response.status, 200);
     const payload = (await response.json()) as {
@@ -504,10 +524,18 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
         highestMythicPlusScore: number | null;
         highestMythicPlusCharacterName: string | null;
         averageItemLevel: number | null;
-        bestKeystone: { level: number; mapChallengeModeID: number | null; mapName: string | null } | null;
+        bestKeystone: {
+          level: number;
+          mapChallengeModeID: number | null;
+          mapName: string | null;
+        } | null;
         latestSnapshotAt: number | null;
       };
-      characters: Array<{ _id: string; name: string; snapshot: { mythicPlusScore: number } | null }>;
+      characters: Array<{
+        _id: string;
+        name: string;
+        snapshot: { mythicPlusScore: number } | null;
+      }>;
     };
 
     assert.equal(payload.player.playerId, playerId);
@@ -631,6 +659,38 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
       },
     });
 
+    await db
+      .update(characters)
+      .set({
+        mythicPlusSummary: {
+          latestSeasonID: null,
+          currentScore: 1111,
+          overall: {
+            totalRuns: 0,
+            completedRuns: 0,
+            timedRuns: 0,
+            timed2To9: 0,
+            timed10To11: 0,
+            timed12To13: 0,
+            timed14Plus: 0,
+            bestLevel: null,
+            bestTimedLevel: null,
+            bestTimedUpgradeCount: null,
+            bestTimedScore: null,
+            bestTimedDurationMs: null,
+            bestScore: null,
+            averageLevel: null,
+            averageScore: null,
+            lastRunAt: null,
+          },
+          currentSeason: null,
+          currentSeasonDungeons: [],
+        },
+        mythicPlusRecentRunsPreview: [],
+        mythicPlusRunCount: 0,
+      })
+      .where(eq(characters.id, characterId));
+
     const response = await app.request(
       `http://localhost/api/characters/${characterId}/page?timeFrame=all&includeStats=false`,
       {
@@ -646,9 +706,15 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
         latestSnapshot: { itemLevel: number; mythicPlusScore: number } | null;
         firstSnapshotAt: number | null;
       };
-      coreTimeline: { snapshots: Array<{ takenAt: number; itemLevel: number; currencies: object }> };
+      coreTimeline: {
+        snapshots: Array<{ takenAt: number; itemLevel: number; currencies: object }>;
+      };
       statsTimeline: null | { snapshots: Array<unknown> };
-      mythicPlus: { totalRunCount: number; runs: Array<unknown>; summary: { currentScore: number | null } };
+      mythicPlus: {
+        totalRunCount: number;
+        runs: Array<unknown>;
+        summary: { currentScore: number | null };
+      };
     } | null;
 
     assert.ok(payload);
@@ -796,6 +862,74 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     });
   });
 
+  it("prefers the most complete snapshot when bucketed snapshots share a time bucket", async () => {
+    const auth = await seedAuthenticatedUser();
+    const playerId = await seedPlayer(auth.userId, "Buckets#1111");
+    const characterId = await seedCharacter({
+      playerId,
+      name: "BucketHero",
+      realm: "Tarren Mill",
+      className: "Paladin",
+      race: "Human",
+      faction: "alliance",
+    });
+
+    await seedSnapshot({
+      characterId,
+      takenAt: "2026-04-21T12:10:00.000Z",
+      level: 80,
+      spec: "Protection",
+      role: "tank",
+      itemLevel: 720,
+      gold: 900,
+      playtimeSeconds: 7000,
+      playtimeThisLevelSeconds: 1200,
+      mythicPlusScore: 3000,
+      ownedKeystone: {
+        level: 14,
+        mapChallengeModeID: 244,
+        mapName: "The MOTHERLODE!!",
+      },
+    });
+    await seedSnapshot({
+      characterId,
+      takenAt: "2026-04-21T12:20:00.000Z",
+      level: 80,
+      spec: "Protection",
+      role: "tank",
+      itemLevel: 718,
+      gold: 800,
+      playtimeSeconds: 7000,
+      mythicPlusScore: 2990,
+    });
+
+    const response = await app.request(
+      `http://localhost/api/characters/${characterId}/snapshot-timeline?timeFrame=all`,
+      {
+        headers: authHeaders(auth.token),
+      },
+    );
+
+    assert.equal(response.status, 200);
+    const payload = (await response.json()) as {
+      snapshots: Array<{
+        takenAt: number;
+        itemLevel: number;
+        ownedKeystone?: { level: number; mapChallengeModeID?: number; mapName?: string };
+      }>;
+    } | null;
+
+    assert.ok(payload);
+    assert.equal(payload.snapshots.length, 1);
+    assert.equal(payload.snapshots[0]?.takenAt, 1_776_773_400);
+    assert.equal(payload.snapshots[0]?.itemLevel, 720);
+    assert.deepEqual(payload.snapshots[0]?.ownedKeystone, {
+      level: 14,
+      mapChallengeModeID: 244,
+      mapName: "The MOTHERLODE!!",
+    });
+  });
+
   it("returns full mythic plus payloads for the character detail page", async () => {
     const auth = await seedAuthenticatedUser();
     const playerId = await seedPlayer(auth.userId, "Runs#1111");
@@ -855,7 +989,10 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
       totalRunCount: number;
       isPreview: boolean;
       runs: Array<{ mapName?: string; level?: number; runScore?: number }>;
-      summary: { currentScore: number | null; overall: { totalRuns: number; bestLevel: number | null } };
+      summary: {
+        currentScore: number | null;
+        overall: { totalRuns: number; bestLevel: number | null };
+      };
     } | null;
 
     assert.ok(payload);

@@ -597,7 +597,7 @@ function bucketDailySnapshotsBySpan(
     const dayStartAt = toUnixSeconds(snapshot.dayStartAt)!;
     const bucketKey = Math.floor(dayStartAt / (daySpan * 86400));
     const current = bucketed.get(bucketKey);
-    if (!current || snapshot.lastTakenAt.getTime() >= current.lastTakenAt.getTime()) {
+    if (shouldReplaceDailyBucketSnapshot(current, snapshot)) {
       bucketed.set(bucketKey, snapshot);
     }
   }
@@ -607,15 +607,46 @@ function bucketDailySnapshotsBySpan(
   );
 }
 
+function getDailySnapshotCompletenessScore(snapshot: CharacterDailySnapshotRecord) {
+  let score = 0;
+  const stats = snapshot.stats;
+
+  if (snapshot.playtimeSeconds > 0) score += 1;
+  if (snapshot.currencies !== null && snapshot.currencies !== undefined) score += 1;
+  if (snapshot.stats !== null && snapshot.stats !== undefined) score += 1;
+  if (stats?.critRating !== undefined) score += 1;
+  if (stats?.hasteRating !== undefined) score += 1;
+  if (stats?.masteryRating !== undefined) score += 1;
+  if (stats?.versatilityRating !== undefined) score += 1;
+  if (stats?.speedRating !== undefined) score += 1;
+  if (stats?.leechRating !== undefined) score += 1;
+  if (stats?.avoidanceRating !== undefined) score += 1;
+  if (stats?.speedPercent !== undefined) score += 2;
+  if (stats?.leechPercent !== undefined) score += 2;
+  if (stats?.avoidancePercent !== undefined) score += 2;
+
+  return score;
+}
+
+function shouldReplaceDailyBucketSnapshot(
+  currentSnapshot: CharacterDailySnapshotRecord | undefined,
+  candidateSnapshot: CharacterDailySnapshotRecord,
+) {
+  if (!currentSnapshot) return true;
+
+  const currentScore = getDailySnapshotCompletenessScore(currentSnapshot);
+  const candidateScore = getDailySnapshotCompletenessScore(candidateSnapshot);
+  if (candidateScore !== currentScore) {
+    return candidateScore > currentScore;
+  }
+
+  return candidateSnapshot.lastTakenAt.getTime() >= currentSnapshot.lastTakenAt.getTime();
+}
+
 function shouldReplaceBucketSnapshot(
   currentSnapshot: SnapshotRecord | undefined,
   candidateSnapshot: SnapshotRecord,
 ) {
-  if (!currentSnapshot) return true;
-  if (candidateSnapshot.takenAt.getTime() !== currentSnapshot.takenAt.getTime()) {
-    return candidateSnapshot.takenAt.getTime() > currentSnapshot.takenAt.getTime();
-  }
-
   return shouldReplaceSnapshot(currentSnapshot, candidateSnapshot);
 }
 
@@ -738,6 +769,7 @@ function buildCharacterMythicPlusData(
 function getStoredCharacterMythicPlusData(
   character: CharacterRecord,
   includeAllRuns: boolean,
+  currentScoreOverride?: number | null,
 ): CharacterMythicPlusResponse | null {
   const summary = character.mythicPlusSummary ?? null;
   const runs = character.mythicPlusRecentRunsPreview ?? null;
@@ -750,7 +782,12 @@ function getStoredCharacterMythicPlusData(
     return null;
   }
 
-  return buildCharacterMythicPlusData(summary, runs, totalRunCount, includeAllRuns);
+  const resolvedSummary =
+    currentScoreOverride === undefined || currentScoreOverride === null
+      ? summary
+      : { ...summary, currentScore: currentScoreOverride };
+
+  return buildCharacterMythicPlusData(resolvedSummary, runs, totalRunCount, includeAllRuns);
 }
 
 async function readCharacterMythicPlusData(
@@ -758,7 +795,11 @@ async function readCharacterMythicPlusData(
   includeAllRuns: boolean,
   currentScoreOverride?: number | null,
 ): Promise<CharacterMythicPlusResponse> {
-  const storedData = getStoredCharacterMythicPlusData(character, includeAllRuns);
+  const storedData = getStoredCharacterMythicPlusData(
+    character,
+    includeAllRuns,
+    currentScoreOverride,
+  );
   if (storedData) {
     return storedData;
   }
