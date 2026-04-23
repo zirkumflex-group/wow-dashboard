@@ -275,4 +275,3 @@ ALTER TABLE "players" ADD CONSTRAINT "players_user_id_user_id_fk" FOREIGN KEY ("
 CREATE UNIQUE INDEX "character_daily_snapshots_character_id_day_start_at_uidx" ON "character_daily_snapshots" USING btree ("character_id","day_start_at");
 --> statement-breakpoint
 CREATE UNIQUE INDEX "characters_player_id_region_realm_name_uidx" ON "characters" USING btree ("player_id","region","realm","name");
-

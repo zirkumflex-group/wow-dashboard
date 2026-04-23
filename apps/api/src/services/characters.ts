@@ -7,7 +7,6 @@ import type {
 } from "@wow-dashboard/api-schema";
 import { mythicPlusPreviewRunLimit } from "@wow-dashboard/api-schema";
 import {
-  account,
   characterDailySnapshots,
   characters,
   mythicPlusRuns,
@@ -26,6 +25,7 @@ import { db } from "../db";
 import { insertAuditEvent } from "../lib/audit";
 import { enqueueSyncCharactersJob } from "../lib/queue";
 import { limitBattleNetSync } from "../lib/rateLimit";
+import { resolveBattleNetAccessTokenForUser } from "./battleNetTokens";
 import {
   buildMythicPlusSummary,
   buildRecentRuns,
@@ -499,12 +499,6 @@ async function readPlayerIdForUser(userId: string): Promise<string | null> {
   });
 
   return player?.id ?? null;
-}
-
-async function readBattleNetAccountForUser(userId: string) {
-  return await db.query.account.findFirst({
-    where: and(eq(account.userId, userId), eq(account.providerId, "battlenet")),
-  });
 }
 
 async function readCharacterById(characterId: string) {
@@ -1253,8 +1247,16 @@ export async function requestCharacterResync(
     };
   }
 
-  const battleNetAccount = await readBattleNetAccountForUser(userId);
-  if (!battleNetAccount?.accessToken) {
+  const accessToken = await resolveBattleNetAccessTokenForUser(userId);
+  if (!accessToken.ok) {
+    await insertAuditEvent("battlenet.resync.unavailable", {
+      userId,
+      metadata: {
+        reason: accessToken.reason,
+      },
+      error: accessToken.error,
+    });
+
     return {
       ok: false,
       nextAllowedAt: null,
@@ -1263,11 +1265,14 @@ export async function requestCharacterResync(
 
   await enqueueSyncCharactersJob({
     userId,
-    accessToken: battleNetAccount.accessToken,
+    accessToken: accessToken.accessToken,
   });
 
   await insertAuditEvent("battlenet.resync", {
     userId,
+    metadata: {
+      tokenRefreshed: accessToken.refreshed,
+    },
   });
 
   return {

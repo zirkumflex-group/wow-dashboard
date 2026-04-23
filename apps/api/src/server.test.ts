@@ -5,7 +5,11 @@ import { config as loadDotenv } from "dotenv";
 
 process.env.NODE_ENV = "test";
 loadRootEnv();
-process.env.DATABASE_URL ??= "postgres://wowdash:wowdash@localhost:5432/wowdash";
+process.env.DATABASE_URL =
+  process.env.TEST_DATABASE_URL ??
+  process.env.DATABASE_URL ??
+  "postgres://wowdash:wowdash@localhost:5432/wowdash_test";
+assertSafeTestDatabaseUrl(process.env.DATABASE_URL);
 process.env.REDIS_URL ??= "redis://localhost:6379";
 process.env.SITE_URL ??= "http://localhost:3001";
 process.env.API_URL ??= "http://localhost:3000/api";
@@ -49,6 +53,23 @@ function loadRootEnv() {
   for (const path of envFiles) {
     if (!existsSync(path)) continue;
     loadDotenv({ path, override: false });
+  }
+}
+
+function assertSafeTestDatabaseUrl(databaseUrl: string) {
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(databaseUrl);
+  } catch {
+    throw new Error("[api:test] DATABASE_URL must be a valid Postgres URL.");
+  }
+
+  const databaseName = decodeURIComponent(parsedUrl.pathname.replace(/^\/+/, ""));
+  if (!databaseName.endsWith("_test")) {
+    throw new Error(
+      `[api:test] Refusing to truncate non-test database "${databaseName}". ` +
+        "Set TEST_DATABASE_URL or DATABASE_URL to a database whose name ends with _test.",
+    );
   }
 }
 

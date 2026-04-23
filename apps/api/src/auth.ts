@@ -100,7 +100,9 @@ async function readPlayerBinding(userId: string) {
   });
 }
 
-function isBattleNetAccount(account: { providerId?: string | null }): account is BattleNetAccountHook {
+function isBattleNetAccount(account: {
+  providerId?: string | null;
+}): account is BattleNetAccountHook {
   return account.providerId === "battlenet";
 }
 
@@ -214,6 +216,7 @@ export const auth = betterAuth({
           clientId: env.BATTLENET_CLIENT_ID,
           clientSecret: env.BATTLENET_CLIENT_SECRET,
           scopes: ["openid", "wow.profile"],
+          accessType: "offline",
           mapProfileToUser: (profile: BattleNetProfile) => ({
             id: String(profile.sub),
             name: profile.battletag ?? profile.battle_tag ?? String(profile.sub),
