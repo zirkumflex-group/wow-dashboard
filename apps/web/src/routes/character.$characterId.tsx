@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
+import type { SearchSchemaInput } from "@tanstack/react-router";
 import { getMythicPlusDungeonMeta } from "../lib/mythic-plus-static";
 import { getClassTextColor } from "../lib/class-colors";
 import { usePinnedCharacters } from "../lib/pinned-characters";
@@ -17,6 +18,7 @@ import {
 } from "@wow-dashboard/ui/components/chart";
 import { Checkbox } from "@wow-dashboard/ui/components/checkbox";
 import { Input } from "@wow-dashboard/ui/components/input";
+import { Label } from "@wow-dashboard/ui/components/label";
 import {
   Sheet,
   SheetContent,
@@ -26,10 +28,19 @@ import {
   SheetTrigger,
 } from "@wow-dashboard/ui/components/sheet";
 import { Skeleton } from "@wow-dashboard/ui/components/skeleton";
+import { ToggleGroup, ToggleGroupItem } from "@wow-dashboard/ui/components/toggle-group";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@wow-dashboard/ui/components/tooltip";
+import { cn } from "@wow-dashboard/ui/lib/utils";
 import {
   Clock,
   Coins,
   Columns,
+  Copy,
   ExternalLink,
   Flame,
   Gem,
@@ -49,6 +60,7 @@ import {
   startTransition,
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useState,
 } from "react";
@@ -76,8 +88,49 @@ import {
 } from "../lib/trade-slots";
 import { apiClient, apiQueryKeys, apiQueryOptions } from "@/lib/api-client";
 
-const DEFAULT_TIME_FRAME = "all" as const;
+type TimeFrame = "7d" | "30d" | "90d" | "all";
+type LayoutMode = "overview" | "focus" | "timeline";
+type FocusMetric = "ilvl" | "mplus" | "gold" | "stats" | "currencies" | "playtime";
+
+type CharacterPageSearch = {
+  timeFrame: TimeFrame;
+  layoutMode: LayoutMode;
+  focusMetric: FocusMetric;
+};
+
+type CharacterPageSearchInput = SearchSchemaInput & Partial<CharacterPageSearch>;
+
+const DEFAULT_TIME_FRAME: TimeFrame = "all";
+const DEFAULT_LAYOUT_MODE: LayoutMode = "overview";
+const DEFAULT_FOCUS_METRIC: FocusMetric = "ilvl";
 const CHARACTER_PAGE_STALE_TIME_MS = 5 * 60 * 1000;
+
+function isTimeFrame(value: unknown): value is TimeFrame {
+  return value === "7d" || value === "30d" || value === "90d" || value === "all";
+}
+
+function isLayoutMode(value: unknown): value is LayoutMode {
+  return value === "overview" || value === "focus" || value === "timeline";
+}
+
+function isFocusMetric(value: unknown): value is FocusMetric {
+  return (
+    value === "ilvl" ||
+    value === "mplus" ||
+    value === "gold" ||
+    value === "stats" ||
+    value === "currencies" ||
+    value === "playtime"
+  );
+}
+
+function validateCharacterPageSearch(search: CharacterPageSearchInput): CharacterPageSearch {
+  return {
+    timeFrame: isTimeFrame(search.timeFrame) ? search.timeFrame : DEFAULT_TIME_FRAME,
+    layoutMode: isLayoutMode(search.layoutMode) ? search.layoutMode : DEFAULT_LAYOUT_MODE,
+    focusMetric: isFocusMetric(search.focusMetric) ? search.focusMetric : DEFAULT_FOCUS_METRIC,
+  };
+}
 
 function getCharacterPageQueryOptions(characterId: string, timeFrame: TimeFrame) {
   return {
@@ -113,9 +166,11 @@ function getCharacterMythicPlusAllRunsQueryOptions(characterId: string) {
 }
 
 export const Route = createFileRoute("/character/$characterId")({
-  loader: ({ context, params }) =>
+  validateSearch: validateCharacterPageSearch,
+  loaderDeps: ({ search }) => ({ timeFrame: search.timeFrame }),
+  loader: ({ context, params, deps }) =>
     context.queryClient.ensureQueryData(
-      getCharacterPageQueryOptions(params.characterId, DEFAULT_TIME_FRAME),
+      getCharacterPageQueryOptions(params.characterId, deps.timeFrame),
     ),
   component: RouteComponent,
 });
@@ -132,8 +187,6 @@ const CARD_DATE_TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
 
 // ── Time frame ───────────────────────────────────────────────────────────────
 
-type TimeFrame = "7d" | "30d" | "90d" | "all";
-
 const TIME_FRAME_OPTIONS: { value: TimeFrame; label: string }[] = [
   { value: "all", label: "All" },
   { value: "90d", label: "90D" },
@@ -149,33 +202,34 @@ function TimeFramePicker({
   onChange: (v: TimeFrame) => void;
 }) {
   return (
-    <div className="flex items-center gap-2">
-      <span className="text-muted-foreground text-xs">Zoom</span>
-      <div className="flex rounded-md border overflow-hidden">
-        {TIME_FRAME_OPTIONS.map((opt) => {
-          return (
-            <button
-              key={opt.value}
-              type="button"
-              onClick={() => onChange(opt.value)}
-              className={`px-3 py-1 text-xs transition-colors ${
-                value === opt.value
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
-              }`}
-            >
-              {opt.label}
-            </button>
-          );
-        })}
-      </div>
+    <div className="flex flex-wrap items-center gap-2">
+      <span id="character-time-frame-label" className="text-xs text-muted-foreground">
+        Range
+      </span>
+      <ToggleGroup
+        type="single"
+        value={value}
+        onValueChange={(nextValue) => {
+          if (isTimeFrame(nextValue)) {
+            onChange(nextValue);
+          }
+        }}
+        variant="outline"
+        size="sm"
+        aria-labelledby="character-time-frame-label"
+        className="justify-start"
+      >
+        {TIME_FRAME_OPTIONS.map((opt) => (
+          <ToggleGroupItem key={opt.value} value={opt.value} className="px-3 text-xs">
+            {opt.label}
+          </ToggleGroupItem>
+        ))}
+      </ToggleGroup>
     </div>
   );
 }
 
 // ── Layout mode ───────────────────────────────────────────────────────────────
-
-type LayoutMode = "overview" | "focus" | "timeline";
 
 function LayoutSwitcher({
   value,
@@ -185,32 +239,41 @@ function LayoutSwitcher({
   onChange: (m: LayoutMode) => void;
 }) {
   const opts = [
-    { mode: "overview" as const, Icon: LayoutGrid, title: "Overview — radar sidebar + chart grid" },
-    { mode: "focus" as const, Icon: Columns, title: "Focus — single metric deep-dive" },
+    { mode: "overview" as const, Icon: LayoutGrid, label: "Overview" },
+    { mode: "focus" as const, Icon: Columns, label: "Focus" },
     {
       mode: "timeline" as const,
       Icon: LayoutList,
-      title: "Timeline — stacked charts + full history",
+      label: "Timeline",
     },
   ] as const;
   return (
-    <div className="flex items-center gap-0.5 rounded-md border p-0.5">
-      {opts.map(({ mode, Icon, title }) => (
-        <button
-          key={mode}
-          onClick={() => onChange(mode)}
-          title={title}
-          aria-label={title}
-          className={`p-1.5 rounded transition-colors ${
-            value === mode
-              ? "bg-primary text-primary-foreground"
-              : "text-muted-foreground hover:text-foreground"
-          }`}
-        >
-          <Icon size={14} />
-        </button>
-      ))}
-    </div>
+    <TooltipProvider delayDuration={200}>
+      <ToggleGroup
+        type="single"
+        value={value}
+        onValueChange={(nextValue) => {
+          if (isLayoutMode(nextValue)) {
+            onChange(nextValue);
+          }
+        }}
+        variant="outline"
+        size="sm"
+        aria-label="Character page layout"
+        className="justify-start"
+      >
+        {opts.map(({ mode, Icon, label }) => (
+          <Tooltip key={mode}>
+            <TooltipTrigger asChild>
+              <ToggleGroupItem value={mode} aria-label={label}>
+                <Icon data-icon="inline-start" aria-hidden="true" />
+              </ToggleGroupItem>
+            </TooltipTrigger>
+            <TooltipContent>{label}</TooltipContent>
+          </Tooltip>
+        ))}
+      </ToggleGroup>
+    </TooltipProvider>
   );
 }
 
@@ -434,6 +497,16 @@ function formatCardDateTime(ts?: number | null) {
   return CARD_DATE_TIME_FORMATTER.format(new Date(ts * 1000));
 }
 
+function getTimeFrameDeltaLabel(timeFrame: TimeFrame) {
+  return `last ${TIME_FRAME_OPTIONS.find((option) => option.value === timeFrame)?.label ?? timeFrame}`;
+}
+
+function formatSignedDelta(value: number, formatter: (absoluteValue: number) => string) {
+  if (!Number.isFinite(value)) return "--";
+  if (value === 0) return "0";
+  return `${value > 0 ? "+" : "-"}${formatter(Math.abs(value))}`;
+}
+
 // ── Shared display components ─────────────────────────────────────────────────
 
 function GoldDisplay({ value }: { value: number }) {
@@ -646,10 +719,12 @@ function TopMetricCard({
   label,
   meta,
   value,
+  delta,
 }: {
   label: string;
   meta?: string;
   value: React.ReactNode;
+  delta?: React.ReactNode;
 }) {
   return (
     <div className="rounded-md border border-border/60 bg-card px-4 py-3">
@@ -664,7 +739,41 @@ function TopMetricCard({
         )}
       </div>
       <div className="mt-3 min-w-0 text-xl font-semibold leading-none text-foreground">{value}</div>
+      {delta ? <div className="mt-2">{delta}</div> : null}
     </div>
+  );
+}
+
+function RangeDelta({
+  value,
+  formatter,
+  label,
+}: {
+  value: number;
+  formatter: (absoluteValue: number) => string;
+  label: string;
+}) {
+  if (!Number.isFinite(value) || Math.abs(value) < 0.0001) {
+    return (
+      <Badge
+        variant="outline"
+        className="border-border/60 bg-background text-xs font-normal text-muted-foreground"
+      >
+        No change over {label}
+      </Badge>
+    );
+  }
+
+  return (
+    <Badge
+      variant="outline"
+      className={cn(
+        "border-border/60 bg-background text-xs font-normal tabular-nums",
+        value > 0 ? "text-emerald-300" : "text-orange-300",
+      )}
+    >
+      {formatSignedDelta(value, formatter)} over {label}
+    </Badge>
   );
 }
 
@@ -679,6 +788,8 @@ function FullscreenOverlay({
   onClose: () => void;
   children: React.ReactNode;
 }) {
+  const titleId = useId();
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -689,22 +800,31 @@ function FullscreenOverlay({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-50 bg-background/60 backdrop-blur-xl flex flex-col"
-      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={titleId}
+      className="fixed inset-0 z-50 flex flex-col bg-background/60 backdrop-blur-xl"
     >
-      <div
-        className="flex-1 flex flex-col p-6 max-w-6xl mx-auto w-full min-h-0"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between mb-4 shrink-0">
-          <h2 className="text-base font-semibold">{title}</h2>
-          <button
+      <button
+        type="button"
+        aria-label="Close fullscreen chart"
+        className="absolute inset-0 cursor-default"
+        onClick={onClose}
+      />
+      <div className="relative z-10 mx-auto flex min-h-0 w-full max-w-6xl flex-1 flex-col p-6">
+        <div className="mb-4 flex shrink-0 items-center justify-between">
+          <h2 id={titleId} className="text-base font-semibold">
+            {title}
+          </h2>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
             onClick={onClose}
-            className="text-muted-foreground hover:text-foreground p-1 rounded transition-colors"
             aria-label="Close fullscreen"
           >
-            <X size={16} className="transition-transform duration-200 hover:rotate-90" />
-          </button>
+            <X data-icon="inline-start" aria-hidden="true" />
+          </Button>
         </div>
         <div className="flex-1 min-h-0">{children}</div>
       </div>
@@ -715,13 +835,16 @@ function FullscreenOverlay({
 
 function FullscreenButton({ onClick }: { onClick: () => void }) {
   return (
-    <button
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon"
       onClick={onClick}
-      className="text-muted-foreground hover:text-foreground p-1 rounded transition-colors"
-      aria-label="View fullscreen"
+      className="size-8 text-muted-foreground hover:text-foreground"
+      aria-label="View chart fullscreen"
     >
-      <Maximize2 size={13} className="transition-transform duration-200 hover:scale-110" />
-    </button>
+      <Maximize2 data-icon="inline-start" aria-hidden="true" />
+    </Button>
   );
 }
 
@@ -1336,7 +1459,7 @@ function RadarPanel({ snapshot }: { snapshot: Snapshot }) {
   const primaryStat = getPrimaryStat(snapshot);
 
   return (
-    <div className="space-y-3">
+    <div className="flex flex-col gap-3">
       <ChartContainer config={radarConfig} className="h-[170px] w-full">
         <RadarChart data={radarData} margin={{ top: 14, right: 22, bottom: 14, left: 22 }}>
           <PolarGrid />
@@ -1353,7 +1476,7 @@ function RadarPanel({ snapshot }: { snapshot: Snapshot }) {
           />
         </RadarChart>
       </ChartContainer>
-      <div className="space-y-1 text-sm">
+      <div className="flex flex-col gap-1 text-sm">
         <StatRow label="Stamina" value={snapshot.stats.stamina.toLocaleString()} />
         {primaryStat && (
           <StatRow label={primaryStat.label} value={primaryStat.value.toLocaleString()} />
@@ -1408,7 +1531,7 @@ function RadarStrip({ snapshot }: { snapshot: Snapshot }) {
               </RadarChart>
             </ChartContainer>
           </div>
-          <div className="flex-1 space-y-2">
+          <div className="flex flex-1 flex-col gap-2">
             <div className="grid grid-cols-2 gap-x-8 gap-y-1.5 text-sm">
               {combatStats.map((stat) => (
                 <StatRow key={stat.label} label={stat.label} value={renderCombatStatValue(stat)} />
@@ -1714,7 +1837,7 @@ function CurrentSnapshotCard({ snapshot }: { snapshot: Snapshot }) {
           Snapshot Totals
         </CardTitle>
       </CardHeader>
-      <CardContent className="space-y-1 px-4 pb-4 pt-2">
+      <CardContent className="flex flex-col gap-1 px-4 pb-4 pt-2">
         <StatRow label="Gold" value={<GoldDisplay value={snapshot.gold} />} />
         <StatRow
           label="Playtime"
@@ -1775,7 +1898,7 @@ function DungeonIcon({
 
   if (!dungeonMeta?.iconUrl) {
     return (
-      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-border/60 bg-muted/30 text-[10px] font-semibold text-muted-foreground">
+      <span className="flex size-6 shrink-0 items-center justify-center rounded-md border border-border/60 bg-muted/30 text-[10px] font-semibold text-muted-foreground">
         {fallbackLabel}
       </span>
     );
@@ -1785,10 +1908,12 @@ function DungeonIcon({
     <img
       src={dungeonMeta.iconUrl}
       alt=""
+      width={24}
+      height={24}
       loading="lazy"
       decoding="async"
       referrerPolicy="no-referrer"
-      className="h-6 w-6 shrink-0 rounded-md border border-border/60 object-cover"
+      className="size-6 shrink-0 rounded-md border border-border/60 object-cover"
     />
   );
 }
@@ -1813,10 +1938,10 @@ function OverviewLayout({
   setTimeFrame,
 }: LayoutProps) {
   return (
-    <div className="space-y-3">
+    <div className="flex flex-col gap-3">
       <div className="grid items-start gap-3 lg:grid-cols-[16rem_minmax(0,1fr)]">
         {/* Sidebar */}
-        <div className="w-full space-y-3 lg:sticky lg:top-4">
+        <div className="flex w-full flex-col gap-3 lg:sticky lg:top-4">
           <Card>
             <CardHeader className="border-b px-4 pb-2 pt-4">
               <CardTitle className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
@@ -1831,7 +1956,7 @@ function OverviewLayout({
         </div>
 
         {/* Main charts */}
-        <div className="min-w-0 space-y-3">
+        <div className="flex min-w-0 flex-col gap-3">
           <div className="flex items-center justify-between flex-wrap gap-2">
             <TimeFramePicker value={timeFrame} onChange={setTimeFrame} />
             <span className="text-muted-foreground text-xs">
@@ -1866,8 +1991,6 @@ function OverviewLayout({
 // Metric tab bar → single large chart
 // Right sidebar: radar + key stats (sticky)
 // ════════════════════════════════════════════════════════════════════════════
-
-type FocusMetric = "ilvl" | "mplus" | "gold" | "stats" | "currencies" | "playtime";
 
 const FOCUS_METRICS: { value: FocusMetric; label: string; Icon: React.ElementType }[] = [
   { value: "ilvl", label: "Item Level", Icon: Sword },
@@ -1992,7 +2115,7 @@ function FocusChart({
     if (!statsSnapshots) {
       return (
         <div className={`${h} flex items-center justify-center text-sm text-muted-foreground`}>
-          Loading stat history...
+          Loading stat history…
         </div>
       );
     }
@@ -2024,7 +2147,7 @@ function FocusChart({
     if (!currencySnapshots) {
       return (
         <div className={`${h} flex items-center justify-center text-sm text-muted-foreground`}>
-          Loading currency history...
+          Loading currency history…
         </div>
       );
     }
@@ -2082,24 +2205,28 @@ function FocusLayout({
   return (
     <div className="flex flex-col lg:flex-row gap-4 items-start">
       {/* Main chart area */}
-      <div className="flex-1 min-w-0 space-y-4">
+      <div className="flex min-w-0 flex-1 flex-col gap-4">
         {/* Metric selector */}
-        <div className="flex flex-wrap gap-1.5">
+        <ToggleGroup
+          type="single"
+          value={metric}
+          onValueChange={(nextValue) => {
+            if (isFocusMetric(nextValue)) {
+              setMetric(nextValue);
+            }
+          }}
+          variant="outline"
+          size="sm"
+          aria-label="Focused metric"
+          className="flex flex-wrap justify-start"
+        >
           {FOCUS_METRICS.map(({ value, label, Icon }) => (
-            <button
-              key={value}
-              onClick={() => setMetric(value)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm border transition-colors ${
-                metric === value
-                  ? "bg-primary text-primary-foreground border-primary"
-                  : "text-muted-foreground border-border hover:text-foreground hover:bg-muted/50"
-              }`}
-            >
-              <Icon size={13} />
+            <ToggleGroupItem key={value} value={value} aria-label={label} className="px-3">
+              <Icon data-icon="inline-start" aria-hidden="true" />
               {label}
-            </button>
+            </ToggleGroupItem>
           ))}
-        </div>
+        </ToggleGroup>
 
         {/* Current value spotlight */}
         <div className="min-h-[2.5rem] flex items-center">
@@ -2127,7 +2254,7 @@ function FocusLayout({
       </div>
 
       {/* Right sidebar */}
-      <div className="w-full lg:w-64 shrink-0 lg:sticky lg:top-4 space-y-4">
+      <div className="flex w-full shrink-0 flex-col gap-4 lg:sticky lg:top-4 lg:w-64">
         <Card>
           <CardHeader className="border-b pb-3">
             <CardTitle className="text-sm font-medium flex items-center gap-1.5">
@@ -2181,7 +2308,7 @@ function TimelineLayout({
   const chartH = "h-[260px]";
 
   return (
-    <div className="space-y-4">
+    <div className="flex flex-col gap-4">
       {/* Time picker — prominent at top */}
       <div className="flex items-center justify-between flex-wrap gap-2">
         <TimeFramePicker value={timeFrame} onChange={setTimeFrame} />
@@ -2263,9 +2390,7 @@ function TimelineLayout({
               <Zap size={14} className="text-muted-foreground" /> Secondary Stats
             </CardTitle>
           </CardHeader>
-          <CardContent className="text-sm text-muted-foreground">
-            Loading stat history...
-          </CardContent>
+          <CardContent className="text-sm text-muted-foreground">Loading stat history…</CardContent>
         </Card>
       )}
       {currencySnapshots ? (
@@ -2278,7 +2403,7 @@ function TimelineLayout({
             </CardTitle>
           </CardHeader>
           <CardContent className="px-4 pb-4 pt-2 text-sm text-muted-foreground">
-            Loading currency history...
+            Loading currency history…
           </CardContent>
         </Card>
       )}
@@ -2291,36 +2416,40 @@ function TimelineLayout({
 
 // ── External site links ───────────────────────────────────────────────────────
 
+function characterPathSegment(value: string) {
+  return encodeURIComponent(value.trim());
+}
+
 const EXTERNAL_LINKS = [
   {
     label: "Raider.IO",
     color: "hover:text-orange-400",
     url: (region: string, realm: string, name: string) =>
-      `https://raider.io/characters/${region}/${realm}/${name}`,
+      `https://raider.io/characters/${region}/${characterPathSegment(realm)}/${characterPathSegment(name)}`,
   },
   {
     label: "Armory",
     color: "hover:text-blue-400",
     url: (region: string, realm: string, name: string) =>
-      `https://worldofwarcraft.blizzard.com/en-${region}/character/${region}/${encodeURIComponent(realm.toLowerCase())}/${encodeURIComponent(name.toLowerCase())}`,
+      `https://worldofwarcraft.blizzard.com/en-${region}/character/${region}/${characterPathSegment(realm.toLowerCase())}/${characterPathSegment(name.toLowerCase())}`,
   },
   {
     label: "WoWProgress",
     color: "hover:text-green-400",
     url: (region: string, realm: string, name: string) =>
-      `https://www.wowprogress.com/character/${region}/${realm}/${name}`,
+      `https://www.wowprogress.com/character/${region}/${characterPathSegment(realm)}/${characterPathSegment(name)}`,
   },
   {
     label: "WarcraftLogs",
     color: "hover:text-purple-400",
     url: (region: string, realm: string, name: string) =>
-      `https://www.warcraftlogs.com/character/${region}/${realm}/${name}`,
+      `https://www.warcraftlogs.com/character/${region}/${characterPathSegment(realm)}/${characterPathSegment(name)}`,
   },
   {
     label: "Mythic Planner",
     color: "hover:text-cyan-400",
     url: (region: string, realm: string, name: string) =>
-      `https://mythicplanner.com/share/${region}/${encodeURIComponent(realm.toLowerCase())}/${encodeURIComponent(name)}/3500?maxKeyLevel=18`,
+      `https://mythicplanner.com/share/${region}/${characterPathSegment(realm.toLowerCase())}/${characterPathSegment(name)}/3500?maxKeyLevel=18`,
   },
 ] as const;
 
@@ -2335,7 +2464,7 @@ function CharacterLinks({ region, realm, name }: { region: string; realm: string
           rel="noopener noreferrer"
           className={`flex items-center gap-1 text-xs text-muted-foreground transition-colors ${color}`}
         >
-          <ExternalLink size={11} />
+          <ExternalLink size={11} aria-hidden="true" />
           {label}
         </a>
       ))}
@@ -2353,7 +2482,7 @@ function MythicPlusSectionFallback() {
         </CardTitle>
       </CardHeader>
       <CardContent className="pt-4 text-sm text-muted-foreground">
-        Loading Mythic+ details...
+        Loading Mythic+ details…
       </CardContent>
     </Card>
   );
@@ -2450,7 +2579,7 @@ function CharacterPageState({
   return (
     <div className="w-full px-4 py-6 sm:px-6 lg:px-8">
       <Card className="border-border/60 bg-background">
-        <CardContent className="space-y-4 px-6 py-6">
+        <CardContent className="flex flex-col gap-4 px-6 py-6">
           {isLoading ? (
             <>
               <Skeleton className="h-8 w-64" />
@@ -2476,7 +2605,8 @@ function CharacterPageState({
 function RouteComponent() {
   const queryClient = useQueryClient();
   const { characterId } = Route.useParams();
-  const [timeFrame, setTimeFrame] = useState<TimeFrame>(DEFAULT_TIME_FRAME);
+  const navigate = Route.useNavigate();
+  const { timeFrame, layoutMode, focusMetric } = Route.useSearch();
   const { pinnedCharacterIdSet, togglePinnedCharacter } = usePinnedCharacters();
   const [discordUserIdInput, setDiscordUserIdInput] = useState("");
   const [nonTradeableSlotsDraft, setNonTradeableSlotsDraft] = useState<TradeSlotKey[]>([]);
@@ -2484,15 +2614,7 @@ function RouteComponent() {
   const [isUpdatingBooster, setIsUpdatingBooster] = useState(false);
   const [isSavingTradeSlots, setIsSavingTradeSlots] = useState(false);
   const [isDiscordSheetOpen, setIsDiscordSheetOpen] = useState(false);
-  const [focusMetric, setFocusMetric] = useState<FocusMetric>("ilvl");
   const [shouldLoadFullMythicPlusRuns, setShouldLoadFullMythicPlusRuns] = useState(false);
-  const [layoutMode, setLayoutMode] = useState<LayoutMode>(() => {
-    try {
-      return (localStorage.getItem("wow-char-layout") as LayoutMode) ?? "overview";
-    } catch {
-      return "overview";
-    }
-  });
   const characterPageQuery = useQuery(getCharacterPageQueryOptions(characterId, timeFrame));
   const characterPage = characterPageQuery.data;
   const pageHeader = characterPage?.header;
@@ -2537,41 +2659,59 @@ function RouteComponent() {
     document.title = `${characterPage.header.character.name} (${characterPage.header.character.realm}) | ${appTitle}`;
   }, [characterPage]);
 
+  const updateCharacterPageSearch = useCallback(
+    (nextSearch: Partial<CharacterPageSearch>) => {
+      startTransition(() => {
+        void navigate({
+          search: (previousSearch) => ({
+            ...previousSearch,
+            ...nextSearch,
+          }),
+          replace: true,
+        });
+      });
+    },
+    [navigate],
+  );
+
   function handleLayoutChange(mode: LayoutMode) {
+    if (mode === layoutMode) {
+      return;
+    }
+
     if (mode !== "overview") {
       void import("../components/character-page-mythic-plus-section");
     }
     if (mode === "timeline" || (mode === "focus" && focusMetric === "stats")) {
       void queryClient.prefetchQuery(getCharacterStatsTimelineQueryOptions(characterId, timeFrame));
     }
-    startTransition(() => {
-      setLayoutMode(mode);
-    });
-    try {
-      localStorage.setItem("wow-char-layout", mode);
-    } catch {
-      /* ignore */
-    }
+    updateCharacterPageSearch({ layoutMode: mode });
   }
 
-  const handleTimeFrameChange = useCallback((nextFrame: TimeFrame) => {
-    startTransition(() => {
-      setTimeFrame(nextFrame);
-    });
-  }, []);
+  const handleTimeFrameChange = useCallback(
+    (nextFrame: TimeFrame) => {
+      if (nextFrame === timeFrame) {
+        return;
+      }
+      updateCharacterPageSearch({ timeFrame: nextFrame });
+    },
+    [timeFrame, updateCharacterPageSearch],
+  );
 
   const handleFocusMetricChange = useCallback(
     (metric: FocusMetric) => {
+      if (metric === focusMetric) {
+        return;
+      }
+
       if (layoutMode === "focus" && metric === "stats") {
         void queryClient.prefetchQuery(
           getCharacterStatsTimelineQueryOptions(characterId, timeFrame),
         );
       }
-      startTransition(() => {
-        setFocusMetric(metric);
-      });
+      updateCharacterPageSearch({ focusMetric: metric });
     },
-    [characterId, layoutMode, queryClient, timeFrame],
+    [characterId, focusMetric, layoutMode, queryClient, timeFrame, updateCharacterPageSearch],
   );
 
   const handleRequestAllMythicPlusRuns = useCallback(() => {
@@ -2712,6 +2852,9 @@ function RouteComponent() {
   const trackingCountLabel = snapshotCount === null ? "Tracked Points" : "Snapshots";
   const trackingCountValue =
     snapshotCount === null ? coreSnapshots.length.toLocaleString() : snapshotCount.toLocaleString();
+  const showRangeDelta = timeFrame !== "all";
+  const rangeBaselineSnapshot = showRangeDelta ? (coreSnapshots[0] ?? latest) : null;
+  const rangeDeltaLabel = getTimeFrameDeltaLabel(timeFrame);
 
   async function handleBoosterToggle() {
     if (isUpdatingBooster) {
@@ -2774,13 +2917,27 @@ function RouteComponent() {
     }
   }
 
+  async function handleCopyCharacterLink() {
+    if (typeof window === "undefined" || !navigator.clipboard) {
+      toast.error("Could not copy character link.");
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(window.location.href);
+      toast.success("Character link copied.");
+    } catch {
+      toast.error("Could not copy character link.");
+    }
+  }
+
   return (
-    <div className="w-full px-4 py-6 sm:px-6 lg:px-8 space-y-4">
+    <div className="flex w-full flex-col gap-4 px-4 py-6 sm:px-6 lg:px-8">
       {/* Character header */}
       <Card className="overflow-hidden border-border/60 bg-background">
         <CardHeader className="border-b border-border/60 bg-background pb-4">
           <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-            <div className="space-y-4">
+            <div className="flex flex-col gap-4">
               {latest && (
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge
@@ -2837,10 +2994,21 @@ function RouteComponent() {
                   }
                 >
                   <Star
-                    size={14}
+                    data-icon="inline-start"
+                    aria-hidden="true"
                     className={isPinnedToQuickAccess ? "fill-current text-yellow-400" : ""}
                   />
                   {isPinnedToQuickAccess ? "Pinned" : "Pin"}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={handleCopyCharacterLink}
+                  className="border-border/60 bg-card text-muted-foreground hover:text-foreground"
+                >
+                  <Copy data-icon="inline-start" aria-hidden="true" />
+                  Copy Link
                 </Button>
                 <Button
                   type="button"
@@ -2854,7 +3022,11 @@ function RouteComponent() {
                       : "border-border/60 bg-card text-muted-foreground hover:text-foreground"
                   }
                 >
-                  <Zap size={14} className={isBoosterCharacter ? "text-emerald-300" : ""} />
+                  <Zap
+                    data-icon="inline-start"
+                    aria-hidden="true"
+                    className={isBoosterCharacter ? "text-emerald-300" : ""}
+                  />
                   {isBoosterCharacter ? "Booster" : "Set Booster"}
                 </Button>
                 {owner && !owner.discordUserId && (
@@ -2876,13 +3048,20 @@ function RouteComponent() {
                           Shared across all characters for {owner.battleTag || character.name}.
                         </SheetDescription>
                       </SheetHeader>
-                      <div className="mt-6 space-y-3">
-                        <Input
-                          value={discordUserIdInput}
-                          onChange={(event) => setDiscordUserIdInput(event.target.value)}
-                          placeholder="Discord user ID or <@mention>"
-                          className="h-9"
-                        />
+                      <div className="mt-6 flex flex-col gap-3">
+                        <div className="flex flex-col gap-2">
+                          <Label htmlFor="discord-user-id">Discord User ID</Label>
+                          <Input
+                            id="discord-user-id"
+                            name="discordUserId"
+                            autoComplete="off"
+                            spellCheck={false}
+                            value={discordUserIdInput}
+                            onChange={(event) => setDiscordUserIdInput(event.target.value)}
+                            placeholder="123456789012345678 or <@mention>…"
+                            className="h-9"
+                          />
+                        </div>
                         <p className="text-xs text-muted-foreground">
                           Stored globally on the account owner and used by Copy Helper exports.
                         </p>
@@ -2891,7 +3070,7 @@ function RouteComponent() {
                           onClick={handleDiscordUserIdSave}
                           disabled={!hasDiscordUserIdChanges || isSavingDiscordUserId}
                         >
-                          {isSavingDiscordUserId ? "Saving..." : "Save Discord ID"}
+                          {isSavingDiscordUserId ? "Saving…" : "Save Discord ID"}
                         </Button>
                       </div>
                     </SheetContent>
@@ -2919,7 +3098,7 @@ function RouteComponent() {
                         character and shown in Copy Helper.
                       </SheetDescription>
                     </SheetHeader>
-                    <div className="mt-6 space-y-5">
+                    <div className="mt-6 flex flex-col gap-5">
                       <div className="grid gap-3 sm:grid-cols-2">
                         {TRADE_SLOT_EDITOR_OPTIONS.map((slot) => (
                           <label
@@ -2966,7 +3145,7 @@ function RouteComponent() {
                           onClick={handleTradeSlotSave}
                           disabled={!hasTradeSlotChanges || isSavingTradeSlots}
                         >
-                          {isSavingTradeSlots ? "Saving..." : "Save Slots"}
+                          {isSavingTradeSlots ? "Saving…" : "Save Slots"}
                         </Button>
                       </div>
                     </div>
@@ -2995,12 +3174,30 @@ function RouteComponent() {
                 label="Item level"
                 meta="Equipped"
                 value={<span className="tabular-nums">{latest.itemLevel.toFixed(1)}</span>}
+                delta={
+                  rangeBaselineSnapshot ? (
+                    <RangeDelta
+                      value={latest.itemLevel - rangeBaselineSnapshot.itemLevel}
+                      formatter={(value) => value.toFixed(1)}
+                      label={rangeDeltaLabel}
+                    />
+                  ) : null
+                }
               />
               <TopMetricCard
                 label="M+ score"
                 meta="Current"
                 value={
                   <span className="tabular-nums">{latest.mythicPlusScore.toLocaleString()}</span>
+                }
+                delta={
+                  rangeBaselineSnapshot ? (
+                    <RangeDelta
+                      value={latest.mythicPlusScore - rangeBaselineSnapshot.mythicPlusScore}
+                      formatter={(value) => Math.round(value).toLocaleString()}
+                      label={rangeDeltaLabel}
+                    />
+                  ) : null
                 }
               />
               <TopMetricCard
@@ -3022,6 +3219,15 @@ function RouteComponent() {
                     </span>
                   </span>
                 }
+                delta={
+                  rangeBaselineSnapshot ? (
+                    <RangeDelta
+                      value={latest.playtimeSeconds - rangeBaselineSnapshot.playtimeSeconds}
+                      formatter={(value) => formatPlaytime(value)}
+                      label={rangeDeltaLabel}
+                    />
+                  ) : null
+                }
               />
             </div>
 
@@ -3030,7 +3236,7 @@ function RouteComponent() {
                 <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground/75">
                   Character
                 </div>
-                <div className="mt-3 space-y-2">
+                <div className="mt-3 flex flex-col gap-2">
                   <StatRow label="Race" value={character.race} />
                   <StatRow label="Class" value={character.class} />
                 </div>
@@ -3039,7 +3245,7 @@ function RouteComponent() {
                 <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground/75">
                   Server
                 </div>
-                <div className="mt-3 space-y-2">
+                <div className="mt-3 flex flex-col gap-2">
                   <StatRow label="Server" value={character.realm} />
                   <StatRow label="Region" value={character.region.toUpperCase()} />
                 </div>
@@ -3048,7 +3254,7 @@ function RouteComponent() {
                 <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground/75">
                   Tracking
                 </div>
-                <div className="mt-3 space-y-2">
+                <div className="mt-3 flex flex-col gap-2">
                   <StatRow label="Since" value={formatDate(firstSnapshotAt ?? latest.takenAt)} />
                   <StatRow label={trackingCountLabel} value={trackingCountValue} />
                 </div>
@@ -3057,13 +3263,13 @@ function RouteComponent() {
                 <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground/75">
                   Activity
                 </div>
-                <div className="mt-3 space-y-2">
+                <div className="mt-3 flex flex-col gap-2">
                   <StatRow label="Last Snapshot" value={formatCardDateTime(latest.takenAt)} />
                   <StatRow
                     label="Last M+ Run"
                     value={
                       mythicPlusData === undefined
-                        ? "Loading..."
+                        ? "Loading…"
                         : lastMythicPlusRunAt
                           ? formatCardDateTime(lastMythicPlusRunAt)
                           : "No runs"
