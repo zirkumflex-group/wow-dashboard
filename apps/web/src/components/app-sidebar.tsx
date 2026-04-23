@@ -106,6 +106,7 @@ export function AppSidebar() {
     enabled: pinnedCharacterIds.length > 0,
   });
   const characters = charactersQuery.data;
+  const isQuickAccessLoading = charactersQuery.isLoading;
   const quickAccessCharacters = useMemo(() => {
     if (characters === undefined || characters === null || pinnedCharacterIds.length === 0) {
       return [];
@@ -121,7 +122,7 @@ export function AppSidebar() {
   }, [characters, pinnedCharacterIds]);
   const showQuickAccess =
     pinnedCharacterIds.length > 0 &&
-    (characters === undefined || quickAccessCharacters.length > 0);
+    (isQuickAccessLoading || quickAccessCharacters.length > 0);
 
   return (
     <Sidebar collapsible="icon">
@@ -172,7 +173,7 @@ export function AppSidebar() {
               <span>Quick Access</span>
             </SidebarGroupLabel>
             <SidebarGroupContent>
-              {characters === undefined ? (
+              {isQuickAccessLoading ? (
                 <SidebarMenu>
                   {pinnedCharacterIds.slice(0, 4).map((characterId) => (
                     <SidebarMenuSkeleton key={characterId} showIcon />
