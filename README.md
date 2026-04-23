@@ -55,31 +55,43 @@ Create local env from the repo root:
 cp .env.example .env.local
 ```
 
-Start local Postgres + Redis:
+Start the full local stack:
+
+```bash
+pnpm run dev
+```
+
+That one command will:
+
+- start local Postgres + Redis
+- wait for both containers to become healthy
+- apply Drizzle migrations
+- run `apps/api`, `apps/worker`, `apps/web`, and `apps/app`
+- stop the local Postgres + Redis containers it started when you press `Ctrl+C`
+
+If you want the manual step-by-step flow instead, use:
 
 ```bash
 docker compose -f deploy/docker-compose.dev.yml up -d postgres redis
-```
-
-Apply migrations:
-
-```bash
 pnpm -F @wow-dashboard/db migrate
+pnpm run dev:services
 ```
 
-Run the core services:
+To stop only the local dev containers manually:
 
 ```bash
-pnpm -F @wow-dashboard/api dev
-pnpm -F @wow-dashboard/worker dev
-pnpm -F web dev
+pnpm run dev:stop
 ```
 
-Optional desktop app dev:
+If `localhost:3000` or `localhost:3001` is already occupied, `pnpm run dev` will exit early with a clear error so you do not accidentally point the web or desktop client at the wrong service. If you intentionally use a different API port, override `PORT`, `API_URL`, `BETTER_AUTH_URL`, and `VITE_API_URL` together.
+
+Optional browser-only dev:
 
 ```bash
-pnpm -F app dev
+pnpm run dev:web
 ```
+
+Note: The Electron dev/start scripts clear `ELECTRON_RUN_AS_NODE` automatically, because that environment variable forces Electron into plain Node mode and crashes the desktop app on startup.
 
 Useful local URLs:
 

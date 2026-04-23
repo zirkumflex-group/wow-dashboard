@@ -7,10 +7,12 @@
   ],
   "type": "module",
   "scripts": {
-    "dev": "turbo dev",
-    "build": "turbo build",
-    "check-types": "turbo check-types",
-    "dev:web": "turbo -F web dev",
+    "dev": "node scripts/dev-stack.mjs",
+    "dev:services": "turbo run dev --filter=@wow-dashboard/api --filter=@wow-dashboard/worker --filter=web --filter=app",
+    "dev:stop": "docker compose -f deploy/docker-compose.dev.yml stop postgres redis",
+    "build": "turbo run build",
+    "check-types": "turbo run check-types",
+    "dev:web": "turbo run dev --filter=web",
     "check": "oxlint && oxfmt --write ."
   },
   "dependencies": {
