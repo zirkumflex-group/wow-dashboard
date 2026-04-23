@@ -1,5 +1,5 @@
 ## X-Flavor: retail
-## X-Expansion: TWW
+## X-Expansion: Midnight
 ## Interface: 120001
 ## Version: 1.2.9
 

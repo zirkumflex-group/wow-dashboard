@@ -9,6 +9,26 @@ local FONT_BOLD    = ADDON_PATH .. "\\Fonts\\Lato-Bold.ttf"
 local BORDER_TEX   = ADDON_PATH .. "\\Art\\ExpansionLandingPage\\ExpansionBorder_TWW"
 local MINIMAP_ICON = ADDON_PATH .. "\\Art\\Logo\\WDIconTransparent"
 
+local function GetAddonMetadata(fieldName, fallback)
+    local value = nil
+    if type(C_AddOns) == "table" and type(C_AddOns.GetAddOnMetadata) == "function" then
+        value = C_AddOns.GetAddOnMetadata(addonName, fieldName)
+    end
+    if (value == nil or value == "") and type(GetAddOnMetadata) == "function" then
+        value = GetAddOnMetadata(addonName, fieldName)
+    end
+
+    if value ~= nil and value ~= "" then
+        return tostring(value)
+    end
+
+    return fallback
+end
+
+local ADDON_VERSION   = GetAddonMetadata("Version", "1.2.9")
+local ADDON_INTERFACE = GetAddonMetadata("Interface", "120001")
+local ADDON_EXPANSION = GetAddonMetadata("X-Expansion", "Midnight")
+
 local BG_R, BG_G, BG_B = 0.067, 0.040, 0.024
 
 -- ============================================================
@@ -157,7 +177,7 @@ end
 -- Data Collection
 -- ============================================================
 -- Every SNAPSHOT_INTERVAL seconds the addon collects character
--- and snapshot fields that mirror the backend Convex schema and
+-- and snapshot fields that mirror the backend addon ingest schema and
 -- appends them to WowDashboardDB.characters[key].snapshots.
 --
 -- The SavedVariables file written by WoW is located at:
@@ -300,6 +320,8 @@ local MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS = 4 * 60 * 60 * 1000
 local MYTHIC_PLUS_DEBUG_EVENT_LIMIT = 30
 local PLAYTIME_TIMEOUT = 30             -- seconds before we give up waiting for TIME_PLAYED_MSG
 local MAX_SNAPSHOTS_PER_CHARACTER = 500
+local MAX_MYTHIC_PLUS_RUNS_PER_CHARACTER = 5000
+local MAX_MYTHIC_PLUS_RUN_MEMBERS = 10
 local MAX_LOG_ENTRIES = 200
 
 -- Midnight S1 currency IDs.
@@ -341,13 +363,36 @@ end
 
 local function GetRegion()
     if GetCurrentRegionName then
-        return GetCurrentRegionName():lower()
+        local region = GetCurrentRegionName()
+        if type(region) == "string" and region ~= "" then
+            region = string.lower(region)
+            if region == "us" or region == "eu" or region == "kr" or region == "tw" then
+                return region
+            end
+        end
     end
     return "us"
 end
 
 local function PrintAddonMessage(message)
     print("|cff00ccff[WoW Dashboard]|r " .. message)
+end
+
+local function TrimArrayToNewest(items, maxItems)
+    if type(items) ~= "table" or type(maxItems) ~= "number" or #items <= maxItems then
+        return items
+    end
+
+    local writeIndex = 1
+    for readIndex = #items - maxItems + 1, #items do
+        items[writeIndex] = items[readIndex]
+        writeIndex = writeIndex + 1
+    end
+    for index = writeIndex, #items do
+        items[index] = nil
+    end
+
+    return items
 end
 
 local function GetCharacterIdentity()
@@ -673,13 +718,7 @@ local function EnsureCharacterEntry(key, name, realm, charInfo)
     entry.mythicPlusDebug = nil
 
     -- Trim legacy oversized snapshot lists down to the cap (keeps newest)
-    if #entry.snapshots > MAX_SNAPSHOTS_PER_CHARACTER then
-        local trimmed = {}
-        for i = #entry.snapshots - MAX_SNAPSHOTS_PER_CHARACTER + 1, #entry.snapshots do
-            trimmed[#trimmed + 1] = entry.snapshots[i]
-        end
-        entry.snapshots = trimmed
-    end
+    TrimArrayToNewest(entry.snapshots, MAX_SNAPSHOTS_PER_CHARACTER)
 
     return entry
 end
@@ -697,14 +736,25 @@ local function NormalizeAndDeduplicateRuns(entry)
             end
         end
     end
-    local normalizedKeys = {}
-    for dedupKey, run in pairs(normalizedRunsByDedupKey) do
-        normalizedKeys[dedupKey] = true
+
+    for _, run in pairs(normalizedRunsByDedupKey) do
         normalizedRuns[#normalizedRuns + 1] = run
     end
     table.sort(normalizedRuns, function(a, b)
         return GetRunSortValue(a) > GetRunSortValue(b)
     end)
+    while #normalizedRuns > MAX_MYTHIC_PLUS_RUNS_PER_CHARACTER do
+        normalizedRuns[#normalizedRuns] = nil
+    end
+
+    local normalizedKeys = {}
+    for _, run in ipairs(normalizedRuns) do
+        local dedupKey = GetRunDedupKey(run)
+        if dedupKey then
+            normalizedKeys[dedupKey] = true
+        end
+    end
+
     entry.mythicPlusRuns = normalizedRuns
     entry.mythicPlusRunKeys = normalizedKeys
 end
@@ -877,6 +927,9 @@ local function NormalizeMythicPlusMembers(members)
             if not seenMembers[memberKey] then
                 seenMembers[memberKey] = true
                 normalizedMembers[#normalizedMembers + 1] = normalized
+                if #normalizedMembers >= MAX_MYTHIC_PLUS_RUN_MEMBERS then
+                    break
+                end
             end
         end
     end
@@ -998,7 +1051,9 @@ local function MergeMythicPlusMemberLists(...)
                 if normalized ~= nil then
                     local mergedIndex = FindMergeableMythicPlusMemberIndex(mergedMembers, normalized)
                     if mergedIndex == nil then
-                        mergedMembers[#mergedMembers + 1] = normalized
+                        if #mergedMembers < MAX_MYTHIC_PLUS_RUN_MEMBERS then
+                            mergedMembers[#mergedMembers + 1] = normalized
+                        end
                     else
                         mergedMembers[mergedIndex] = MergeMythicPlusMember(mergedMembers[mergedIndex], normalized)
                     end
@@ -3235,8 +3290,14 @@ local function BuildPendingSnapshot()
 
     local currencies = {}
     for fieldName, currencyID in pairs(CURRENCY_IDS) do
-        local info            = C_CurrencyInfo.GetCurrencyInfo(currencyID)
-        currencies[fieldName] = info and info.quantity or 0
+        local quantity = 0
+        if type(C_CurrencyInfo) == "table" and type(C_CurrencyInfo.GetCurrencyInfo) == "function" then
+            local ok, info = pcall(C_CurrencyInfo.GetCurrencyInfo, currencyID)
+            if ok and type(info) == "table" then
+                quantity = tonumber(info.quantity) or 0
+            end
+        end
+        currencies[fieldName] = quantity
     end
 
     local _, stamina = UnitStat("player", LE_UNIT_STAT_STAMINA)
@@ -3266,8 +3327,11 @@ local function BuildPendingSnapshot()
     }
 
     local mplusScore = 0
-    if C_ChallengeMode and C_ChallengeMode.GetOverallDungeonScore then
-        mplusScore = C_ChallengeMode.GetOverallDungeonScore() or 0
+    if type(C_ChallengeMode) == "table" and type(C_ChallengeMode.GetOverallDungeonScore) == "function" then
+        local ok, score = pcall(C_ChallengeMode.GetOverallDungeonScore)
+        if ok then
+            mplusScore = tonumber(score) or 0
+        end
     end
 
     local ownedKeystone = nil
@@ -3347,6 +3411,28 @@ local function RestoreTimePlayedMessages()
     suppressedTimePlayedFrames = nil
 end
 
+local function GetLastKnownPlaytime(characterKey)
+    local characters = WowDashboardDB and WowDashboardDB.characters
+    local entry = type(characters) == "table" and characters[characterKey] or nil
+    local snapshots = type(entry) == "table" and entry.snapshots or nil
+    if type(snapshots) ~= "table" then
+        return 0, 0
+    end
+
+    for index = #snapshots, 1, -1 do
+        local snap = snapshots[index]
+        if type(snap) == "table" then
+            local totalSeconds = tonumber(snap.playtimeSeconds)
+            local thisLevelSeconds = tonumber(snap.playtimeThisLevelSeconds)
+            if totalSeconds ~= nil or thisLevelSeconds ~= nil then
+                return totalSeconds or 0, thisLevelSeconds or 0
+            end
+        end
+    end
+
+    return 0, 0
+end
+
 local function CommitSnapshot(totalSeconds, thisLevelSeconds)
     if not pendingSnapshot then return end
     local p         = pendingSnapshot
@@ -3360,9 +3446,7 @@ local function CommitSnapshot(totalSeconds, thisLevelSeconds)
     table.insert(entry.snapshots, p.snap)
 
     -- Bound snapshot retention per character
-    while #entry.snapshots > MAX_SNAPSHOTS_PER_CHARACTER do
-        table.remove(entry.snapshots, 1)
-    end
+    TrimArrayToNewest(entry.snapshots, MAX_SNAPSHOTS_PER_CHARACTER)
 
     lastSnapshotAt = GetTime()
     if RefreshLog then
@@ -3389,21 +3473,29 @@ local function CollectSnapshot(forceFresh)
     -- all chat frames from TIME_PLAYED_MSG before requesting.
     SuppressTimePlayedMessages()
     waitingForPlaytime = true
-    RequestTimePlayed()
-
-    -- Failsafe: if TIME_PLAYED_MSG never arrives, unblock after timeout
-    local timeoutSnapshot = snapshot
-    C_Timer.After(PLAYTIME_TIMEOUT, function()
-        if waitingForPlaytime and pendingSnapshot == timeoutSnapshot then
-            waitingForPlaytime = false
-            RestoreTimePlayedMessages()
-            pendingSnapshot = nil
-            if queuedFreshSnapshot then
-                queuedFreshSnapshot = false
-                CollectSnapshot(true)
-            end
+    if type(RequestTimePlayed) == "function" then
+        local ok = pcall(RequestTimePlayed)
+        if ok then
+            -- Failsafe: if TIME_PLAYED_MSG never arrives, unblock after timeout
+            local timeoutSnapshot = snapshot
+            C_Timer.After(PLAYTIME_TIMEOUT, function()
+                if waitingForPlaytime and pendingSnapshot == timeoutSnapshot then
+                    waitingForPlaytime = false
+                    RestoreTimePlayedMessages()
+                    CommitSnapshot(GetLastKnownPlaytime(timeoutSnapshot.key))
+                    if queuedFreshSnapshot then
+                        queuedFreshSnapshot = false
+                        CollectSnapshot(true)
+                    end
+                end
+            end)
+            return true
         end
-    end)
+    end
+
+    waitingForPlaytime = false
+    RestoreTimePlayedMessages()
+    CommitSnapshot(GetLastKnownPlaytime(snapshot.key))
     return true
 end
 
@@ -3617,14 +3709,17 @@ end
 -- Left Section
 -- ============================================================
 
+local snapshotsPanel = nil
+
+do
 local LeftSection = BuildSection(MainFrame, LEFT_W, HEIGHT, false)
 LeftSection:SetPoint("TOPLEFT", MainFrame, "TOPLEFT")
 
 BuildCategoryBar(LeftSection, "Information", 38)
-BuildInfoRow(LeftSection, "Version",    "1.0.0",         78)
+BuildInfoRow(LeftSection, "Version",    ADDON_VERSION,   78)
 BuildInfoRow(LeftSection, "Author",     "wow-dashboard", 96)
-BuildInfoRow(LeftSection, "Interface",  "120001",       114)
-BuildInfoRow(LeftSection, "Expansion",  "TWW",          132)
+BuildInfoRow(LeftSection, "Interface",  ADDON_INTERFACE, 114)
+BuildInfoRow(LeftSection, "Expansion",  ADDON_EXPANSION, 132)
 
 BuildCategoryBar(LeftSection, "Commands", 158)
 BuildInfoRow(LeftSection, "/wowdashboard", "open/help", 198)
@@ -3668,7 +3763,7 @@ local overviewPanel = CreateFrame("Frame", nil, RightSection)
 overviewPanel:SetPoint("TOPLEFT",     RightSection, "TOPLEFT",     36, -108)
 overviewPanel:SetPoint("BOTTOMRIGHT", RightSection, "BOTTOMRIGHT", -36, 30)
 
-local snapshotsPanel = CreateFrame("Frame", nil, RightSection)
+snapshotsPanel = CreateFrame("Frame", nil, RightSection)
 snapshotsPanel:SetPoint("TOPLEFT",     RightSection, "TOPLEFT",     36, -108)
 snapshotsPanel:SetPoint("BOTTOMRIGHT", RightSection, "BOTTOMRIGHT", -36, 30)
 snapshotsPanel:Hide()
@@ -3777,6 +3872,7 @@ minimapToggle:SetScript("OnClick", function(self)
     WowDashboardDB.minimap.hide = not self:GetChecked()
     RefreshMinimapButton()
 end)
+end
 
 -- ============================================================
 -- Snapshots Panel — scrollable log of saved snapshots
@@ -3862,8 +3958,11 @@ RefreshLog = function()
     -- Gather all snapshots across all characters, newest first
     local all = {}
     for key, charData in pairs(WowDashboardDB.characters) do
-        for _, snap in ipairs(charData.snapshots or {}) do
-            all[#all + 1] = { key = key, snap = snap }
+        local snapshots = type(charData) == "table" and charData.snapshots or nil
+        for _, snap in ipairs(snapshots or {}) do
+            if type(snap) == "table" and type(snap.takenAt) == "number" then
+                all[#all + 1] = { key = key, snap = snap }
+            end
         end
     end
     table.sort(all, function(a, b) return a.snap.takenAt > b.snap.takenAt end)
@@ -3876,14 +3975,17 @@ RefreshLog = function()
     end
     rowCount = n
 
-    for i, entry in ipairs(all) do
+    for i = 1, n do
+        local entry = all[i]
         local row  = GetRow(i)
         local snap = entry.snap
         row.charText:SetText(entry.key)
         row.timeText:SetText(date("%m/%d %H:%M", snap.takenAt))
         row.statsText:SetFormattedText("Lv%d  %d  %dg  %dM+",
-            snap.level, math.floor(snap.itemLevel),
-            math.floor(snap.gold), snap.mythicPlusScore)
+            tonumber(snap.level) or 0,
+            math.floor(tonumber(snap.itemLevel) or 0),
+            math.floor(tonumber(snap.gold) or 0),
+            tonumber(snap.mythicPlusScore) or 0)
         row:Show()
     end
 
@@ -3912,7 +4014,8 @@ local function OnSecondTick()
             refreshBtn:SetText(string.format("Wait  %ds", math.ceil(refreshCooldownUntil - now)))
             refreshBtn:Disable()
         else
-            if refreshBtn:IsEnabled() == 0 then
+            local isEnabled = refreshBtn:IsEnabled()
+            if isEnabled == false or isEnabled == nil or isEnabled == 0 then
                 refreshBtn:SetText("Force Snapshot")
                 refreshBtn:Enable()
             end
