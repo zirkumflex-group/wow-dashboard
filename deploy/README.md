@@ -51,7 +51,17 @@ bash deploy/update-server.sh
 The script pulls with `--ff-only`, rebuilds the Docker images, and forces the one-shot
 `migrate` service plus `api`, `worker`, `web`, and `caddy` to be recreated. If package
 or deploy metadata changed since the last successful deploy, it rebuilds without Docker
-layer cache so workspace/package changes cannot reuse stale install layers.
+layer cache so workspace/package changes cannot reuse stale install layers. When
+Dockerfiles change, the script pulls base images such as `node:24-slim` with retries
+before building, then avoids forcing Docker Hub checks during every compose build.
+
+If Docker Hub is having transient TLS or rate-limit issues, rerun the script. You can
+also force or skip the base-image pre-pull:
+
+```bash
+PULL_BASE_IMAGES=1 bash deploy/update-server.sh
+PULL_BASE_IMAGES=0 bash deploy/update-server.sh
+```
 
 ## Manual VPS workflow
 
