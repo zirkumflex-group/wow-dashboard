@@ -12,3 +12,4 @@
 ## IconTexture: Interface\AddOns\wow-dashboard\Art\Logo\PlumberLogo64
 
 wow-dashboard.lua
+wow-dashboard-ui.lua
