@@ -223,6 +223,12 @@ function getCharacterMythicPlusAllRunsQueryOptions(characterId: string) {
 
 export const Route = createFileRoute("/character/$characterId")({
   validateSearch: validateCharacterPageSearch,
+  search: {
+    middlewares: [
+      ({ search, next }) =>
+        stripDefaultCharacterPageSearch(next(search as CharacterPageSearch) as CharacterPageSearch),
+    ],
+  },
   loaderDeps: ({ search }) => ({ timeFrame: search.timeFrame }),
   loader: ({ context, params, deps }) =>
     context.queryClient.ensureQueryData(
