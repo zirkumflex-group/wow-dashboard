@@ -18,6 +18,7 @@ RUN --mount=type=cache,id=wowdash-pnpm-store,target=/pnpm/store,sharing=locked \
 FROM base AS deps
 
 COPY --from=pruner /pruned/json/ .
+COPY --from=pruner /pruned/full/packages/ui ./packages/ui
 
 RUN --mount=type=cache,id=wowdash-pnpm-store,target=/pnpm/store,sharing=locked \
   pnpm install --frozen-lockfile --fix-lockfile

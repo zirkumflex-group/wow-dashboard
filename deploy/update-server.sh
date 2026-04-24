@@ -211,7 +211,11 @@ else
   echo "No Dockerfile/base-image changes detected; using locally cached base images when available."
 fi
 
-retry_command "$BUILD_RETRIES" "$RETRY_DELAY_SECONDS" "${compose[@]}" build "${build_args[@]}" "${build_services[@]}"
+if ! retry_command "$BUILD_RETRIES" "$RETRY_DELAY_SECONDS" "${compose[@]}" build "${build_args[@]}" "${build_services[@]}"; then
+  echo "Docker image build failed. Services were not recreated." >&2
+  exit 1
+fi
+
 "${compose[@]}" up -d --force-recreate --remove-orphans "${up_services[@]}"
 "${compose[@]}" ps
 
