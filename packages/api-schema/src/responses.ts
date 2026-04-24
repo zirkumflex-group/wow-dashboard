@@ -8,7 +8,12 @@ import {
   mythicPlusRunStatusSchema,
   nonTradeableSlotSchema,
   ownedKeystoneSchema,
+  snapshotClientInfoSchema,
+  snapshotCurrencyDetailsSchema,
+  snapshotEquipmentSchema,
+  snapshotMajorFactionsSchema,
   snapshotRoleSchema,
+  snapshotWeeklyRewardsSchema,
   statsSchema,
 } from "./routes";
 
@@ -65,12 +70,18 @@ export const latestSnapshotSummarySchema = z.object({
   playtimeSeconds: z.number(),
   playtimeThisLevelSeconds: z.number().optional(),
   mythicPlusScore: z.number(),
+  seasonID: z.number().optional(),
   ownedKeystone: ownedKeystoneSchema.optional(),
 });
 
 export const latestSnapshotDetailsSchema = latestSnapshotSummarySchema.extend({
   currencies: currenciesSchema,
+  currencyDetails: snapshotCurrencyDetailsSchema.optional(),
   stats: statsSchema,
+  equipment: snapshotEquipmentSchema.optional(),
+  weeklyRewards: snapshotWeeklyRewardsSchema.optional(),
+  majorFactions: snapshotMajorFactionsSchema.optional(),
+  clientInfo: snapshotClientInfoSchema.optional(),
 });
 
 export const mythicPlusBucketSummarySchema = z.object({
@@ -389,7 +400,8 @@ export const boosterCharactersExportResponseSchema = z.array(characterBoosterExp
 export const playerCharactersResultSchema = playerCharactersResponseSchema.nullable();
 export const characterPageResultSchema = characterPageResponseSchema.nullable();
 export const characterDetailTimelineResultSchema = characterDetailTimelineResponseSchema.nullable();
-export const characterSnapshotTimelineResultSchema = characterSnapshotTimelineResponseSchema.nullable();
+export const characterSnapshotTimelineResultSchema =
+  characterSnapshotTimelineResponseSchema.nullable();
 export const characterMythicPlusResultSchema = characterMythicPlusResponseSchema.nullable();
 
 export type ApiErrorResponse = z.infer<typeof apiErrorResponseSchema>;
@@ -414,9 +426,7 @@ export type CharacterCurrenciesTimelineSnapshot = z.infer<
   typeof characterCurrenciesTimelineSnapshotSchema
 >;
 export type CharacterPageResponse = z.infer<typeof characterPageResponseSchema>;
-export type CharacterDetailTimelineResponse = z.infer<
-  typeof characterDetailTimelineResponseSchema
->;
+export type CharacterDetailTimelineResponse = z.infer<typeof characterDetailTimelineResponseSchema>;
 export type CharacterSnapshotTimelineResponse = z.infer<
   typeof characterSnapshotTimelineResponseSchema
 >;

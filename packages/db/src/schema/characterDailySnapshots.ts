@@ -26,6 +26,7 @@ export const characterDailySnapshots = pgTable(
     gold: doublePrecision("gold").notNull(),
     playtimeSeconds: integer("playtime_seconds").notNull(),
     mythicPlusScore: doublePrecision("mythic_plus_score").notNull(),
+    seasonId: integer("season_id"),
     currencies: jsonb("currencies").$type<Currencies>(),
     stats: jsonb("stats").$type<Stats>(),
   },
@@ -36,9 +37,9 @@ export const characterDailySnapshots = pgTable(
     byCharacterIdx: index("character_daily_snapshots_character_id_idx").on(table.characterId),
     byCharacterAndDayIdx: uniqueIndex(
       "character_daily_snapshots_character_id_day_start_at_uidx",
-    ).on(
-      table.characterId,
-      table.dayStartAt,
-    ),
+    ).on(table.characterId, table.dayStartAt),
+    byCharacterSeasonAndDayIdx: index(
+      "character_daily_snapshots_character_id_season_id_day_start_at_idx",
+    ).on(table.characterId, table.seasonId, table.dayStartAt),
   }),
 );

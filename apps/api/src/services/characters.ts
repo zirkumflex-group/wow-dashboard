@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, inArray, lt, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lt, or, type SQL } from "drizzle-orm";
 import type {
   CharacterDetailTimelineResponse,
   CharacterMythicPlusResponse,
@@ -160,15 +160,17 @@ const midnightSeasonOneStartSeconds = Math.floor(Date.UTC(2026, 2, 18) / 1000);
 
 const snapshotSeasonRanges: Record<
   Extract<SnapshotTimeFrame, "tww-s3" | "mn-s1">,
-  { startAt: number | null; endAt: number | null }
+  { startAt: number | null; endAt: number | null; seasonID: number }
 > = {
   "tww-s3": {
     startAt: null,
     endAt: midnightSeasonOneStartSeconds,
+    seasonID: 16,
   },
   "mn-s1": {
     startAt: midnightSeasonOneStartSeconds,
     endAt: null,
+    seasonID: 17,
   },
 };
 
@@ -230,6 +232,7 @@ function serializeSnapshotSummary(
     playtimeSeconds: snapshot.playtimeSeconds,
     ...(playtimeThisLevelSeconds !== undefined ? { playtimeThisLevelSeconds } : {}),
     mythicPlusScore: snapshot.mythicPlusScore,
+    ...(snapshot.seasonID !== undefined ? { seasonID: snapshot.seasonID } : {}),
     ...(ownedKeystone ? { ownedKeystone } : {}),
   };
 }
@@ -240,7 +243,12 @@ function serializeSnapshotDetails(snapshot: LatestSnapshotDetails): LatestSnapsh
   return {
     ...summary,
     currencies: snapshot.currencies,
+    ...(snapshot.currencyDetails ? { currencyDetails: snapshot.currencyDetails } : {}),
     stats: snapshot.stats,
+    ...(snapshot.equipment ? { equipment: snapshot.equipment } : {}),
+    ...(snapshot.weeklyRewards ? { weeklyRewards: snapshot.weeklyRewards } : {}),
+    ...(snapshot.majorFactions ? { majorFactions: snapshot.majorFactions } : {}),
+    ...(snapshot.clientInfo ? { clientInfo: snapshot.clientInfo } : {}),
   };
 }
 
@@ -259,6 +267,7 @@ function serializeSnapshotRow(snapshot: SnapshotRecord): LatestSnapshotSummary {
       ? { playtimeThisLevelSeconds: snapshot.playtimeThisLevelSeconds }
       : {}),
     mythicPlusScore: snapshot.mythicPlusScore,
+    ...(snapshot.seasonId !== null ? { seasonID: snapshot.seasonId } : {}),
     ...(ownedKeystone ? { ownedKeystone } : {}),
   };
 }
@@ -267,7 +276,12 @@ function serializeSnapshotDetailsRow(snapshot: SnapshotRecord): LatestSnapshotDe
   return {
     ...serializeSnapshotRow(snapshot),
     currencies: snapshot.currencies,
+    ...(snapshot.currencyDetails ? { currencyDetails: snapshot.currencyDetails } : {}),
     stats: snapshot.stats,
+    ...(snapshot.equipment ? { equipment: snapshot.equipment } : {}),
+    ...(snapshot.weeklyRewards ? { weeklyRewards: snapshot.weeklyRewards } : {}),
+    ...(snapshot.majorFactions ? { majorFactions: snapshot.majorFactions } : {}),
+    ...(snapshot.clientInfo ? { clientInfo: snapshot.clientInfo } : {}),
   };
 }
 
@@ -688,6 +702,28 @@ function buildRawSnapshotWhereClause(character: CharacterRecord, timeFrame: Snap
   const range = getSnapshotTimeFrameRange(timeFrame);
   let whereClause: SQL = eq(snapshots.characterId, character.id);
 
+  if (isSnapshotSeasonTimeFrame(timeFrame)) {
+    const seasonRange = snapshotSeasonRanges[timeFrame];
+    let dateFallbackClause: SQL = isNull(snapshots.seasonId);
+
+    if (range.startAt !== null) {
+      dateFallbackClause =
+        and(dateFallbackClause, gte(snapshots.takenAt, new Date(range.startAt * 1000))) ??
+        dateFallbackClause;
+    }
+
+    if (range.endAt !== null) {
+      dateFallbackClause =
+        and(dateFallbackClause, lt(snapshots.takenAt, new Date(range.endAt * 1000))) ??
+        dateFallbackClause;
+    }
+
+    return (
+      and(whereClause, or(eq(snapshots.seasonId, seasonRange.seasonID), dateFallbackClause)) ??
+      whereClause
+    );
+  }
+
   if (range.startAt !== null) {
     whereClause =
       and(whereClause, gte(snapshots.takenAt, new Date(range.startAt * 1000))) ?? whereClause;
@@ -704,6 +740,40 @@ function buildRawSnapshotWhereClause(character: CharacterRecord, timeFrame: Snap
 function buildDailySnapshotWhereClause(character: CharacterRecord, timeFrame: SnapshotTimeFrame) {
   const range = getSnapshotTimeFrameRange(timeFrame);
   let whereClause: SQL = eq(characterDailySnapshots.characterId, character.id);
+
+  if (isSnapshotSeasonTimeFrame(timeFrame)) {
+    const seasonRange = snapshotSeasonRanges[timeFrame];
+    let dateFallbackClause: SQL = isNull(characterDailySnapshots.seasonId);
+
+    if (range.startAt !== null) {
+      dateFallbackClause =
+        and(
+          dateFallbackClause,
+          gte(
+            characterDailySnapshots.dayStartAt,
+            new Date(Math.floor(range.startAt / 86400) * 86400 * 1000),
+          ),
+        ) ?? dateFallbackClause;
+    }
+
+    if (range.endAt !== null) {
+      dateFallbackClause =
+        and(
+          dateFallbackClause,
+          lt(
+            characterDailySnapshots.dayStartAt,
+            new Date(Math.floor(range.endAt / 86400) * 86400 * 1000),
+          ),
+        ) ?? dateFallbackClause;
+    }
+
+    return (
+      and(
+        whereClause,
+        or(eq(characterDailySnapshots.seasonId, seasonRange.seasonID), dateFallbackClause),
+      ) ?? whereClause
+    );
+  }
 
   if (range.startAt !== null) {
     whereClause =

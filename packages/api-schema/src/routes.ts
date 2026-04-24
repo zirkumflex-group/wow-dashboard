@@ -47,6 +47,10 @@ export const addonIngestLimits = {
   maxSnapshotsPerCharacter: 1_000,
   maxMythicPlusRunsPerCharacter: 5_000,
   maxMythicPlusRunMembers: 10,
+  maxSnapshotCurrencyDetails: 50,
+  maxSnapshotEquipmentSlots: 32,
+  maxSnapshotWeeklyRewardActivities: 25,
+  maxSnapshotMajorFactions: 50,
 } as const;
 
 export const nonTradeableSlotSchema = z.enum(nonTradeableSlotValues);
@@ -65,6 +69,86 @@ export const currenciesSchema = z.object({
   heroDawncrest: z.number(),
   mythDawncrest: z.number(),
   radiantSparkDust: z.number(),
+});
+
+export const snapshotCurrencyInfoSchema = z.object({
+  currencyID: z.number(),
+  name: z.string().optional(),
+  quantity: z.number(),
+  iconFileID: z.number().optional(),
+  maxQuantity: z.number().optional(),
+  canEarnPerWeek: z.boolean().optional(),
+  quantityEarnedThisWeek: z.number().optional(),
+  maxWeeklyQuantity: z.number().optional(),
+  totalEarned: z.number().optional(),
+  discovered: z.boolean().optional(),
+  quality: z.number().optional(),
+  useTotalEarnedForMaxQty: z.boolean().optional(),
+});
+
+export const snapshotCurrencyDetailsSchema = z
+  .record(z.string(), snapshotCurrencyInfoSchema)
+  .refine((value) => Object.keys(value).length <= addonIngestLimits.maxSnapshotCurrencyDetails);
+
+export const snapshotEquipmentItemSchema = z.object({
+  slot: z.string(),
+  slotID: z.number(),
+  itemID: z.number().optional(),
+  itemName: z.string().optional(),
+  itemLink: z.string().optional(),
+  itemLevel: z.number().optional(),
+  quality: z.number().optional(),
+  iconFileID: z.number().optional(),
+});
+
+export const snapshotEquipmentSchema = z
+  .record(z.string(), snapshotEquipmentItemSchema)
+  .refine((value) => Object.keys(value).length <= addonIngestLimits.maxSnapshotEquipmentSlots);
+
+export const snapshotWeeklyRewardActivitySchema = z.object({
+  type: z.number().optional(),
+  index: z.number().optional(),
+  id: z.number().optional(),
+  level: z.number().optional(),
+  threshold: z.number().optional(),
+  progress: z.number().optional(),
+  activityTierID: z.number().optional(),
+  itemLevel: z.number().optional(),
+  name: z.string().optional(),
+});
+
+export const snapshotWeeklyRewardsSchema = z.object({
+  canClaimRewards: z.boolean().optional(),
+  isCurrentPeriod: z.boolean().optional(),
+  activities: z
+    .array(snapshotWeeklyRewardActivitySchema)
+    .max(addonIngestLimits.maxSnapshotWeeklyRewardActivities),
+});
+
+export const snapshotMajorFactionSchema = z.object({
+  factionID: z.number(),
+  name: z.string().optional(),
+  expansionID: z.number().optional(),
+  isUnlocked: z.boolean().optional(),
+  renownLevel: z.number().optional(),
+  renownReputationEarned: z.number().optional(),
+  renownLevelThreshold: z.number().optional(),
+  isWeeklyCapped: z.boolean().optional(),
+});
+
+export const snapshotMajorFactionsSchema = z.object({
+  factions: z.array(snapshotMajorFactionSchema).max(addonIngestLimits.maxSnapshotMajorFactions),
+});
+
+export const snapshotClientInfoSchema = z.object({
+  addonVersion: z.string().optional(),
+  interfaceVersion: z.number().optional(),
+  gameVersion: z.string().optional(),
+  buildNumber: z.string().optional(),
+  buildDate: z.string().optional(),
+  tocVersion: z.number().optional(),
+  expansion: z.string().optional(),
+  locale: z.string().optional(),
 });
 
 export const statsSchema = z.object({
@@ -104,9 +188,15 @@ export const addonSnapshotSchema = z.object({
   playtimeSeconds: z.number(),
   playtimeThisLevelSeconds: z.number().optional(),
   mythicPlusScore: z.number(),
+  seasonID: z.number().optional(),
   ownedKeystone: ownedKeystoneSchema.optional(),
   currencies: currenciesSchema,
+  currencyDetails: snapshotCurrencyDetailsSchema.optional(),
   stats: statsSchema,
+  equipment: snapshotEquipmentSchema.optional(),
+  weeklyRewards: snapshotWeeklyRewardsSchema.optional(),
+  majorFactions: snapshotMajorFactionsSchema.optional(),
+  clientInfo: snapshotClientInfoSchema.optional(),
 });
 
 export const addonMythicPlusRunMemberSchema = z.object({

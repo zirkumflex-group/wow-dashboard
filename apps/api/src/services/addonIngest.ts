@@ -13,8 +13,13 @@ import {
   type MythicPlusRecentRunPreview,
   type MythicPlusSummary,
   type OwnedKeystone,
+  type SnapshotClientInfo,
+  type SnapshotCurrencyDetails,
+  type SnapshotEquipment,
+  type SnapshotMajorFactions,
   type SnapshotRole,
   type SnapshotSpec,
+  type SnapshotWeeklyRewards,
   type Stats,
 } from "@wow-dashboard/db";
 import { db } from "../db";
@@ -50,9 +55,15 @@ type SnapshotFields = {
   playtimeSeconds: number;
   playtimeThisLevelSeconds?: number;
   mythicPlusScore: number;
+  seasonID?: number;
   ownedKeystone?: OwnedKeystone;
   currencies: Currencies;
+  currencyDetails?: SnapshotCurrencyDetails;
   stats: Stats;
+  equipment?: SnapshotEquipment;
+  weeklyRewards?: SnapshotWeeklyRewards;
+  majorFactions?: SnapshotMajorFactions;
+  clientInfo?: SnapshotClientInfo;
 };
 
 type MythicPlusRunInputDocument = MythicPlusRunDocument;
@@ -136,9 +147,15 @@ function toSnapshotFields(snapshot: SnapshotFields): SnapshotFields {
     playtimeSeconds: snapshot.playtimeSeconds,
     playtimeThisLevelSeconds: snapshot.playtimeThisLevelSeconds,
     mythicPlusScore: snapshot.mythicPlusScore,
+    seasonID: snapshot.seasonID,
     ownedKeystone: snapshot.ownedKeystone,
     currencies: snapshot.currencies,
+    currencyDetails: snapshot.currencyDetails,
     stats: snapshot.stats,
+    equipment: snapshot.equipment,
+    weeklyRewards: snapshot.weeklyRewards,
+    majorFactions: snapshot.majorFactions,
+    clientInfo: snapshot.clientInfo,
   };
 }
 
@@ -155,9 +172,15 @@ function snapshotRowToFields(snapshot: SnapshotRow): SnapshotFields {
       ? { playtimeThisLevelSeconds: snapshot.playtimeThisLevelSeconds }
       : {}),
     mythicPlusScore: snapshot.mythicPlusScore,
+    ...(snapshot.seasonId !== null ? { seasonID: snapshot.seasonId } : {}),
     ...(snapshot.ownedKeystone ? { ownedKeystone: snapshot.ownedKeystone } : {}),
     currencies: snapshot.currencies,
+    ...(snapshot.currencyDetails ? { currencyDetails: snapshot.currencyDetails } : {}),
     stats: snapshot.stats,
+    ...(snapshot.equipment ? { equipment: snapshot.equipment } : {}),
+    ...(snapshot.weeklyRewards ? { weeklyRewards: snapshot.weeklyRewards } : {}),
+    ...(snapshot.majorFactions ? { majorFactions: snapshot.majorFactions } : {}),
+    ...(snapshot.clientInfo ? { clientInfo: snapshot.clientInfo } : {}),
   };
 }
 
@@ -173,9 +196,15 @@ function snapshotFieldsToInsert(characterId: string, snapshot: SnapshotFields) {
     playtimeSeconds: snapshot.playtimeSeconds,
     playtimeThisLevelSeconds: snapshot.playtimeThisLevelSeconds ?? null,
     mythicPlusScore: snapshot.mythicPlusScore,
+    seasonId: snapshot.seasonID ?? null,
     ownedKeystone: snapshot.ownedKeystone,
     currencies: snapshot.currencies,
+    currencyDetails: snapshot.currencyDetails ?? null,
     stats: snapshot.stats,
+    equipment: snapshot.equipment ?? null,
+    weeklyRewards: snapshot.weeklyRewards ?? null,
+    majorFactions: snapshot.majorFactions ?? null,
+    clientInfo: snapshot.clientInfo ?? null,
     legacyConvexId: null,
   };
 }
@@ -192,6 +221,7 @@ function mergeSnapshotFields(
         : existingSnapshot.playtimeSeconds,
     playtimeThisLevelSeconds:
       incomingSnapshot.playtimeThisLevelSeconds ?? existingSnapshot.playtimeThisLevelSeconds,
+    seasonID: incomingSnapshot.seasonID ?? existingSnapshot.seasonID,
     ownedKeystone: incomingSnapshot.ownedKeystone ?? existingSnapshot.ownedKeystone,
     stats: {
       ...incomingSnapshot.stats,
@@ -209,6 +239,11 @@ function mergeSnapshotFields(
       avoidancePercent:
         incomingSnapshot.stats.avoidancePercent ?? existingSnapshot.stats.avoidancePercent,
     },
+    currencyDetails: incomingSnapshot.currencyDetails ?? existingSnapshot.currencyDetails,
+    equipment: incomingSnapshot.equipment ?? existingSnapshot.equipment,
+    weeklyRewards: incomingSnapshot.weeklyRewards ?? existingSnapshot.weeklyRewards,
+    majorFactions: incomingSnapshot.majorFactions ?? existingSnapshot.majorFactions,
+    clientInfo: incomingSnapshot.clientInfo ?? existingSnapshot.clientInfo,
   };
 }
 
@@ -229,6 +264,7 @@ function toCharacterLatestSnapshot(snapshot: SnapshotFields): LatestSnapshotSumm
       ? { playtimeThisLevelSeconds: snapshot.playtimeThisLevelSeconds }
       : {}),
     mythicPlusScore: snapshot.mythicPlusScore,
+    ...(snapshot.seasonID !== undefined ? { seasonID: snapshot.seasonID } : {}),
     ...(snapshot.ownedKeystone ? { ownedKeystone: snapshot.ownedKeystone } : {}),
   };
 }
@@ -237,7 +273,12 @@ function toCharacterLatestSnapshotDetails(snapshot: SnapshotFields): LatestSnaps
   return {
     ...toCharacterLatestSnapshot(snapshot),
     currencies: snapshot.currencies,
+    ...(snapshot.currencyDetails ? { currencyDetails: snapshot.currencyDetails } : {}),
     stats: snapshot.stats,
+    ...(snapshot.equipment ? { equipment: snapshot.equipment } : {}),
+    ...(snapshot.weeklyRewards ? { weeklyRewards: snapshot.weeklyRewards } : {}),
+    ...(snapshot.majorFactions ? { majorFactions: snapshot.majorFactions } : {}),
+    ...(snapshot.clientInfo ? { clientInfo: snapshot.clientInfo } : {}),
   };
 }
 
@@ -268,6 +309,7 @@ function isSameCharacterLatestSnapshot(
     currentSnapshot.playtimeSeconds === nextSnapshot.playtimeSeconds &&
     currentSnapshot.playtimeThisLevelSeconds === nextSnapshot.playtimeThisLevelSeconds &&
     currentSnapshot.mythicPlusScore === nextSnapshot.mythicPlusScore &&
+    currentSnapshot.seasonID === nextSnapshot.seasonID &&
     sameKeystone
   );
 }
@@ -329,6 +371,7 @@ function toCharacterDailySnapshotFields(snapshot: SnapshotFields) {
     gold: snapshot.gold,
     playtimeSeconds: snapshot.playtimeSeconds,
     mythicPlusScore: snapshot.mythicPlusScore,
+    seasonId: snapshot.seasonID ?? null,
     currencies: snapshot.currencies,
     stats: snapshot.stats,
   };
@@ -990,9 +1033,17 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
             ? { playtimeThisLevelSeconds: snapshotInput.playtimeThisLevelSeconds }
             : {}),
           mythicPlusScore: snapshotInput.mythicPlusScore,
+          ...(snapshotInput.seasonID !== undefined ? { seasonID: snapshotInput.seasonID } : {}),
           ...(snapshotInput.ownedKeystone ? { ownedKeystone: snapshotInput.ownedKeystone } : {}),
           currencies: snapshotInput.currencies,
+          ...(snapshotInput.currencyDetails
+            ? { currencyDetails: snapshotInput.currencyDetails }
+            : {}),
           stats: snapshotInput.stats,
+          ...(snapshotInput.equipment ? { equipment: snapshotInput.equipment } : {}),
+          ...(snapshotInput.weeklyRewards ? { weeklyRewards: snapshotInput.weeklyRewards } : {}),
+          ...(snapshotInput.majorFactions ? { majorFactions: snapshotInput.majorFactions } : {}),
+          ...(snapshotInput.clientInfo ? { clientInfo: snapshotInput.clientInfo } : {}),
         };
 
         const takenAt = fromUnixSeconds(snapshotInput.takenAt);

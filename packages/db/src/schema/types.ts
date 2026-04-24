@@ -95,6 +95,80 @@ export interface Currencies {
   radiantSparkDust: number;
 }
 
+export interface SnapshotCurrencyInfo {
+  currencyID: number;
+  name?: string;
+  quantity: number;
+  iconFileID?: number;
+  maxQuantity?: number;
+  canEarnPerWeek?: boolean;
+  quantityEarnedThisWeek?: number;
+  maxWeeklyQuantity?: number;
+  totalEarned?: number;
+  discovered?: boolean;
+  quality?: number;
+  useTotalEarnedForMaxQty?: boolean;
+}
+
+export type SnapshotCurrencyDetails = Record<string, SnapshotCurrencyInfo>;
+
+export interface SnapshotEquipmentItem {
+  slot: string;
+  slotID: number;
+  itemID?: number;
+  itemName?: string;
+  itemLink?: string;
+  itemLevel?: number;
+  quality?: number;
+  iconFileID?: number;
+}
+
+export type SnapshotEquipment = Record<string, SnapshotEquipmentItem>;
+
+export interface SnapshotWeeklyRewardActivity {
+  type?: number;
+  index?: number;
+  id?: number;
+  level?: number;
+  threshold?: number;
+  progress?: number;
+  activityTierID?: number;
+  itemLevel?: number;
+  name?: string;
+}
+
+export interface SnapshotWeeklyRewards {
+  canClaimRewards?: boolean;
+  isCurrentPeriod?: boolean;
+  activities: SnapshotWeeklyRewardActivity[];
+}
+
+export interface SnapshotMajorFaction {
+  factionID: number;
+  name?: string;
+  expansionID?: number;
+  isUnlocked?: boolean;
+  renownLevel?: number;
+  renownReputationEarned?: number;
+  renownLevelThreshold?: number;
+  isWeeklyCapped?: boolean;
+}
+
+export interface SnapshotMajorFactions {
+  factions: SnapshotMajorFaction[];
+}
+
+export interface SnapshotClientInfo {
+  addonVersion?: string;
+  interfaceVersion?: number;
+  gameVersion?: string;
+  buildNumber?: string;
+  buildDate?: string;
+  tocVersion?: number;
+  expansion?: string;
+  locale?: string;
+}
+
 export interface Stats {
   stamina: number;
   strength: number;
@@ -126,12 +200,18 @@ export interface LatestSnapshotSummary {
   playtimeSeconds: number;
   playtimeThisLevelSeconds?: number;
   mythicPlusScore: number;
+  seasonID?: number;
   ownedKeystone?: OwnedKeystone;
 }
 
 export interface LatestSnapshotDetails extends LatestSnapshotSummary {
   currencies: Currencies;
+  currencyDetails?: SnapshotCurrencyDetails;
   stats: Stats;
+  equipment?: SnapshotEquipment;
+  weeklyRewards?: SnapshotWeeklyRewards;
+  majorFactions?: SnapshotMajorFactions;
+  clientInfo?: SnapshotClientInfo;
 }
 
 export interface MythicPlusBucketSummary {

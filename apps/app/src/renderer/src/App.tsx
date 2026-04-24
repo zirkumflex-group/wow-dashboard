@@ -15,6 +15,80 @@ import { apiClient, apiQueryKeys, apiQueryOptions } from "./lib/api-client";
 // Types
 // ---------------------------------------------------------------------------
 
+interface SnapshotCurrencyInfo {
+  currencyID: number;
+  name?: string;
+  quantity: number;
+  iconFileID?: number;
+  maxQuantity?: number;
+  canEarnPerWeek?: boolean;
+  quantityEarnedThisWeek?: number;
+  maxWeeklyQuantity?: number;
+  totalEarned?: number;
+  discovered?: boolean;
+  quality?: number;
+  useTotalEarnedForMaxQty?: boolean;
+}
+
+type SnapshotCurrencyDetails = Record<string, SnapshotCurrencyInfo>;
+
+interface SnapshotEquipmentItem {
+  slot: string;
+  slotID: number;
+  itemID?: number;
+  itemName?: string;
+  itemLink?: string;
+  itemLevel?: number;
+  quality?: number;
+  iconFileID?: number;
+}
+
+type SnapshotEquipment = Record<string, SnapshotEquipmentItem>;
+
+interface SnapshotWeeklyRewardActivity {
+  type?: number;
+  index?: number;
+  id?: number;
+  level?: number;
+  threshold?: number;
+  progress?: number;
+  activityTierID?: number;
+  itemLevel?: number;
+  name?: string;
+}
+
+interface SnapshotWeeklyRewards {
+  canClaimRewards?: boolean;
+  isCurrentPeriod?: boolean;
+  activities: SnapshotWeeklyRewardActivity[];
+}
+
+interface SnapshotMajorFaction {
+  factionID: number;
+  name?: string;
+  expansionID?: number;
+  isUnlocked?: boolean;
+  renownLevel?: number;
+  renownReputationEarned?: number;
+  renownLevelThreshold?: number;
+  isWeeklyCapped?: boolean;
+}
+
+interface SnapshotMajorFactions {
+  factions: SnapshotMajorFaction[];
+}
+
+interface SnapshotClientInfo {
+  addonVersion?: string;
+  interfaceVersion?: number;
+  gameVersion?: string;
+  buildNumber?: string;
+  buildDate?: string;
+  tocVersion?: number;
+  expansion?: string;
+  locale?: string;
+}
+
 interface SnapshotData {
   takenAt: number;
   level: number;
@@ -25,6 +99,7 @@ interface SnapshotData {
   playtimeSeconds: number;
   playtimeThisLevelSeconds?: number;
   mythicPlusScore: number;
+  seasonID?: number;
   currencies: {
     adventurerDawncrest: number;
     veteranDawncrest: number;
@@ -33,6 +108,7 @@ interface SnapshotData {
     mythDawncrest: number;
     radiantSparkDust: number;
   };
+  currencyDetails?: SnapshotCurrencyDetails;
   stats: {
     stamina: number;
     strength: number;
@@ -53,6 +129,10 @@ interface SnapshotData {
     avoidanceRating?: number;
     avoidancePercent?: number;
   };
+  equipment?: SnapshotEquipment;
+  weeklyRewards?: SnapshotWeeklyRewards;
+  majorFactions?: SnapshotMajorFactions;
+  clientInfo?: SnapshotClientInfo;
 }
 
 interface MythicPlusRunData {

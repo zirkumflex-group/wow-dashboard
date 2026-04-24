@@ -18,8 +18,13 @@ import {
   snapshotSpecs,
   type Currencies,
   type OwnedKeystone,
+  type SnapshotClientInfo,
+  type SnapshotCurrencyDetails,
+  type SnapshotEquipment,
+  type SnapshotMajorFactions,
   type SnapshotRole,
   type SnapshotSpec,
+  type SnapshotWeeklyRewards,
   type Stats,
 } from "./types";
 
@@ -40,9 +45,15 @@ export const snapshots = pgTable(
     playtimeSeconds: integer("playtime_seconds").notNull(),
     playtimeThisLevelSeconds: integer("playtime_this_level_seconds"),
     mythicPlusScore: doublePrecision("mythic_plus_score").notNull(),
+    seasonId: integer("season_id"),
     ownedKeystone: jsonb("owned_keystone").$type<OwnedKeystone>(),
     currencies: jsonb("currencies").$type<Currencies>().notNull(),
+    currencyDetails: jsonb("currency_details").$type<SnapshotCurrencyDetails>(),
     stats: jsonb("stats").$type<Stats>().notNull(),
+    equipment: jsonb("equipment").$type<SnapshotEquipment>(),
+    weeklyRewards: jsonb("weekly_rewards").$type<SnapshotWeeklyRewards>(),
+    majorFactions: jsonb("major_factions").$type<SnapshotMajorFactions>(),
+    clientInfo: jsonb("client_info").$type<SnapshotClientInfo>(),
   },
   (table) => ({
     legacyConvexIdIdx: uniqueIndex("snapshots_legacy_convex_id_uidx").on(table.legacyConvexId),
@@ -55,13 +66,12 @@ export const snapshots = pgTable(
       table.characterId,
       table.takenAt,
     ),
-    specCheck: check(
-      "snapshots_spec_check",
-      sql`${table.spec} in (${sqlTextEnum(snapshotSpecs)})`,
+    byCharacterSeasonAndTimeIdx: index("snapshots_character_id_season_id_taken_at_idx").on(
+      table.characterId,
+      table.seasonId,
+      table.takenAt,
     ),
-    roleCheck: check(
-      "snapshots_role_check",
-      sql`${table.role} in (${sqlTextEnum(snapshotRoles)})`,
-    ),
+    specCheck: check("snapshots_spec_check", sql`${table.spec} in (${sqlTextEnum(snapshotSpecs)})`),
+    roleCheck: check("snapshots_role_check", sql`${table.role} in (${sqlTextEnum(snapshotRoles)})`),
   }),
 );

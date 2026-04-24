@@ -551,6 +551,80 @@ interface MythicPlusRunData {
   members?: MythicPlusRunMemberData[];
 }
 
+interface SnapshotCurrencyInfo {
+  currencyID: number;
+  name?: string;
+  quantity: number;
+  iconFileID?: number;
+  maxQuantity?: number;
+  canEarnPerWeek?: boolean;
+  quantityEarnedThisWeek?: number;
+  maxWeeklyQuantity?: number;
+  totalEarned?: number;
+  discovered?: boolean;
+  quality?: number;
+  useTotalEarnedForMaxQty?: boolean;
+}
+
+type SnapshotCurrencyDetails = Record<string, SnapshotCurrencyInfo>;
+
+interface SnapshotEquipmentItem {
+  slot: string;
+  slotID: number;
+  itemID?: number;
+  itemName?: string;
+  itemLink?: string;
+  itemLevel?: number;
+  quality?: number;
+  iconFileID?: number;
+}
+
+type SnapshotEquipment = Record<string, SnapshotEquipmentItem>;
+
+interface SnapshotWeeklyRewardActivity {
+  type?: number;
+  index?: number;
+  id?: number;
+  level?: number;
+  threshold?: number;
+  progress?: number;
+  activityTierID?: number;
+  itemLevel?: number;
+  name?: string;
+}
+
+interface SnapshotWeeklyRewards {
+  canClaimRewards?: boolean;
+  isCurrentPeriod?: boolean;
+  activities: SnapshotWeeklyRewardActivity[];
+}
+
+interface SnapshotMajorFaction {
+  factionID: number;
+  name?: string;
+  expansionID?: number;
+  isUnlocked?: boolean;
+  renownLevel?: number;
+  renownReputationEarned?: number;
+  renownLevelThreshold?: number;
+  isWeeklyCapped?: boolean;
+}
+
+interface SnapshotMajorFactions {
+  factions: SnapshotMajorFaction[];
+}
+
+interface SnapshotClientInfo {
+  addonVersion?: string;
+  interfaceVersion?: number;
+  gameVersion?: string;
+  buildNumber?: string;
+  buildDate?: string;
+  tocVersion?: number;
+  expansion?: string;
+  locale?: string;
+}
+
 interface SnapshotData {
   takenAt: number;
   level: number;
@@ -561,6 +635,7 @@ interface SnapshotData {
   playtimeSeconds: number;
   playtimeThisLevelSeconds?: number;
   mythicPlusScore: number;
+  seasonID?: number;
   ownedKeystone?: {
     level: number;
     mapChallengeModeID?: number;
@@ -574,6 +649,7 @@ interface SnapshotData {
     mythDawncrest: number;
     radiantSparkDust: number;
   };
+  currencyDetails?: SnapshotCurrencyDetails;
   stats: {
     stamina: number;
     strength: number;
@@ -594,6 +670,10 @@ interface SnapshotData {
     avoidanceRating?: number;
     avoidancePercent?: number;
   };
+  equipment?: SnapshotEquipment;
+  weeklyRewards?: SnapshotWeeklyRewards;
+  majorFactions?: SnapshotMajorFactions;
+  clientInfo?: SnapshotClientInfo;
 }
 
 interface CharacterData {
@@ -620,7 +700,13 @@ function getSnapshotCompletenessScore(snapshot: SnapshotData): number {
 
   if (snapshot.playtimeSeconds > 0) score += 1;
   if (snapshot.playtimeThisLevelSeconds !== undefined) score += 1;
+  if (snapshot.seasonID !== undefined) score += 1;
   if (snapshot.ownedKeystone !== undefined) score += 1;
+  if (snapshot.currencyDetails !== undefined) score += 1;
+  if (snapshot.equipment !== undefined) score += 2;
+  if (snapshot.weeklyRewards !== undefined) score += 1;
+  if (snapshot.majorFactions !== undefined) score += 1;
+  if (snapshot.clientInfo !== undefined) score += 1;
   if (snapshot.stats.critRating !== undefined) score += 1;
   if (snapshot.stats.hasteRating !== undefined) score += 1;
   if (snapshot.stats.masteryRating !== undefined) score += 1;
@@ -647,7 +733,13 @@ function mergeSnapshotData(current: SnapshotData, candidate: SnapshotData): Snap
       preferred.playtimeSeconds > 0 ? preferred.playtimeSeconds : fallback.playtimeSeconds,
     playtimeThisLevelSeconds:
       preferred.playtimeThisLevelSeconds ?? fallback.playtimeThisLevelSeconds,
+    seasonID: preferred.seasonID ?? fallback.seasonID,
     ownedKeystone: preferred.ownedKeystone ?? fallback.ownedKeystone,
+    currencyDetails: preferred.currencyDetails ?? fallback.currencyDetails,
+    equipment: preferred.equipment ?? fallback.equipment,
+    weeklyRewards: preferred.weeklyRewards ?? fallback.weeklyRewards,
+    majorFactions: preferred.majorFactions ?? fallback.majorFactions,
+    clientInfo: preferred.clientInfo ?? fallback.clientInfo,
     stats: {
       ...preferred.stats,
       critRating: preferred.stats.critRating ?? fallback.stats.critRating,
@@ -678,6 +770,216 @@ function toOptionalBoolean(value: unknown): boolean | undefined {
 
 function toOptionalString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
+}
+
+function normalizeCurrencyDetails(value: unknown): SnapshotCurrencyDetails | undefined {
+  if (!isRecord(value)) return undefined;
+
+  const details: SnapshotCurrencyDetails = {};
+  for (const [key, rawInfo] of Object.entries(value)) {
+    if (!isRecord(rawInfo)) continue;
+    const currencyID = toOptionalNumber(rawInfo.currencyID);
+    const quantity = toOptionalNumber(rawInfo.quantity);
+    if (currencyID === undefined || quantity === undefined) continue;
+
+    details[key] = {
+      currencyID,
+      quantity,
+      ...(toOptionalString(rawInfo.name) !== undefined
+        ? { name: toOptionalString(rawInfo.name) }
+        : {}),
+      ...(toOptionalNumber(rawInfo.iconFileID) !== undefined
+        ? { iconFileID: toOptionalNumber(rawInfo.iconFileID) }
+        : {}),
+      ...(toOptionalNumber(rawInfo.maxQuantity) !== undefined
+        ? { maxQuantity: toOptionalNumber(rawInfo.maxQuantity) }
+        : {}),
+      ...(toOptionalBoolean(rawInfo.canEarnPerWeek) !== undefined
+        ? { canEarnPerWeek: toOptionalBoolean(rawInfo.canEarnPerWeek) }
+        : {}),
+      ...(toOptionalNumber(rawInfo.quantityEarnedThisWeek) !== undefined
+        ? { quantityEarnedThisWeek: toOptionalNumber(rawInfo.quantityEarnedThisWeek) }
+        : {}),
+      ...(toOptionalNumber(rawInfo.maxWeeklyQuantity) !== undefined
+        ? { maxWeeklyQuantity: toOptionalNumber(rawInfo.maxWeeklyQuantity) }
+        : {}),
+      ...(toOptionalNumber(rawInfo.totalEarned) !== undefined
+        ? { totalEarned: toOptionalNumber(rawInfo.totalEarned) }
+        : {}),
+      ...(toOptionalBoolean(rawInfo.discovered) !== undefined
+        ? { discovered: toOptionalBoolean(rawInfo.discovered) }
+        : {}),
+      ...(toOptionalNumber(rawInfo.quality) !== undefined
+        ? { quality: toOptionalNumber(rawInfo.quality) }
+        : {}),
+      ...(toOptionalBoolean(rawInfo.useTotalEarnedForMaxQty) !== undefined
+        ? { useTotalEarnedForMaxQty: toOptionalBoolean(rawInfo.useTotalEarnedForMaxQty) }
+        : {}),
+    };
+  }
+
+  return Object.keys(details).length > 0 ? details : undefined;
+}
+
+function normalizeSnapshotEquipment(value: unknown): SnapshotEquipment | undefined {
+  if (!isRecord(value)) return undefined;
+
+  const equipment: SnapshotEquipment = {};
+  for (const [key, rawItem] of Object.entries(value)) {
+    if (!isRecord(rawItem)) continue;
+    const slot = toOptionalString(rawItem.slot) ?? key;
+    const slotID = toOptionalNumber(rawItem.slotID);
+    if (slotID === undefined) continue;
+
+    equipment[key] = {
+      slot,
+      slotID,
+      ...(toOptionalNumber(rawItem.itemID) !== undefined
+        ? { itemID: toOptionalNumber(rawItem.itemID) }
+        : {}),
+      ...(toOptionalString(rawItem.itemName) !== undefined
+        ? { itemName: toOptionalString(rawItem.itemName) }
+        : {}),
+      ...(toOptionalString(rawItem.itemLink) !== undefined
+        ? { itemLink: toOptionalString(rawItem.itemLink) }
+        : {}),
+      ...(toOptionalNumber(rawItem.itemLevel) !== undefined
+        ? { itemLevel: toOptionalNumber(rawItem.itemLevel) }
+        : {}),
+      ...(toOptionalNumber(rawItem.quality) !== undefined
+        ? { quality: toOptionalNumber(rawItem.quality) }
+        : {}),
+      ...(toOptionalNumber(rawItem.iconFileID) !== undefined
+        ? { iconFileID: toOptionalNumber(rawItem.iconFileID) }
+        : {}),
+    };
+  }
+
+  return Object.keys(equipment).length > 0 ? equipment : undefined;
+}
+
+function normalizeWeeklyRewards(value: unknown): SnapshotWeeklyRewards | undefined {
+  if (!isRecord(value)) return undefined;
+
+  const activitiesRaw = Array.isArray(value.activities) ? value.activities : [];
+  const activities: SnapshotWeeklyRewardActivity[] = [];
+  for (const [index, rawActivity] of activitiesRaw.entries()) {
+    if (!isRecord(rawActivity)) continue;
+    const activity = {
+      ...(toOptionalNumber(rawActivity.type) !== undefined
+        ? { type: toOptionalNumber(rawActivity.type) }
+        : {}),
+      ...(toOptionalNumber(rawActivity.index) !== undefined
+        ? { index: toOptionalNumber(rawActivity.index) }
+        : { index: index + 1 }),
+      ...(toOptionalNumber(rawActivity.id) !== undefined
+        ? { id: toOptionalNumber(rawActivity.id) }
+        : {}),
+      ...(toOptionalNumber(rawActivity.level) !== undefined
+        ? { level: toOptionalNumber(rawActivity.level) }
+        : {}),
+      ...(toOptionalNumber(rawActivity.threshold) !== undefined
+        ? { threshold: toOptionalNumber(rawActivity.threshold) }
+        : {}),
+      ...(toOptionalNumber(rawActivity.progress) !== undefined
+        ? { progress: toOptionalNumber(rawActivity.progress) }
+        : {}),
+      ...(toOptionalNumber(rawActivity.activityTierID) !== undefined
+        ? { activityTierID: toOptionalNumber(rawActivity.activityTierID) }
+        : {}),
+      ...(toOptionalNumber(rawActivity.itemLevel) !== undefined
+        ? { itemLevel: toOptionalNumber(rawActivity.itemLevel) }
+        : {}),
+      ...(toOptionalString(rawActivity.name) !== undefined
+        ? { name: toOptionalString(rawActivity.name) }
+        : {}),
+    };
+    activities.push(activity);
+  }
+
+  if (activities.length === 0) return undefined;
+
+  return {
+    ...(toOptionalBoolean(value.canClaimRewards) !== undefined
+      ? { canClaimRewards: toOptionalBoolean(value.canClaimRewards) }
+      : {}),
+    ...(toOptionalBoolean(value.isCurrentPeriod) !== undefined
+      ? { isCurrentPeriod: toOptionalBoolean(value.isCurrentPeriod) }
+      : {}),
+    activities,
+  };
+}
+
+function normalizeMajorFactions(value: unknown): SnapshotMajorFactions | undefined {
+  if (!isRecord(value)) return undefined;
+
+  const factionsRaw = Array.isArray(value.factions) ? value.factions : [];
+  const factions: SnapshotMajorFaction[] = [];
+  for (const rawFaction of factionsRaw) {
+    if (!isRecord(rawFaction)) continue;
+    const factionID = toOptionalNumber(rawFaction.factionID);
+    if (factionID === undefined) continue;
+
+    factions.push({
+      factionID,
+      ...(toOptionalString(rawFaction.name) !== undefined
+        ? { name: toOptionalString(rawFaction.name) }
+        : {}),
+      ...(toOptionalNumber(rawFaction.expansionID) !== undefined
+        ? { expansionID: toOptionalNumber(rawFaction.expansionID) }
+        : {}),
+      ...(toOptionalBoolean(rawFaction.isUnlocked) !== undefined
+        ? { isUnlocked: toOptionalBoolean(rawFaction.isUnlocked) }
+        : {}),
+      ...(toOptionalNumber(rawFaction.renownLevel) !== undefined
+        ? { renownLevel: toOptionalNumber(rawFaction.renownLevel) }
+        : {}),
+      ...(toOptionalNumber(rawFaction.renownReputationEarned) !== undefined
+        ? { renownReputationEarned: toOptionalNumber(rawFaction.renownReputationEarned) }
+        : {}),
+      ...(toOptionalNumber(rawFaction.renownLevelThreshold) !== undefined
+        ? { renownLevelThreshold: toOptionalNumber(rawFaction.renownLevelThreshold) }
+        : {}),
+      ...(toOptionalBoolean(rawFaction.isWeeklyCapped) !== undefined
+        ? { isWeeklyCapped: toOptionalBoolean(rawFaction.isWeeklyCapped) }
+        : {}),
+    });
+  }
+
+  return factions.length > 0 ? { factions } : undefined;
+}
+
+function normalizeClientInfo(value: unknown): SnapshotClientInfo | undefined {
+  if (!isRecord(value)) return undefined;
+
+  const clientInfo: SnapshotClientInfo = {
+    ...(toOptionalString(value.addonVersion) !== undefined
+      ? { addonVersion: toOptionalString(value.addonVersion) }
+      : {}),
+    ...(toOptionalNumber(value.interfaceVersion) !== undefined
+      ? { interfaceVersion: toOptionalNumber(value.interfaceVersion) }
+      : {}),
+    ...(toOptionalString(value.gameVersion) !== undefined
+      ? { gameVersion: toOptionalString(value.gameVersion) }
+      : {}),
+    ...(toOptionalString(value.buildNumber) !== undefined
+      ? { buildNumber: toOptionalString(value.buildNumber) }
+      : {}),
+    ...(toOptionalString(value.buildDate) !== undefined
+      ? { buildDate: toOptionalString(value.buildDate) }
+      : {}),
+    ...(toOptionalNumber(value.tocVersion) !== undefined
+      ? { tocVersion: toOptionalNumber(value.tocVersion) }
+      : {}),
+    ...(toOptionalString(value.expansion) !== undefined
+      ? { expansion: toOptionalString(value.expansion) }
+      : {}),
+    ...(toOptionalString(value.locale) !== undefined
+      ? { locale: toOptionalString(value.locale) }
+      : {}),
+  };
+
+  return Object.keys(clientInfo).length > 0 ? clientInfo : undefined;
 }
 
 function isTemporaryAttemptFingerprint(value: unknown): boolean {
@@ -2360,6 +2662,7 @@ function extractCharacters(db: Record<string, unknown>): CharacterData[] {
         playtimeSeconds: Number(snap.playtimeSeconds),
         playtimeThisLevelSeconds: toOptionalNumber(snap.playtimeThisLevelSeconds),
         mythicPlusScore: Number(snap.mythicPlusScore),
+        seasonID: toOptionalNumber(snap.seasonID),
         ownedKeystone:
           ownedKeystoneLevel && ownedKeystoneLevel > 0
             ? {
@@ -2376,6 +2679,7 @@ function extractCharacters(db: Record<string, unknown>): CharacterData[] {
           mythDawncrest: Number(currencies.mythDawncrest ?? 0),
           radiantSparkDust: Number(currencies.radiantSparkDust ?? 0),
         },
+        currencyDetails: normalizeCurrencyDetails(snap.currencyDetails),
         stats: {
           stamina: Number(stats.stamina ?? 0),
           strength: Number(stats.strength ?? 0),
@@ -2396,6 +2700,10 @@ function extractCharacters(db: Record<string, unknown>): CharacterData[] {
           avoidanceRating: toOptionalNumber(stats.avoidanceRating),
           avoidancePercent: toOptionalNumber(stats.avoidancePercent),
         },
+        equipment: normalizeSnapshotEquipment(snap.equipment),
+        weeklyRewards: normalizeWeeklyRewards(snap.weeklyRewards),
+        majorFactions: normalizeMajorFactions(snap.majorFactions),
+        clientInfo: normalizeClientInfo(snap.clientInfo),
       });
     }
 

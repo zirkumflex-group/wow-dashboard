@@ -1,4 +1,5 @@
 local addonName, addon = ...
+addon = addon or {}
 
 -- ============================================================
 -- WoW Dashboard — Expansion Overview Panel Style
@@ -231,6 +232,7 @@ end
 --       playtimeSeconds   number  -- total /played seconds
 --       playtimeThisLevelSeconds number  -- /played seconds on current level
 --       mythicPlusScore   number
+--       seasonID          number?
 --       ownedKeystone     table?
 --         level               number
 --         mapChallengeModeID  number?
@@ -242,6 +244,7 @@ end
 --         heroDawncrest        number
 --         mythDawncrest        number
 --         radiantSparkDust     number
+--       currencyDetails   table? -- keyed like currencies; includes caps and weekly earned values
 --       stats             table
 --         stamina              number
 --         strength             number
@@ -261,6 +264,10 @@ end
 --         leechPercent         number
 --         avoidanceRating      number
 --         avoidancePercent     number
+--       equipment         table? -- keyed by equipment slot
+--       weeklyRewards     table?
+--       majorFactions     table?
+--       clientInfo        table?
 --   pendingMythicPlusMembers table -- keyed by "Name-Realm"
 --     capturedAt    number
 --     members       array
@@ -332,6 +339,25 @@ local CURRENCY_IDS = {
     heroDawncrest       = 3345,  -- Hero Dawncrest        (Midnight S1)
     mythDawncrest       = 3347,  -- Myth Dawncrest        (Midnight S1)
     radiantSparkDust    = 3212,  -- Radiant Spark Dust    (Midnight S1)
+}
+
+addon.SNAPSHOT_EQUIPMENT_SLOTS = {
+    { key = "head",      slotName = "HeadSlot" },
+    { key = "neck",      slotName = "NeckSlot" },
+    { key = "shoulders", slotName = "ShoulderSlot" },
+    { key = "back",      slotName = "BackSlot" },
+    { key = "chest",     slotName = "ChestSlot" },
+    { key = "wrist",     slotName = "WristSlot" },
+    { key = "hands",     slotName = "HandsSlot" },
+    { key = "waist",     slotName = "WaistSlot" },
+    { key = "legs",      slotName = "LegsSlot" },
+    { key = "feet",      slotName = "FeetSlot" },
+    { key = "finger1",   slotName = "Finger0Slot" },
+    { key = "finger2",   slotName = "Finger1Slot" },
+    { key = "trinket1",  slotName = "Trinket0Slot" },
+    { key = "trinket2",  slotName = "Trinket1Slot" },
+    { key = "mainHand",  slotName = "MainHandSlot" },
+    { key = "offHand",   slotName = "SecondaryHandSlot" },
 }
 
 local pendingSnapshot      = nil
@@ -2177,10 +2203,36 @@ local function NormalizeLifecycleTimestamp(value)
 end
 
 local function GetCurrentMythicPlusSeasonID()
-    if type(C_MythicPlus) == "table" and type(C_MythicPlus.GetCurrentSeason) == "function" then
+    local function NormalizeSeasonID(value)
+        local seasonID = tonumber(value)
+        if seasonID and seasonID > 0 then
+            return seasonID
+        end
+
+        return nil
+    end
+
+    if type(C_MythicPlus) ~= "table" then
+        return nil
+    end
+
+    if type(C_MythicPlus.RequestMapInfo) == "function" then
+        pcall(C_MythicPlus.RequestMapInfo)
+    end
+
+    if type(C_MythicPlus.GetCurrentUIDisplaySeason) == "function" then
+        local ok, seasonID = pcall(C_MythicPlus.GetCurrentUIDisplaySeason)
+        local normalized = ok and NormalizeSeasonID(seasonID) or nil
+        if normalized then
+            return normalized
+        end
+    end
+
+    if type(C_MythicPlus.GetCurrentSeason) == "function" then
         local ok, seasonID = pcall(C_MythicPlus.GetCurrentSeason)
-        if ok then
-            return tonumber(seasonID)
+        local normalized = ok and NormalizeSeasonID(seasonID) or nil
+        if normalized then
+            return normalized
         end
     end
 
@@ -3274,6 +3326,188 @@ local function ScheduleMythicPlusHistorySync(reason, delaySeconds, options)
     end)
 end
 
+function addon.BuildSnapshotClientInfo()
+    local gameVersion, buildNumber, buildDate, tocVersion = nil, nil, nil, nil
+    if type(GetBuildInfo) == "function" then
+        local ok, version, build, date, toc = pcall(GetBuildInfo)
+        if ok then
+            gameVersion = version
+            buildNumber = build
+            buildDate = date
+            tocVersion = tonumber(toc)
+        end
+    end
+
+    local locale = nil
+    if type(GetLocale) == "function" then
+        local ok, value = pcall(GetLocale)
+        if ok then
+            locale = value
+        end
+    end
+
+    return {
+        addonVersion = ADDON_VERSION,
+        interfaceVersion = tonumber(ADDON_INTERFACE),
+        gameVersion = gameVersion,
+        buildNumber = buildNumber,
+        buildDate = buildDate,
+        tocVersion = tocVersion,
+        expansion = ADDON_EXPANSION,
+        locale = locale,
+    }
+end
+
+function addon.BuildEquipmentSnapshot()
+    if type(GetInventorySlotInfo) ~= "function" then
+        return nil
+    end
+
+    local equipment = {}
+    for _, slot in ipairs(addon.SNAPSHOT_EQUIPMENT_SLOTS or {}) do
+        local slotID = GetInventorySlotInfo(slot.slotName)
+        if slotID then
+            local itemID = type(GetInventoryItemID) == "function" and GetInventoryItemID("player", slotID) or nil
+            local itemLink = type(GetInventoryItemLink) == "function" and GetInventoryItemLink("player", slotID) or nil
+            if itemID or itemLink then
+                local itemName, itemQuality, itemLevel, iconFileID = nil, nil, nil, nil
+                if itemLink and type(GetItemInfo) == "function" then
+                    local ok, name, link, quality, level, _, _, _, _, icon = pcall(GetItemInfo, itemLink)
+                    if ok then
+                        itemName = name
+                        itemLink = link or itemLink
+                        itemQuality = tonumber(quality)
+                        itemLevel = tonumber(level)
+                        iconFileID = tonumber(icon)
+                    end
+                end
+                if itemLink and type(GetDetailedItemLevelInfo) == "function" then
+                    local ok, detailedLevel = pcall(GetDetailedItemLevelInfo, itemLink)
+                    if ok and tonumber(detailedLevel) then
+                        itemLevel = tonumber(detailedLevel)
+                    end
+                end
+
+                equipment[slot.key] = {
+                    slot = slot.key,
+                    slotID = slotID,
+                    itemID = tonumber(itemID),
+                    itemName = itemName,
+                    itemLink = itemLink,
+                    itemLevel = itemLevel,
+                    quality = itemQuality,
+                    iconFileID = iconFileID,
+                }
+            end
+        end
+    end
+
+    if next(equipment) then
+        return equipment
+    end
+
+    return nil
+end
+
+function addon.BuildWeeklyRewardsSnapshot()
+    if type(C_WeeklyRewards) ~= "table" or type(C_WeeklyRewards.GetActivities) ~= "function" then
+        return nil
+    end
+
+    local activities = {}
+    local okActivities, rawActivities = pcall(C_WeeklyRewards.GetActivities)
+    if okActivities and type(rawActivities) == "table" then
+        for index, activity in ipairs(rawActivities) do
+            if type(activity) == "table" then
+                table.insert(activities, {
+                    type = tonumber(activity.type or activity.activityType),
+                    index = tonumber(activity.index) or index,
+                    id = tonumber(activity.id),
+                    level = tonumber(activity.level),
+                    threshold = tonumber(activity.threshold),
+                    progress = tonumber(activity.progress),
+                    activityTierID = tonumber(activity.activityTierID),
+                    itemLevel = tonumber(activity.itemLevel),
+                    name = activity.name and tostring(activity.name) or nil,
+                })
+            end
+        end
+    end
+
+    if #activities == 0 then
+        return nil
+    end
+
+    local canClaimRewards = nil
+    if type(C_WeeklyRewards.CanClaimRewards) == "function" then
+        local ok, value = pcall(C_WeeklyRewards.CanClaimRewards)
+        if ok then
+            canClaimRewards = value == true
+        end
+    end
+
+    local isCurrentPeriod = nil
+    if type(C_WeeklyRewards.AreRewardsForCurrentRewardPeriod) == "function" then
+        local ok, value = pcall(C_WeeklyRewards.AreRewardsForCurrentRewardPeriod)
+        if ok then
+            isCurrentPeriod = value == true
+        end
+    end
+
+    return {
+        canClaimRewards = canClaimRewards,
+        isCurrentPeriod = isCurrentPeriod,
+        activities = activities,
+    }
+end
+
+function addon.BuildMajorFactionsSnapshot()
+    if type(C_MajorFactions) ~= "table"
+        or type(C_MajorFactions.GetMajorFactionIDs) ~= "function"
+        or type(C_MajorFactions.GetMajorFactionData) ~= "function" then
+        return nil
+    end
+
+    local okIDs, majorFactionIDs = pcall(C_MajorFactions.GetMajorFactionIDs)
+    if not okIDs or type(majorFactionIDs) ~= "table" then
+        return nil
+    end
+
+    local factions = {}
+    for _, factionID in ipairs(majorFactionIDs) do
+        local numericFactionID = tonumber(factionID)
+        if numericFactionID then
+            local okData, data = pcall(C_MajorFactions.GetMajorFactionData, numericFactionID)
+            if okData and type(data) == "table" and data.isUnlocked ~= false then
+                local isWeeklyCapped = nil
+                if type(C_MajorFactions.IsWeeklyRenownCapped) == "function" then
+                    local okCapped, capped = pcall(C_MajorFactions.IsWeeklyRenownCapped, numericFactionID)
+                    if okCapped then
+                        isWeeklyCapped = capped == true
+                    end
+                end
+
+                table.insert(factions, {
+                    factionID = numericFactionID,
+                    name = data.name and tostring(data.name) or nil,
+                    expansionID = tonumber(data.expansionID),
+                    isUnlocked = data.isUnlocked == true,
+                    renownLevel = tonumber(data.renownLevel),
+                    renownReputationEarned = tonumber(data.renownReputationEarned),
+                    renownLevelThreshold = tonumber(data.renownLevelThreshold),
+                    isWeeklyCapped = isWeeklyCapped,
+                })
+            end
+        end
+    end
+
+    if #factions > 0 then
+        return { factions = factions }
+    end
+
+    return nil
+end
+
 local function BuildPendingSnapshot()
     local key, name, realm, charInfo = GetCharacterIdentity()
 
@@ -3290,12 +3524,27 @@ local function BuildPendingSnapshot()
     local _, equippedIlvl = GetAverageItemLevel()
 
     local currencies = {}
+    local currencyDetails = {}
     for fieldName, currencyID in pairs(CURRENCY_IDS) do
         local quantity = 0
         if type(C_CurrencyInfo) == "table" and type(C_CurrencyInfo.GetCurrencyInfo) == "function" then
             local ok, info = pcall(C_CurrencyInfo.GetCurrencyInfo, currencyID)
             if ok and type(info) == "table" then
                 quantity = tonumber(info.quantity) or 0
+                currencyDetails[fieldName] = {
+                    currencyID = currencyID,
+                    name = info.name and tostring(info.name) or nil,
+                    quantity = quantity,
+                    iconFileID = tonumber(info.iconFileID),
+                    maxQuantity = tonumber(info.maxQuantity),
+                    canEarnPerWeek = info.canEarnPerWeek == true,
+                    quantityEarnedThisWeek = tonumber(info.quantityEarnedThisWeek),
+                    maxWeeklyQuantity = tonumber(info.maxWeeklyQuantity),
+                    totalEarned = tonumber(info.totalEarned),
+                    discovered = info.discovered == true,
+                    quality = tonumber(info.quality),
+                    useTotalEarnedForMaxQty = info.useTotalEarnedForMaxQty == true,
+                }
             end
         end
         currencies[fieldName] = quantity
@@ -3362,6 +3611,12 @@ local function BuildPendingSnapshot()
         end
     end
 
+    local seasonID = GetCurrentMythicPlusSeasonID()
+    local equipment = addon.BuildEquipmentSnapshot()
+    local weeklyRewards = addon.BuildWeeklyRewardsSnapshot()
+    local majorFactions = addon.BuildMajorFactionsSnapshot()
+    local clientInfo = addon.BuildSnapshotClientInfo()
+
     return {
         key      = key,
         name     = name,
@@ -3377,9 +3632,15 @@ local function BuildPendingSnapshot()
             playtimeSeconds = 0,
             playtimeThisLevelSeconds = 0,
             mythicPlusScore = mplusScore,
+            seasonID        = seasonID,
             ownedKeystone   = ownedKeystone,
             currencies      = currencies,
+            currencyDetails = next(currencyDetails) and currencyDetails or nil,
             stats           = stats,
+            equipment       = equipment,
+            weeklyRewards   = weeklyRewards,
+            majorFactions   = majorFactions,
+            clientInfo      = clientInfo,
         },
     }
 end

@@ -963,6 +963,7 @@ type Snapshot = {
   playtimeSeconds: number;
   playtimeThisLevelSeconds?: number;
   mythicPlusScore: number;
+  seasonID?: number;
   ownedKeystone?: {
     level: number;
     mapChallengeModeID?: number;
@@ -976,6 +977,23 @@ type Snapshot = {
     mythDawncrest: number;
     radiantSparkDust: number;
   };
+  currencyDetails?: Record<
+    string,
+    {
+      currencyID: number;
+      name?: string;
+      quantity: number;
+      iconFileID?: number;
+      maxQuantity?: number;
+      canEarnPerWeek?: boolean;
+      quantityEarnedThisWeek?: number;
+      maxWeeklyQuantity?: number;
+      totalEarned?: number;
+      discovered?: boolean;
+      quality?: number;
+      useTotalEarnedForMaxQty?: boolean;
+    }
+  >;
   stats: {
     stamina: number;
     strength: number;
@@ -995,6 +1013,56 @@ type Snapshot = {
     leechPercent?: number;
     avoidanceRating?: number;
     avoidancePercent?: number;
+  };
+  equipment?: Record<
+    string,
+    {
+      slot: string;
+      slotID: number;
+      itemID?: number;
+      itemName?: string;
+      itemLink?: string;
+      itemLevel?: number;
+      quality?: number;
+      iconFileID?: number;
+    }
+  >;
+  weeklyRewards?: {
+    canClaimRewards?: boolean;
+    isCurrentPeriod?: boolean;
+    activities: {
+      type?: number;
+      index?: number;
+      id?: number;
+      level?: number;
+      threshold?: number;
+      progress?: number;
+      activityTierID?: number;
+      itemLevel?: number;
+      name?: string;
+    }[];
+  };
+  majorFactions?: {
+    factions: {
+      factionID: number;
+      name?: string;
+      expansionID?: number;
+      isUnlocked?: boolean;
+      renownLevel?: number;
+      renownReputationEarned?: number;
+      renownLevelThreshold?: number;
+      isWeeklyCapped?: boolean;
+    }[];
+  };
+  clientInfo?: {
+    addonVersion?: string;
+    interfaceVersion?: number;
+    gameVersion?: string;
+    buildNumber?: string;
+    buildDate?: string;
+    tocVersion?: number;
+    expansion?: string;
+    locale?: string;
   };
 };
 
