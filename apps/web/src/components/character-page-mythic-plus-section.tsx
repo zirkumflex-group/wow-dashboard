@@ -2,7 +2,7 @@ import { Badge } from "@wow-dashboard/ui/components/badge";
 import { Button } from "@wow-dashboard/ui/components/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@wow-dashboard/ui/components/card";
 import { Clock, Eye, EyeOff, Flame, History, Sword } from "lucide-react";
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import {
   getMythicPlusDungeonMeta,
   getMythicPlusDungeonTimerMs,
@@ -10,8 +10,8 @@ import {
 } from "../lib/mythic-plus-static";
 import { getClassTextColor } from "../lib/class-colors";
 
-const INITIAL_RECENT_RUN_COUNT = 20;
-const RECENT_RUN_LOAD_INCREMENT = 20;
+const INITIAL_RECENT_RUN_COUNT = 10;
+const RECENT_RUN_LOAD_INCREMENT = 10;
 const RUN_TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
   hour: "2-digit",
   minute: "2-digit",
@@ -286,7 +286,11 @@ function StatGrid({
   compact?: boolean;
 }) {
   return (
-    <div className={`rounded-md bg-muted/30 text-center ${compact ? "p-1.5" : "p-2"}`}>
+    <div
+      className={`rounded-md border border-border/50 bg-muted/20 text-center ${
+        compact ? "px-2 py-2" : "p-3"
+      }`}
+    >
       <div
         className={
           compact
@@ -298,7 +302,7 @@ function StatGrid({
       </div>
       <div
         className={
-          compact ? "mt-0.5 text-sm font-semibold leading-none" : "mt-0.5 text-sm font-semibold"
+          compact ? "mt-1 text-sm font-semibold leading-none" : "mt-1 text-sm font-semibold"
         }
       >
         {value}
@@ -576,7 +580,9 @@ function RecentRunPartyMembers({
         if (isHidden) {
           return (
             <span key={key} className="inline-flex shrink-0 items-center whitespace-nowrap">
-              {index > 0 ? <span className="shrink-0 px-0.5 text-muted-foreground/25">/</span> : null}
+              {index > 0 ? (
+                <span className="shrink-0 px-0.5 text-muted-foreground/25">/</span>
+              ) : null}
               <span
                 className="inline-block h-[0.65em] w-10 shrink-0 rounded-sm bg-muted-foreground/25 blur-[5px]"
                 aria-hidden="true"
@@ -813,6 +819,172 @@ function MythicPlusResultBadge({ run }: { run: MythicPlusRun }) {
   return null;
 }
 
+function MythicPlusSeasonHero({
+  summary,
+  currentSeason,
+}: {
+  summary: MythicPlusSummary;
+  currentSeason: MythicPlusBucketSummary;
+}) {
+  const totalAttempts = currentSeason.totalAttempts ?? currentSeason.totalRuns;
+  const timedRate =
+    currentSeason.completedRuns > 0
+      ? Math.round((currentSeason.timedRuns / currentSeason.completedRuns) * 100)
+      : null;
+
+  return (
+    <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.45fr)]">
+      <div className="rounded-md border border-violet-400/25 bg-violet-400/10 p-4">
+        <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+          Current Score
+        </div>
+        <div className="mt-2 text-4xl font-bold leading-none tracking-tight">
+          <RaiderIoScoreText score={summary.currentScore} className="tabular-nums" />
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <span>Best timed</span>
+          <MythicPlusKeyPill
+            level={currentSeason.bestTimedLevel}
+            upgradeCount={currentSeason.bestTimedUpgradeCount}
+            compact
+          />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-2">
+        <StatGrid compact label="Runs" value={totalAttempts.toLocaleString()} />
+        <StatGrid compact label="Timed" value={currentSeason.timedRuns.toLocaleString()} />
+        <StatGrid
+          compact
+          label="Depleted"
+          value={Math.max(
+            0,
+            currentSeason.completedRuns - currentSeason.timedRuns,
+          ).toLocaleString()}
+        />
+        <StatGrid
+          compact
+          label="Abandoned"
+          value={(currentSeason.abandonedRuns ?? 0).toLocaleString()}
+        />
+        <StatGrid compact label="Timed Rate" value={timedRate === null ? "-" : `${timedRate}%`} />
+        <StatGrid
+          compact
+          label="Best Score"
+          value={
+            <RaiderIoScoreText score={currentSeason.bestTimedScore} className="tabular-nums" />
+          }
+        />
+      </div>
+    </div>
+  );
+}
+
+function MythicPlusKeyProfile({ currentSeason }: { currentSeason: MythicPlusBucketSummary }) {
+  const buckets = [
+    { label: "2-9", value: currentSeason.timed2To9 },
+    { label: "10-11", value: currentSeason.timed10To11 },
+    { label: "12-13", value: currentSeason.timed12To13 },
+    { label: "14+", value: currentSeason.timed14Plus },
+  ];
+  const maxValue = Math.max(1, ...buckets.map((bucket) => bucket.value));
+
+  return (
+    <div className="rounded-md border border-border/60 bg-muted/10 p-3">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <div className="text-xs font-semibold text-foreground">Timed Key Profile</div>
+        <div className="text-[11px] text-muted-foreground">
+          {currentSeason.timedRuns.toLocaleString()} timed
+        </div>
+      </div>
+      <div className="grid gap-2">
+        {buckets.map((bucket) => {
+          const percent = Math.max(4, Math.min(100, (bucket.value / maxValue) * 100));
+          return (
+            <div
+              key={bucket.label}
+              className="grid grid-cols-[3.5rem_minmax(0,1fr)_2rem] items-center gap-2"
+            >
+              <div className="text-[11px] font-medium text-muted-foreground">+{bucket.label}</div>
+              <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+                <div
+                  className="h-full rounded-full bg-emerald-400/80"
+                  style={{ width: `${percent}%` }}
+                />
+              </div>
+              <div className="text-right text-[11px] font-semibold tabular-nums text-foreground">
+                {bucket.value.toLocaleString()}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function MythicPlusDungeonBestList({
+  dungeons,
+  currentScore,
+}: {
+  dungeons: MythicPlusDungeonSummary[];
+  currentScore: number | null;
+}) {
+  if (dungeons.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="overflow-hidden rounded-md border border-border/60">
+      <div className="flex items-center justify-between gap-3 border-b border-border/60 bg-muted/20 px-3 py-2">
+        <div className="flex items-center gap-2">
+          <Sword size={14} className="text-muted-foreground" />
+          <h3 className="text-sm font-semibold">Dungeon Bests</h3>
+        </div>
+        {currentScore !== null ? (
+          <div className="text-xs text-muted-foreground">
+            Score <RaiderIoScoreText score={currentScore} className="font-semibold tabular-nums" />
+          </div>
+        ) : null}
+      </div>
+      <div className="divide-y divide-border/60">
+        {dungeons.map((dungeon) => (
+          <div
+            key={`${dungeon.mapChallengeModeID ?? "map"}-${dungeon.mapName}`}
+            className="grid grid-cols-[minmax(0,1fr)_3rem_4.5rem_4rem] items-center gap-3 px-3 py-2 transition-colors hover:bg-muted/15"
+          >
+            <div className="flex min-w-0 items-center gap-2.5">
+              <DungeonIcon
+                mapChallengeModeID={dungeon.mapChallengeModeID}
+                mapName={dungeon.mapName}
+              />
+              <div className="min-w-0">
+                <div className="truncate font-medium text-foreground">{dungeon.mapName}</div>
+                <div className="text-[11px] text-muted-foreground">
+                  {formatRunDuration(dungeon.bestTimedDurationMs)}
+                </div>
+              </div>
+            </div>
+            <div className="text-right text-xs tabular-nums text-muted-foreground">
+              {dungeon.timedRuns}
+            </div>
+            <div className="text-right">
+              <MythicPlusKeyPill
+                level={dungeon.bestTimedLevel}
+                upgradeCount={dungeon.bestTimedUpgradeCount}
+                compact
+              />
+            </div>
+            <div className="text-right text-sm font-semibold tabular-nums">
+              <RaiderIoScoreText score={dungeon.bestTimedScore} />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function MythicPlusSection({
   data,
   isLoadingAllRuns,
@@ -835,8 +1007,6 @@ export function MythicPlusSection({
     hideAllNames,
     toggleHideAllNames,
   } = useHiddenPlayers();
-  const [summaryCardHeight, setSummaryCardHeight] = useState<number | null>(null);
-  const summaryCardRef = useRef<HTMLDivElement | null>(null);
   const latestRunResetKey = data?.runs[0] ? getRecentRunRowKey(data.runs[0]) : "";
   const recentRunsResetKey = `${data?.totalRunCount ?? 0}:${latestRunResetKey}`;
   const totalRunCount = data?.totalRunCount ?? 0;
@@ -844,21 +1014,6 @@ export function MythicPlusSection({
 
   useEffect(() => {
     setVisibleRecentRunCount(INITIAL_RECENT_RUN_COUNT);
-  }, [recentRunsResetKey]);
-
-  useEffect(() => {
-    const summaryElement = summaryCardRef.current;
-    if (!summaryElement || typeof ResizeObserver === "undefined") return;
-
-    const updateHeight = () => {
-      setSummaryCardHeight(Math.ceil(summaryElement.getBoundingClientRect().height));
-    };
-
-    updateHeight();
-
-    const resizeObserver = new ResizeObserver(updateHeight);
-    resizeObserver.observe(summaryElement);
-    return () => resizeObserver.disconnect();
   }, [recentRunsResetKey]);
 
   if (data === undefined) {
@@ -896,10 +1051,10 @@ export function MythicPlusSection({
           </CardHeader>
           <CardContent className="pt-4">
             <p className="text-sm text-muted-foreground">
-            No Mythic+ run history uploaded for this character yet.
-          </p>
-        </CardContent>
-      </Card>
+              No Mythic+ run history uploaded for this character yet.
+            </p>
+          </CardContent>
+        </Card>
       </div>
     );
   }
@@ -924,152 +1079,39 @@ export function MythicPlusSection({
 
   return (
     <div className="space-y-4 [contain-intrinsic-size:1200px] [content-visibility:auto]">
-      <div className="grid items-start gap-4 xl:grid-cols-[1.1fr_0.9fr]">
-        <div ref={summaryCardRef}>
-          <Card>
-            <CardHeader className="border-b pb-3">
-              <div className="flex items-center justify-between gap-3">
-                <CardTitle className="flex items-center gap-2 text-lg">
-                  <History size={16} className="text-muted-foreground" />
-                  Mythic+ Summary
-                </CardTitle>
-                {formatSeasonLabel(summary.latestSeasonID) ? (
-                  <Badge variant="outline">{formatSeasonLabel(summary.latestSeasonID)}</Badge>
-                ) : null}
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-4 pt-4">
-              {currentSeason ? (
-                <div className="space-y-3">
-                  <div className="flex items-center gap-2">
-                    <Flame size={14} className="text-muted-foreground" />
-                    <h3 className="text-sm font-semibold">Current Season</h3>
-                  </div>
-                  <div className="grid gap-1.5 sm:grid-cols-2 xl:grid-cols-3">
-                    <StatGrid
-                      compact
-                      label="Current Score"
-                      value={
-                        <RaiderIoScoreText score={summary.currentScore} className="tabular-nums" />
-                      }
-                    />
-                    <StatGrid
-                      compact
-                      label="Best Timed"
-                      value={
-                        <MythicPlusKeyPill
-                          level={currentSeason.bestTimedLevel}
-                          upgradeCount={currentSeason.bestTimedUpgradeCount}
-                          compact
-                        />
-                      }
-                    />
-                    <StatGrid
-                      compact
-                      label="Total Runs"
-                      value={(currentSeason.totalAttempts ?? currentSeason.totalRuns).toLocaleString()}
-                    />
-                  </div>
-                  <div className="grid gap-1.5 sm:grid-cols-2 xl:grid-cols-3">
-                    <StatGrid compact label="Timed" value={currentSeason.timedRuns.toLocaleString()} />
-                    <StatGrid
-                      compact
-                      label="Depleted"
-                      value={Math.max(0, currentSeason.completedRuns - currentSeason.timedRuns).toLocaleString()}
-                    />
-                    <StatGrid
-                      compact
-                      label="Abandoned"
-                      value={(currentSeason.abandonedRuns ?? 0).toLocaleString()}
-                    />
-                  </div>
-                  <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
-                    <StatGrid compact label="2+ Timed" value={currentSeason.timed2To9.toLocaleString()} />
-                    <StatGrid compact label="10+ Timed" value={currentSeason.timed10To11.toLocaleString()} />
-                    <StatGrid compact label="12+ Timed" value={currentSeason.timed12To13.toLocaleString()} />
-                    <StatGrid compact label="14+ Timed" value={currentSeason.timed14Plus.toLocaleString()} />
-                  </div>
-                </div>
+      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
+        <Card className="overflow-hidden">
+          <CardHeader className="border-b bg-muted/10 px-4 py-3">
+            <div className="flex items-center justify-between gap-3">
+              <CardTitle className="flex items-center gap-2 text-lg">
+                <History size={16} className="text-muted-foreground" />
+                Mythic+ Summary
+              </CardTitle>
+              {formatSeasonLabel(summary.latestSeasonID) ? (
+                <Badge variant="outline">{formatSeasonLabel(summary.latestSeasonID)}</Badge>
               ) : null}
-
-              {summary.currentSeasonDungeons.length > 0 ? (
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-2">
-                      <Sword size={14} className="text-muted-foreground" />
-                      <h3 className="text-sm font-semibold">Dungeon Bests</h3>
-                    </div>
-                    {summary.currentScore !== null ? (
-                      <div className="text-xs text-muted-foreground">
-                        Score{" "}
-                        <RaiderIoScoreText
-                          score={summary.currentScore}
-                          className="font-semibold tabular-nums"
-                        />
-                      </div>
-                    ) : null}
-                  </div>
-                  <div className="overflow-x-auto rounded-md border">
-                    <table className="w-full min-w-[560px] text-sm leading-tight">
-                      <thead className="bg-muted/40 text-muted-foreground">
-                        <tr>
-                          <th className="px-3 py-2 text-left font-medium">Dungeon</th>
-                          <th className="px-3 py-2 text-right font-medium">Timed</th>
-                          <th className="px-3 py-2 text-right font-medium">Level</th>
-                          <th className="px-3 py-2 text-right font-medium">Score</th>
-                          <th className="px-3 py-2 text-right font-medium">Time</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-border/70">
-                        {summary.currentSeasonDungeons.map((dungeon) => (
-                          <tr
-                            key={`${dungeon.mapChallengeModeID ?? "map"}-${dungeon.mapName}`}
-                            className="bg-background/20 transition-colors hover:bg-muted/20"
-                          >
-                            <td className="px-3 py-2.5">
-                              <div className="flex items-center gap-2.5">
-                                <DungeonIcon
-                                  mapChallengeModeID={dungeon.mapChallengeModeID}
-                                  mapName={dungeon.mapName}
-                                />
-                                <div className="font-medium text-foreground">{dungeon.mapName}</div>
-                              </div>
-                            </td>
-                            <td className="px-3 py-2.5 text-right tabular-nums text-muted-foreground">
-                              {dungeon.timedRuns}
-                            </td>
-                            <td className="px-3 py-2.5 text-right">
-                              <MythicPlusKeyPill
-                                level={dungeon.bestTimedLevel}
-                                upgradeCount={dungeon.bestTimedUpgradeCount}
-                                compact
-                              />
-                            </td>
-                            <td className="px-3 py-2.5 text-right tabular-nums">
-                              <RaiderIoScoreText
-                                score={dungeon.bestTimedScore}
-                                className="tabular-nums"
-                              />
-                            </td>
-                            <td className="px-3 py-2.5 text-right tabular-nums">
-                              {formatRunDuration(dungeon.bestTimedDurationMs)}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+            </div>
+          </CardHeader>
+          <CardContent className="grid gap-3 px-4 py-4">
+            {currentSeason ? (
+              <>
+                <div className="flex items-center gap-2">
+                  <Flame size={14} className="text-muted-foreground" />
+                  <h3 className="text-sm font-semibold">Current Season</h3>
                 </div>
-              ) : null}
-            </CardContent>
-          </Card>
-        </div>
+                <MythicPlusSeasonHero summary={summary} currentSeason={currentSeason} />
+                <MythicPlusKeyProfile currentSeason={currentSeason} />
+              </>
+            ) : null}
+            <MythicPlusDungeonBestList
+              dungeons={summary.currentSeasonDungeons}
+              currentScore={summary.currentScore}
+            />
+          </CardContent>
+        </Card>
 
-        <Card
-          className="flex flex-col"
-          style={summaryCardHeight === null ? undefined : { height: `${summaryCardHeight}px` }}
-        >
-          <CardHeader className="border-b pb-3">
+        <Card className="flex max-h-[30rem] flex-col overflow-hidden">
+          <CardHeader className="border-b bg-muted/10 px-4 py-3">
             <div className="flex items-center justify-between gap-3">
               <CardTitle className="flex items-center gap-2 text-lg">
                 <Clock size={16} className="text-muted-foreground" />
@@ -1084,26 +1126,31 @@ export function MythicPlusSection({
               />
             </div>
           </CardHeader>
-          <CardContent className="flex min-h-0 flex-1 flex-col pt-4">
+          <CardContent className="flex min-h-0 flex-1 flex-col p-4">
             <div className="dark-scrollbar min-h-0 flex-1 overflow-auto rounded-md border border-border/60">
-              <table className="w-full min-w-[760px] text-sm">
-                <thead className="bg-muted/30 text-[11px] uppercase tracking-wider text-muted-foreground">
+              <table className="w-full min-w-[700px] text-sm">
+                <thead className="sticky top-0 z-10 bg-muted/40 text-[11px] uppercase tracking-wider text-muted-foreground">
                   <tr>
                     <th className="px-3 py-2 text-left font-medium">Played</th>
                     <th className="px-3 py-2 text-left font-medium">Dungeon</th>
                     <th className="px-3 py-2 text-right font-medium">Key</th>
                     <th className="px-3 py-2 text-left font-medium">Result</th>
                     <th className="px-3 py-2 text-right font-medium">Score</th>
-                    <th className="w-[7rem] whitespace-nowrap px-3 py-2 text-right font-medium">Time</th>
+                    <th className="w-[7rem] whitespace-nowrap px-3 py-2 text-right font-medium">
+                      Time
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border/50">
                   {visibleRecentRuns.map((run) => (
-                    <tr key={getRecentRunRowKey(run)} className="transition-colors hover:bg-muted/15">
-                      <td className="px-3 py-2.5 align-top text-muted-foreground">
+                    <tr
+                      key={getRecentRunRowKey(run)}
+                      className="transition-colors hover:bg-muted/15"
+                    >
+                      <td className="px-3 py-2 align-top text-muted-foreground">
                         <RecentRunPlayedAt run={run} />
                       </td>
-                      <td className="px-3 py-2.5 align-top">
+                      <td className="px-3 py-2 align-top">
                         <div className="flex items-center gap-2">
                           <DungeonIcon
                             mapChallengeModeID={run.mapChallengeModeID}
@@ -1122,13 +1169,13 @@ export function MythicPlusSection({
                           onHide={hidePlayer}
                         />
                       </td>
-                      <td className="px-3 py-2.5 align-top text-right">
+                      <td className="px-3 py-2 align-top text-right">
                         <RecentRunKeyCell run={run} />
                       </td>
-                      <td className="px-3 py-2.5 align-top">
+                      <td className="px-3 py-2 align-top">
                         <MythicPlusResultBadge run={run} />
                       </td>
-                      <td className="px-3 py-2.5 align-top text-right">
+                      <td className="px-3 py-2 align-top text-right">
                         <div className="flex items-center justify-end gap-1.5 tabular-nums">
                           <span>{formatRunScore(run.runScore)}</span>
                           {formatRunScoreIncrease(run.scoreIncrease) ? (
@@ -1138,7 +1185,7 @@ export function MythicPlusSection({
                           ) : null}
                         </div>
                       </td>
-                      <td className="w-[7rem] whitespace-nowrap px-3 py-2.5 align-top text-right tabular-nums text-muted-foreground">
+                      <td className="w-[7rem] whitespace-nowrap px-3 py-2 align-top text-right tabular-nums text-muted-foreground">
                         {formatRunTimeComparison(run)}
                       </td>
                     </tr>
