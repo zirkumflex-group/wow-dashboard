@@ -21,6 +21,7 @@ local BuildInfoRow = helpers.BuildInfoRow
 local timerLabel = nil
 local refreshBtn = nil
 local minimapToggle = nil
+local playtimeSyncToggle = nil
 
 local LEFT_W, RIGHT_W, HEIGHT = 220, 560, 500
 local MainFrame = nil
@@ -144,6 +145,12 @@ function addon.RefreshMinimapButton()
 
     if minimapToggle then
         minimapToggle:SetChecked(not WowDashboardDB.minimap.hide)
+    end
+end
+
+function addon.RefreshSettingsControls()
+    if playtimeSyncToggle and addon.ShouldSyncPlaytimeOnLogin then
+        playtimeSyncToggle:SetChecked(addon.ShouldSyncPlaytimeOnLogin())
     end
 end
 
@@ -641,7 +648,7 @@ function addon.EnsureDashboardFrame()
     overviewWidgets.scheduleDetail = gui.CreateSmallLabel(scheduleCard, "Automatic capture starts after login")
     overviewWidgets.scheduleDetail:SetPoint("TOPLEFT", timerLabel, "BOTTOMLEFT", 0, -10)
 
-    local actionCard = gui.CreateDashboardCard(overviewPanel, 240, 100)
+    local actionCard = gui.CreateDashboardCard(overviewPanel, 240, 124)
     actionCard:SetPoint("TOPLEFT", overviewPanel, "TOPLEFT", 248, -198)
 
     local actionLabel = gui.CreateSmallLabel(actionCard, "ACTIONS")
@@ -674,7 +681,22 @@ function addon.EnsureDashboardFrame()
         addon.RefreshMinimapButton()
     end)
 
+    playtimeSyncToggle = CreateFrame("CheckButton", nil, actionCard, "UICheckButtonTemplate")
+    playtimeSyncToggle:SetPoint("TOPLEFT", minimapToggle, "BOTTOMLEFT", 0, -6)
+    playtimeSyncToggle:SetSize(24, 24)
+    playtimeSyncToggle.Label = actionCard:CreateFontString(nil, "OVERLAY")
+    playtimeSyncToggle.Label:SetFont(FONT_BOLD, 11, "")
+    playtimeSyncToggle.Label:SetTextColor(0.80, 0.80, 0.80)
+    playtimeSyncToggle.Label:SetPoint("LEFT", playtimeSyncToggle, "RIGHT", 4, 0)
+    playtimeSyncToggle.Label:SetText("Sync playtime on login")
+    playtimeSyncToggle:SetScript("OnClick", function(self)
+        if addon.SetSyncPlaytimeOnLogin then
+            addon.SetSyncPlaytimeOnLogin(self:GetChecked())
+        end
+    end)
+
     UpdateTabVisuals()
+    addon.RefreshSettingsControls()
     addon.RefreshOverviewPanel()
     end
 

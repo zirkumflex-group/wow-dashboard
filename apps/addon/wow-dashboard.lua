@@ -194,6 +194,8 @@ addon.uiHelpers = {
 -- Schema (WowDashboardDB):
 --   version        number   -- bump when layout changes
 --   panelOpen      boolean
+--   settings       table
+--     syncPlaytimeOnLogin boolean
 --   minimap        table
 --     minimapPos   number
 --     hide         boolean
@@ -332,7 +334,6 @@ local RECENT_COMPLETION_EVENT_GRACE = 20
 local STALE_ATTEMPT_RECOVERY_SECONDS = 10 * 60
 local MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS = 4 * 60 * 60 * 1000
 local MYTHIC_PLUS_DEBUG_EVENT_LIMIT = 30
-local PLAYTIME_TIMEOUT = 30             -- seconds before we give up waiting for TIME_PLAYED_MSG
 local MAX_SNAPSHOTS_PER_CHARACTER = 500
 local MAX_MYTHIC_PLUS_RUNS_PER_CHARACTER = 5000
 local MAX_MYTHIC_PLUS_RUN_MEMBERS = 10
@@ -385,9 +386,8 @@ local nextSnapshotAt       = 0      -- GetTime() when next auto-snapshot fires
 local snapshotTicker       = nil    -- C_Timer handle, cancelled on force-refresh
 local refreshCooldownUntil = 0      -- GetTime() when force-refresh cooldown ends
 local lastSnapshotAt       = 0      -- GetTime() when last snapshot was committed
-local waitingForPlaytime   = false
-local queuedFreshSnapshot  = false
 local initialized          = false  -- true after first PLAYER_ENTERING_WORLD
+local loginPlaytimeSyncRequested = false
 local pendingMPlusSync     = false
 local lastMPlusSyncAt      = 0
 local pendingCompletedRunMembers = nil
@@ -417,6 +417,37 @@ addon.GetRegion = GetRegion
 
 local function PrintAddonMessage(message)
     print("|cff00ccff[WoW Dashboard]|r " .. message)
+end
+
+function addon.EnsureAddonSettings()
+    if not WowDashboardDB then
+        return
+    end
+
+    if type(WowDashboardDB.settings) ~= "table" then
+        WowDashboardDB.settings = {}
+    end
+    if WowDashboardDB.settings.syncPlaytimeOnLogin == nil then
+        WowDashboardDB.settings.syncPlaytimeOnLogin = true
+    end
+end
+
+function addon.ShouldSyncPlaytimeOnLogin()
+    if not WowDashboardDB then
+        return true
+    end
+
+    addon.EnsureAddonSettings()
+    return WowDashboardDB.settings.syncPlaytimeOnLogin ~= false
+end
+
+function addon.SetSyncPlaytimeOnLogin(enabled)
+    if not WowDashboardDB then
+        return
+    end
+
+    addon.EnsureAddonSettings()
+    WowDashboardDB.settings.syncPlaytimeOnLogin = enabled == true
 end
 
 local function TrimArrayToNewest(items, maxItems)
@@ -3659,52 +3690,19 @@ local function BuildPendingSnapshot()
     }
 end
 
-function addon.ClearTimePlayedDisplaySuppression()
-    addon.suppressNextTimePlayedDisplay = false
-    addon.timePlayedDisplaySuppressUntil = 0
-end
-
-function addon.InstallTimePlayedDisplaySuppressionHook()
-    if addon.timePlayedDisplayHookInstalled then
-        return true
+local function SetPlaytimeBaseline(totalSeconds, thisLevelSeconds, capturedAt, level)
+    local totalValue = tonumber(totalSeconds)
+    local thisLevelValue = tonumber(thisLevelSeconds)
+    if totalValue == nil and thisLevelValue == nil then
+        return
     end
 
-    if type(ChatFrame_DisplayTimePlayed) ~= "function" then
-        return false
-    end
-
-    addon.originalChatFrameDisplayTimePlayed = ChatFrame_DisplayTimePlayed
-    ChatFrame_DisplayTimePlayed = function(...)
-        if addon.suppressNextTimePlayedDisplay then
-            if addon.timePlayedDisplaySuppressUntil <= 0 or GetTime() <= addon.timePlayedDisplaySuppressUntil then
-                addon.ClearTimePlayedDisplaySuppression()
-                return
-            end
-
-            addon.ClearTimePlayedDisplaySuppression()
-        end
-
-        if addon.originalChatFrameDisplayTimePlayed then
-            return addon.originalChatFrameDisplayTimePlayed(...)
-        end
-    end
-    addon.timePlayedDisplayHookInstalled = true
-    return true
-end
-
-function addon.SuppressNextTimePlayedDisplay()
-    if addon.InstallTimePlayedDisplaySuppressionHook() then
-        addon.suppressNextTimePlayedDisplay = true
-        addon.timePlayedDisplaySuppressUntil = GetTime() + PLAYTIME_TIMEOUT
-    end
-end
-
-function addon.ClearTimePlayedDisplaySuppressionSoon()
-    if C_Timer and type(C_Timer.After) == "function" then
-        C_Timer.After(0, addon.ClearTimePlayedDisplaySuppression)
-    else
-        addon.ClearTimePlayedDisplaySuppression()
-    end
+    addon.playtimeBaseline = {
+        totalSeconds = totalValue or 0,
+        thisLevelSeconds = thisLevelValue or 0,
+        capturedAt = tonumber(capturedAt) or time(),
+        level = tonumber(level) or tonumber(UnitLevel("player")),
+    }
 end
 
 local function GetLastKnownPlaytime(characterKey)
@@ -3721,12 +3719,64 @@ local function GetLastKnownPlaytime(characterKey)
             local totalSeconds = tonumber(snap.playtimeSeconds)
             local thisLevelSeconds = tonumber(snap.playtimeThisLevelSeconds)
             if totalSeconds ~= nil or thisLevelSeconds ~= nil then
-                return totalSeconds or 0, thisLevelSeconds or 0
+                return totalSeconds or 0, thisLevelSeconds or 0, tonumber(snap.takenAt), tonumber(snap.level)
             end
         end
     end
 
     return 0, 0
+end
+
+local function GetEstimatedPlaytime(characterKey)
+    local now = time()
+    local currentLevel = tonumber(UnitLevel("player"))
+    local baseline = addon.playtimeBaseline
+
+    if type(baseline) ~= "table" then
+        local totalSeconds, thisLevelSeconds, _, snapshotLevel = GetLastKnownPlaytime(characterKey)
+        if snapshotLevel ~= nil and currentLevel ~= nil and snapshotLevel ~= currentLevel then
+            thisLevelSeconds = 0
+        end
+        SetPlaytimeBaseline(totalSeconds, thisLevelSeconds, now, currentLevel)
+        baseline = addon.playtimeBaseline
+    end
+
+    if type(baseline) ~= "table" then
+        return 0, 0
+    end
+
+    local elapsed = math.max(0, now - (tonumber(baseline.capturedAt) or now))
+    local totalSeconds = (tonumber(baseline.totalSeconds) or 0) + elapsed
+    local thisLevelSeconds = tonumber(baseline.thisLevelSeconds) or 0
+    local baselineLevel = tonumber(baseline.level)
+
+    if baselineLevel == nil or currentLevel == nil or baselineLevel == currentLevel then
+        thisLevelSeconds = thisLevelSeconds + elapsed
+    else
+        thisLevelSeconds = 0
+    end
+
+    return math.floor(totalSeconds), math.floor(thisLevelSeconds)
+end
+
+local function RequestLoginPlaytimeSync()
+    if loginPlaytimeSyncRequested then
+        return false
+    end
+    if not addon.ShouldSyncPlaytimeOnLogin() then
+        return false
+    end
+    if not IsLoggedIn() or type(RequestTimePlayed) ~= "function" then
+        return false
+    end
+
+    loginPlaytimeSyncRequested = true
+    local ok = pcall(RequestTimePlayed)
+    if not ok then
+        loginPlaytimeSyncRequested = false
+    end
+
+    return ok == true
 end
 
 local function CommitSnapshot(totalSeconds, thisLevelSeconds)
@@ -3735,6 +3785,7 @@ local function CommitSnapshot(totalSeconds, thisLevelSeconds)
     pendingSnapshot = nil
     p.snap.playtimeSeconds = totalSeconds or 0
     p.snap.playtimeThisLevelSeconds = thisLevelSeconds or 0
+    SetPlaytimeBaseline(p.snap.playtimeSeconds, p.snap.playtimeThisLevelSeconds, p.snap.takenAt, p.snap.level)
 
     local db = WowDashboardDB
     local entry = EnsureCharacterEntry(p.key, p.name, p.realm, p.charInfo)
@@ -3755,44 +3806,13 @@ end
 
 local function CollectSnapshot(forceFresh)
     if not IsLoggedIn() then return false end
-    if waitingForPlaytime then
-        if forceFresh then
-            queuedFreshSnapshot = true
-            return true
-        end
-        return false
-    end
     if pendingSnapshot and not forceFresh then return false end
 
     local snapshot = BuildPendingSnapshot()
     if not snapshot then return false end
     pendingSnapshot = snapshot
 
-    addon.SuppressNextTimePlayedDisplay()
-    waitingForPlaytime = true
-    if type(RequestTimePlayed) == "function" then
-        local ok = pcall(RequestTimePlayed)
-        if ok then
-            -- Failsafe: if TIME_PLAYED_MSG never arrives, unblock after timeout
-            local timeoutSnapshot = snapshot
-            C_Timer.After(PLAYTIME_TIMEOUT, function()
-                if waitingForPlaytime and pendingSnapshot == timeoutSnapshot then
-                    waitingForPlaytime = false
-                    addon.ClearTimePlayedDisplaySuppression()
-                    CommitSnapshot(GetLastKnownPlaytime(timeoutSnapshot.key))
-                    if queuedFreshSnapshot then
-                        queuedFreshSnapshot = false
-                        CollectSnapshot(true)
-                    end
-                end
-            end)
-            return true
-        end
-    end
-
-    waitingForPlaytime = false
-    addon.ClearTimePlayedDisplaySuppression()
-    CommitSnapshot(GetLastKnownPlaytime(snapshot.key))
+    CommitSnapshot(GetEstimatedPlaytime(snapshot.key))
     return true
 end
 
@@ -3897,6 +3917,9 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
                 version = DB_VERSION,
                 characters = {},
                 panelOpen = false,
+                settings = {
+                    syncPlaytimeOnLogin = true,
+                },
                 minimap = {
                     minimapPos = DEFAULT_MINIMAP_POS,
                     hide = false,
@@ -3912,6 +3935,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
             WowDashboardDB.pendingMythicPlusMembers = {}
         end
         if WowDashboardDB.panelOpen == nil then WowDashboardDB.panelOpen = false end
+        addon.EnsureAddonSettings()
         if addon.EnsureMinimapSettings then
             addon.EnsureMinimapSettings()
         end
@@ -3943,6 +3967,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
             if addon.SetDashboardShown then
                 addon.SetDashboardShown(WowDashboardDB.panelOpen == true)
             end
+            C_Timer.After(1, RequestLoginPlaytimeSync)
             -- First snapshot in 5 s, then every 15 min
             nextSnapshotAt = GetTime() + 5
             C_Timer.After(5, function()
@@ -4070,14 +4095,9 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
 
     elseif event == "TIME_PLAYED_MSG" then
         local totalSeconds, thisLevelSeconds = ...
-        if waitingForPlaytime then
-            waitingForPlaytime = false
-            addon.ClearTimePlayedDisplaySuppressionSoon()
-        end
-        CommitSnapshot(totalSeconds, thisLevelSeconds)
-        if queuedFreshSnapshot then
-            queuedFreshSnapshot = false
-            CollectSnapshot(true)
+        SetPlaytimeBaseline(totalSeconds, thisLevelSeconds, time(), UnitLevel("player"))
+        if pendingSnapshot then
+            CommitSnapshot(totalSeconds, thisLevelSeconds)
         end
     end
 end)
