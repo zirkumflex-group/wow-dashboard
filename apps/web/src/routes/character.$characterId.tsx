@@ -116,7 +116,8 @@ const CURRENT_SEASON_TIME_FRAME = "mn-s1" satisfies TimeFrame;
 const DEFAULT_TIME_FRAME: TimeFrame = CURRENT_SEASON_TIME_FRAME;
 const DEFAULT_LAYOUT_MODE: LayoutMode = "overview";
 const DEFAULT_FOCUS_METRIC: FocusMetric = "ilvl";
-const CHARACTER_PAGE_STALE_TIME_MS = 5 * 60 * 1000;
+const CHARACTER_PAGE_STALE_TIME_MS = 30 * 1000;
+const CHARACTER_PAGE_REFETCH_INTERVAL_MS = 30 * 1000;
 
 function isTimeFrame(value: unknown): value is TimeFrame {
   return (
@@ -1241,6 +1242,70 @@ type MythicPlusData = {
   totalRunCount: number;
   isPreview: boolean;
 };
+
+function getMythicPlusRunCacheIdentity(run: MythicPlusRun) {
+  const normalizedString = (value: string | undefined) => {
+    const normalized = value?.trim();
+    return normalized ? normalized : null;
+  };
+
+  const rowKey = normalizedString(run.rowKey);
+  if (rowKey) {
+    return `row:${rowKey}`;
+  }
+
+  const id = normalizedString(run._id);
+  if (id) {
+    return `id:${id}`;
+  }
+
+  const fingerprint = normalizedString(run.fingerprint);
+  if (fingerprint) {
+    return `fp:${fingerprint}`;
+  }
+
+  const canonicalKey = normalizedString(run.canonicalKey);
+  if (canonicalKey) {
+    return `ck:${canonicalKey}`;
+  }
+
+  const attemptId = normalizedString(run.attemptId);
+  if (attemptId) {
+    return `aid:${attemptId}`;
+  }
+
+  const playedAt = run.playedAt ?? run.sortTimestamp ?? run.observedAt;
+  const dungeon = run.mapChallengeModeID ?? run.mapName ?? "unknown";
+  return [
+    "run",
+    playedAt,
+    run.seasonID ?? "unknown",
+    dungeon,
+    run.level ?? "unknown",
+    run.status ?? "unknown",
+  ].join(":");
+}
+
+function isFullMythicPlusDataFreshForPreview(
+  fullData: MythicPlusData,
+  previewData: MythicPlusData,
+) {
+  const previewLastRunAt = previewData.summary.overall.lastRunAt;
+  if (previewLastRunAt !== null) {
+    const fullLastRunAt = fullData.summary.overall.lastRunAt;
+    if (fullLastRunAt === null || fullLastRunAt < previewLastRunAt) {
+      return false;
+    }
+  }
+
+  const latestPreviewRun = previewData.runs[0];
+  if (!latestPreviewRun) {
+    return true;
+  }
+
+  const latestPreviewRunKey = getMythicPlusRunCacheIdentity(latestPreviewRun);
+  return fullData.runs.some((run) => getMythicPlusRunCacheIdentity(run) === latestPreviewRunKey);
+}
 
 // ── Snapshot grouping ─────────────────────────────────────────────────────────
 
@@ -3350,7 +3415,10 @@ function RouteComponent() {
   const [isUpdatingBooster, setIsUpdatingBooster] = useState(false);
   const [isSavingTradeSlots, setIsSavingTradeSlots] = useState(false);
   const [shouldLoadFullMythicPlusRuns, setShouldLoadFullMythicPlusRuns] = useState(false);
-  const characterPageQuery = useQuery(getCharacterPageQueryOptions(characterId, timeFrame));
+  const characterPageQuery = useQuery({
+    ...getCharacterPageQueryOptions(characterId, timeFrame),
+    refetchInterval: CHARACTER_PAGE_REFETCH_INTERVAL_MS,
+  });
   const characterPage = characterPageQuery.data;
   const pageHeader = characterPage?.header;
   const mythicPlusAllRuns = useQuery({
@@ -3487,15 +3555,37 @@ function RouteComponent() {
   }, [characterId, queryClient]);
 
   const baseMythicPlusData = (characterPage?.mythicPlus ?? null) as MythicPlusData | null;
+
+  useEffect(() => {
+    if (
+      !baseMythicPlusData ||
+      !mythicPlusAllRuns ||
+      isFullMythicPlusDataFreshForPreview(mythicPlusAllRuns, baseMythicPlusData)
+    ) {
+      return;
+    }
+
+    void queryClient.invalidateQueries({
+      queryKey: apiQueryKeys.characterMythicPlus(characterId, { includeAllRuns: true }),
+    });
+  }, [baseMythicPlusData, characterId, mythicPlusAllRuns, queryClient]);
+
   const mythicPlusData = useMemo(() => {
     if (!baseMythicPlusData) {
       return baseMythicPlusData;
     }
+    const usableMythicPlusAllRuns =
+      mythicPlusAllRuns &&
+      isFullMythicPlusDataFreshForPreview(mythicPlusAllRuns, baseMythicPlusData)
+        ? mythicPlusAllRuns
+        : null;
+
     return {
       ...baseMythicPlusData,
-      runs: mythicPlusAllRuns?.runs ?? baseMythicPlusData.runs,
-      totalRunCount: mythicPlusAllRuns?.totalRunCount ?? baseMythicPlusData.totalRunCount,
-      isPreview: mythicPlusAllRuns?.isPreview ?? baseMythicPlusData.isPreview,
+      runs: usableMythicPlusAllRuns?.runs ?? baseMythicPlusData.runs,
+      totalRunCount:
+        usableMythicPlusAllRuns?.totalRunCount ?? baseMythicPlusData.totalRunCount,
+      isPreview: usableMythicPlusAllRuns?.isPreview ?? baseMythicPlusData.isPreview,
     };
   }, [baseMythicPlusData, mythicPlusAllRuns]);
 
