@@ -33,6 +33,7 @@ let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let isQuitting = false;
 let isInstallingAppUpdate = false;
+let isEndingWindowsSession = false;
 let mainWindowReady = false;
 let pendingWindowReveal = false;
 // Cache close behavior so the window close handler can be synchronous (event.preventDefault
@@ -50,6 +51,9 @@ let applyingStagedAddonUpdate = false;
 let appUpdateCheckInFlight: Promise<void> | null = null;
 let addonUpdateCheckInFlight: Promise<AddonUpdateCheckResult> | null = null;
 let appUpdaterListenersRegistered = false;
+let addonUpdateCheckTimer: ReturnType<typeof setInterval> | null = null;
+let addonUpdateApplyTimer: ReturnType<typeof setInterval> | null = null;
+let appUpdateCheckTimer: ReturnType<typeof setInterval> | null = null;
 
 const DEFAULT_APP_UPDATE_CHECK_INTERVAL_MINUTES = 60;
 const DEFAULT_ADDON_UPDATE_CHECK_INTERVAL_MINUTES = 60;
@@ -242,12 +246,47 @@ function updateAddonUpdateState(patch: Partial<AddonUpdateState>): AddonUpdateSt
   return snapshot;
 }
 
-function quitApplication(): void {
+function destroyTray(): void {
+  if (!tray) return;
+  tray.destroy();
+  tray = null;
+}
+
+function clearBackgroundTimers(): void {
+  if (addonUpdateCheckTimer) {
+    clearInterval(addonUpdateCheckTimer);
+    addonUpdateCheckTimer = null;
+  }
+  if (addonUpdateApplyTimer) {
+    clearInterval(addonUpdateApplyTimer);
+    addonUpdateApplyTimer = null;
+  }
+  if (appUpdateCheckTimer) {
+    clearInterval(appUpdateCheckTimer);
+    appUpdateCheckTimer = null;
+  }
+}
+
+function prepareForQuit(options?: { windowsSessionEnding?: boolean }): void {
   isQuitting = true;
+
+  if (options?.windowsSessionEnding) {
+    isEndingWindowsSession = true;
+    autoUpdater.autoInstallOnAppQuit = false;
+  }
+
+  clearBackgroundTimers();
+  stopAddonWatcher();
+  destroyTray();
+}
+
+function quitApplication(): void {
+  prepareForQuit();
   app.quit();
 }
 
 function revealWindow(): void {
+  if (isQuitting) return;
   pendingWindowReveal = false;
   mainWindow?.setSkipTaskbar(false);
   mainWindow?.show();
@@ -255,6 +294,8 @@ function revealWindow(): void {
 }
 
 function showWindow(): void {
+  if (isQuitting) return;
+
   if (!mainWindow) {
     pendingWindowReveal = true;
     createWindow();
@@ -2856,7 +2897,7 @@ function createWindow(): void {
   mainWindow.once("ready-to-show", () => {
     mainWindowReady = true;
 
-    if (process.platform !== "win32" || pendingWindowReveal) {
+    if (!isQuitting && (process.platform !== "win32" || pendingWindowReveal)) {
       pendingWindowReveal = false;
       mainWindow?.setSkipTaskbar(false);
       mainWindow?.show();
@@ -2864,11 +2905,19 @@ function createWindow(): void {
     }
   });
 
+  mainWindow.on("query-session-end", () => {
+    prepareForQuit({ windowsSessionEnding: true });
+  });
+
+  mainWindow.on("session-end", () => {
+    prepareForQuit({ windowsSessionEnding: true });
+  });
+
   // Use the cached close behavior so event.preventDefault() is called synchronously.
   // Awaiting inside a close handler is too late — Electron processes the event before
   // the async callback resumes, so the window would be destroyed even with preventDefault.
   mainWindow.on("close", (event) => {
-    if (isQuitting || isInstallingAppUpdate) return;
+    if (isQuitting || isInstallingAppUpdate || isEndingWindowsSession) return;
     if (closeBehaviorCache === "tray") {
       event.preventDefault();
       mainWindow?.setSkipTaskbar(true);
@@ -4171,12 +4220,12 @@ app.whenReady().then(async () => {
   void stageLatestAddonUpdate().catch((error) => {
     console.warn("[wow-dashboard] Failed to stage addon update:", error);
   });
-  setInterval(() => {
+  addonUpdateCheckTimer = setInterval(() => {
     void stageLatestAddonUpdate().catch((error) => {
       console.warn("[wow-dashboard] Failed to stage addon update:", error);
     });
   }, getConfiguredAddonUpdateCheckIntervalMs());
-  setInterval(() => {
+  addonUpdateApplyTimer = setInterval(() => {
     void applyStagedAddonUpdateIfReady().catch((error) => {
       console.warn("[wow-dashboard] Failed to apply staged addon update:", error);
     });
@@ -4185,7 +4234,7 @@ app.whenReady().then(async () => {
   void triggerAppUpdateCheck().catch((error) => {
     console.warn("[wow-dashboard] Failed to check for app updates:", error);
   });
-  setInterval(() => {
+  appUpdateCheckTimer = setInterval(() => {
     void triggerAppUpdateCheck().catch((error) => {
       console.warn("[wow-dashboard] Failed to check for app updates:", error);
     });
@@ -4197,8 +4246,7 @@ app.whenReady().then(async () => {
 });
 
 app.on("before-quit", () => {
-  isQuitting = true;
-  stopAddonWatcher();
+  prepareForQuit();
 });
 
 app.on("window-all-closed", () => {
