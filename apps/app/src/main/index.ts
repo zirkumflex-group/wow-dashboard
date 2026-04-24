@@ -154,7 +154,11 @@ function loadStoredAuth(): void {
         return;
       }
     } catch {
-      cachedElectronToken = raw;
+      if (raw) {
+        storedSessionToken = raw;
+        cachedElectronToken = raw;
+        saveSessionToken(raw);
+      }
     }
   } catch {
     return;

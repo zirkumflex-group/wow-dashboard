@@ -19,7 +19,7 @@ import { players } from "@wow-dashboard/db";
 import { env } from "@wow-dashboard/env/server";
 import { auth, type ApiAuthSession, type ApiAuthUser } from "./auth";
 import { db } from "./db";
-import { createLoginCode, redeemLoginCode } from "./lib/loginCodes";
+import { createLoginCode, ensureDesktopSessionLifetime, redeemLoginCode } from "./lib/loginCodes";
 import { ensureRedis } from "./lib/redis";
 import { AddonIngestServiceError, ingestAddonData } from "./services/addonIngest";
 import {
@@ -458,6 +458,14 @@ app.use("/api/*", async (c, next) => {
   const session = await auth.api.getSession({
     headers: c.req.raw.headers,
   });
+
+  if (session?.session) {
+    try {
+      await ensureDesktopSessionLifetime(session.session);
+    } catch (error) {
+      console.warn("[api] failed to extend desktop session lifetime", error);
+    }
+  }
 
   c.set("session", session?.session ?? null);
   c.set("user", session?.user ?? null);

@@ -6,6 +6,9 @@ import { ensureRedis } from "./redis";
 
 const loginCodePrefix = "auth:login-code";
 const codeBytes = 32;
+const desktopSessionUserAgent = "wow-dashboard-desktop";
+const desktopSessionTtlSeconds = 10 * 365 * 24 * 60 * 60;
+const desktopSessionRefreshThresholdSeconds = 9 * 365 * 24 * 60 * 60;
 
 type StoredLoginCode = {
   token: string;
@@ -21,11 +24,52 @@ function createRandomCode(): string {
   return randomBytes(codeBytes).toString("hex");
 }
 
+function getDesktopSessionExpiresAt(): Date {
+  return new Date(Date.now() + desktopSessionTtlSeconds * 1000);
+}
+
+type MaybeDesktopSession = {
+  token?: string | null;
+  userAgent?: string | null;
+  expiresAt?: Date | string | null;
+};
+
+export async function ensureDesktopSessionLifetime(session: MaybeDesktopSession): Promise<void> {
+  if (session.userAgent !== desktopSessionUserAgent || !session.token) return;
+
+  const expiresAt =
+    session.expiresAt instanceof Date
+      ? session.expiresAt
+      : session.expiresAt
+        ? new Date(session.expiresAt)
+        : null;
+
+  if (
+    expiresAt &&
+    Number.isFinite(expiresAt.getTime()) &&
+    expiresAt.getTime() > Date.now() + desktopSessionRefreshThresholdSeconds * 1000
+  ) {
+    return;
+  }
+
+  const authContext = await auth.$context;
+  await authContext.internalAdapter.updateSession(session.token, {
+    expiresAt: getDesktopSessionExpiresAt(),
+    updatedAt: new Date(),
+  });
+}
+
 async function createDesktopSessionToken(userId: string): Promise<string> {
   const authContext = await auth.$context;
-  const session = await authContext.internalAdapter.createSession(userId, false, {
-    userAgent: "wow-dashboard-desktop",
-  });
+  const session = await authContext.internalAdapter.createSession(
+    userId,
+    false,
+    {
+      userAgent: desktopSessionUserAgent,
+      expiresAt: getDesktopSessionExpiresAt(),
+    },
+    true,
+  );
 
   if (!session) {
     throw new Error("Failed to create desktop session");

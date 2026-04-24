@@ -97,7 +97,7 @@ async function resetQueueSchema() {
   await db.execute(sql.raw(`drop schema if exists pgboss cascade`));
 }
 
-async function seedAuthenticatedUser() {
+async function seedAuthenticatedUser(input?: { expiresAt?: Date; userAgent?: string | null }) {
   const userId = `user-${randomUUID()}`;
   const token = `session-token-${randomUUID()}`;
 
@@ -113,12 +113,12 @@ async function seedAuthenticatedUser() {
 
   await db.insert(authSessions).values({
     id: `session-${randomUUID()}`,
-    expiresAt: new Date("2027-04-21T12:00:00.000Z"),
+    expiresAt: input?.expiresAt ?? new Date("2027-04-21T12:00:00.000Z"),
     token,
     createdAt: new Date("2026-04-21T12:00:00.000Z"),
     updatedAt: new Date("2026-04-21T12:00:00.000Z"),
     ipAddress: null,
-    userAgent: "test-suite",
+    userAgent: input?.userAgent ?? "test-suite",
     userId,
   });
 
@@ -367,6 +367,45 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
 
     assert.equal(browserSessionResponse.status, 200);
     assert.equal(desktopSessionResponse.status, 200);
+
+    const [desktopSession] = await db
+      .select({
+        expiresAt: authSessions.expiresAt,
+        userAgent: authSessions.userAgent,
+      })
+      .from(authSessions)
+      .where(eq(authSessions.token, redeemPayload.token));
+
+    assert.ok(desktopSession);
+    assert.equal(desktopSession.userAgent, "wow-dashboard-desktop");
+    assert.ok(
+      desktopSession.expiresAt.getTime() > Date.now() + 9 * 365 * 24 * 60 * 60 * 1000,
+    );
+  });
+
+  it("extends existing short-lived desktop sessions on authenticated requests", async () => {
+    const auth = await seedAuthenticatedUser({
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      userAgent: "wow-dashboard-desktop",
+    });
+
+    const response = await app.request("http://localhost/api/me", {
+      headers: authHeaders(auth.token),
+    });
+
+    assert.equal(response.status, 200);
+
+    const [desktopSession] = await db
+      .select({
+        expiresAt: authSessions.expiresAt,
+      })
+      .from(authSessions)
+      .where(eq(authSessions.token, auth.token));
+
+    assert.ok(desktopSession);
+    assert.ok(
+      desktopSession.expiresAt.getTime() > Date.now() + 9 * 365 * 24 * 60 * 60 * 1000,
+    );
   });
 
   it("allows desktop null-origin preflights only for bearer-authenticated API requests", async () => {
