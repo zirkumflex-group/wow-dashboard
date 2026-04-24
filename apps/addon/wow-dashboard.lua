@@ -367,7 +367,6 @@ local refreshCooldownUntil = 0      -- GetTime() when force-refresh cooldown end
 local lastSnapshotAt       = 0      -- GetTime() when last snapshot was committed
 local waitingForPlaytime   = false
 local queuedFreshSnapshot  = false
-local suppressedTimePlayedFrames = nil
 local initialized          = false  -- true after first PLAYER_ENTERING_WORLD
 local pendingMPlusSync     = false
 local lastMPlusSyncAt      = 0
@@ -3645,32 +3644,52 @@ local function BuildPendingSnapshot()
     }
 end
 
-local function SuppressTimePlayedMessages()
-    if suppressedTimePlayedFrames then
-        return
+function addon.ClearTimePlayedDisplaySuppression()
+    addon.suppressNextTimePlayedDisplay = false
+    addon.timePlayedDisplaySuppressUntil = 0
+end
+
+function addon.InstallTimePlayedDisplaySuppressionHook()
+    if addon.timePlayedDisplayHookInstalled then
+        return true
     end
 
-    suppressedTimePlayedFrames = {}
-    for i = 1, NUM_CHAT_WINDOWS do
-        local frame = _G["ChatFrame" .. i]
-        if frame and frame:IsEventRegistered("TIME_PLAYED_MSG") then
-            suppressedTimePlayedFrames[#suppressedTimePlayedFrames + 1] = frame
-            frame:UnregisterEvent("TIME_PLAYED_MSG")
+    if type(ChatFrame_DisplayTimePlayed) ~= "function" then
+        return false
+    end
+
+    addon.originalChatFrameDisplayTimePlayed = ChatFrame_DisplayTimePlayed
+    ChatFrame_DisplayTimePlayed = function(...)
+        if addon.suppressNextTimePlayedDisplay then
+            if addon.timePlayedDisplaySuppressUntil <= 0 or GetTime() <= addon.timePlayedDisplaySuppressUntil then
+                addon.ClearTimePlayedDisplaySuppression()
+                return
+            end
+
+            addon.ClearTimePlayedDisplaySuppression()
         end
+
+        if addon.originalChatFrameDisplayTimePlayed then
+            return addon.originalChatFrameDisplayTimePlayed(...)
+        end
+    end
+    addon.timePlayedDisplayHookInstalled = true
+    return true
+end
+
+function addon.SuppressNextTimePlayedDisplay()
+    if addon.InstallTimePlayedDisplaySuppressionHook() then
+        addon.suppressNextTimePlayedDisplay = true
+        addon.timePlayedDisplaySuppressUntil = GetTime() + PLAYTIME_TIMEOUT
     end
 end
 
-local function RestoreTimePlayedMessages()
-    if not suppressedTimePlayedFrames then
-        return
+function addon.ClearTimePlayedDisplaySuppressionSoon()
+    if C_Timer and type(C_Timer.After) == "function" then
+        C_Timer.After(0, addon.ClearTimePlayedDisplaySuppression)
+    else
+        addon.ClearTimePlayedDisplaySuppression()
     end
-
-    for _, frame in ipairs(suppressedTimePlayedFrames) do
-        if frame then
-            frame:RegisterEvent("TIME_PLAYED_MSG")
-        end
-    end
-    suppressedTimePlayedFrames = nil
 end
 
 local function GetLastKnownPlaytime(characterKey)
@@ -3734,9 +3753,7 @@ local function CollectSnapshot(forceFresh)
     if not snapshot then return false end
     pendingSnapshot = snapshot
 
-    -- Suppress the default chat output by temporarily unregistering
-    -- all chat frames from TIME_PLAYED_MSG before requesting.
-    SuppressTimePlayedMessages()
+    addon.SuppressNextTimePlayedDisplay()
     waitingForPlaytime = true
     if type(RequestTimePlayed) == "function" then
         local ok = pcall(RequestTimePlayed)
@@ -3746,7 +3763,7 @@ local function CollectSnapshot(forceFresh)
             C_Timer.After(PLAYTIME_TIMEOUT, function()
                 if waitingForPlaytime and pendingSnapshot == timeoutSnapshot then
                     waitingForPlaytime = false
-                    RestoreTimePlayedMessages()
+                    addon.ClearTimePlayedDisplaySuppression()
                     CommitSnapshot(GetLastKnownPlaytime(timeoutSnapshot.key))
                     if queuedFreshSnapshot then
                         queuedFreshSnapshot = false
@@ -3759,7 +3776,7 @@ local function CollectSnapshot(forceFresh)
     end
 
     waitingForPlaytime = false
-    RestoreTimePlayedMessages()
+    addon.ClearTimePlayedDisplaySuppression()
     CommitSnapshot(GetLastKnownPlaytime(snapshot.key))
     return true
 end
@@ -4783,7 +4800,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         local totalSeconds, thisLevelSeconds = ...
         if waitingForPlaytime then
             waitingForPlaytime = false
-            RestoreTimePlayedMessages()
+            addon.ClearTimePlayedDisplaySuppressionSoon()
         end
         CommitSnapshot(totalSeconds, thisLevelSeconds)
         if queuedFreshSnapshot then
