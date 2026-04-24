@@ -2221,6 +2221,13 @@ const GREAT_VAULT_DUNGEON_REWARDS_BY_LEVEL = [
   { minLevel: 2, itemLevel: 259 },
 ] as const;
 
+const GREAT_VAULT_RAID_TRACKS_BY_DIFFICULTY_ID = [
+  { difficultyId: 17, label: "Veteran" },
+  { difficultyId: 14, label: "Champion" },
+  { difficultyId: 15, label: "Hero" },
+  { difficultyId: 16, label: "Myth" },
+] as const;
+
 function getVaultActivityGroupKey(
   activity: WeeklyRewardActivity,
   fallbackIndex: number,
@@ -2356,6 +2363,10 @@ function getVaultItemTrack(itemLevel: number | null): GreatVaultItemTrack | null
   return GREAT_VAULT_ITEM_TRACKS.find((track) => itemLevel >= track.minItemLevel) ?? null;
 }
 
+function getVaultItemTrackByLabel(label: string): GreatVaultItemTrack | null {
+  return GREAT_VAULT_ITEM_TRACKS.find((track) => track.label === label) ?? null;
+}
+
 function getDungeonVaultItemLevel(level: number | null): number | null {
   if (level === null || !Number.isFinite(level)) {
     return null;
@@ -2367,6 +2378,18 @@ function getDungeonVaultItemLevel(level: number | null): number | null {
   );
 }
 
+function getRaidVaultItemTrack(level: number | null): GreatVaultItemTrack | null {
+  if (level === null || !Number.isFinite(level)) {
+    return null;
+  }
+
+  const raidTrack = GREAT_VAULT_RAID_TRACKS_BY_DIFFICULTY_ID.find(
+    (track) => track.difficultyId === level,
+  );
+
+  return raidTrack ? getVaultItemTrackByLabel(raidTrack.label) : null;
+}
+
 function getVaultSlotReward(
   group: GreatVaultGroup,
   slot: GreatVaultSlotSummary,
@@ -2376,7 +2399,9 @@ function getVaultSlotReward(
 
   return {
     itemLevel,
-    track: getVaultItemTrack(itemLevel),
+    track:
+      getVaultItemTrack(itemLevel) ??
+      (group.key === "raid" ? getRaidVaultItemTrack(slot.level) : null),
   };
 }
 
@@ -2387,11 +2412,11 @@ function GreatVaultRewardLabel({
   reward: { itemLevel: number | null; track: GreatVaultItemTrack | null };
   className?: string;
 }) {
-  if (!reward.itemLevel) {
+  if (!reward.itemLevel && !reward.track) {
     return null;
   }
 
-  const roundedItemLevel = Math.round(reward.itemLevel);
+  const roundedItemLevel = reward.itemLevel ? Math.round(reward.itemLevel) : null;
 
   if (!reward.track) {
     return <span className={cn("tabular-nums", className)}>{roundedItemLevel}</span>;
@@ -2402,15 +2427,18 @@ function GreatVaultRewardLabel({
       <span className={cn("min-w-0 truncate font-semibold", reward.track.className)}>
         {reward.track.label}
       </span>
-      <span className="shrink-0 tabular-nums text-muted-foreground">{roundedItemLevel}</span>
+      {roundedItemLevel ? (
+        <span className="shrink-0 tabular-nums text-muted-foreground">{roundedItemLevel}</span>
+      ) : null}
     </span>
   );
 }
 
 function GreatVaultSlot({ group, slot }: { group: GreatVaultGroup; slot: GreatVaultSlotSummary }) {
   const reward = getVaultSlotReward(group, slot);
-  const rewardTitle =
-    reward.track && reward.itemLevel ? `, ${reward.track.label} ${reward.itemLevel}` : "";
+  const rewardTitle = reward.track
+    ? `, ${reward.track.label}${reward.itemLevel ? ` ${reward.itemLevel}` : ""}`
+    : "";
 
   return (
     <div
@@ -2423,7 +2451,7 @@ function GreatVaultSlot({ group, slot }: { group: GreatVaultGroup; slot: GreatVa
       title={`${formatVaultObjective(group, slot.threshold)}${rewardTitle}`}
     >
       {slot.unlocked ? (
-        reward.itemLevel ? (
+        reward.itemLevel || reward.track ? (
           <GreatVaultRewardLabel reward={reward} className="max-w-full justify-center truncate" />
         ) : (
           <span className="flex items-center justify-center gap-1 leading-none">
