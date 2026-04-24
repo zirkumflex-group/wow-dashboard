@@ -34,6 +34,7 @@ import {
   type SnapshotSpec,
   user as authUsers,
 } from "@wow-dashboard/db";
+import { addonIngestLimits } from "@wow-dashboard/api-schema";
 
 const [{ app }, { databaseConnection, db }, { closeQueue }, { closeRedis, ensureRedis }] =
   await Promise.all([
@@ -754,7 +755,7 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     const payload = (await response.json()) as {
       header: {
         character: { _id: string; name: string; nonTradeableSlots: string[] | null };
-        owner: { playerId: string; battleTag: string } | null;
+        owner: { playerId: string } | null;
         latestSnapshot: { itemLevel: number; mythicPlusScore: number } | null;
         firstSnapshotAt: number | null;
       };
@@ -773,7 +774,6 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     assert.equal(payload.header.character._id, characterId);
     assert.equal(payload.header.character.name, "PageHero");
     assert.equal(payload.header.owner?.playerId, playerId);
-    assert.equal(payload.header.owner?.battleTag, "Page#1111");
     assert.equal(payload.header.latestSnapshot?.itemLevel, 730.5);
     assert.equal(payload.header.latestSnapshot?.mythicPlusScore, 3250);
     assert.equal(payload.header.firstSnapshotAt, 1_776_772_800);
@@ -1616,6 +1616,25 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     assert.equal(storedSnapshots.length, 1);
     assert.equal(storedDailySnapshots.length, 1);
     assert.equal(storedRuns.length, 1);
+  });
+
+  it("rejects addon ingest requests before parsing bodies over the byte limit", async () => {
+    const auth = await seedAuthenticatedUser();
+    await seedPlayer(auth.userId, "Uploader#4444");
+
+    const response = await app.request("http://localhost/api/addon/ingest", {
+      method: "POST",
+      headers: {
+        ...authHeaders(auth.token),
+        "content-type": "application/json",
+        "content-length": String(addonIngestLimits.maxBodyBytes + 1),
+      },
+      body: "{}",
+    });
+
+    assert.equal(response.status, 413);
+    const payload = (await response.json()) as { error: string };
+    assert.equal(payload.error, "Request body is too large");
   });
 
   it("matches addon characters by normalized realm and name", async () => {

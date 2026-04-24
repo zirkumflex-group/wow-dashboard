@@ -3,6 +3,7 @@ import { eq, sql } from "drizzle-orm";
 import { Hono, type Context } from "hono";
 import {
   addonIngestBodySchema,
+  addonIngestLimits,
   characterDetailTimelineQuerySchema,
   characterMythicPlusQuerySchema,
   characterPageQuerySchema,
@@ -20,6 +21,7 @@ import { env } from "@wow-dashboard/env/server";
 import { auth, type ApiAuthSession, type ApiAuthUser } from "./auth";
 import { db } from "./db";
 import { createLoginCode, ensureDesktopSessionLifetime, redeemLoginCode } from "./lib/loginCodes";
+import { limitPublicHeavyRead, limitPublicRead } from "./lib/rateLimit";
 import { ensureRedis } from "./lib/redis";
 import { AddonIngestServiceError, ingestAddonData } from "./services/addonIngest";
 import {
@@ -60,6 +62,7 @@ function isAllowedApiOrigin(origin: string) {
   try {
     const url = new URL(origin);
     if (
+      env.NODE_ENV !== "production" &&
       (url.hostname === "localhost" || url.hostname === "127.0.0.1") &&
       url.protocol === "http:"
     ) {
@@ -418,6 +421,80 @@ function parseBooleanQueryValue(value: string | null) {
   return value;
 }
 
+function getClientRateLimitKey(c: Context<AppBindings>): string {
+  const forwardedFor = c.req.header("x-forwarded-for")?.split(",")[0]?.trim();
+  const candidate =
+    c.req.header("cf-connecting-ip") ??
+    c.req.header("x-real-ip") ??
+    forwardedFor ??
+    c.req.header("user-agent") ??
+    "unknown";
+  return candidate.slice(0, 128);
+}
+
+function setRetryAfterHeader(c: Context<AppBindings>, retryAfterMs: number) {
+  c.header("Retry-After", String(Math.max(1, Math.ceil(retryAfterMs / 1000))));
+}
+
+async function enforcePublicReadRateLimit(c: Context<AppBindings>, heavy = false) {
+  const key = getClientRateLimitKey(c);
+  const rateLimit = heavy ? await limitPublicHeavyRead(key) : await limitPublicRead(key);
+  if (rateLimit.ok) {
+    return null;
+  }
+
+  setRetryAfterHeader(c, rateLimit.retryAfterMs);
+  return c.json({ error: "Too many requests" }, 429);
+}
+
+function applyPublicCacheHeaders(c: Context<AppBindings>, maxAgeSeconds = 30) {
+  c.header("Cache-Control", `public, max-age=${maxAgeSeconds}, stale-while-revalidate=120`);
+}
+
+async function readJsonBodyWithByteLimit(c: Context<AppBindings>, maxBytes: number) {
+  const contentLengthHeader = c.req.header("content-length");
+  if (contentLengthHeader) {
+    const contentLength = Number(contentLengthHeader);
+    if (!Number.isFinite(contentLength) || contentLength > maxBytes) {
+      return { ok: false as const, status: 413 as const, error: "Request body is too large" };
+    }
+  }
+
+  const body = c.req.raw.body;
+  if (!body) {
+    return { ok: false as const, status: 400 as const, error: "Invalid request body" };
+  }
+
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytes) {
+        await reader.cancel();
+        return { ok: false as const, status: 413 as const, error: "Request body is too large" };
+      }
+
+      chunks.push(value);
+    }
+  } catch {
+    return { ok: false as const, status: 400 as const, error: "Invalid request body" };
+  }
+
+  try {
+    const text = new TextDecoder().decode(Buffer.concat(chunks));
+    return { ok: true as const, body: JSON.parse(text) as unknown };
+  } catch {
+    return { ok: false as const, status: 400 as const, error: "Invalid request body" };
+  }
+}
+
 app.use("/api/*", async (c, next) => {
   const corsPolicy = resolveApiCorsPolicy(c);
 
@@ -590,6 +667,9 @@ app.get("/api/me", (c) => {
 });
 
 app.get("/api/characters/latest", async (c) => {
+  const rateLimitResponse = await enforcePublicReadRateLimit(c);
+  if (rateLimitResponse) return rateLimitResponse;
+
   const searchParams = new URL(c.req.url).searchParams;
   const parsedQuery = charactersLatestQuerySchema.safeParse({
     characterId: searchParams.getAll("characterId"),
@@ -599,6 +679,7 @@ app.get("/api/characters/latest", async (c) => {
     return c.json({ error: formatValidationError(parsedQuery.error.issues) }, 400);
   }
 
+  applyPublicCacheHeaders(c);
   return c.json(await readCharactersWithLatestSnapshot(parsedQuery.data.characterId));
 });
 
@@ -614,6 +695,9 @@ app.get("/api/characters", async (c) => {
 });
 
 app.get("/api/characters/:id/page", async (c) => {
+  const rateLimitResponse = await enforcePublicReadRateLimit(c, true);
+  if (rateLimitResponse) return rateLimitResponse;
+
   const parsedParams = characterRouteParamsSchema.safeParse(c.req.param());
   if (!parsedParams.success) {
     return c.json({ error: formatValidationError(parsedParams.error.issues) }, 400);
@@ -628,6 +712,7 @@ app.get("/api/characters/:id/page", async (c) => {
     return c.json({ error: formatValidationError(parsedQuery.error.issues) }, 400);
   }
 
+  applyPublicCacheHeaders(c);
   return c.json(
     await readCharacterPage(
       parsedParams.data.id,
@@ -638,6 +723,9 @@ app.get("/api/characters/:id/page", async (c) => {
 });
 
 app.get("/api/characters/:id/detail-timeline", async (c) => {
+  const rateLimitResponse = await enforcePublicReadRateLimit(c, true);
+  if (rateLimitResponse) return rateLimitResponse;
+
   const parsedParams = characterRouteParamsSchema.safeParse(c.req.param());
   if (!parsedParams.success) {
     return c.json({ error: formatValidationError(parsedParams.error.issues) }, 400);
@@ -652,6 +740,7 @@ app.get("/api/characters/:id/detail-timeline", async (c) => {
     return c.json({ error: formatValidationError(parsedQuery.error.issues) }, 400);
   }
 
+  applyPublicCacheHeaders(c);
   return c.json(
     await readCharacterDetailTimeline(
       parsedParams.data.id,
@@ -662,6 +751,9 @@ app.get("/api/characters/:id/detail-timeline", async (c) => {
 });
 
 app.get("/api/characters/:id/snapshot-timeline", async (c) => {
+  const rateLimitResponse = await enforcePublicReadRateLimit(c, true);
+  if (rateLimitResponse) return rateLimitResponse;
+
   const parsedParams = characterRouteParamsSchema.safeParse(c.req.param());
   if (!parsedParams.success) {
     return c.json({ error: formatValidationError(parsedParams.error.issues) }, 400);
@@ -675,12 +767,16 @@ app.get("/api/characters/:id/snapshot-timeline", async (c) => {
     return c.json({ error: formatValidationError(parsedQuery.error.issues) }, 400);
   }
 
+  applyPublicCacheHeaders(c);
   return c.json(
     await readCharacterSnapshotTimeline(parsedParams.data.id, parsedQuery.data.timeFrame),
   );
 });
 
 app.get("/api/characters/:id/mythic-plus", async (c) => {
+  const rateLimitResponse = await enforcePublicReadRateLimit(c, true);
+  if (rateLimitResponse) return rateLimitResponse;
+
   const parsedParams = characterRouteParamsSchema.safeParse(c.req.param());
   if (!parsedParams.success) {
     return c.json({ error: formatValidationError(parsedParams.error.issues) }, 400);
@@ -694,16 +790,23 @@ app.get("/api/characters/:id/mythic-plus", async (c) => {
     return c.json({ error: formatValidationError(parsedQuery.error.issues) }, 400);
   }
 
+  applyPublicCacheHeaders(c);
   return c.json(
     await readCharacterMythicPlus(parsedParams.data.id, parsedQuery.data.includeAllRuns === true),
   );
 });
 
 app.get("/api/characters/scoreboard", async (c) => {
+  const rateLimitResponse = await enforcePublicReadRateLimit(c, true);
+  if (rateLimitResponse) return rateLimitResponse;
+  applyPublicCacheHeaders(c, 60);
   return c.json(await readScoreboardCharacters());
 });
 
 app.get("/api/scoreboard/players", async (c) => {
+  const rateLimitResponse = await enforcePublicReadRateLimit(c, true);
+  if (rateLimitResponse) return rateLimitResponse;
+  applyPublicCacheHeaders(c, 60);
   return c.json(await readPlayerScoreboard());
 });
 
@@ -737,14 +840,12 @@ app.post("/api/addon/ingest", async (c) => {
     return c.json({ error: "Unauthorized" }, 401);
   }
 
-  let body: unknown;
-  try {
-    body = await c.req.json();
-  } catch {
-    return c.json({ error: "Invalid request body" }, 400);
+  const bodyResult = await readJsonBodyWithByteLimit(c, addonIngestLimits.maxBodyBytes);
+  if (!bodyResult.ok) {
+    return c.json({ error: bodyResult.error }, bodyResult.status);
   }
 
-  const parsedBody = addonIngestBodySchema.safeParse(body);
+  const parsedBody = addonIngestBodySchema.safeParse(bodyResult.body);
   if (!parsedBody.success) {
     return c.json({ error: formatValidationError(parsedBody.error.issues) }, 400);
   }
@@ -769,11 +870,15 @@ app.post("/api/addon/ingest", async (c) => {
 });
 
 app.get("/api/players/:id/characters", async (c) => {
+  const rateLimitResponse = await enforcePublicReadRateLimit(c, true);
+  if (rateLimitResponse) return rateLimitResponse;
+
   const parsedParams = playerRouteParamsSchema.safeParse(c.req.param());
   if (!parsedParams.success) {
     return c.json({ error: formatValidationError(parsedParams.error.issues) }, 400);
   }
 
+  applyPublicCacheHeaders(c);
   return c.json(await readPlayerCharacters(parsedParams.data.id));
 });
 

@@ -38,6 +38,9 @@ type CharacterDailySnapshotRecord = typeof characterDailySnapshots.$inferSelect;
 type MythicPlusRunRecord = typeof mythicPlusRuns.$inferSelect;
 type SnapshotRecord = typeof snapshots.$inferSelect;
 
+const mythicPlusAllRunsResponseLimit = 250;
+const scoreboardResponseLimit = 500;
+
 type SerializedCharacter = {
   _id: string;
   playerId: string;
@@ -891,7 +894,9 @@ function buildCharacterMythicPlusData(
   totalRunCount: number,
   includeAllRuns: boolean,
 ): CharacterMythicPlusResponse {
-  const visibleRuns = includeAllRuns ? runs : runs.slice(0, mythicPlusPreviewRunLimit);
+  const visibleRuns = includeAllRuns
+    ? runs.slice(0, mythicPlusAllRunsResponseLimit)
+    : runs.slice(0, mythicPlusPreviewRunLimit);
 
   return {
     summary,
@@ -999,8 +1004,6 @@ export async function readCharacterPage(
       owner: owner
         ? {
             playerId: owner.id,
-            battleTag: owner.battleTag,
-            discordUserId: owner.discordUserId ?? null,
           }
         : null,
       latestSnapshot,
@@ -1273,7 +1276,8 @@ export async function readScoreboardCharacters(): Promise<ScoreboardCharacterEnt
     .sort(
       (left, right) =>
         right.mythicPlusScore - left.mythicPlusScore || right.itemLevel - left.itemLevel,
-    );
+    )
+    .slice(0, scoreboardResponseLimit);
 }
 
 export async function readPlayerScoreboard(): Promise<PlayerScoreboardEntry[]> {
@@ -1367,7 +1371,8 @@ export async function readPlayerScoreboard(): Promise<PlayerScoreboardEntry[]> {
         right.highestMythicPlusScore - left.highestMythicPlusScore ||
         right.totalPlaytimeSeconds - left.totalPlaytimeSeconds ||
         right.totalGold - left.totalGold,
-    );
+    )
+    .slice(0, scoreboardResponseLimit);
 }
 
 export async function requestCharacterResync(

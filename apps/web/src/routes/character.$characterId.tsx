@@ -26,8 +26,6 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from "@wow-dashboard/ui/components/dropdown-menu";
-import { Input } from "@wow-dashboard/ui/components/input";
-import { Label } from "@wow-dashboard/ui/components/label";
 import {
   Sheet,
   SheetContent,
@@ -3211,12 +3209,9 @@ function RouteComponent() {
   const navigate = Route.useNavigate();
   const { timeFrame, layoutMode, focusMetric } = Route.useSearch();
   const { pinnedCharacterIdSet, togglePinnedCharacter } = usePinnedCharacters();
-  const [discordUserIdInput, setDiscordUserIdInput] = useState("");
   const [nonTradeableSlotsDraft, setNonTradeableSlotsDraft] = useState<TradeSlotKey[]>([]);
-  const [isSavingDiscordUserId, setIsSavingDiscordUserId] = useState(false);
   const [isUpdatingBooster, setIsUpdatingBooster] = useState(false);
   const [isSavingTradeSlots, setIsSavingTradeSlots] = useState(false);
-  const [isDiscordSheetOpen, setIsDiscordSheetOpen] = useState(false);
   const [shouldLoadFullMythicPlusRuns, setShouldLoadFullMythicPlusRuns] = useState(false);
   const characterPageQuery = useQuery(getCharacterPageQueryOptions(characterId, timeFrame));
   const characterPage = characterPageQuery.data;
@@ -3233,10 +3228,6 @@ function RouteComponent() {
     ...getCharacterStatsTimelineQueryOptions(characterId, timeFrame),
     enabled: needsStatsTimeline,
   }).data;
-
-  useEffect(() => {
-    setDiscordUserIdInput(pageHeader?.owner?.discordUserId ?? "");
-  }, [characterId, pageHeader?.owner?.discordUserId]);
 
   useEffect(() => {
     setShouldLoadFullMythicPlusRuns(false);
@@ -3333,7 +3324,7 @@ function RouteComponent() {
       ...baseMythicPlusData,
       runs: mythicPlusAllRuns?.runs ?? baseMythicPlusData.runs,
       totalRunCount: mythicPlusAllRuns?.totalRunCount ?? baseMythicPlusData.totalRunCount,
-      isPreview: mythicPlusAllRuns ? false : baseMythicPlusData.isPreview,
+      isPreview: mythicPlusAllRuns?.isPreview ?? baseMythicPlusData.isPreview,
     };
   }, [baseMythicPlusData, mythicPlusAllRuns]);
 
@@ -3387,18 +3378,6 @@ function RouteComponent() {
     },
   });
 
-  const setPlayerDiscordUserId = useMutation({
-    mutationFn: ({ playerId, discordUserId }: { playerId: string; discordUserId: string | null }) =>
-      apiClient.updatePlayerDiscordUserId(playerId, { discordUserId }),
-    onSuccess: async () => {
-      await Promise.all([
-        invalidateCharacterPageQueries(),
-        invalidateBoosterExportQueries(),
-        invalidateOwnerQueries(),
-      ]);
-    },
-  });
-
   if (characterPageQuery.isError) {
     return (
       <CharacterPageState
@@ -3433,14 +3412,11 @@ function RouteComponent() {
 
   const { header, coreTimeline } = characterPage;
   const { character, latestSnapshot, firstSnapshotAt, snapshotCount } = header;
-  const owner = header.owner;
   const isPinnedToQuickAccess = pinnedCharacterIdSet.has(characterId);
   const isBoosterCharacter = character.isBooster === true;
   const nonTradeableSlots = (character.nonTradeableSlots ?? []) as TradeSlotKey[];
   const isLoadingAllMythicPlusRuns =
     shouldLoadFullMythicPlusRuns && mythicPlusAllRuns === undefined;
-  const normalizedDiscordUserIdInput = discordUserIdInput.trim();
-  const hasDiscordUserIdChanges = normalizedDiscordUserIdInput !== (owner?.discordUserId ?? "");
   const hasTradeSlotChanges =
     JSON.stringify(nonTradeableSlotsDraft) !== JSON.stringify(nonTradeableSlots);
 
@@ -3471,28 +3447,6 @@ function RouteComponent() {
       toast.error(error instanceof Error ? error.message : "Could not update booster flag.");
     } finally {
       setIsUpdatingBooster(false);
-    }
-  }
-
-  async function handleDiscordUserIdSave() {
-    if (!owner || isSavingDiscordUserId || !hasDiscordUserIdChanges) {
-      return;
-    }
-
-    setIsSavingDiscordUserId(true);
-    try {
-      await setPlayerDiscordUserId.mutateAsync({
-        playerId: owner.playerId,
-        discordUserId: normalizedDiscordUserIdInput === "" ? null : normalizedDiscordUserIdInput,
-      });
-      setIsDiscordSheetOpen(false);
-      toast.success(
-        normalizedDiscordUserIdInput === "" ? "Discord ID cleared." : "Discord ID saved.",
-      );
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not save Discord ID.");
-    } finally {
-      setIsSavingDiscordUserId(false);
     }
   }
 
@@ -3640,53 +3594,6 @@ function RouteComponent() {
                   />
                   {isBoosterCharacter ? "Booster" : "Set Booster"}
                 </Button>
-                {owner && !owner.discordUserId && (
-                  <Sheet open={isDiscordSheetOpen} onOpenChange={setIsDiscordSheetOpen}>
-                    <SheetTrigger asChild>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        className="border-orange-500/40 bg-orange-500/10 text-orange-200 hover:bg-orange-500/15 hover:text-orange-100"
-                      >
-                        Set Discord ID
-                      </Button>
-                    </SheetTrigger>
-                    <SheetContent className="w-full sm:max-w-md">
-                      <SheetHeader>
-                        <SheetTitle>Owner Discord ID</SheetTitle>
-                        <SheetDescription>
-                          Shared across all characters for {owner.battleTag || character.name}.
-                        </SheetDescription>
-                      </SheetHeader>
-                      <div className="mt-6 flex flex-col gap-3">
-                        <div className="flex flex-col gap-2">
-                          <Label htmlFor="discord-user-id">Discord User ID</Label>
-                          <Input
-                            id="discord-user-id"
-                            name="discordUserId"
-                            autoComplete="off"
-                            spellCheck={false}
-                            value={discordUserIdInput}
-                            onChange={(event) => setDiscordUserIdInput(event.target.value)}
-                            placeholder="123456789012345678 or <@mention>…"
-                            className="h-9"
-                          />
-                        </div>
-                        <p className="text-xs text-muted-foreground">
-                          Stored globally on the account owner and used by Copy Helper exports.
-                        </p>
-                        <Button
-                          type="button"
-                          onClick={handleDiscordUserIdSave}
-                          disabled={!hasDiscordUserIdChanges || isSavingDiscordUserId}
-                        >
-                          {isSavingDiscordUserId ? "Saving…" : "Save Discord ID"}
-                        </Button>
-                      </div>
-                    </SheetContent>
-                  </Sheet>
-                )}
                 <Sheet>
                   <SheetTrigger asChild>
                     <Button

@@ -1,4 +1,4 @@
-import PgBoss from "pg-boss";
+import { PgBoss } from "pg-boss";
 import {
   queueNames,
   syncCharactersJobPayloadSchema,
@@ -25,7 +25,7 @@ function isExpectedQueueShutdownError(error: unknown) {
 }
 
 function attachQueueErrorHandler(queue: PgBoss) {
-  queue.on("error", (error) => {
+  queue.on("error", (error: unknown) => {
     if (queueIsClosing && isExpectedQueueShutdownError(error)) {
       return;
     }

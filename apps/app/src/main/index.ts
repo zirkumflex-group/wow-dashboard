@@ -20,6 +20,7 @@ import { join, resolve, sep } from "path";
 import * as crypto from "crypto";
 import * as os from "os";
 import * as unzipper from "unzipper";
+import { fileURLToPath } from "node:url";
 import type {
   AddonApplyStagedResult,
   AddonUpdateCheckResult,
@@ -42,7 +43,6 @@ let closeBehaviorCache: "tray" | "exit" = "tray";
 let launchMinimizedCache = true;
 let addonWatcher: ReturnType<typeof fs.watch> | null = null;
 let addonWatchDebounce: ReturnType<typeof setTimeout> | null = null;
-let cachedElectronToken: string | null = null;
 let storedSessionToken: string | null = null;
 let pendingLoginResolve: ((token: string) => void) | null = null;
 let pendingLoginReject: ((err: Error) => void) | null = null;
@@ -85,6 +85,106 @@ const addonUpdateState: AddonUpdateState = {
 };
 const SITE_URL = appEnv.VITE_SITE_URL;
 const API_URL = appEnv.VITE_API_URL;
+const RENDERER_DEV_URL = process.env["ELECTRON_RENDERER_URL"] ?? null;
+const RENDERER_FILE_PATH = join(__dirname, "../renderer/index.html");
+const RENDERER_DIR = resolve(__dirname, "../renderer");
+
+function isHttpUrl(url: URL): boolean {
+  return url.protocol === "https:" || url.protocol === "http:";
+}
+
+function isPathInside(parentPath: string, childPath: string): boolean {
+  const relativePath = path.relative(resolve(parentPath), resolve(childPath));
+  return relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
+}
+
+function isTrustedRendererUrl(rawUrl: string): boolean {
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(rawUrl);
+  } catch {
+    return false;
+  }
+
+  if (RENDERER_DEV_URL) {
+    try {
+      const devUrl = new URL(RENDERER_DEV_URL);
+      return parsedUrl.origin === devUrl.origin;
+    } catch {
+      return false;
+    }
+  }
+
+  if (parsedUrl.protocol !== "file:") {
+    return false;
+  }
+
+  try {
+    const filePath = fileURLToPath(parsedUrl);
+    return isPathInside(RENDERER_DIR, filePath);
+  } catch {
+    return false;
+  }
+}
+
+function handleBlockedRendererNavigation(rawUrl: string): void {
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(rawUrl);
+  } catch {
+    return;
+  }
+
+  if (isHttpUrl(parsedUrl)) {
+    void openUrlInExternalBrowser(rawUrl).catch((error) => {
+      console.warn("[wow-dashboard] Failed to open blocked renderer navigation externally:", error);
+    });
+  }
+}
+
+type MainApiFetchRequest = {
+  url: string;
+  method?: string;
+  headers?: Array<[string, string]>;
+  body?: string;
+};
+
+type MainApiFetchResponse = {
+  status: number;
+  statusText: string;
+  headers: Array<[string, string]>;
+  body: string;
+};
+
+function isTrustedApiUrl(rawUrl: string): boolean {
+  try {
+    const parsedUrl = new URL(rawUrl);
+    const apiBaseUrl = new URL(API_URL.endsWith("/") ? API_URL : `${API_URL}/`);
+    return (
+      parsedUrl.origin === apiBaseUrl.origin &&
+      (parsedUrl.pathname === apiBaseUrl.pathname.slice(0, -1) ||
+        parsedUrl.pathname.startsWith(apiBaseUrl.pathname))
+    );
+  } catch {
+    return false;
+  }
+}
+
+function buildApiProxyHeaders(inputHeaders: Array<[string, string]> | undefined): Headers {
+  const headers = new Headers();
+  for (const [name, value] of inputHeaders ?? []) {
+    const normalizedName = name.toLowerCase();
+    if (normalizedName === "accept" || normalizedName === "content-type") {
+      headers.set(name, value);
+    }
+  }
+
+  headers.set("Origin", SITE_URL);
+  if (storedSessionToken) {
+    headers.set("Authorization", `Bearer ${storedSessionToken}`);
+  }
+  return headers;
+}
 
 function getElectronLoginUrl(): string {
   return new URL("/auth/electron-login", SITE_URL).toString();
@@ -99,7 +199,6 @@ function getApiAuthUrl(pathname: string): string {
 
 function persistDesktopSessionToken(token: string): void {
   storedSessionToken = token;
-  cachedElectronToken = null;
   saveSessionToken(token);
 }
 
@@ -160,7 +259,6 @@ function loadStoredAuth(): void {
     } catch {
       if (raw) {
         storedSessionToken = raw;
-        cachedElectronToken = raw;
         saveSessionToken(raw);
       }
     }
@@ -2883,15 +2981,38 @@ function createWindow(): void {
     show: process.platform !== "win32", // on Windows start hidden in tray; show immediately on other platforms
     webPreferences: {
       preload: join(__dirname, "../preload/index.js"),
+      contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
+      webSecurity: true,
     },
   });
 
-  if (process.env["ELECTRON_RENDERER_URL"]) {
-    mainWindow.loadURL(process.env["ELECTRON_RENDERER_URL"]);
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    handleBlockedRendererNavigation(url);
+    return { action: "deny" };
+  });
+
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    if (isTrustedRendererUrl(url)) {
+      return;
+    }
+    event.preventDefault();
+    handleBlockedRendererNavigation(url);
+  });
+
+  mainWindow.webContents.on("will-redirect", (event, url) => {
+    if (isTrustedRendererUrl(url)) {
+      return;
+    }
+    event.preventDefault();
+    handleBlockedRendererNavigation(url);
+  });
+
+  if (RENDERER_DEV_URL) {
+    mainWindow.loadURL(RENDERER_DEV_URL);
   } else {
-    mainWindow.loadFile(join(__dirname, "../renderer/index.html"));
+    mainWindow.loadFile(RENDERER_FILE_PATH);
   }
 
   mainWindow.once("ready-to-show", () => {
@@ -2955,7 +3076,6 @@ function handleDeepLink(url: string): void {
             const data = (await resp.json()) as { token?: string; error?: string };
             if (!data.token) throw new Error(data.error ?? "No token in response");
             storedSessionToken = data.token;
-            cachedElectronToken = null;
             saveSessionToken(data.token);
             resolve(data.token);
           })
@@ -3026,15 +3146,6 @@ ipcMain.handle("auth:login", () => {
   });
 });
 
-ipcMain.handle("auth:getToken", async () => {
-  if (cachedElectronToken) return cachedElectronToken;
-  if (storedSessionToken) {
-    cachedElectronToken = storedSessionToken;
-    return cachedElectronToken;
-  }
-  return null;
-});
-
 ipcMain.handle("auth:getSession", async () => {
   if (!storedSessionToken) {
     return {
@@ -3051,7 +3162,6 @@ ipcMain.handle("auth:getSession", async () => {
     });
     if (!resp.ok) {
       if (resp.status === 401) {
-        cachedElectronToken = null;
         saveSessionToken(null);
         return {
           status: "unauthenticated",
@@ -3074,7 +3184,6 @@ ipcMain.handle("auth:getSession", async () => {
 
 ipcMain.handle("auth:logout", async () => {
   const sessionToken = storedSessionToken;
-  cachedElectronToken = null;
   storedSessionToken = null;
   saveSessionToken(null);
   try {
@@ -3092,6 +3201,33 @@ ipcMain.handle("auth:logout", async () => {
     return false;
   }
 });
+
+ipcMain.handle(
+  "api:fetch",
+  async (_, request: MainApiFetchRequest): Promise<MainApiFetchResponse> => {
+    if (!request || typeof request.url !== "string" || !isTrustedApiUrl(request.url)) {
+      throw new Error("Blocked untrusted API request");
+    }
+
+    const method = (request.method ?? "GET").toUpperCase();
+    if (method !== "GET" && method !== "POST" && method !== "PATCH") {
+      throw new Error(`Blocked unsupported API method: ${method}`);
+    }
+
+    const response = await session.defaultSession.fetch(request.url, {
+      method,
+      headers: buildApiProxyHeaders(request.headers),
+      ...(method !== "GET" && request.body !== undefined ? { body: request.body } : {}),
+    });
+
+    return {
+      status: response.status,
+      statusText: response.statusText,
+      headers: Array.from(response.headers.entries()),
+      body: await response.text(),
+    };
+  },
+);
 
 // WoW addon data
 function getStoredRetailPath(settings: Record<string, unknown>): string | null {
@@ -3233,14 +3369,18 @@ const GITHUB_REPO = "zirkumflex-group/wow-dashboard";
 
 interface AddonReleaseInfo {
   url: string;
-  checksumUrl: string | null;
+  checksumUrl: string;
   version: string;
 }
 
 interface StagedAddonUpdate {
   version: string;
-  checksumUrl: string | null;
+  checksumUrl: string;
   downloadedAt: number;
+}
+
+interface ExposedAddonReleaseInfo {
+  version: string;
 }
 
 function getAddonPath(retailPath: string): string {
@@ -3344,18 +3484,35 @@ async function getInstalledAddonVersionForRetailPath(retailPath: string): Promis
   }
 }
 
-function validateGitHubUrl(url: string): void {
+function validateOfficialAddonReleaseUrl(url: string, tagName: string, assetName: string): void {
   let parsedUrl: URL;
   try {
     parsedUrl = new URL(url);
   } catch {
     throw new Error("Invalid URL");
   }
+
+  const [repoOwner, repoName] = GITHUB_REPO.split("/");
+  if (!repoOwner || !repoName) {
+    throw new Error("Invalid GitHub repository configuration");
+  }
+  const pathSegments = parsedUrl.pathname.split("/").map((segment) => decodeURIComponent(segment));
+  const expectedSegments = [
+    "",
+    repoOwner,
+    repoName,
+    "releases",
+    "download",
+    tagName,
+    assetName,
+  ];
   if (
-    parsedUrl.hostname !== "objects.githubusercontent.com" &&
-    parsedUrl.hostname !== "github.com"
+    parsedUrl.protocol !== "https:" ||
+    parsedUrl.hostname !== "github.com" ||
+    pathSegments.length !== expectedSegments.length ||
+    pathSegments.some((segment, index) => segment !== expectedSegments[index])
   ) {
-    throw new Error(`Untrusted download host: ${parsedUrl.hostname}`);
+    throw new Error(`Untrusted addon release asset URL: ${url}`);
   }
 }
 
@@ -3369,12 +3526,14 @@ async function computeFileSha256(filePath: string): Promise<string> {
   });
 }
 
-async function verifyAddonPackage(zipPath: string, checksumPath: string | null): Promise<void> {
-  if (!checksumPath) return;
+async function verifyAddonPackage(zipPath: string, checksumPath: string): Promise<void> {
   const checksumContent = await fs.promises.readFile(checksumPath, "utf-8");
-  const expectedHash = checksumContent.trim().split(/\s+/)[0];
+  const expectedHash = checksumContent.trim().split(/\s+/)[0] ?? "";
+  if (!/^[a-f0-9]{64}$/i.test(expectedHash)) {
+    throw new Error("Invalid addon checksum format");
+  }
   const actualHash = await computeFileSha256(zipPath);
-  if (actualHash !== expectedHash) {
+  if (actualHash.toLowerCase() !== expectedHash.toLowerCase()) {
     throw new Error(
       `Checksum mismatch - addon package may be corrupted or tampered with.\nExpected: ${expectedHash}\nGot: ${actualHash}`,
     );
@@ -3383,36 +3542,18 @@ async function verifyAddonPackage(zipPath: string, checksumPath: string | null):
 
 async function downloadAddonPackage(
   downloadUrl: string,
-  checksumUrl: string | null,
+  checksumUrl: string,
   zipPath: string,
-  checksumPath: string | null,
+  checksumPath: string,
 ): Promise<void> {
-  validateGitHubUrl(downloadUrl);
-  if (checksumUrl) validateGitHubUrl(checksumUrl);
-
   await fs.promises.mkdir(path.dirname(zipPath), { recursive: true });
   await downloadFile(downloadUrl, zipPath);
-
-  if (!checksumUrl) {
-    if (checksumPath) {
-      await fs.promises.rm(checksumPath, { force: true }).catch(() => {});
-    }
-    return;
-  }
-
-  if (!checksumPath) {
-    throw new Error("Checksum URL provided without a checksum destination");
-  }
 
   await downloadFile(checksumUrl, checksumPath);
   await verifyAddonPackage(zipPath, checksumPath);
 }
 
-async function installAddonFromPackage(
-  retailPath: string,
-  zipPath: string,
-  checksumPath: string | null,
-): Promise<void> {
+async function installAddonFromPackage(retailPath: string, zipPath: string, checksumPath: string) {
   await verifyAddonPackage(zipPath, checksumPath);
 
   const extractDir = await fs.promises.mkdtemp(join(os.tmpdir(), "wow-dashboard-addon-extract-"));
@@ -3455,9 +3596,13 @@ async function fetchLatestAddonRelease(): Promise<AddonReleaseInfo> {
   const addonRelease = releases.find(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (release: any) =>
-      release.tag_name.startsWith("addon-v") && !release.draft && !release.prerelease,
+      typeof release.tag_name === "string" &&
+      release.tag_name.startsWith("addon-v") &&
+      !release.draft &&
+      !release.prerelease,
   );
   if (!addonRelease) throw new Error("No addon release found on GitHub");
+  const tagName = addonRelease.tag_name as string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const asset = addonRelease.assets.find((asset: any) => asset.name === "wow-dashboard.zip");
   if (!asset) throw new Error("No wow-dashboard.zip asset found in latest addon release");
@@ -3465,10 +3610,23 @@ async function fetchLatestAddonRelease(): Promise<AddonReleaseInfo> {
   const checksumAsset = addonRelease.assets.find(
     (asset: any) => asset.name === "wow-dashboard.zip.sha256",
   );
+  if (!checksumAsset) {
+    throw new Error("No wow-dashboard.zip.sha256 asset found in latest addon release");
+  }
+  const url = asset.browser_download_url as string;
+  const checksumUrl = checksumAsset.browser_download_url as string;
+  validateOfficialAddonReleaseUrl(url, tagName, "wow-dashboard.zip");
+  validateOfficialAddonReleaseUrl(checksumUrl, tagName, "wow-dashboard.zip.sha256");
   return {
-    url: asset.browser_download_url as string,
-    checksumUrl: checksumAsset ? (checksumAsset.browser_download_url as string) : null,
-    version: (addonRelease.tag_name as string).replace("addon-v", ""),
+    url,
+    checksumUrl,
+    version: tagName.replace("addon-v", ""),
+  };
+}
+
+function exposeAddonReleaseInfo(release: AddonReleaseInfo): ExposedAddonReleaseInfo {
+  return {
+    version: release.version,
   };
 }
 
@@ -3477,9 +3635,10 @@ async function readStagedAddonUpdate(): Promise<StagedAddonUpdate | null> {
     const raw = await fs.promises.readFile(getStagedAddonMetaPath(), "utf-8");
     const parsed = JSON.parse(raw) as Partial<StagedAddonUpdate>;
     if (typeof parsed.version !== "string") return null;
+    if (typeof parsed.checksumUrl !== "string") return null;
     return {
       version: parsed.version,
-      checksumUrl: typeof parsed.checksumUrl === "string" ? parsed.checksumUrl : null,
+      checksumUrl: parsed.checksumUrl,
       downloadedAt: typeof parsed.downloadedAt === "number" ? parsed.downloadedAt : 0,
     };
   } catch {
@@ -3496,12 +3655,10 @@ async function clearStagedAddonUpdate(): Promise<void> {
   await fs.promises.rm(getAddonUpdateStageDir(), { recursive: true, force: true }).catch(() => {});
 }
 
-async function stagedAddonPayloadExists(checksumUrl: string | null): Promise<boolean> {
+async function stagedAddonPayloadExists(): Promise<boolean> {
   try {
     await fs.promises.access(getStagedAddonZipPath(), fs.constants.F_OK);
-    if (checksumUrl) {
-      await fs.promises.access(getStagedAddonChecksumPath(), fs.constants.F_OK);
-    }
+    await fs.promises.access(getStagedAddonChecksumPath(), fs.constants.F_OK);
     return true;
   } catch {
     return false;
@@ -3514,7 +3671,7 @@ async function downloadAndInstallAddonRelease(
 ): Promise<void> {
   const downloadDir = await fs.promises.mkdtemp(join(os.tmpdir(), "wow-dashboard-addon-download-"));
   const zipPath = join(downloadDir, "wow-dashboard.zip");
-  const checksumPath = release.checksumUrl ? join(downloadDir, "wow-dashboard.zip.sha256") : null;
+  const checksumPath = join(downloadDir, "wow-dashboard.zip.sha256");
   try {
     await downloadAddonPackage(release.url, release.checksumUrl, zipPath, checksumPath);
     await installAddonFromPackage(retailPath, zipPath, checksumPath);
@@ -3526,7 +3683,7 @@ async function downloadAndInstallAddonRelease(
 async function getUsableStagedAddonUpdate(): Promise<StagedAddonUpdate | null> {
   const staged = await readStagedAddonUpdate();
   if (!staged) return null;
-  if (await stagedAddonPayloadExists(staged.checksumUrl)) {
+  if (await stagedAddonPayloadExists()) {
     return staged;
   }
   await clearStagedAddonUpdate();
@@ -3607,7 +3764,7 @@ async function applyStagedAddonUpdateIfReady(): Promise<AddonApplyStagedResult> 
       await installAddonFromPackage(
         validatedRetailPath,
         getStagedAddonZipPath(),
-        staged.checksumUrl ? getStagedAddonChecksumPath() : null,
+        getStagedAddonChecksumPath(),
       );
       await clearStagedAddonUpdate();
       broadcastToRenderers("wow:addonUpdateApplied", staged.version);
@@ -3770,12 +3927,11 @@ async function stageLatestAddonUpdate(): Promise<AddonUpdateCheckResult> {
             error: null,
           });
         } else {
-          const checksumPath = latestRelease.checksumUrl ? getStagedAddonChecksumPath() : null;
           await downloadAddonPackage(
             latestRelease.url,
             latestRelease.checksumUrl,
             getStagedAddonZipPath(),
-            checksumPath,
+            getStagedAddonChecksumPath(),
           );
           await writeStagedAddonUpdate({
             version: latestRelease.version,
@@ -3902,26 +4058,28 @@ ipcMain.handle("wow:getInstalledAddonVersion", async () => {
   return getInstalledAddonVersionForRetailPath(retailPath);
 });
 
-ipcMain.handle("wow:installAddon", async (_, downloadUrl: string, checksumUrl: string | null) => {
+ipcMain.handle("wow:installAddon", async () => {
   const { validatedRetailPath, error } = await resolveRetailPathFromSettings();
   if (!validatedRetailPath) {
     throw new Error(error ?? "WoW retail path is not configured");
   }
 
-  await downloadAndInstallAddonRelease(
-    { url: downloadUrl, checksumUrl, version: "" },
-    validatedRetailPath,
-  );
+  const latestRelease = await fetchLatestAddonRelease();
+  await downloadAndInstallAddonRelease(latestRelease, validatedRetailPath);
   await clearStagedAddonUpdate();
   updateAddonUpdateState({
     status: "applied",
-    installedVersion: await getInstalledAddonVersionForRetailPath(validatedRetailPath),
+    installedVersion: latestRelease.version,
+    latestVersion: latestRelease.version,
     stagedVersion: null,
     error: null,
   });
+  return exposeAddonReleaseInfo(latestRelease);
 });
 
-ipcMain.handle("wow:getLatestAddonRelease", () => fetchLatestAddonRelease());
+ipcMain.handle("wow:getLatestAddonRelease", async () =>
+  exposeAddonReleaseInfo(await fetchLatestAddonRelease()),
+);
 
 ipcMain.handle("wow:getAddonUpdateStatus", async () => {
   const staged = await getUsableStagedAddonUpdate();

@@ -229,9 +229,21 @@ declare global {
       version: string;
       auth: {
         login: () => Promise<boolean>;
-        getToken: () => Promise<string | null>;
         getSession: () => Promise<DesktopAuthSessionState>;
         logout: () => Promise<boolean>;
+      };
+      api: {
+        fetch: (request: {
+          url: string;
+          method?: string;
+          headers?: Array<[string, string]>;
+          body?: string;
+        }) => Promise<{
+          status: number;
+          statusText: string;
+          headers: Array<[string, string]>;
+          body: string;
+        }>;
       };
       wow: {
         getRetailPath: () => Promise<string | null>;
@@ -243,10 +255,8 @@ declare global {
         } | null>;
         checkAddonInstalled: () => Promise<boolean>;
         getInstalledAddonVersion: () => Promise<string | null>;
-        installAddon: (downloadUrl: string, checksumUrl: string | null) => Promise<void>;
+        installAddon: () => Promise<{ version: string }>;
         getLatestAddonRelease: () => Promise<{
-          url: string;
-          checksumUrl: string | null;
           version: string;
         }>;
         getAddonUpdateStatus: () => Promise<AddonUpdateState>;
@@ -282,9 +292,9 @@ declare global {
 }
 
 // ---------------------------------------------------------------------------
-// Module-level auth token store (shared across hook instances)
+// Module-level auth state store (shared across hook instances)
 // ---------------------------------------------------------------------------
-let _token: string | null | undefined = undefined; // undefined = still loading
+let _token: "authenticated" | null | undefined = undefined; // undefined = still loading
 const _listeners = new Set<() => void>();
 
 function _notify() {
@@ -302,31 +312,22 @@ async function _clearToken(): Promise<void> {
 }
 
 async function _fetchToken(): Promise<string | null> {
-  let token: string | null = null;
-
   try {
-    token = await window.electron.auth.getToken();
-    if (!token) {
-      _token = null;
-      _notify();
-      return null;
-    }
-
     const sessionState = await window.electron.auth.getSession();
     if (sessionState.status === "unauthenticated") {
       await _clearToken();
       return null;
     }
 
-    _token = token;
+    _token = "authenticated";
     _notify();
-    return token;
+    return _token;
   } catch {
-    // Preserve the local token on transient validation failures. The API client
+    // Preserve local auth state on transient validation failures. The API proxy
     // will still surface request-level auth errors if the session has actually expired.
-    _token = token;
+    _token = "authenticated";
     _notify();
-    return token;
+    return _token;
   }
 }
 
@@ -417,6 +418,9 @@ function isUploadableSnapshot(snapshot: SnapshotData, sinceTs: number) {
 }
 
 const MYTHIC_PLUS_UPLOAD_LOOKBACK_SECONDS = 2 * 60 * 60;
+const ADDON_UPLOAD_CHARACTERS_PER_BATCH = 20;
+const ADDON_UPLOAD_SNAPSHOTS_PER_CHARACTER = 200;
+const ADDON_UPLOAD_RUNS_PER_CHARACTER = 300;
 
 function normalizePositiveTimestampSeconds(value: unknown): number | null {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
@@ -462,6 +466,48 @@ function getPendingUploadCounts(chars: CharacterData[], sinceTs: number): Pendin
     }),
     { snapshots: 0, mythicPlusRuns: 0 },
   );
+}
+
+function chunkCharacterForUpload(character: CharacterData): CharacterData[] {
+  const chunkCount = Math.max(
+    Math.ceil(character.snapshots.length / ADDON_UPLOAD_SNAPSHOTS_PER_CHARACTER),
+    Math.ceil(character.mythicPlusRuns.length / ADDON_UPLOAD_RUNS_PER_CHARACTER),
+    1,
+  );
+  const chunks: CharacterData[] = [];
+
+  for (let index = 0; index < chunkCount; index++) {
+    const snapshots = character.snapshots.slice(
+      index * ADDON_UPLOAD_SNAPSHOTS_PER_CHARACTER,
+      (index + 1) * ADDON_UPLOAD_SNAPSHOTS_PER_CHARACTER,
+    );
+    const mythicPlusRuns = character.mythicPlusRuns.slice(
+      index * ADDON_UPLOAD_RUNS_PER_CHARACTER,
+      (index + 1) * ADDON_UPLOAD_RUNS_PER_CHARACTER,
+    );
+    if (snapshots.length === 0 && mythicPlusRuns.length === 0) {
+      continue;
+    }
+
+    chunks.push({
+      ...character,
+      snapshots,
+      mythicPlusRuns,
+    });
+  }
+
+  return chunks;
+}
+
+function createAddonUploadBatches(characters: CharacterData[]): CharacterData[][] {
+  const chunks = characters.flatMap((character) => chunkCharacterForUpload(character));
+  const batches: CharacterData[][] = [];
+
+  for (let index = 0; index < chunks.length; index += ADDON_UPLOAD_CHARACTERS_PER_BATCH) {
+    batches.push(chunks.slice(index, index + ADDON_UPLOAD_CHARACTERS_PER_BATCH));
+  }
+
+  return batches;
 }
 
 // ---------------------------------------------------------------------------
@@ -826,8 +872,7 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
     setInstalling(true);
     setAddonActionError(null);
     try {
-      const { url, checksumUrl, version } = await window.electron.wow.getLatestAddonRelease();
-      await window.electron.wow.installAddon(url, checksumUrl ?? null);
+      const { version } = await window.electron.wow.installAddon();
       setAddonInstalled(true);
       setAddonVersion(version);
       setAddonUpdateState((current) => ({
@@ -930,13 +975,23 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
             .filter((c) => c.snapshots.length > 0 || c.mythicPlusRuns.length > 0);
 
           if (pendingChars.length > 0) {
-            const result = await uploadAddon.mutateAsync({
-              characters: pendingChars,
-            });
+            const aggregateResult = {
+              newChars: 0,
+              newSnapshots: 0,
+              newMythicPlusRuns: 0,
+            };
+            for (const batch of createAddonUploadBatches(pendingChars)) {
+              const result = await uploadAddon.mutateAsync({
+                characters: batch,
+              });
+              aggregateResult.newChars += result.newChars;
+              aggregateResult.newSnapshots += result.newSnapshots;
+              aggregateResult.newMythicPlusRuns += result.newMythicPlusRuns;
+            }
             setLastUploadResult({
-              newChars: result.newChars,
-              newSnapshots: result.newSnapshots,
-              newMythicPlusRuns: result.newMythicPlusRuns,
+              newChars: aggregateResult.newChars,
+              newSnapshots: aggregateResult.newSnapshots,
+              newMythicPlusRuns: aggregateResult.newMythicPlusRuns,
             });
             const now = Math.floor(Date.now() / 1000);
             setLastSyncedAt(now);

@@ -1,4 +1,4 @@
-import PgBoss from "pg-boss";
+import { PgBoss, type Job } from "pg-boss";
 import {
   queueNames,
   syncCharactersJobPayloadSchema,
@@ -26,7 +26,7 @@ function isExpectedQueueShutdownError(error: unknown) {
 }
 
 function attachBossErrorHandler(boss: PgBoss) {
-  boss.on("error", (error) => {
+  boss.on("error", (error: unknown) => {
     if (workerIsShuttingDown && isExpectedQueueShutdownError(error)) {
       return;
     }
@@ -53,7 +53,7 @@ export async function startWorker() {
 
   await boss.work(
     queueNames.syncCharacters,
-    async (jobs: PgBoss.Job<SyncCharactersJobPayload>[]) => {
+    async (jobs: Job<SyncCharactersJobPayload>[]) => {
       for (const job of jobs) {
         const payload = syncCharactersJobPayloadSchema.parse(job.data);
         const result = await syncCharacters(payload);

@@ -6,6 +6,9 @@
     "packages/*"
   ],
   "type": "module",
+  "engines": {
+    "node": ">=24 <25"
+  },
   "scripts": {
     "dev": "node scripts/dev-stack.mjs",
     "dev:services": "turbo run dev --filter=@wow-dashboard/api --filter=@wow-dashboard/worker --filter=web --filter=app",
@@ -29,7 +32,8 @@
   "packageManager": "pnpm@10.33.1",
   "pnpm": {
     "overrides": {
-      "tar": ">=7.5.11"
+      "tar": ">=7.5.11",
+      "@esbuild-kit/core-utils>esbuild": "0.25.12"
     }
   }
 }

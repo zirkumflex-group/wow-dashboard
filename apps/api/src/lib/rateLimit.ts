@@ -1,7 +1,7 @@
 import { RateLimiterRedis } from "rate-limiter-flexible";
 import { ensureRedis, getRedis } from "./redis";
 
-type RateLimitName = "addonIngest" | "battlenetSync";
+type RateLimitName = "addonIngest" | "battlenetSync" | "publicRead" | "publicHeavyRead";
 type RejectedRateLimit = {
   remainingPoints?: number;
   msBeforeNext?: number;
@@ -18,6 +18,18 @@ const limiters = {
     storeClient: getRedis(),
     keyPrefix: "rate-limit:battlenet-sync",
     points: 5,
+    duration: 60,
+  }),
+  publicRead: new RateLimiterRedis({
+    storeClient: getRedis(),
+    keyPrefix: "rate-limit:public-read",
+    points: 180,
+    duration: 60,
+  }),
+  publicHeavyRead: new RateLimiterRedis({
+    storeClient: getRedis(),
+    keyPrefix: "rate-limit:public-heavy-read",
+    points: 60,
     duration: 60,
   }),
 } satisfies Record<RateLimitName, RateLimiterRedis>;
@@ -53,4 +65,12 @@ export function limitAddonIngest(userId: string) {
 
 export function limitBattleNetSync(userId: string) {
   return consumeRateLimit("battlenetSync", userId);
+}
+
+export function limitPublicRead(key: string) {
+  return consumeRateLimit("publicRead", key);
+}
+
+export function limitPublicHeavyRead(key: string) {
+  return consumeRateLimit("publicHeavyRead", key);
 }

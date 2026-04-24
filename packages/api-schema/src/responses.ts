@@ -266,8 +266,6 @@ export const characterHeaderCharacterSchema = z.object({
 
 export const characterHeaderOwnerSchema = z.object({
   playerId: z.string().uuid(),
-  battleTag: z.string(),
-  discordUserId: z.string().nullable(),
 });
 
 export const characterHeaderResponseSchema = z.object({
