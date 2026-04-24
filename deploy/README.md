@@ -45,7 +45,7 @@ For an existing VPS checkout, use the update script instead of a bare `git pull`
 
 ```bash
 cd ~/wow-dashboard
-bash deploy/update-staging.sh
+bash deploy/update-server.sh
 ```
 
 The script pulls with `--ff-only`, rebuilds the Docker images, and forces the one-shot
@@ -91,7 +91,7 @@ Then SSH into the VPS and deploy:
 ```bash
 ssh vps
 cd ~/wow-dashboard
-bash deploy/update-staging.sh
+bash deploy/update-server.sh
 ```
 
 If you want to run the historical Convex import after deploy:

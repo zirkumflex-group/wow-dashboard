@@ -133,7 +133,7 @@ Bring it up on the VPS with:
 
 ```bash
 cd ~/wow-dashboard
-bash deploy/update-staging.sh
+bash deploy/update-server.sh
 ```
 
 ## Historical Convex Import

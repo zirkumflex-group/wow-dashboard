@@ -20,7 +20,7 @@ FROM base AS deps
 COPY --from=pruner /pruned/json/ .
 
 RUN --mount=type=cache,id=wowdash-pnpm-store,target=/pnpm/store,sharing=locked \
-  pnpm install --frozen-lockfile
+  pnpm install --frozen-lockfile --fix-lockfile
 
 FROM deps AS source
 
