@@ -2,15 +2,16 @@ import { Badge } from "@wow-dashboard/ui/components/badge";
 import { Button } from "@wow-dashboard/ui/components/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@wow-dashboard/ui/components/card";
 import { Clock, Eye, EyeOff, Flame, History, Sword } from "lucide-react";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
+  getRaiderIoDungeonScoreColor,
   getMythicPlusDungeonMeta,
   getMythicPlusDungeonTimerMs,
   getRaiderIoScoreColor,
 } from "../lib/mythic-plus-static";
 import { getClassTextColor } from "../lib/class-colors";
 
-const INITIAL_RECENT_RUN_COUNT = 10;
+const INITIAL_RECENT_RUN_COUNT = 12;
 const RECENT_RUN_LOAD_INCREMENT = 10;
 const RUN_TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
   hour: "2-digit",
@@ -764,9 +765,20 @@ function DungeonIcon({
   );
 }
 
-function RaiderIoScoreText({ score, className }: { score?: number | null; className?: string }) {
+function RaiderIoScoreText({
+  score,
+  className,
+  scoreKind = "overall",
+}: {
+  score?: number | null;
+  className?: string;
+  scoreKind?: "overall" | "dungeon";
+}) {
+  const color =
+    scoreKind === "dungeon" ? getRaiderIoDungeonScoreColor(score) : getRaiderIoScoreColor(score);
+
   return (
-    <span className={className} style={{ color: getRaiderIoScoreColor(score) }}>
+    <span className={className} style={{ color }}>
       {formatRunScore(score)}
     </span>
   );
@@ -872,7 +884,11 @@ function MythicPlusSeasonHero({
           compact
           label="Best Score"
           value={
-            <RaiderIoScoreText score={currentSeason.bestTimedScore} className="tabular-nums" />
+            <RaiderIoScoreText
+              score={currentSeason.bestTimedScore}
+              className="tabular-nums"
+              scoreKind="dungeon"
+            />
           }
         />
       </div>
@@ -976,7 +992,7 @@ function MythicPlusDungeonBestList({
               />
             </div>
             <div className="text-right text-sm font-semibold tabular-nums">
-              <RaiderIoScoreText score={dungeon.bestTimedScore} />
+              <RaiderIoScoreText score={dungeon.bestTimedScore} scoreKind="dungeon" />
             </div>
           </div>
         ))}
@@ -1007,6 +1023,8 @@ export function MythicPlusSection({
     hideAllNames,
     toggleHideAllNames,
   } = useHiddenPlayers();
+  const [summaryCardHeight, setSummaryCardHeight] = useState<number | null>(null);
+  const summaryCardRef = useRef<HTMLDivElement | null>(null);
   const latestRunResetKey = data?.runs[0] ? getRecentRunRowKey(data.runs[0]) : "";
   const recentRunsResetKey = `${data?.totalRunCount ?? 0}:${latestRunResetKey}`;
   const totalRunCount = data?.totalRunCount ?? 0;
@@ -1014,6 +1032,23 @@ export function MythicPlusSection({
 
   useEffect(() => {
     setVisibleRecentRunCount(INITIAL_RECENT_RUN_COUNT);
+  }, [recentRunsResetKey]);
+
+  useEffect(() => {
+    const summaryElement = summaryCardRef.current;
+    if (!summaryElement || typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    const updateHeight = () => {
+      setSummaryCardHeight(Math.ceil(summaryElement.getBoundingClientRect().height));
+    };
+
+    updateHeight();
+
+    const resizeObserver = new ResizeObserver(updateHeight);
+    resizeObserver.observe(summaryElement);
+    return () => resizeObserver.disconnect();
   }, [recentRunsResetKey]);
 
   if (data === undefined) {
@@ -1080,37 +1115,42 @@ export function MythicPlusSection({
   return (
     <div className="space-y-4 [contain-intrinsic-size:1200px] [content-visibility:auto]">
       <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
-        <Card className="overflow-hidden">
-          <CardHeader className="border-b bg-muted/10 px-4 py-3">
-            <div className="flex items-center justify-between gap-3">
-              <CardTitle className="flex items-center gap-2 text-lg">
-                <History size={16} className="text-muted-foreground" />
-                Mythic+ Summary
-              </CardTitle>
-              {formatSeasonLabel(summary.latestSeasonID) ? (
-                <Badge variant="outline">{formatSeasonLabel(summary.latestSeasonID)}</Badge>
+        <div ref={summaryCardRef}>
+          <Card className="overflow-hidden">
+            <CardHeader className="border-b bg-muted/10 px-4 py-3">
+              <div className="flex items-center justify-between gap-3">
+                <CardTitle className="flex items-center gap-2 text-lg">
+                  <History size={16} className="text-muted-foreground" />
+                  Mythic+ Summary
+                </CardTitle>
+                {formatSeasonLabel(summary.latestSeasonID) ? (
+                  <Badge variant="outline">{formatSeasonLabel(summary.latestSeasonID)}</Badge>
+                ) : null}
+              </div>
+            </CardHeader>
+            <CardContent className="grid gap-3 px-4 py-4">
+              {currentSeason ? (
+                <>
+                  <div className="flex items-center gap-2">
+                    <Flame size={14} className="text-muted-foreground" />
+                    <h3 className="text-sm font-semibold">Current Season</h3>
+                  </div>
+                  <MythicPlusSeasonHero summary={summary} currentSeason={currentSeason} />
+                  <MythicPlusKeyProfile currentSeason={currentSeason} />
+                </>
               ) : null}
-            </div>
-          </CardHeader>
-          <CardContent className="grid gap-3 px-4 py-4">
-            {currentSeason ? (
-              <>
-                <div className="flex items-center gap-2">
-                  <Flame size={14} className="text-muted-foreground" />
-                  <h3 className="text-sm font-semibold">Current Season</h3>
-                </div>
-                <MythicPlusSeasonHero summary={summary} currentSeason={currentSeason} />
-                <MythicPlusKeyProfile currentSeason={currentSeason} />
-              </>
-            ) : null}
-            <MythicPlusDungeonBestList
-              dungeons={summary.currentSeasonDungeons}
-              currentScore={summary.currentScore}
-            />
-          </CardContent>
-        </Card>
+              <MythicPlusDungeonBestList
+                dungeons={summary.currentSeasonDungeons}
+                currentScore={summary.currentScore}
+              />
+            </CardContent>
+          </Card>
+        </div>
 
-        <Card className="flex max-h-[30rem] flex-col overflow-hidden">
+        <Card
+          className="flex flex-col overflow-hidden"
+          style={summaryCardHeight === null ? undefined : { height: `${summaryCardHeight}px` }}
+        >
           <CardHeader className="border-b bg-muted/10 px-4 py-3">
             <div className="flex items-center justify-between gap-3">
               <CardTitle className="flex items-center gap-2 text-lg">

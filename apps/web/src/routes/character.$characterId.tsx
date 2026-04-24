@@ -610,7 +610,7 @@ function formatCardDateTime(ts?: number | null) {
 
 function getTimeFrameDeltaLabel(timeFrame: TimeFrame) {
   if (timeFrame === CURRENT_SEASON_TIME_FRAME) {
-    return "last 7D";
+    return "last week";
   }
 
   if (isSeasonTimeFrame(timeFrame)) {
