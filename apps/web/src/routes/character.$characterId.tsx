@@ -2075,6 +2075,19 @@ function getBoundedPercent(value: number, max: number) {
   return Math.max(0, Math.min(100, (value / max) * 100));
 }
 
+function getCurrencyCapProgressQuantity(quantity: number, detail: SnapshotCurrencyDetail | undefined) {
+  if (detail?.useTotalEarnedForMaxQty !== true) {
+    return quantity;
+  }
+
+  const totalEarned = detail.totalEarned;
+  if (totalEarned === undefined || !Number.isFinite(totalEarned)) {
+    return quantity;
+  }
+
+  return Math.max(quantity, totalEarned);
+}
+
 function getCurrencyProgress(
   quantity: number,
   detail: SnapshotCurrencyDetail | undefined,
@@ -2100,8 +2113,9 @@ function getCurrencyProgress(
   const maxQuantity =
     detail?.maxQuantity && detail.maxQuantity > 0 ? detail.maxQuantity : fallbackMaxQuantity;
   if (maxQuantity && maxQuantity > 0) {
-    labels.push(`${quantity.toLocaleString()}/${maxQuantity.toLocaleString()} cap`);
-    percent ??= getBoundedPercent(quantity, maxQuantity);
+    const capProgressQuantity = getCurrencyCapProgressQuantity(quantity, detail);
+    labels.push(`${capProgressQuantity.toLocaleString()}/${maxQuantity.toLocaleString()} cap`);
+    percent ??= getBoundedPercent(capProgressQuantity, maxQuantity);
   }
 
   if (labels.length > 0) {
