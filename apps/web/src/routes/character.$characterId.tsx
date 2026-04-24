@@ -46,6 +46,7 @@ import {
 } from "@wow-dashboard/ui/components/tooltip";
 import { cn } from "@wow-dashboard/ui/lib/utils";
 import {
+  CheckCircle2,
   Clock,
   Coins,
   ChevronDown,
@@ -57,6 +58,7 @@ import {
   History,
   LayoutGrid,
   LayoutList,
+  Lock,
   Maximize2,
   Star,
   Sword,
@@ -2308,25 +2310,27 @@ function formatVaultObjective(group: GreatVaultGroup, threshold: number) {
   return `${threshold} ${noun}`;
 }
 
-function GreatVaultSlot({ group, slot }: { group: GreatVaultGroup; slot: GreatVaultSlotSummary }) {
-  const shownProgress = Math.min(slot.progress, slot.threshold);
+function formatVaultProgressLabel(group: GreatVaultGroup, progress: number) {
+  const noun = progress === 1 ? group.singularObjective : group.pluralObjective;
+  return noun;
+}
 
+function GreatVaultSlot({ group, slot }: { group: GreatVaultGroup; slot: GreatVaultSlotSummary }) {
   return (
     <div
       className={cn(
-        "min-w-0 rounded-md border px-2 py-1.5",
-        slot.unlocked ? "border-violet-400/35 bg-violet-400/10" : "border-border/60 bg-muted/20",
+        "flex min-w-0 items-center justify-center gap-1 rounded-md border px-1.5 py-1 text-[10px] font-semibold",
+        slot.unlocked
+          ? "border-violet-300/50 bg-violet-400/15 text-violet-100"
+          : "border-border/60 bg-background text-muted-foreground",
       )}
+      title={formatVaultObjective(group, slot.threshold)}
     >
-      <div className="truncate text-[11px] font-medium text-muted-foreground">
-        {formatVaultObjective(group, slot.threshold)}
-      </div>
-      <div className="mt-1 font-semibold tabular-nums">
-        {shownProgress.toLocaleString()}/{slot.threshold.toLocaleString()}
-      </div>
-      <div className="mt-0.5 truncate text-[10px] font-medium text-muted-foreground">
-        {slot.itemLevel ? `ilvl ${slot.itemLevel}` : slot.unlocked ? "Unlocked" : "Locked"}
-      </div>
+      {slot.unlocked ? <CheckCircle2 size={11} /> : <Lock size={10} />}
+      <span className="tabular-nums">{slot.threshold.toLocaleString()}</span>
+      {slot.itemLevel ? (
+        <span className="min-w-0 truncate text-muted-foreground">{slot.itemLevel}</span>
+      ) : null}
     </div>
   );
 }
@@ -2341,14 +2345,35 @@ function GreatVaultGroupRow({
   const unlocked = slots.filter((slot) => slot.unlocked).length;
   const bestItemLevel =
     slots.reduce((highest, slot) => Math.max(highest, slot.itemLevel ?? 0), 0) || null;
+  const progress = slots.reduce((highest, slot) => Math.max(highest, slot.progress), 0);
+  const finalThreshold = slots.reduce((highest, slot) => Math.max(highest, slot.threshold), 0);
+  const progressPercent = getBoundedPercent(progress, finalThreshold) ?? 0;
+  const shownProgress = Math.min(progress, finalThreshold);
 
   return (
-    <div className="grid gap-2">
-      <div className="flex items-center justify-between gap-3 text-xs">
-        <span className="font-semibold text-foreground">{group.label}</span>
-        <span className="shrink-0 text-muted-foreground">
-          {unlocked}/3{bestItemLevel ? ` best ${bestItemLevel}` : ""}
+    <div className="grid gap-1.5 border-t border-border/50 pt-2.5 first:border-t-0 first:pt-0">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0 font-semibold text-foreground">{group.label}</div>
+        <div className="shrink-0 text-[11px] text-muted-foreground">
+          <span className="font-semibold tabular-nums text-foreground">{unlocked}/3</span> slots
+        </div>
+      </div>
+      <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+        <span className="min-w-0 truncate">
+          <span className="font-medium tabular-nums text-foreground">
+            {shownProgress.toLocaleString()}/{finalThreshold.toLocaleString()}
+          </span>{" "}
+          {formatVaultProgressLabel(group, shownProgress)}
         </span>
+        {bestItemLevel ? (
+          <span className="shrink-0 font-medium tabular-nums">best {bestItemLevel}</span>
+        ) : null}
+      </div>
+      <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+        <div
+          className="h-full rounded-full bg-violet-400"
+          style={{ width: `${progressPercent}%` }}
+        />
       </div>
       <div className="grid grid-cols-3 gap-1.5">
         {slots.map((slot) => (
@@ -2402,11 +2427,11 @@ function GreatVaultCard({ weeklyRewards }: { weeklyRewards?: Snapshot["weeklyRew
   }
 
   return (
-    <Card>
-      <CardHeader className="border-b px-4 pb-2 pt-4">
+    <Card className="overflow-hidden">
+      <CardHeader className="border-b bg-muted/10 px-4 pb-2 pt-4">
         <CardTitle className="flex items-center justify-between gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
           <span className="flex items-center gap-1.5">
-            <Trophy size={14} className="text-muted-foreground" /> Great Vault
+            <Trophy size={14} className="text-violet-300" /> Great Vault
           </span>
           {weeklyRewards?.canClaimRewards ? (
             <Badge
@@ -2418,30 +2443,21 @@ function GreatVaultCard({ weeklyRewards }: { weeklyRewards?: Snapshot["weeklyRew
           ) : null}
         </CardTitle>
       </CardHeader>
-      <CardContent className="grid gap-3 px-4 pb-4 pt-2">
-        <div className="grid grid-cols-3 gap-2">
-          <div>
-            <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
-              Slots
-            </div>
-            <div className="font-semibold tabular-nums">
-              {summary.unlocked}/{summary.slotCount}
-            </div>
-          </div>
-          <div>
-            <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
-              Best
-            </div>
-            <div className="font-semibold tabular-nums">{summary.bestItemLevel ?? "None"}</div>
-          </div>
-          <div>
-            <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
-              Week
-            </div>
-            <div className="font-semibold">
-              {weeklyRewards?.isCurrentPeriod === false ? "Stale" : "Current"}
-            </div>
-          </div>
+      <CardContent className="grid gap-3 px-4 pb-3 pt-2.5">
+        <div className="flex items-center justify-between gap-2 rounded-md border border-border/50 bg-muted/10 px-2 py-1.5 text-xs">
+          <span className="shrink-0 text-muted-foreground">
+            <span className="font-semibold tabular-nums text-foreground">{summary.unlocked}</span>/
+            {summary.slotCount} slots
+          </span>
+          <span className="min-w-0 truncate text-muted-foreground">
+            Best{" "}
+            <span className="font-semibold tabular-nums text-foreground">
+              {summary.bestItemLevel ?? "None"}
+            </span>
+          </span>
+          <span className="shrink-0 font-medium text-muted-foreground">
+            {weeklyRewards?.isCurrentPeriod === false ? "Stale" : "Current"}
+          </span>
         </div>
         <div className="grid gap-3">
           {summary.groups.map(({ group, slots }) => (
