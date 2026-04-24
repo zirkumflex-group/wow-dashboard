@@ -221,12 +221,6 @@ const SEASON_TIME_FRAME_OPTIONS: {
   { value: "tww-s3", label: "TWW-S3" },
 ];
 
-const SEASON_ID_BY_TIME_FRAME: Record<(typeof SEASON_TIME_FRAME_OPTIONS)[number]["value"], number> =
-  {
-    "mn-s1": 17,
-    "tww-s3": 16,
-  };
-
 const RELATIVE_TIME_FRAME_OPTIONS: {
   value: Extract<TimeFrame, "30d" | "14d" | "7d">;
   label: string;
@@ -247,17 +241,6 @@ function getTimeFrameOptionLabel(timeFrame: TimeFrame) {
     SEASON_TIME_FRAME_OPTIONS.find((option) => option.value === timeFrame)?.label ??
     RELATIVE_TIME_FRAME_OPTIONS.find((option) => option.value === timeFrame)?.label ??
     (timeFrame === "all" ? "All" : timeFrame)
-  );
-}
-
-function formatSnapshotSeasonLabel(seasonID?: number) {
-  if (typeof seasonID !== "number" || !Number.isFinite(seasonID)) {
-    return null;
-  }
-
-  return (
-    SEASON_TIME_FRAME_OPTIONS.find((option) => SEASON_ID_BY_TIME_FRAME[option.value] === seasonID)
-      ?.label ?? `Season ${seasonID}`
   );
 }
 
@@ -2148,7 +2131,7 @@ const GREAT_VAULT_GROUPS = [
     label: "Dungeons",
     singularObjective: "dungeon",
     pluralObjective: "dungeons",
-    thresholds: [2, 4, 8],
+    thresholds: [1, 4, 8],
   },
   {
     key: "world",
@@ -2177,8 +2160,30 @@ type GreatVaultSlotSummary = {
   threshold: number;
   progress: number;
   unlocked: boolean;
+  level: number | null;
   itemLevel: number | null;
 };
+
+type GreatVaultItemTrack = {
+  label: string;
+  className: string;
+};
+
+const GREAT_VAULT_ITEM_TRACKS = [
+  { minItemLevel: 272, label: "Myth", className: "text-rose-300" },
+  { minItemLevel: 259, label: "Hero", className: "text-amber-300" },
+  { minItemLevel: 246, label: "Champion", className: "text-emerald-300" },
+  { minItemLevel: 233, label: "Veteran", className: "text-cyan-300" },
+  { minItemLevel: 220, label: "Adventurer", className: "text-sky-300" },
+] as const satisfies readonly (GreatVaultItemTrack & { minItemLevel: number })[];
+
+const GREAT_VAULT_DUNGEON_REWARDS_BY_LEVEL = [
+  { minLevel: 10, itemLevel: 272 },
+  { minLevel: 7, itemLevel: 269 },
+  { minLevel: 6, itemLevel: 266 },
+  { minLevel: 4, itemLevel: 263 },
+  { minLevel: 2, itemLevel: 259 },
+] as const;
 
 function getVaultActivityGroupKey(
   activity: WeeklyRewardActivity,
@@ -2274,6 +2279,7 @@ function getVaultGroupSlots(
       threshold,
       progress,
       unlocked: progress >= threshold,
+      level: activity?.level ?? null,
       itemLevel: activity?.itemLevel ?? null,
     };
   });
@@ -2290,16 +2296,9 @@ function getVaultSummary(weeklyRewards: Snapshot["weeklyRewards"]) {
     group,
     slots: getVaultGroupSlots(group, groupedActivities[group.key]),
   }));
-  const allSlots = groups.flatMap((group) => group.slots);
-  const unlocked = allSlots.filter((slot) => slot.unlocked).length;
-  const bestItemLevel =
-    allSlots.reduce((highest, slot) => Math.max(highest, slot.itemLevel ?? 0), 0) || null;
 
   return {
-    slotCount: allSlots.length,
     groups,
-    unlocked,
-    bestItemLevel,
   };
 }
 
@@ -2313,22 +2312,95 @@ function formatVaultProgressLabel(group: GreatVaultGroup, progress: number) {
   return noun;
 }
 
+function getVaultItemTrack(itemLevel: number | null): GreatVaultItemTrack | null {
+  if (itemLevel === null || !Number.isFinite(itemLevel)) {
+    return null;
+  }
+
+  return GREAT_VAULT_ITEM_TRACKS.find((track) => itemLevel >= track.minItemLevel) ?? null;
+}
+
+function getDungeonVaultItemLevel(level: number | null): number | null {
+  if (level === null || !Number.isFinite(level)) {
+    return null;
+  }
+
+  return (
+    GREAT_VAULT_DUNGEON_REWARDS_BY_LEVEL.find((reward) => level >= reward.minLevel)?.itemLevel ??
+    null
+  );
+}
+
+function getVaultSlotReward(
+  group: GreatVaultGroup,
+  slot: GreatVaultSlotSummary,
+): { itemLevel: number | null; track: GreatVaultItemTrack | null } {
+  const itemLevel =
+    slot.itemLevel ?? (group.key === "dungeons" ? getDungeonVaultItemLevel(slot.level) : null);
+
+  return {
+    itemLevel,
+    track: getVaultItemTrack(itemLevel),
+  };
+}
+
+function GreatVaultRewardLabel({
+  reward,
+  className,
+}: {
+  reward: { itemLevel: number | null; track: GreatVaultItemTrack | null };
+  className?: string;
+}) {
+  if (!reward.itemLevel) {
+    return null;
+  }
+
+  const roundedItemLevel = Math.round(reward.itemLevel);
+
+  if (!reward.track) {
+    return <span className={cn("tabular-nums", className)}>{roundedItemLevel}</span>;
+  }
+
+  return (
+    <span className={cn("inline-flex min-w-0 items-baseline gap-1", className)}>
+      <span className={cn("min-w-0 truncate font-semibold", reward.track.className)}>
+        {reward.track.label}
+      </span>
+      <span className="shrink-0 tabular-nums text-muted-foreground">{roundedItemLevel}</span>
+    </span>
+  );
+}
+
 function GreatVaultSlot({ group, slot }: { group: GreatVaultGroup; slot: GreatVaultSlotSummary }) {
+  const reward = getVaultSlotReward(group, slot);
+  const rewardTitle =
+    reward.track && reward.itemLevel ? `, ${reward.track.label} ${reward.itemLevel}` : "";
+
   return (
     <div
       className={cn(
-        "flex min-w-0 items-center justify-center gap-1 rounded-md border px-1.5 py-1 text-[10px] font-semibold",
+        "flex h-10 min-w-0 flex-col items-center justify-center gap-0.5 rounded-md border px-1 py-1 text-[10px] font-semibold",
         slot.unlocked
           ? "border-violet-300/50 bg-violet-400/15 text-violet-100"
           : "border-border/60 bg-background text-muted-foreground",
       )}
-      title={formatVaultObjective(group, slot.threshold)}
+      title={`${formatVaultObjective(group, slot.threshold)}${rewardTitle}`}
     >
-      {slot.unlocked ? <CheckCircle2 size={11} /> : <Lock size={10} />}
-      <span className="tabular-nums">{slot.threshold.toLocaleString()}</span>
-      {slot.itemLevel ? (
-        <span className="min-w-0 truncate text-muted-foreground">{slot.itemLevel}</span>
-      ) : null}
+      {slot.unlocked ? (
+        reward.itemLevel ? (
+          <GreatVaultRewardLabel reward={reward} className="max-w-full justify-center truncate" />
+        ) : (
+          <span className="flex items-center justify-center gap-1 leading-none">
+            <CheckCircle2 size={11} />
+            <span className="tabular-nums">{slot.threshold.toLocaleString()}</span>
+          </span>
+        )
+      ) : (
+        <span className="flex items-center justify-center gap-1 leading-none">
+          <Lock size={10} />
+          <span className="tabular-nums">{slot.threshold.toLocaleString()}</span>
+        </span>
+      )}
     </div>
   );
 }
@@ -2341,8 +2413,6 @@ function GreatVaultGroupRow({
   slots: GreatVaultSlotSummary[];
 }) {
   const unlocked = slots.filter((slot) => slot.unlocked).length;
-  const bestItemLevel =
-    slots.reduce((highest, slot) => Math.max(highest, slot.itemLevel ?? 0), 0) || null;
   const progress = slots.reduce((highest, slot) => Math.max(highest, slot.progress), 0);
   const finalThreshold = slots.reduce((highest, slot) => Math.max(highest, slot.threshold), 0);
   const progressPercent = getBoundedPercent(progress, finalThreshold) ?? 0;
@@ -2363,9 +2433,6 @@ function GreatVaultGroupRow({
           </span>{" "}
           {formatVaultProgressLabel(group, shownProgress)}
         </span>
-        {bestItemLevel ? (
-          <span className="shrink-0 font-medium tabular-nums">best {bestItemLevel}</span>
-        ) : null}
       </div>
       <div className="h-1.5 overflow-hidden rounded-full bg-muted">
         <div
@@ -2441,22 +2508,7 @@ function GreatVaultCard({ weeklyRewards }: { weeklyRewards?: Snapshot["weeklyRew
           ) : null}
         </CardTitle>
       </CardHeader>
-      <CardContent className="grid gap-3 px-4 pb-3 pt-2.5">
-        <div className="flex items-center justify-between gap-2 rounded-md border border-border/50 bg-muted/10 px-2 py-1.5 text-xs">
-          <span className="shrink-0 text-muted-foreground">
-            <span className="font-semibold tabular-nums text-foreground">{summary.unlocked}</span>/
-            {summary.slotCount} slots
-          </span>
-          <span className="min-w-0 truncate text-muted-foreground">
-            Best{" "}
-            <span className="font-semibold tabular-nums text-foreground">
-              {summary.bestItemLevel ?? "None"}
-            </span>
-          </span>
-          <span className="shrink-0 font-medium text-muted-foreground">
-            {weeklyRewards?.isCurrentPeriod === false ? "Stale" : "Current"}
-          </span>
-        </div>
+      <CardContent className="grid gap-3 px-4 pb-3 pt-3">
         <div className="grid gap-3">
           {summary.groups.map(({ group, slots }) => (
             <GreatVaultGroupRow key={group.key} group={group} slots={slots} />
@@ -3433,7 +3485,6 @@ function RouteComponent() {
     snapshotCount === null ? coreSnapshots.length.toLocaleString() : snapshotCount.toLocaleString();
   const rangeBaselineSnapshot = getRangeBaselineSnapshot(timeFrame, coreSnapshots, latest);
   const rangeDeltaLabel = getTimeFrameDeltaLabel(timeFrame);
-  const latestSeasonLabel = formatSnapshotSeasonLabel(latest?.seasonID);
 
   async function handleBoosterToggle() {
     if (isUpdatingBooster) {
@@ -3509,14 +3560,6 @@ function RouteComponent() {
                   >
                     {ROLE_LABELS[latest.role] ?? latest.role}
                   </Badge>
-                  {latestSeasonLabel ? (
-                    <Badge
-                      variant="outline"
-                      className="border-yellow-400/40 bg-yellow-400/10 uppercase tracking-[0.18em] text-yellow-300"
-                    >
-                      {latestSeasonLabel}
-                    </Badge>
-                  ) : null}
                 </div>
               )}
               <CardTitle
