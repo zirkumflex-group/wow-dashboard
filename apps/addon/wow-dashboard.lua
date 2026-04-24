@@ -2265,16 +2265,16 @@ local function GetCurrentMythicPlusSeasonID()
         pcall(C_MythicPlus.RequestMapInfo)
     end
 
-    if type(C_MythicPlus.GetCurrentUIDisplaySeason) == "function" then
-        local ok, seasonID = pcall(C_MythicPlus.GetCurrentUIDisplaySeason)
+    if type(C_MythicPlus.GetCurrentSeason) == "function" then
+        local ok, seasonID = pcall(C_MythicPlus.GetCurrentSeason)
         local normalized = ok and NormalizeSeasonID(seasonID) or nil
         if normalized then
             return normalized
         end
     end
 
-    if type(C_MythicPlus.GetCurrentSeason) == "function" then
-        local ok, seasonID = pcall(C_MythicPlus.GetCurrentSeason)
+    if type(C_MythicPlus.GetCurrentUIDisplaySeason) == "function" then
+        local ok, seasonID = pcall(C_MythicPlus.GetCurrentUIDisplaySeason)
         local normalized = ok and NormalizeSeasonID(seasonID) or nil
         if normalized then
             return normalized
@@ -2424,6 +2424,21 @@ local function PickDefinedValue(preferredValue, fallbackValue)
     return fallbackValue
 end
 
+local function PickMergedSeasonID(preferredValue, fallbackValue)
+    local preferredSeason = tonumber(preferredValue)
+    local fallbackSeason = tonumber(fallbackValue)
+    if preferredSeason ~= nil
+        and fallbackSeason ~= nil
+        and preferredSeason > 0
+        and fallbackSeason > 0
+        and preferredSeason ~= fallbackSeason
+    then
+        return math.max(preferredSeason, fallbackSeason)
+    end
+
+    return PickDefinedValue(preferredValue, fallbackValue)
+end
+
 MergeStoredMythicPlusRun = function(currentRun, candidateRun)
     if type(currentRun) ~= "table" then
         return candidateRun
@@ -2472,7 +2487,7 @@ MergeStoredMythicPlusRun = function(currentRun, candidateRun)
         fingerprint = PickDefinedValue(preferredRun.fingerprint, fallbackRun.fingerprint),
         attemptId = PickDefinedValue(GetRunAttemptID(preferredRun), GetRunAttemptID(fallbackRun)),
         observedAt = mergedObservedAt > 0 and mergedObservedAt or PickDefinedValue(preferredRun.observedAt, fallbackRun.observedAt),
-        seasonID = PickDefinedValue(preferredRun.seasonID, fallbackRun.seasonID),
+        seasonID = PickMergedSeasonID(preferredRun.seasonID, fallbackRun.seasonID),
         mapChallengeModeID = PickDefinedValue(preferredRun.mapChallengeModeID, fallbackRun.mapChallengeModeID),
         mapName = PickDefinedValue(preferredRun.mapName, fallbackRun.mapName),
         level = PickDefinedValue(preferredRun.level, fallbackRun.level),
@@ -3073,6 +3088,8 @@ local function MarkAttemptCompleted(reason, options)
 
     local completedAt = NormalizeLifecycleTimestamp(options.completedAt) or time()
     local completionMembers = NormalizeMythicPlusMembers(options.members)
+    local activeStartDate = type(activeRun) == "table" and NormalizeLifecycleTimestamp(activeRun.startDate) or nil
+    local completionStartDate = activeStartDate or NormalizeLifecycleTimestamp(options.startDate)
     local completionRun = {
         fingerprint = type(activeRun) == "table" and activeRun.fingerprint or nil,
         attemptId = type(activeRun) == "table" and activeRun.attemptId or nil,
@@ -3086,7 +3103,7 @@ local function MarkAttemptCompleted(reason, options)
         completedInTime = options.completedInTime,
         durationMs = tonumber(options.durationMs),
         runScore = tonumber(options.runScore),
-        startDate = NormalizeLifecycleTimestamp(options.startDate) or (type(activeRun) == "table" and activeRun.startDate),
+        startDate = completionStartDate,
         completedAt = completedAt,
         endedAt = completedAt,
         members = completionMembers,

@@ -66,6 +66,27 @@ function toFingerprintToken(value: boolean | number | string | null | undefined)
   return value;
 }
 
+export function pickMergedMythicPlusSeasonID(
+  preferredRun: Pick<MythicPlusRunDocument, "seasonID">,
+  fallbackRun: Pick<MythicPlusRunDocument, "seasonID">,
+): number | undefined {
+  const preferredSeason = preferredRun.seasonID;
+  const fallbackSeason = fallbackRun.seasonID;
+  if (
+    preferredSeason !== undefined &&
+    fallbackSeason !== undefined &&
+    Number.isFinite(preferredSeason) &&
+    Number.isFinite(fallbackSeason) &&
+    preferredSeason > 0 &&
+    fallbackSeason > 0 &&
+    preferredSeason !== fallbackSeason
+  ) {
+    return Math.max(preferredSeason, fallbackSeason);
+  }
+
+  return preferredSeason ?? fallbackSeason;
+}
+
 function getRunMapFingerprintTokens(run: MythicPlusRunDocument): string[] {
   const tokens: string[] = [];
   const seen = new Set<string>();
@@ -491,7 +512,7 @@ function findMergeableRunMemberIndex(
     return exactIndex;
   }
   if (candidateRealm === "") {
-    return sameNameCount === 1 ? unresolvedIndex ?? sameNameIndex : undefined;
+    return sameNameCount === 1 ? (unresolvedIndex ?? sameNameIndex) : undefined;
   }
 
   return unresolvedCount === 1 ? unresolvedIndex : undefined;
@@ -541,7 +562,9 @@ function getMythicPlusRunTimerMs(
   run: Pick<MythicPlusRunDocument, "mapChallengeModeID" | "mapName"> | string | null | undefined,
 ) {
   if (typeof run === "string") {
-    return run.trim() === "" ? null : MYTHIC_PLUS_TIMER_MS_BY_MAP_NAME.get(normalizeMapName(run)) ?? null;
+    return run.trim() === ""
+      ? null
+      : (MYTHIC_PLUS_TIMER_MS_BY_MAP_NAME.get(normalizeMapName(run)) ?? null);
   }
 
   const mapChallengeModeID = run?.mapChallengeModeID;
@@ -819,11 +842,58 @@ function hasCompatibleLegacyDstShift(a: MythicPlusRunDocument, b: MythicPlusRunD
   return false;
 }
 
+function hasCompatibleCompletedDisplayIdentity(
+  a: MythicPlusRunDocument,
+  b: MythicPlusRunDocument,
+): boolean {
+  if (!isCompletedRun(a) || !isCompletedRun(b)) {
+    return false;
+  }
+
+  const mapTokenA = getRunMapFingerprintToken(a);
+  const mapTokenB = getRunMapFingerprintToken(b);
+  if (mapTokenA === "" || mapTokenB === "" || mapTokenA !== mapTokenB) {
+    return false;
+  }
+
+  if (a.level === undefined || b.level === undefined || a.level !== b.level) {
+    return false;
+  }
+
+  const durationA = getSanitizedRunDurationMs(a);
+  const durationB = getSanitizedRunDurationMs(b);
+  if (
+    durationA === undefined ||
+    durationB === undefined ||
+    Math.abs(durationA - durationB) > MAX_COMPAT_DURATION_DRIFT_MS
+  ) {
+    return false;
+  }
+
+  const timedA = getMythicPlusRunTimedState(a);
+  const timedB = getMythicPlusRunTimedState(b);
+  if (timedA !== null && timedB !== null && timedA !== timedB) {
+    return false;
+  }
+
+  if (
+    Math.abs(getRunTimestamp(a) - getRunTimestamp(b)) >
+    LEGACY_DISPLAY_DUPLICATE_RUN_TOLERANCE_SECONDS
+  ) {
+    return false;
+  }
+
+  return areLegacyDisplayDuplicatePartiesCompatible(a, b);
+}
+
 function canMergeMythicPlusRunsAcrossCanonicalMismatch(
   existingRun: MythicPlusRunDocument,
   candidateRun: MythicPlusRunDocument,
 ): boolean {
-  return hasCompatibleLegacyDstShift(existingRun, candidateRun);
+  return (
+    hasCompatibleLegacyDstShift(existingRun, candidateRun) ||
+    hasCompatibleCompletedDisplayIdentity(existingRun, candidateRun)
+  );
 }
 
 export function canUseMythicPlusRunCompatibilityAliasMatch(
@@ -833,7 +903,14 @@ export function canUseMythicPlusRunCompatibilityAliasMatch(
   const existingAttemptId = getMythicPlusRunAttemptId(existingRun);
   const candidateAttemptId = getMythicPlusRunAttemptId(candidateRun);
   if (existingAttemptId !== null && candidateAttemptId !== null) {
-    return existingAttemptId === candidateAttemptId;
+    return (
+      existingAttemptId === candidateAttemptId ||
+      hasCompatibleCompletedDisplayIdentity(existingRun, candidateRun)
+    );
+  }
+
+  if (hasCompatibleCompletedDisplayIdentity(existingRun, candidateRun)) {
+    return true;
   }
 
   if (!areRunCoreIdentityFieldsCompatible(existingRun, candidateRun)) {
@@ -1128,7 +1205,8 @@ function buildDungeonSummaries(runs: MythicPlusRunDocument[]) {
       }
     }
     if (run.level !== undefined) {
-      current.bestLevel = current.bestLevel === null ? run.level : Math.max(current.bestLevel, run.level);
+      current.bestLevel =
+        current.bestLevel === null ? run.level : Math.max(current.bestLevel, run.level);
     }
     if (run.runScore !== undefined) {
       current.bestScore =
@@ -1191,7 +1269,8 @@ function getRunMemberIdentityFingerprint(run: MythicPlusRunDocument) {
 }
 
 function getLegacyDisplayDuplicateSignature(run: MythicPlusRunDocument) {
-  if (!isCompletedRun(run) || run.level === undefined || run.durationMs === undefined) {
+  const durationSeconds = getRunDurationSeconds(run);
+  if (!isCompletedRun(run) || run.level === undefined || durationSeconds === null) {
     return null;
   }
 
@@ -1200,7 +1279,7 @@ function getLegacyDisplayDuplicateSignature(run: MythicPlusRunDocument) {
       ? String(run.mapChallengeModeID)
       : getMapLabel(run).trim().toLowerCase();
   const timedToken = String(getMythicPlusRunTimedState(run) ?? "unknown");
-  return `${mapToken}|${run.level}|${run.durationMs}|${timedToken}`;
+  return `${mapToken}|${run.level}|${durationSeconds}|${timedToken}`;
 }
 
 function areLegacyDisplayDuplicatePartiesCompatible(
@@ -1235,6 +1314,7 @@ function mergeLegacyDisplayDuplicateRuns(
   return {
     ...fallbackRun,
     ...preferredRun,
+    seasonID: pickMergedMythicPlusSeasonID(preferredRun, fallbackRun),
     members: mergeMythicPlusRunMembers(currentRun.members, candidateRun.members),
   };
 }
@@ -1279,7 +1359,10 @@ function collapseLegacyDisplayDuplicateRuns(runs: MythicPlusRunDocument[]) {
       continue;
     }
 
-    collapsedRuns[matchedIndex] = mergeLegacyDisplayDuplicateRuns(collapsedRuns[matchedIndex]!, run);
+    collapsedRuns[matchedIndex] = mergeLegacyDisplayDuplicateRuns(
+      collapsedRuns[matchedIndex]!,
+      run,
+    );
   }
 
   return collapsedRuns;
@@ -1295,7 +1378,8 @@ export function buildMythicPlusSummary(
     if (run.seasonID === undefined) {
       continue;
     }
-    latestSeasonID = latestSeasonID === null ? run.seasonID : Math.max(latestSeasonID, run.seasonID);
+    latestSeasonID =
+      latestSeasonID === null ? run.seasonID : Math.max(latestSeasonID, run.seasonID);
   }
 
   const currentSeasonRuns =
@@ -1386,7 +1470,9 @@ export function buildRecentRuns(runs: MythicPlusRunDocument[]): MythicPlusRecent
       playedAt: sortTimestamp,
       sortTimestamp,
       ...(run.seasonID !== undefined ? { seasonID: run.seasonID } : {}),
-      ...(run.mapChallengeModeID !== undefined ? { mapChallengeModeID: run.mapChallengeModeID } : {}),
+      ...(run.mapChallengeModeID !== undefined
+        ? { mapChallengeModeID: run.mapChallengeModeID }
+        : {}),
       ...(run.mapName ? { mapName: run.mapName } : {}),
       ...(run.level !== undefined ? { level: run.level } : {}),
       ...(status !== undefined ? { status } : {}),
@@ -1549,7 +1635,10 @@ export function dedupeMythicPlusRuns(runs: MythicPlusRunDocument[]) {
     return -1;
   };
 
-  const mergeDuplicateRuns = (currentRun: MythicPlusRunDocument, candidateRun: MythicPlusRunDocument) => {
+  const mergeDuplicateRuns = (
+    currentRun: MythicPlusRunDocument,
+    candidateRun: MythicPlusRunDocument,
+  ) => {
     const candidatePreferred = shouldReplaceMythicPlusRun(currentRun, candidateRun);
     const preferredRun = candidatePreferred ? candidateRun : currentRun;
     const fallbackRun = candidatePreferred ? currentRun : candidateRun;
@@ -1573,7 +1662,7 @@ export function dedupeMythicPlusRuns(runs: MythicPlusRunDocument[]) {
       observedAt:
         mergedObservedAt > 0
           ? mergedObservedAt
-          : pickDefinedValue(preferredRun.observedAt, fallbackRun.observedAt) ?? 0,
+          : (pickDefinedValue(preferredRun.observedAt, fallbackRun.observedAt) ?? 0),
       attemptId: pickDefinedValue(
         getMythicPlusRunAttemptId(preferredRun) ?? undefined,
         getMythicPlusRunAttemptId(fallbackRun) ?? undefined,
@@ -1582,7 +1671,7 @@ export function dedupeMythicPlusRuns(runs: MythicPlusRunDocument[]) {
         getMythicPlusRunCanonicalKey(preferredRun) ?? undefined,
         getMythicPlusRunCanonicalKey(fallbackRun) ?? undefined,
       ),
-      seasonID: pickDefinedValue(preferredRun.seasonID, fallbackRun.seasonID),
+      seasonID: pickMergedMythicPlusSeasonID(preferredRun, fallbackRun),
       mapChallengeModeID: pickDefinedValue(
         preferredRun.mapChallengeModeID,
         fallbackRun.mapChallengeModeID,

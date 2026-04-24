@@ -2075,7 +2075,10 @@ function getBoundedPercent(value: number, max: number) {
   return Math.max(0, Math.min(100, (value / max) * 100));
 }
 
-function getCurrencyCapProgressQuantity(quantity: number, detail: SnapshotCurrencyDetail | undefined) {
+function getCurrencyCapProgressQuantity(
+  quantity: number,
+  detail: SnapshotCurrencyDetail | undefined,
+) {
   if (detail?.useTotalEarnedForMaxQty !== true) {
     return quantity;
   }

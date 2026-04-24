@@ -1618,6 +1618,108 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     assert.equal(storedRuns.length, 1);
   });
 
+  it("collapses matching live attempt and history mythic plus runs", async () => {
+    const auth = await seedAuthenticatedUser();
+    const playerId = await seedPlayer(auth.userId, "Uploader#3636");
+
+    const response = await app.request("http://localhost/api/addon/ingest", {
+      method: "POST",
+      headers: {
+        ...authHeaders(auth.token),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        characters: [
+          {
+            name: "Francisfekir",
+            realm: "Blackhand",
+            region: "eu",
+            class: "Death Knight",
+            race: "Orc",
+            faction: "horde",
+            snapshots: [],
+            mythicPlusRuns: [
+              {
+                fingerprint: "attempt|1|559|16|1777065946",
+                observedAt: 1_777_065_946,
+                seasonID: 1,
+                mapChallengeModeID: 559,
+                mapName: "Nexus-Point Xenas",
+                level: 16,
+                status: "completed",
+                completed: true,
+                completedInTime: true,
+                durationMs: 1_571_153,
+                startDate: 1_777_067_496,
+                completedAt: 1_777_067_496,
+                endedAt: 1_777_067_496,
+                members: [
+                  {
+                    name: "Francisfekir",
+                    realm: "Blackhand",
+                    classTag: "DEATHKNIGHT",
+                    role: "dps",
+                  },
+                  { name: "Oktalt", classTag: "PALADIN", role: "tank" },
+                  { name: "Nyzx", realm: "KultderVerdammten", classTag: "SHAMAN", role: "dps" },
+                  { name: "Kushara", realm: "Blackmoore", classTag: "DRUID", role: "healer" },
+                  { name: "Hxdey", realm: "BurningLegion", classTag: "WARLOCK", role: "dps" },
+                ],
+              },
+              {
+                fingerprint: "run|17|559|16|1777063860",
+                observedAt: 1_777_067_542,
+                seasonID: 17,
+                mapChallengeModeID: 559,
+                mapName: "Nexus-Point Xenas",
+                level: 16,
+                status: "completed",
+                completed: true,
+                durationMs: 1_571_000,
+                runScore: 430,
+                completedAt: 1_777_063_860,
+                endedAt: 1_777_063_860,
+                abandonedAt: 1_777_063_860,
+                thisWeek: true,
+              },
+            ],
+          },
+        ],
+      }),
+    });
+
+    assert.equal(response.status, 200);
+    const payload = (await response.json()) as {
+      newMythicPlusRuns: number;
+      collapsedMythicPlusRuns: number;
+    };
+    assert.equal(payload.newMythicPlusRuns, 1);
+    assert.equal(payload.collapsedMythicPlusRuns, 0);
+
+    const character = await db.query.characters.findFirst({
+      where: and(eq(characters.playerId, playerId), eq(characters.name, "Francisfekir")),
+    });
+    assert.ok(character);
+    assert.equal(character.mythicPlusRunCount, 1);
+
+    const preview = character.mythicPlusRecentRunsPreview?.[0];
+    assert.ok(preview);
+    assert.equal(preview.mapChallengeModeID, 559);
+    assert.equal(preview.level, 16);
+    assert.equal(preview.seasonID, 17);
+    assert.equal(preview.runScore, 430);
+    assert.equal(preview.completedInTime, true);
+    assert.equal(preview.members?.length, 5);
+
+    const storedRuns = await db.query.mythicPlusRuns.findMany({
+      where: eq(mythicPlusRuns.characterId, character.id),
+    });
+    assert.equal(storedRuns.length, 1);
+    assert.equal(storedRuns[0]?.seasonId, 17);
+    assert.equal(storedRuns[0]?.runScore, 430);
+    assert.equal(storedRuns[0]?.members?.length, 5);
+  });
+
   it("rejects addon ingest requests before parsing bodies over the byte limit", async () => {
     const auth = await seedAuthenticatedUser();
     await seedPlayer(auth.userId, "Uploader#4444");

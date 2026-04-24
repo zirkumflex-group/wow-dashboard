@@ -1005,12 +1005,23 @@ function getStoredCharacterMythicPlusData(
     return null;
   }
 
+  const normalizedRuns = buildRecentRuns(runs as MythicPlusRunDocument[]);
+  const visibleDuplicateCount = Math.max(0, runs.length - normalizedRuns.length);
+  const normalizedTotalRunCount = Math.max(
+    normalizedRuns.length,
+    totalRunCount - visibleDuplicateCount,
+  );
   const resolvedSummary =
     currentScoreOverride === undefined || currentScoreOverride === null
       ? summary
       : { ...summary, currentScore: currentScoreOverride };
 
-  return buildCharacterMythicPlusData(resolvedSummary, runs, totalRunCount, includeAllRuns);
+  return buildCharacterMythicPlusData(
+    resolvedSummary,
+    normalizedRuns,
+    normalizedTotalRunCount,
+    includeAllRuns,
+  );
 }
 
 async function readCharacterMythicPlusData(

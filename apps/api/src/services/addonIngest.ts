@@ -36,6 +36,7 @@ import {
   getMythicPlusRunCompatibilityLookupAliases,
   getMythicPlusRunLifecycleStatus,
   mergeMythicPlusRunMembers,
+  pickMergedMythicPlusSeasonID,
   shouldReplaceMythicPlusRun,
   type MythicPlusRunDocument,
 } from "./mythicPlus";
@@ -500,7 +501,7 @@ function mergeMythicPlusRunData(
       deriveCanonicalKeyFromRun(preferredRun),
       deriveCanonicalKeyFromRun(fallbackRun),
     ),
-    seasonID: pickDefinedValue(preferredRun.seasonID, fallbackRun.seasonID),
+    seasonID: pickMergedMythicPlusSeasonID(preferredRun, fallbackRun),
     mapChallengeModeID: pickDefinedValue(
       preferredRun.mapChallengeModeID,
       fallbackRun.mapChallengeModeID,
