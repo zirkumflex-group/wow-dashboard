@@ -60,6 +60,7 @@ import {
   Maximize2,
   Star,
   Sword,
+  Trophy,
   X,
   Zap,
 } from "lucide-react";
@@ -220,6 +221,12 @@ const SEASON_TIME_FRAME_OPTIONS: {
   { value: "tww-s3", label: "TWW-S3" },
 ];
 
+const SEASON_ID_BY_TIME_FRAME: Record<(typeof SEASON_TIME_FRAME_OPTIONS)[number]["value"], number> =
+  {
+    "mn-s1": 17,
+    "tww-s3": 16,
+  };
+
 const RELATIVE_TIME_FRAME_OPTIONS: {
   value: Extract<TimeFrame, "30d" | "14d" | "7d">;
   label: string;
@@ -240,6 +247,17 @@ function getTimeFrameOptionLabel(timeFrame: TimeFrame) {
     SEASON_TIME_FRAME_OPTIONS.find((option) => option.value === timeFrame)?.label ??
     RELATIVE_TIME_FRAME_OPTIONS.find((option) => option.value === timeFrame)?.label ??
     (timeFrame === "all" ? "All" : timeFrame)
+  );
+}
+
+function formatSnapshotSeasonLabel(seasonID?: number) {
+  if (typeof seasonID !== "number" || !Number.isFinite(seasonID)) {
+    return null;
+  }
+
+  return (
+    SEASON_TIME_FRAME_OPTIONS.find((option) => SEASON_ID_BY_TIME_FRAME[option.value] === seasonID)
+      ?.label ?? `Season ${seasonID}`
   );
 }
 
@@ -2013,12 +2031,340 @@ function PlaytimeChartCard({
 
 // ── Sidebar: current snapshot values ─────────────────────────────────────────
 
+type SnapshotCurrencyKey = keyof Snapshot["currencies"];
+type SnapshotCurrencyDetail = NonNullable<Snapshot["currencyDetails"]>[string];
+type WeeklyRewardActivity = NonNullable<Snapshot["weeklyRewards"]>["activities"][number];
+
+const SNAPSHOT_CURRENCY_ROWS: { key: SnapshotCurrencyKey; label: string }[] = [
+  { key: "adventurerDawncrest", label: "Adv. Crest" },
+  { key: "veteranDawncrest", label: "Vet. Crest" },
+  { key: "championDawncrest", label: "Champ. Crest" },
+  { key: "heroDawncrest", label: "Hero Crest" },
+  { key: "mythDawncrest", label: "Myth Crest" },
+  { key: "radiantSparkDust", label: "Spark Dust" },
+];
+
+const SNAPSHOT_CURRENCY_CAP_FALLBACKS: Partial<Record<SnapshotCurrencyKey, number>> = {
+  adventurerDawncrest: 900,
+};
+
+function getBoundedPercent(value: number, max: number) {
+  if (!Number.isFinite(value) || !Number.isFinite(max) || max <= 0) {
+    return null;
+  }
+
+  return Math.max(0, Math.min(100, (value / max) * 100));
+}
+
+function getCurrencyProgress(
+  quantity: number,
+  detail: SnapshotCurrencyDetail | undefined,
+  fallbackMaxQuantity: number | undefined,
+): { label: string; percent: number | null } | null {
+  if (!detail && !fallbackMaxQuantity) {
+    return null;
+  }
+
+  if (detail?.discovered === false) {
+    return { label: "Not discovered", percent: null };
+  }
+
+  const labels: string[] = [];
+  let percent: number | null = null;
+
+  if (detail?.maxWeeklyQuantity && detail.maxWeeklyQuantity > 0) {
+    const earned = detail.quantityEarnedThisWeek ?? 0;
+    labels.push(`${earned.toLocaleString()}/${detail.maxWeeklyQuantity.toLocaleString()} weekly`);
+    percent = getBoundedPercent(earned, detail.maxWeeklyQuantity);
+  }
+
+  const maxQuantity =
+    detail?.maxQuantity && detail.maxQuantity > 0 ? detail.maxQuantity : fallbackMaxQuantity;
+  if (maxQuantity && maxQuantity > 0) {
+    labels.push(`${quantity.toLocaleString()}/${maxQuantity.toLocaleString()} cap`);
+    percent ??= getBoundedPercent(quantity, maxQuantity);
+  }
+
+  if (labels.length > 0) {
+    return {
+      label: labels.join(" / "),
+      percent,
+    };
+  }
+
+  return null;
+}
+
+function CurrencyProgressRow({
+  label,
+  quantity,
+  detail,
+  fallbackMaxQuantity,
+}: {
+  label: string;
+  quantity: number;
+  detail?: SnapshotCurrencyDetail;
+  fallbackMaxQuantity?: number;
+}) {
+  const progress = getCurrencyProgress(quantity, detail, fallbackMaxQuantity);
+
+  return (
+    <div className="grid gap-1 py-1">
+      <div className="flex items-center justify-between gap-3 text-sm">
+        <span className="min-w-0 truncate text-muted-foreground">{detail?.name ?? label}</span>
+        <span className="shrink-0 font-medium tabular-nums">{quantity.toLocaleString()}</span>
+      </div>
+      {progress ? (
+        <div className="grid gap-1">
+          <div className="text-right text-[11px] font-medium leading-tight text-muted-foreground">
+            {progress.label}
+          </div>
+          {progress.percent !== null ? (
+            <div className="h-1 overflow-hidden rounded-full bg-muted">
+              <div
+                className="h-full rounded-full bg-yellow-400/80"
+                style={{ width: `${progress.percent}%` }}
+              />
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+type GreatVaultGroupKey = "raid" | "dungeons" | "world";
+
+const GREAT_VAULT_GROUPS = [
+  {
+    key: "raid",
+    label: "Raids",
+    singularObjective: "boss",
+    pluralObjective: "bosses",
+    thresholds: [2, 4, 6],
+  },
+  {
+    key: "dungeons",
+    label: "Dungeons",
+    singularObjective: "dungeon",
+    pluralObjective: "dungeons",
+    thresholds: [2, 4, 8],
+  },
+  {
+    key: "world",
+    label: "World",
+    singularObjective: "activity",
+    pluralObjective: "activities",
+    thresholds: [2, 4, 8],
+  },
+] as const satisfies readonly {
+  key: GreatVaultGroupKey;
+  label: string;
+  singularObjective: string;
+  pluralObjective: string;
+  thresholds: readonly number[];
+}[];
+
+type GreatVaultGroup = (typeof GREAT_VAULT_GROUPS)[number];
+
+const GREAT_VAULT_ACTIVITY_TYPE_MAP: Partial<Record<number, GreatVaultGroupKey>> = {
+  1: "dungeons",
+  3: "raid",
+  6: "world",
+};
+
+type GreatVaultSlotSummary = {
+  threshold: number;
+  progress: number;
+  unlocked: boolean;
+  itemLevel: number | null;
+};
+
+function getVaultActivityGroupKey(
+  activity: WeeklyRewardActivity,
+  fallbackIndex: number,
+): GreatVaultGroupKey {
+  const activityName = activity.name?.toLowerCase() ?? "";
+  if (activityName.includes("raid") || activityName.includes("boss")) {
+    return "raid";
+  }
+  if (
+    activityName.includes("dungeon") ||
+    activityName.includes("mythic") ||
+    activityName.includes("timewalking")
+  ) {
+    return "dungeons";
+  }
+  if (
+    activityName.includes("world") ||
+    activityName.includes("delve") ||
+    activityName.includes("prey")
+  ) {
+    return "world";
+  }
+
+  const mappedType =
+    activity.type === undefined ? undefined : GREAT_VAULT_ACTIVITY_TYPE_MAP[activity.type];
+  if (mappedType) {
+    return mappedType;
+  }
+
+  return (
+    GREAT_VAULT_GROUPS[Math.min(Math.floor(fallbackIndex / 3), GREAT_VAULT_GROUPS.length - 1)]
+      ?.key ?? "world"
+  );
+}
+
+function groupVaultActivities(activities: WeeklyRewardActivity[]) {
+  const grouped: Record<GreatVaultGroupKey, WeeklyRewardActivity[]> = {
+    raid: [],
+    dungeons: [],
+    world: [],
+  };
+
+  activities.forEach((activity, index) => {
+    grouped[getVaultActivityGroupKey(activity, index)].push(activity);
+  });
+
+  for (const group of GREAT_VAULT_GROUPS) {
+    grouped[group.key].sort((a, b) => {
+      const thresholdDelta = (a.threshold ?? 0) - (b.threshold ?? 0);
+      if (thresholdDelta !== 0) {
+        return thresholdDelta;
+      }
+      return (a.index ?? 0) - (b.index ?? 0);
+    });
+  }
+
+  return grouped;
+}
+
+function getVaultGroupProgress(activities: WeeklyRewardActivity[]) {
+  return activities.reduce((highest, activity) => Math.max(highest, activity.progress ?? 0), 0);
+}
+
+function getVaultGroupThresholds(group: GreatVaultGroup, activities: WeeklyRewardActivity[]) {
+  const observedThresholds = Array.from(
+    new Set(
+      activities.map((activity) => activity.threshold ?? 0).filter((threshold) => threshold > 0),
+    ),
+  ).sort((a, b) => a - b);
+
+  if (observedThresholds.length === 0) {
+    return group.thresholds;
+  }
+
+  return Array.from(new Set([...observedThresholds, ...group.thresholds]))
+    .sort((a, b) => a - b)
+    .slice(0, 3);
+}
+
+function getVaultGroupSlots(
+  group: GreatVaultGroup,
+  activities: WeeklyRewardActivity[],
+): GreatVaultSlotSummary[] {
+  const groupProgress = getVaultGroupProgress(activities);
+
+  return getVaultGroupThresholds(group, activities).map((threshold, index) => {
+    const activity =
+      activities.find((candidate) => candidate.threshold === threshold) ?? activities[index];
+    const progress = Math.max(groupProgress, activity?.progress ?? 0);
+
+    return {
+      threshold,
+      progress,
+      unlocked: progress >= threshold,
+      itemLevel: activity?.itemLevel ?? null,
+    };
+  });
+}
+
+function getVaultSummary(weeklyRewards: Snapshot["weeklyRewards"]) {
+  const activities = weeklyRewards?.activities ?? [];
+  if (activities.length === 0) {
+    return null;
+  }
+
+  const groupedActivities = groupVaultActivities(activities);
+  const groups = GREAT_VAULT_GROUPS.map((group) => ({
+    group,
+    slots: getVaultGroupSlots(group, groupedActivities[group.key]),
+  }));
+  const allSlots = groups.flatMap((group) => group.slots);
+  const unlocked = allSlots.filter((slot) => slot.unlocked).length;
+  const bestItemLevel =
+    allSlots.reduce((highest, slot) => Math.max(highest, slot.itemLevel ?? 0), 0) || null;
+
+  return {
+    slotCount: allSlots.length,
+    groups,
+    unlocked,
+    bestItemLevel,
+  };
+}
+
+function formatVaultObjective(group: GreatVaultGroup, threshold: number) {
+  const noun = threshold === 1 ? group.singularObjective : group.pluralObjective;
+  return `${threshold} ${noun}`;
+}
+
+function GreatVaultSlot({ group, slot }: { group: GreatVaultGroup; slot: GreatVaultSlotSummary }) {
+  const shownProgress = Math.min(slot.progress, slot.threshold);
+
+  return (
+    <div
+      className={cn(
+        "min-w-0 rounded-md border px-2 py-1.5",
+        slot.unlocked ? "border-violet-400/35 bg-violet-400/10" : "border-border/60 bg-muted/20",
+      )}
+    >
+      <div className="truncate text-[11px] font-medium text-muted-foreground">
+        {formatVaultObjective(group, slot.threshold)}
+      </div>
+      <div className="mt-1 font-semibold tabular-nums">
+        {shownProgress.toLocaleString()}/{slot.threshold.toLocaleString()}
+      </div>
+      <div className="mt-0.5 truncate text-[10px] font-medium text-muted-foreground">
+        {slot.itemLevel ? `ilvl ${slot.itemLevel}` : slot.unlocked ? "Unlocked" : "Locked"}
+      </div>
+    </div>
+  );
+}
+
+function GreatVaultGroupRow({
+  group,
+  slots,
+}: {
+  group: GreatVaultGroup;
+  slots: GreatVaultSlotSummary[];
+}) {
+  const unlocked = slots.filter((slot) => slot.unlocked).length;
+  const bestItemLevel =
+    slots.reduce((highest, slot) => Math.max(highest, slot.itemLevel ?? 0), 0) || null;
+
+  return (
+    <div className="grid gap-2">
+      <div className="flex items-center justify-between gap-3 text-xs">
+        <span className="font-semibold text-foreground">{group.label}</span>
+        <span className="shrink-0 text-muted-foreground">
+          {unlocked}/3{bestItemLevel ? ` best ${bestItemLevel}` : ""}
+        </span>
+      </div>
+      <div className="grid grid-cols-3 gap-1.5">
+        {slots.map((slot) => (
+          <GreatVaultSlot key={slot.threshold} group={group} slot={slot} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function CurrentSnapshotCard({ snapshot }: { snapshot: Snapshot }) {
   return (
     <Card>
       <CardHeader className="border-b px-4 pb-2 pt-4">
         <CardTitle className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-          Snapshot Totals
+          Currencies
         </CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col gap-1 px-4 pb-4 pt-2">
@@ -2035,17 +2381,73 @@ function CurrentSnapshotCard({ snapshot }: { snapshot: Snapshot }) {
           }
         />
         <div className="border-t border-border/50 my-2" />
-        <StatRow
-          label="Adv. Crest"
-          value={snapshot.currencies.adventurerDawncrest.toLocaleString()}
-        />
-        <StatRow label="Vet. Crest" value={snapshot.currencies.veteranDawncrest.toLocaleString()} />
-        <StatRow
-          label="Champ. Crest"
-          value={snapshot.currencies.championDawncrest.toLocaleString()}
-        />
-        <StatRow label="Hero Crest" value={snapshot.currencies.heroDawncrest.toLocaleString()} />
-        <StatRow label="Myth Crest" value={snapshot.currencies.mythDawncrest.toLocaleString()} />
+        {SNAPSHOT_CURRENCY_ROWS.map((row) => (
+          <CurrencyProgressRow
+            key={row.key}
+            label={row.label}
+            quantity={snapshot.currencies[row.key]}
+            detail={snapshot.currencyDetails?.[row.key]}
+            fallbackMaxQuantity={SNAPSHOT_CURRENCY_CAP_FALLBACKS[row.key]}
+          />
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
+function GreatVaultCard({ weeklyRewards }: { weeklyRewards?: Snapshot["weeklyRewards"] }) {
+  const summary = getVaultSummary(weeklyRewards);
+  if (!summary) {
+    return null;
+  }
+
+  return (
+    <Card>
+      <CardHeader className="border-b px-4 pb-2 pt-4">
+        <CardTitle className="flex items-center justify-between gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+          <span className="flex items-center gap-1.5">
+            <Trophy size={14} className="text-muted-foreground" /> Great Vault
+          </span>
+          {weeklyRewards?.canClaimRewards ? (
+            <Badge
+              variant="outline"
+              className="border-emerald-400/40 bg-emerald-400/10 text-[10px] text-emerald-300"
+            >
+              Claim
+            </Badge>
+          ) : null}
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="grid gap-3 px-4 pb-4 pt-2">
+        <div className="grid grid-cols-3 gap-2">
+          <div>
+            <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+              Slots
+            </div>
+            <div className="font-semibold tabular-nums">
+              {summary.unlocked}/{summary.slotCount}
+            </div>
+          </div>
+          <div>
+            <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+              Best
+            </div>
+            <div className="font-semibold tabular-nums">{summary.bestItemLevel ?? "None"}</div>
+          </div>
+          <div>
+            <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+              Week
+            </div>
+            <div className="font-semibold">
+              {weeklyRewards?.isCurrentPeriod === false ? "Stale" : "Current"}
+            </div>
+          </div>
+        </div>
+        <div className="grid gap-3">
+          {summary.groups.map(({ group, slots }) => (
+            <GreatVaultGroupRow key={group.key} group={group} slots={slots} />
+          ))}
+        </div>
       </CardContent>
     </Card>
   );
@@ -2137,6 +2539,7 @@ function OverviewLayout({
             </CardContent>
           </Card>
           <CurrentSnapshotCard snapshot={latest} />
+          <GreatVaultCard weeklyRewards={latest.weeklyRewards} />
         </div>
 
         {/* Main charts */}
@@ -3038,6 +3441,7 @@ function RouteComponent() {
     snapshotCount === null ? coreSnapshots.length.toLocaleString() : snapshotCount.toLocaleString();
   const rangeBaselineSnapshot = getRangeBaselineSnapshot(timeFrame, coreSnapshots, latest);
   const rangeDeltaLabel = getTimeFrameDeltaLabel(timeFrame);
+  const latestSeasonLabel = formatSnapshotSeasonLabel(latest?.seasonID);
 
   async function handleBoosterToggle() {
     if (isUpdatingBooster) {
@@ -3135,6 +3539,14 @@ function RouteComponent() {
                   >
                     {ROLE_LABELS[latest.role] ?? latest.role}
                   </Badge>
+                  {latestSeasonLabel ? (
+                    <Badge
+                      variant="outline"
+                      className="border-yellow-400/40 bg-yellow-400/10 uppercase tracking-[0.18em] text-yellow-300"
+                    >
+                      {latestSeasonLabel}
+                    </Badge>
+                  ) : null}
                 </div>
               )}
               <CardTitle
