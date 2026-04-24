@@ -18,6 +18,8 @@ const trackedServices = [
 let shuttingDown = false;
 const serviceProcesses = [];
 const servicesStartedByScript = new Set();
+const shutdownGraceMs = 5_000;
+const forcedShutdownGraceMs = 2_000;
 
 loadRootEnv();
 
@@ -317,6 +319,7 @@ function startService(name, args, env) {
   const child = spawn(pnpmInvocation.command, [...pnpmInvocation.args, ...args], {
     cwd: repoRoot,
     env,
+    detached: process.platform !== "win32",
     stdio: "inherit",
   });
 
@@ -332,8 +335,14 @@ function startService(name, args, env) {
     if (shuttingDown) return;
 
     const exitReason = signal ? `signal ${signal}` : `code ${code ?? 1}`;
+    if (code === 0) {
+      console.log(`[dev] ${name} exited with ${exitReason}; shutting down`);
+      void shutdown(0);
+      return;
+    }
+
     console.error(`[dev] ${name} exited with ${exitReason}`);
-    void shutdown(code ?? 1);
+    void shutdown(code ?? exitCodeFromSignal(signal));
   });
 }
 
@@ -350,17 +359,7 @@ async function shutdown(exitCode) {
 
   shuttingDown = true;
 
-  for (const { child } of serviceProcesses) {
-    if (child.exitCode !== null || child.signalCode !== null) {
-      continue;
-    }
-
-    child.kill("SIGINT");
-  }
-
-  if (serviceProcesses.length > 0) {
-    await Promise.all(serviceProcesses.map(({ child }) => onceExit(child)));
-  }
+  await stopServiceProcesses();
 
   if (servicesStartedByScript.size > 0) {
     const services = [...servicesStartedByScript];
@@ -374,6 +373,91 @@ async function shutdown(exitCode) {
   }
 
   process.exit(exitCode);
+}
+
+async function stopServiceProcesses() {
+  const runningServices = serviceProcesses.filter(({ child }) => isChildRunning(child));
+
+  if (runningServices.length === 0) {
+    return;
+  }
+
+  await Promise.all(runningServices.map((service) => stopServiceProcessTree(service)));
+  await waitForServiceProcesses(runningServices, shutdownGraceMs);
+}
+
+async function stopServiceProcessTree({ child }) {
+  if (!isChildRunning(child) || !child.pid) {
+    return;
+  }
+
+  if (process.platform === "win32") {
+    await runCaptured("taskkill.exe", ["/pid", String(child.pid), "/T", "/F"], {
+      allowFailure: true,
+    });
+    return;
+  }
+
+  try {
+    process.kill(-child.pid, "SIGINT");
+  } catch {
+    child.kill("SIGINT");
+  }
+}
+
+async function waitForServiceProcesses(services, timeoutMs) {
+  const exits = Promise.all(services.map(({ child }) => onceExit(child)));
+  const timeout = sleep(timeoutMs).then(() => "timeout");
+  const result = await Promise.race([exits, timeout]);
+
+  if (result !== "timeout") {
+    return;
+  }
+
+  const stillRunning = services.filter(({ child }) => isChildRunning(child));
+  if (stillRunning.length === 0) {
+    return;
+  }
+
+  console.log(`[dev] forcing ${stillRunning.map(({ name }) => name).join(", ")} to stop`);
+
+  for (const { child } of stillRunning) {
+    if (!child.pid) continue;
+
+    if (process.platform === "win32") {
+      await runCaptured("taskkill.exe", ["/pid", String(child.pid), "/T", "/F"], {
+        allowFailure: true,
+      });
+      continue;
+    }
+
+    try {
+      process.kill(-child.pid, "SIGKILL");
+    } catch {
+      child.kill("SIGKILL");
+    }
+  }
+
+  await Promise.race([
+    Promise.all(stillRunning.map(({ child }) => onceExit(child))),
+    sleep(forcedShutdownGraceMs),
+  ]);
+}
+
+function isChildRunning(child) {
+  return child.exitCode === null && child.signalCode === null;
+}
+
+function exitCodeFromSignal(signal) {
+  if (signal === "SIGINT") {
+    return 130;
+  }
+
+  if (signal === "SIGTERM") {
+    return 143;
+  }
+
+  return 1;
 }
 
 function onceExit(child) {

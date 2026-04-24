@@ -22,7 +22,15 @@ export const nonTradeableSlotValues = [
 export const characterRegionValues = ["us", "eu", "kr", "tw"] as const;
 export const characterFactionValues = ["alliance", "horde"] as const;
 export const snapshotRoleValues = ["tank", "healer", "dps"] as const;
-export const snapshotTimeFrameValues = ["7d", "30d", "90d", "all"] as const;
+export const snapshotTimeFrameValues = [
+  "7d",
+  "14d",
+  "30d",
+  "90d",
+  "all",
+  "tww-s3",
+  "mn-s1",
+] as const;
 export const characterDetailMetricValues = ["stats", "currencies"] as const;
 export const mythicPlusRunStatusValues = ["active", "completed", "abandoned"] as const;
 export const mythicPlusAbandonReasonValues = [

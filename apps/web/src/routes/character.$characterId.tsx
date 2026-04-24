@@ -17,6 +17,15 @@ import {
   type ChartConfig,
 } from "@wow-dashboard/ui/components/chart";
 import { Checkbox } from "@wow-dashboard/ui/components/checkbox";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from "@wow-dashboard/ui/components/dropdown-menu";
 import { Input } from "@wow-dashboard/ui/components/input";
 import { Label } from "@wow-dashboard/ui/components/label";
 import {
@@ -39,6 +48,7 @@ import { cn } from "@wow-dashboard/ui/lib/utils";
 import {
   Clock,
   Coins,
+  ChevronDown,
   Columns,
   Copy,
   ExternalLink,
@@ -88,7 +98,7 @@ import {
 } from "../lib/trade-slots";
 import { apiClient, apiQueryKeys, apiQueryOptions } from "@/lib/api-client";
 
-type TimeFrame = "7d" | "30d" | "90d" | "all";
+type TimeFrame = "7d" | "14d" | "30d" | "90d" | "all" | "tww-s3" | "mn-s1";
 type LayoutMode = "overview" | "focus" | "timeline";
 type FocusMetric = "ilvl" | "mplus" | "gold" | "stats" | "currencies" | "playtime";
 
@@ -100,13 +110,28 @@ type CharacterPageSearch = {
 
 type CharacterPageSearchInput = SearchSchemaInput & Partial<CharacterPageSearch>;
 
-const DEFAULT_TIME_FRAME: TimeFrame = "all";
+const CURRENT_SEASON_TIME_FRAME = "mn-s1" satisfies TimeFrame;
+const DEFAULT_TIME_FRAME: TimeFrame = CURRENT_SEASON_TIME_FRAME;
 const DEFAULT_LAYOUT_MODE: LayoutMode = "overview";
 const DEFAULT_FOCUS_METRIC: FocusMetric = "ilvl";
 const CHARACTER_PAGE_STALE_TIME_MS = 5 * 60 * 1000;
 
 function isTimeFrame(value: unknown): value is TimeFrame {
-  return value === "7d" || value === "30d" || value === "90d" || value === "all";
+  return (
+    value === "7d" ||
+    value === "14d" ||
+    value === "30d" ||
+    value === "90d" ||
+    value === "all" ||
+    value === "tww-s3" ||
+    value === "mn-s1"
+  );
+}
+
+function isCharacterPageTimeFrame(value: unknown): value is TimeFrame {
+  return (
+    value === "7d" || value === "14d" || value === "30d" || value === "tww-s3" || value === "mn-s1"
+  );
 }
 
 function isLayoutMode(value: unknown): value is LayoutMode {
@@ -126,7 +151,7 @@ function isFocusMetric(value: unknown): value is FocusMetric {
 
 function validateCharacterPageSearch(search: CharacterPageSearchInput): CharacterPageSearch {
   return {
-    timeFrame: isTimeFrame(search.timeFrame) ? search.timeFrame : DEFAULT_TIME_FRAME,
+    timeFrame: isCharacterPageTimeFrame(search.timeFrame) ? search.timeFrame : DEFAULT_TIME_FRAME,
     layoutMode: isLayoutMode(search.layoutMode) ? search.layoutMode : DEFAULT_LAYOUT_MODE,
     focusMetric: isFocusMetric(search.focusMetric) ? search.focusMetric : DEFAULT_FOCUS_METRIC,
   };
@@ -187,12 +212,36 @@ const CARD_DATE_TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
 
 // ── Time frame ───────────────────────────────────────────────────────────────
 
-const TIME_FRAME_OPTIONS: { value: TimeFrame; label: string }[] = [
-  { value: "all", label: "All" },
-  { value: "90d", label: "90D" },
+const SEASON_TIME_FRAME_OPTIONS: {
+  value: Extract<TimeFrame, "tww-s3" | "mn-s1">;
+  label: string;
+}[] = [
+  { value: "mn-s1", label: "MN-S1" },
+  { value: "tww-s3", label: "TWW-S3" },
+];
+
+const RELATIVE_TIME_FRAME_OPTIONS: {
+  value: Extract<TimeFrame, "30d" | "14d" | "7d">;
+  label: string;
+}[] = [
   { value: "30d", label: "30D" },
+  { value: "14d", label: "14D" },
   { value: "7d", label: "7D" },
 ];
+
+function isSeasonTimeFrame(
+  timeFrame: TimeFrame,
+): timeFrame is (typeof SEASON_TIME_FRAME_OPTIONS)[number]["value"] {
+  return timeFrame === "tww-s3" || timeFrame === "mn-s1";
+}
+
+function getTimeFrameOptionLabel(timeFrame: TimeFrame) {
+  return (
+    SEASON_TIME_FRAME_OPTIONS.find((option) => option.value === timeFrame)?.label ??
+    RELATIVE_TIME_FRAME_OPTIONS.find((option) => option.value === timeFrame)?.label ??
+    (timeFrame === "all" ? "All" : timeFrame)
+  );
+}
 
 function TimeFramePicker({
   value,
@@ -201,30 +250,71 @@ function TimeFramePicker({
   value: TimeFrame;
   onChange: (v: TimeFrame) => void;
 }) {
+  const activeSeason = isSeasonTimeFrame(value)
+    ? SEASON_TIME_FRAME_OPTIONS.find((option) => option.value === value)
+    : null;
+
   return (
     <div className="flex flex-wrap items-center gap-2">
       <span id="character-time-frame-label" className="text-xs text-muted-foreground">
         Range
       </span>
-      <ToggleGroup
-        type="single"
-        value={value}
-        onValueChange={(nextValue) => {
-          if (isTimeFrame(nextValue)) {
-            onChange(nextValue);
-          }
-        }}
-        variant="outline"
-        size="sm"
+      <div
+        className="flex flex-wrap items-center gap-2"
         aria-labelledby="character-time-frame-label"
-        className="justify-start"
       >
-        {TIME_FRAME_OPTIONS.map((opt) => (
-          <ToggleGroupItem key={opt.value} value={opt.value} className="px-3 text-xs">
-            {opt.label}
-          </ToggleGroupItem>
-        ))}
-      </ToggleGroup>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              type="button"
+              variant={activeSeason ? "default" : "outline"}
+              size="sm"
+              className="h-8 gap-1.5 px-3 text-xs"
+            >
+              {activeSeason?.label ?? "Season"}
+              <ChevronDown data-icon="inline-end" aria-hidden="true" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-44">
+            <DropdownMenuGroup>
+              <DropdownMenuLabel>Season</DropdownMenuLabel>
+              <DropdownMenuRadioGroup
+                value={activeSeason?.value ?? ""}
+                onValueChange={(nextValue) => {
+                  if (isTimeFrame(nextValue) && isSeasonTimeFrame(nextValue)) {
+                    onChange(nextValue);
+                  }
+                }}
+              >
+                {SEASON_TIME_FRAME_OPTIONS.map((option) => (
+                  <DropdownMenuRadioItem key={option.value} value={option.value}>
+                    {option.label}
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+            </DropdownMenuGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <ToggleGroup
+          type="single"
+          value={RELATIVE_TIME_FRAME_OPTIONS.some((option) => option.value === value) ? value : ""}
+          onValueChange={(nextValue) => {
+            if (isTimeFrame(nextValue)) {
+              onChange(nextValue);
+            }
+          }}
+          variant="outline"
+          size="sm"
+          aria-label="Relative snapshot range"
+          className="justify-start"
+        >
+          {RELATIVE_TIME_FRAME_OPTIONS.map((opt) => (
+            <ToggleGroupItem key={opt.value} value={opt.value} className="px-3 text-xs">
+              {opt.label}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
+      </div>
     </div>
   );
 }
@@ -328,7 +418,7 @@ function xAxisTickFormatter(ts: unknown, frame: TimeFrame): string {
   const d = new Date(parsedTs * 1000);
   if (Number.isNaN(d.getTime())) return "—";
 
-  if (frame === "7d") {
+  if (frame === "7d" || frame === "14d") {
     return d.toLocaleDateString(undefined, { weekday: "short", day: "numeric" });
   }
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
@@ -438,7 +528,7 @@ function getXAxisTicks(data: Record<string, number | undefined>[], frame: TimeFr
     if (frame === "7d") {
       return true;
     }
-    if (frame === "30d") {
+    if (frame === "14d" || frame === "30d") {
       return date.getDay() === 1;
     }
     if (frame === "90d") {
@@ -448,7 +538,8 @@ function getXAxisTicks(data: Record<string, number | undefined>[], frame: TimeFr
   });
   const dedupedImportantTicks = dedupeTicksByBucket(importantTicks, frame, true);
 
-  const maxTickCount = frame === "all" ? 8 : frame === "90d" ? 9 : frame === "30d" ? 7 : 8;
+  const maxTickCount =
+    frame === "all" || isSeasonTimeFrame(frame) ? 8 : frame === "90d" ? 9 : frame === "30d" ? 7 : 8;
   if (dedupedImportantTicks.length >= 3) {
     return capXAxisTicks(dedupedImportantTicks, maxTickCount);
   }
@@ -468,7 +559,7 @@ function xTooltipLabelFormatter(
   const d = new Date(parsedTs * 1000);
   if (Number.isNaN(d.getTime())) return "Unknown date";
 
-  if (frame === "7d") {
+  if (frame === "7d" || frame === "14d") {
     return d.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" });
   }
   return d.toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" });
@@ -498,7 +589,19 @@ function formatCardDateTime(ts?: number | null) {
 }
 
 function getTimeFrameDeltaLabel(timeFrame: TimeFrame) {
-  return `last ${TIME_FRAME_OPTIONS.find((option) => option.value === timeFrame)?.label ?? timeFrame}`;
+  if (timeFrame === CURRENT_SEASON_TIME_FRAME) {
+    return "last 7D";
+  }
+
+  if (isSeasonTimeFrame(timeFrame)) {
+    return getTimeFrameOptionLabel(timeFrame);
+  }
+
+  if (timeFrame === "all") {
+    return "all time";
+  }
+
+  return `last ${getTimeFrameOptionLabel(timeFrame)}`;
 }
 
 function formatSignedDelta(value: number, formatter: (absoluteValue: number) => string) {
@@ -910,6 +1013,19 @@ type StatsChartSnapshot = {
 };
 
 type CurrencyChartSnapshot = Pick<CoreChartSnapshot, "takenAt" | "currencies">;
+
+function getRangeBaselineSnapshot(
+  timeFrame: TimeFrame,
+  coreSnapshots: CoreChartSnapshot[],
+  latest: Snapshot | null,
+) {
+  if (timeFrame === CURRENT_SEASON_TIME_FRAME && latest) {
+    const cutoff = latest.takenAt - 7 * 86400;
+    return coreSnapshots.find((snapshot) => snapshot.takenAt >= cutoff) ?? latest;
+  }
+
+  return coreSnapshots[0] ?? latest;
+}
 
 type LayoutProps = {
   latest: Snapshot;
@@ -2852,8 +2968,7 @@ function RouteComponent() {
   const trackingCountLabel = snapshotCount === null ? "Tracked Points" : "Snapshots";
   const trackingCountValue =
     snapshotCount === null ? coreSnapshots.length.toLocaleString() : snapshotCount.toLocaleString();
-  const showRangeDelta = timeFrame !== "all";
-  const rangeBaselineSnapshot = showRangeDelta ? (coreSnapshots[0] ?? latest) : null;
+  const rangeBaselineSnapshot = getRangeBaselineSnapshot(timeFrame, coreSnapshots, latest);
   const rangeDeltaLabel = getTimeFrameDeltaLabel(timeFrame);
 
   async function handleBoosterToggle() {

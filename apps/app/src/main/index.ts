@@ -55,6 +55,11 @@ const DEFAULT_APP_UPDATE_CHECK_INTERVAL_MINUTES = 60;
 const DEFAULT_ADDON_UPDATE_CHECK_INTERVAL_MINUTES = 60;
 const DEFAULT_ADDON_UPDATE_APPLY_INTERVAL_MINUTES = 1;
 
+if (!app.isPackaged) {
+  app.setName("WoW Dashboard Dev");
+  app.setPath("userData", join(app.getPath("appData"), "WoW Dashboard Dev"));
+}
+
 const appUpdateState: AppUpdateState = {
   status: app.isPackaged ? "idle" : "unsupported",
   currentVersion: app.getVersion(),
@@ -3767,6 +3772,8 @@ app.on("open-url", (event, url) => {
 // Grab the lock so only one instance runs; the second instance forwards its URL and quits.
 const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
+  const instanceLabel = app.isPackaged ? "instance" : "dev instance";
+  console.warn(`[wow-dashboard] Another WoW Dashboard ${instanceLabel} is already running.`);
   app.quit();
 } else {
   app.on("second-instance", (_, argv) => {

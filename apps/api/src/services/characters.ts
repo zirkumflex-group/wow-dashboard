@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lt, type SQL } from "drizzle-orm";
 import type {
   CharacterDetailTimelineResponse,
   CharacterMythicPlusResponse,
@@ -153,8 +153,24 @@ type CharacterBoosterExportEntry = {
   } | null;
 };
 
-type SnapshotTimeFrame = "7d" | "30d" | "90d" | "all";
+type SnapshotTimeFrame = "7d" | "14d" | "30d" | "90d" | "all" | "tww-s3" | "mn-s1";
 type CharacterDetailMetric = "stats" | "currencies";
+
+const midnightSeasonOneStartSeconds = Math.floor(Date.UTC(2026, 2, 18) / 1000);
+
+const snapshotSeasonRanges: Record<
+  Extract<SnapshotTimeFrame, "tww-s3" | "mn-s1">,
+  { startAt: number | null; endAt: number | null }
+> = {
+  "tww-s3": {
+    startAt: null,
+    endAt: midnightSeasonOneStartSeconds,
+  },
+  "mn-s1": {
+    startAt: midnightSeasonOneStartSeconds,
+    endAt: null,
+  },
+};
 
 function toUnixSeconds(value: Date | number | null | undefined): number | null {
   if (value === null || value === undefined) {
@@ -316,22 +332,46 @@ function shouldReplaceSnapshot(
   return candidateSnapshot.takenAt.getTime() > currentSnapshot.takenAt.getTime();
 }
 
-function getSnapshotTimeFrameCutoffSeconds(timeFrame: SnapshotTimeFrame) {
-  if (timeFrame === "all") return null;
+function isSnapshotSeasonTimeFrame(
+  timeFrame: SnapshotTimeFrame,
+): timeFrame is keyof typeof snapshotSeasonRanges {
+  return timeFrame === "tww-s3" || timeFrame === "mn-s1";
+}
 
-  const daysByTimeFrame: Record<Exclude<SnapshotTimeFrame, "all">, number> = {
+function getSnapshotTimeFrameRange(timeFrame: SnapshotTimeFrame): {
+  startAt: number | null;
+  endAt: number | null;
+} {
+  if (isSnapshotSeasonTimeFrame(timeFrame)) {
+    return snapshotSeasonRanges[timeFrame];
+  }
+
+  if (timeFrame === "all") {
+    return { startAt: null, endAt: null };
+  }
+
+  const daysByTimeFrame: Record<
+    Extract<SnapshotTimeFrame, "7d" | "14d" | "30d" | "90d">,
+    number
+  > = {
     "7d": 7,
+    "14d": 14,
     "30d": 30,
     "90d": 90,
   };
 
-  return Math.floor(Date.now() / 1000) - daysByTimeFrame[timeFrame] * 86400;
+  return {
+    startAt: Math.floor(Date.now() / 1000) - daysByTimeFrame[timeFrame] * 86400,
+    endAt: null,
+  };
 }
 
 function getSnapshotBucketTargetPointCount(timeFrame: SnapshotTimeFrame) {
   if (timeFrame === "7d") return 30;
+  if (timeFrame === "14d") return 48;
   if (timeFrame === "30d") return 72;
   if (timeFrame === "90d") return 120;
+  if (isSnapshotSeasonTimeFrame(timeFrame)) return 120;
   return 180;
 }
 
@@ -644,18 +684,58 @@ function shouldReplaceBucketSnapshot(
   return shouldReplaceSnapshot(currentSnapshot, candidateSnapshot);
 }
 
+function buildRawSnapshotWhereClause(character: CharacterRecord, timeFrame: SnapshotTimeFrame) {
+  const range = getSnapshotTimeFrameRange(timeFrame);
+  let whereClause: SQL = eq(snapshots.characterId, character.id);
+
+  if (range.startAt !== null) {
+    whereClause =
+      and(whereClause, gte(snapshots.takenAt, new Date(range.startAt * 1000))) ?? whereClause;
+  }
+
+  if (range.endAt !== null) {
+    whereClause =
+      and(whereClause, lt(snapshots.takenAt, new Date(range.endAt * 1000))) ?? whereClause;
+  }
+
+  return whereClause;
+}
+
+function buildDailySnapshotWhereClause(character: CharacterRecord, timeFrame: SnapshotTimeFrame) {
+  const range = getSnapshotTimeFrameRange(timeFrame);
+  let whereClause: SQL = eq(characterDailySnapshots.characterId, character.id);
+
+  if (range.startAt !== null) {
+    whereClause =
+      and(
+        whereClause,
+        gte(
+          characterDailySnapshots.dayStartAt,
+          new Date(Math.floor(range.startAt / 86400) * 86400 * 1000),
+        ),
+      ) ?? whereClause;
+  }
+
+  if (range.endAt !== null) {
+    whereClause =
+      and(
+        whereClause,
+        lt(
+          characterDailySnapshots.dayStartAt,
+          new Date(Math.floor(range.endAt / 86400) * 86400 * 1000),
+        ),
+      ) ?? whereClause;
+  }
+
+  return whereClause;
+}
+
 async function readBucketedRawSnapshotsForCharacter(
   character: CharacterRecord,
   timeFrame: SnapshotTimeFrame,
 ) {
-  const cutoffSeconds = getSnapshotTimeFrameCutoffSeconds(timeFrame);
-  const whereClause =
-    cutoffSeconds === null
-      ? eq(snapshots.characterId, character.id)
-      : and(
-          eq(snapshots.characterId, character.id),
-          gte(snapshots.takenAt, new Date(cutoffSeconds * 1000)),
-        );
+  const range = getSnapshotTimeFrameRange(timeFrame);
+  const whereClause = buildRawSnapshotWhereClause(character, timeFrame);
 
   const rawSnapshots = await db
     .select()
@@ -667,7 +747,7 @@ async function readBucketedRawSnapshotsForCharacter(
     return [];
   }
 
-  const rangeStartAt = cutoffSeconds ?? toUnixSeconds(rawSnapshots[0]!.takenAt)!;
+  const rangeStartAt = range.startAt ?? toUnixSeconds(rawSnapshots[0]!.takenAt)!;
   const rangeEndAt = toUnixSeconds(rawSnapshots[rawSnapshots.length - 1]!.takenAt)!;
   const bucketSpanSeconds = getSnapshotBucketSpanSeconds(timeFrame, rangeStartAt, rangeEndAt);
   const bucketed = new Map<number, SnapshotRecord>();
@@ -691,17 +771,8 @@ async function readTimelinePayloadForCharacter(
   timeFrame: SnapshotTimeFrame,
   includeStats: boolean,
 ) {
-  const cutoffSeconds = getSnapshotTimeFrameCutoffSeconds(timeFrame);
-  const dailyWhereClause =
-    cutoffSeconds === null
-      ? eq(characterDailySnapshots.characterId, character.id)
-      : and(
-          eq(characterDailySnapshots.characterId, character.id),
-          gte(
-            characterDailySnapshots.dayStartAt,
-            new Date(Math.floor(cutoffSeconds / 86400) * 86400 * 1000),
-          ),
-        );
+  const range = getSnapshotTimeFrameRange(timeFrame);
+  const dailyWhereClause = buildDailySnapshotWhereClause(character, timeFrame);
 
   const dailySnapshots = await db
     .select()
@@ -710,7 +781,7 @@ async function readTimelinePayloadForCharacter(
     .orderBy(asc(characterDailySnapshots.dayStartAt));
 
   if (dailySnapshots.length > 0) {
-    const rangeStartAt = cutoffSeconds ?? toUnixSeconds(dailySnapshots[0]!.dayStartAt)!;
+    const rangeStartAt = range.startAt ?? toUnixSeconds(dailySnapshots[0]!.dayStartAt)!;
     const rangeEndAt = toUnixSeconds(dailySnapshots[dailySnapshots.length - 1]!.lastTakenAt)!;
     const bucketSpanSeconds = getSnapshotBucketSpanSeconds(timeFrame, rangeStartAt, rangeEndAt);
     const canUseDailyCore =
