@@ -129,6 +129,10 @@ function buildQueryString(query: Record<string, QueryValue> | undefined) {
   return encoded === "" ? "" : `?${encoded}`;
 }
 
+function encodePathSegment(value: string) {
+  return encodeURIComponent(value);
+}
+
 async function resolveHeaders(headersResolver: HeadersResolver | undefined) {
   if (!headersResolver) {
     return undefined;
@@ -314,10 +318,11 @@ export function createApiClient(config: ApiClientConfig) {
       input: CharacterPageQuery,
     ): Promise<CharacterPageResponse | null> {
       const { id } = characterRouteParamsSchema.parse({ id: characterId });
+      const pathId = encodePathSegment(id);
       const parsedQuery = characterPageQuerySchema.parse(input);
       return requestJson({
         method: "GET",
-        path: `/characters/${id}/page`,
+        path: `/characters/${pathId}/page`,
         query: {
           timeFrame: parsedQuery.timeFrame,
           ...(parsedQuery.includeStats !== undefined
@@ -333,10 +338,11 @@ export function createApiClient(config: ApiClientConfig) {
       input: CharacterDetailTimelineQuery,
     ): Promise<CharacterDetailTimelineResponse | null> {
       const { id } = characterRouteParamsSchema.parse({ id: characterId });
+      const pathId = encodePathSegment(id);
       const parsedQuery = characterDetailTimelineQuerySchema.parse(input);
       return requestJson({
         method: "GET",
-        path: `/characters/${id}/detail-timeline`,
+        path: `/characters/${pathId}/detail-timeline`,
         query: {
           timeFrame: parsedQuery.timeFrame,
           metric: parsedQuery.metric,
@@ -350,10 +356,11 @@ export function createApiClient(config: ApiClientConfig) {
       input: CharacterSnapshotTimelineQuery,
     ): Promise<CharacterSnapshotTimelineResponse | null> {
       const { id } = characterRouteParamsSchema.parse({ id: characterId });
+      const pathId = encodePathSegment(id);
       const parsedQuery = characterSnapshotTimelineQuerySchema.parse(input);
       return requestJson({
         method: "GET",
-        path: `/characters/${id}/snapshot-timeline`,
+        path: `/characters/${pathId}/snapshot-timeline`,
         query: {
           timeFrame: parsedQuery.timeFrame,
         },
@@ -366,10 +373,11 @@ export function createApiClient(config: ApiClientConfig) {
       input: CharacterMythicPlusQuery = {},
     ): Promise<CharacterMythicPlusResponse | null> {
       const { id } = characterRouteParamsSchema.parse({ id: characterId });
+      const pathId = encodePathSegment(id);
       const parsedQuery = characterMythicPlusQuerySchema.parse(input);
       return requestJson({
         method: "GET",
-        path: `/characters/${id}/mythic-plus`,
+        path: `/characters/${pathId}/mythic-plus`,
         query:
           parsedQuery.includeAllRuns !== undefined
             ? { includeAllRuns: parsedQuery.includeAllRuns }
@@ -397,9 +405,10 @@ export function createApiClient(config: ApiClientConfig) {
       input: UpdateCharacterBoosterBody,
     ): Promise<UpdateCharacterBoosterResponse> {
       const { id } = characterRouteParamsSchema.parse({ id: characterId });
+      const pathId = encodePathSegment(id);
       return requestJson({
         method: "PATCH",
-        path: `/characters/${id}/booster`,
+        path: `/characters/${pathId}/booster`,
         input,
         inputSchema: updateCharacterBoosterBodySchema,
         outputSchema: updateCharacterBoosterResponseSchema,
@@ -411,9 +420,10 @@ export function createApiClient(config: ApiClientConfig) {
       input: UpdateCharacterSlotsBody,
     ): Promise<UpdateCharacterSlotsResponse> {
       const { id } = characterRouteParamsSchema.parse({ id: characterId });
+      const pathId = encodePathSegment(id);
       return requestJson({
         method: "PATCH",
-        path: `/characters/${id}/slots`,
+        path: `/characters/${pathId}/slots`,
         input,
         inputSchema: updateCharacterSlotsBodySchema,
         outputSchema: updateCharacterSlotsResponseSchema,

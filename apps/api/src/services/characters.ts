@@ -5,7 +5,12 @@ import type {
   CharacterPageResponse,
   CharacterSnapshotTimelineResponse,
 } from "@wow-dashboard/api-schema";
-import { mythicPlusPreviewRunLimit } from "@wow-dashboard/api-schema";
+import {
+  isCharacterUuid,
+  mythicPlusPreviewRunLimit,
+  normalizeCharacterRouteLookupPart,
+  parseCharacterRouteSlug,
+} from "@wow-dashboard/api-schema";
 import {
   characterDailySnapshots,
   characters,
@@ -559,21 +564,99 @@ async function readPlayerIdForUser(userId: string): Promise<string | null> {
 }
 
 async function readCharacterById(characterId: string) {
-  return await db.query.characters.findFirst({
-    where: eq(characters.id, characterId),
-  });
+  return await readCharacterByRouteId(characterId);
 }
 
-async function readOwnedCharacterId(characterId: string, userId: string): Promise<string | null> {
-  const [ownedCharacter] = await db
+function normalizeCharacterRouteNameForDb(value: string) {
+  return value.trim().normalize("NFKC").toLocaleLowerCase("en-US");
+}
+
+function selectMatchingCharacterRouteSlug(
+  routeId: string,
+  characterRows: CharacterRecord[],
+): CharacterRecord | null {
+  const slug = parseCharacterRouteSlug(routeId);
+  if (!slug) {
+    return null;
+  }
+
+  const lookupRealm = normalizeCharacterRouteLookupPart(slug.realm);
+  return (
+    characterRows.find(
+      (character) => normalizeCharacterRouteLookupPart(character.realm) === lookupRealm,
+    ) ?? null
+  );
+}
+
+async function readCharacterByRouteId(routeId: string): Promise<CharacterRecord | null> {
+  if (isCharacterUuid(routeId)) {
+    return (
+      (await db.query.characters.findFirst({
+        where: eq(characters.id, routeId),
+      })) ?? null
+    );
+  }
+
+  const slug = parseCharacterRouteSlug(routeId);
+  if (!slug) {
+    return null;
+  }
+
+  const candidateCharacters = await db
+    .select()
+    .from(characters)
+    .where(eq(characters.normalizedName, normalizeCharacterRouteNameForDb(slug.name)))
+    .orderBy(desc(characters.snapshotCount), desc(characters.firstSnapshotAt))
+    .limit(100);
+
+  return selectMatchingCharacterRouteSlug(routeId, candidateCharacters);
+}
+
+async function readOwnedCharacterByRouteId(
+  routeId: string,
+  userId: string,
+): Promise<CharacterRecord | null> {
+  if (isCharacterUuid(routeId)) {
+    const [ownedCharacter] = await db
+      .select({
+        character: characters,
+      })
+      .from(characters)
+      .innerJoin(players, eq(players.id, characters.playerId))
+      .where(and(eq(characters.id, routeId), eq(players.userId, userId)))
+      .limit(1);
+
+    return ownedCharacter?.character ?? null;
+  }
+
+  const slug = parseCharacterRouteSlug(routeId);
+  if (!slug) {
+    return null;
+  }
+
+  const candidateCharacters = await db
     .select({
-      id: characters.id,
+      character: characters,
     })
     .from(characters)
     .innerJoin(players, eq(players.id, characters.playerId))
-    .where(and(eq(characters.id, characterId), eq(players.userId, userId)))
-    .limit(1);
+    .where(
+      and(
+        eq(characters.normalizedName, normalizeCharacterRouteNameForDb(slug.name)),
+        eq(players.userId, userId),
+      ),
+    )
+    .orderBy(desc(characters.snapshotCount), desc(characters.firstSnapshotAt))
+    .limit(100);
 
+  return selectMatchingCharacterRouteSlug(
+    routeId,
+    candidateCharacters.map((row) => row.character),
+  );
+}
+
+async function readOwnedCharacterId(characterId: string, userId: string): Promise<string | null> {
+  const ownedCharacter = await readOwnedCharacterByRouteId(characterId, userId);
   return ownedCharacter?.id ?? null;
 }
 

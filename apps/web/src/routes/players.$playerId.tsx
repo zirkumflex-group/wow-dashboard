@@ -12,6 +12,7 @@ import {
 } from "@wow-dashboard/ui/components/table";
 import { ArrowLeft } from "lucide-react";
 import { useEffect } from "react";
+import { createCharacterRouteSlug } from "@wow-dashboard/api-schema";
 import { apiQueryOptions } from "@/lib/api-client";
 import { getClassTextColor } from "../lib/class-colors";
 import { getMythicPlusDungeonMeta } from "../lib/mythic-plus-static";
@@ -223,7 +224,7 @@ function RouteComponent() {
                       <div className="space-y-0.5">
                         <Link
                           to="/character/$characterId"
-                          params={{ characterId: character._id }}
+                          params={{ characterId: createCharacterRouteSlug(character) }}
                           className={`font-semibold hover:underline ${classColor(character.class)}`}
                         >
                           {character.name}

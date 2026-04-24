@@ -10,6 +10,7 @@ import { Skeleton } from "@wow-dashboard/ui/components/skeleton";
 import { HeartPulse, RefreshCw, Shield, Star, Swords } from "lucide-react";
 import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createCharacterRouteSlug } from "@wow-dashboard/api-schema";
 import { apiClient, apiQueryOptions } from "@/lib/api-client";
 import { PlaytimeBreakdown } from "../components/playtime-breakdown";
 import { getClassBgColor, getClassTextColor } from "../lib/class-colors";
@@ -157,7 +158,11 @@ function CharacterCard({
   const cls = char.class.toLowerCase();
 
   return (
-    <Link to="/character/$characterId" params={{ characterId: char._id }} className="block">
+    <Link
+      to="/character/$characterId"
+      params={{ characterId: createCharacterRouteSlug(char) }}
+      className="block"
+    >
       <Card
         className={`relative h-full transition-all hover:scale-[1.01] hover:shadow-lg border ${classBg(cls)}`}
       >

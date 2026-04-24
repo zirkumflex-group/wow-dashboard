@@ -223,6 +223,9 @@ importers:
       '@wow-dashboard/api-client':
         specifier: workspace:*
         version: link:../../packages/api-client
+      '@wow-dashboard/api-schema':
+        specifier: workspace:*
+        version: link:../../packages/api-schema
       '@wow-dashboard/env':
         specifier: workspace:*
         version: link:../../packages/env

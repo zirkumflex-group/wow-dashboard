@@ -260,8 +260,67 @@ export const playerRouteParamsSchema = z.object({
   id: z.string().uuid(),
 });
 
+export type CharacterRouteSlugParts = {
+  name: string;
+  realm: string;
+};
+
+const characterRouteUuidPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function formatCharacterRouteSlugPart(value: string) {
+  return value
+    .trim()
+    .normalize("NFKC")
+    .replace(/[/?#\\]+/g, "-")
+    .replace(/[\s_]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+export function isCharacterUuid(value: string) {
+  return characterRouteUuidPattern.test(value.trim());
+}
+
+export function createCharacterRouteSlug(character: CharacterRouteSlugParts) {
+  return `${formatCharacterRouteSlugPart(character.name)}-${formatCharacterRouteSlugPart(
+    character.realm,
+  )}`;
+}
+
+export function parseCharacterRouteSlug(value: string): CharacterRouteSlugParts | null {
+  const trimmed = value.trim();
+  const separatorIndex = trimmed.indexOf("-");
+  if (separatorIndex <= 0 || separatorIndex >= trimmed.length - 1) {
+    return null;
+  }
+
+  const name = trimmed.slice(0, separatorIndex);
+  const realm = trimmed.slice(separatorIndex + 1);
+  if (!name || !realm || /[/?#\\]/.test(trimmed)) {
+    return null;
+  }
+
+  return { name, realm };
+}
+
+export function normalizeCharacterRouteLookupPart(value: string) {
+  return value
+    .trim()
+    .normalize("NFKC")
+    .toLocaleLowerCase("en-US")
+    .replace(/[\s'’_-]+/g, "");
+}
+
 export const characterRouteParamsSchema = z.object({
-  id: z.string().uuid(),
+  id: z
+    .string()
+    .trim()
+    .min(1)
+    .max(160)
+    .refine((value) => isCharacterUuid(value) || parseCharacterRouteSlug(value) !== null, {
+      message: "Expected a character UUID or Name-Realm route slug.",
+    }),
 });
 
 export const characterPageQuerySchema = z.object({

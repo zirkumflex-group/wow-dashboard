@@ -16,6 +16,7 @@
     "@tanstack/react-router-ssr-query": "^1.166.11",
     "@tanstack/react-start": "^1.167.43",
     "@wow-dashboard/api-client": "workspace:*",
+    "@wow-dashboard/api-schema": "workspace:*",
     "@wow-dashboard/env": "workspace:*",
     "@wow-dashboard/ui": "workspace:*",
     "better-auth": "^1.6.9",

@@ -76,6 +76,7 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
+import { createCharacterRouteSlug } from "@wow-dashboard/api-schema";
 import {
   CartesianGrid,
   Line,
@@ -156,6 +157,35 @@ function validateCharacterPageSearch(search: CharacterPageSearchInput): Characte
     layoutMode: isLayoutMode(search.layoutMode) ? search.layoutMode : DEFAULT_LAYOUT_MODE,
     focusMetric: isFocusMetric(search.focusMetric) ? search.focusMetric : DEFAULT_FOCUS_METRIC,
   };
+}
+
+function stripDefaultCharacterPageSearch(
+  search: Partial<CharacterPageSearch>,
+): CharacterPageSearchInput {
+  const nextSearch: Partial<CharacterPageSearch> = {};
+  const layoutMode = search.layoutMode ?? DEFAULT_LAYOUT_MODE;
+  if (search.timeFrame && search.timeFrame !== DEFAULT_TIME_FRAME) {
+    nextSearch.timeFrame = search.timeFrame;
+  }
+  if (layoutMode !== DEFAULT_LAYOUT_MODE) {
+    nextSearch.layoutMode = layoutMode;
+  }
+  if (
+    layoutMode === "focus" &&
+    search.focusMetric &&
+    search.focusMetric !== DEFAULT_FOCUS_METRIC
+  ) {
+    nextSearch.focusMetric = search.focusMetric;
+  }
+  return nextSearch as CharacterPageSearchInput;
+}
+
+function buildCharacterPageSearchString(search: Partial<CharacterPageSearch>) {
+  const searchParams = new URLSearchParams();
+  if (search.timeFrame) searchParams.set("timeFrame", search.timeFrame);
+  if (search.layoutMode) searchParams.set("layoutMode", search.layoutMode);
+  if (search.focusMetric) searchParams.set("focusMetric", search.focusMetric);
+  return searchParams.toString();
 }
 
 function getCharacterPageQueryOptions(characterId: string, timeFrame: TimeFrame) {
@@ -3305,14 +3335,48 @@ function RouteComponent() {
     document.title = `${characterPage.header.character.name} (${characterPage.header.character.realm}) | ${appTitle}`;
   }, [characterPage]);
 
+  const canonicalCharacterRouteSlug = characterPage
+    ? createCharacterRouteSlug(characterPage.header.character)
+    : null;
+
+  useEffect(() => {
+    if (!canonicalCharacterRouteSlug || typeof window === "undefined") {
+      return;
+    }
+
+    const canonicalSearch = stripDefaultCharacterPageSearch({
+      timeFrame,
+      layoutMode,
+      focusMetric,
+    });
+    const currentSearch = window.location.search.startsWith("?")
+      ? window.location.search.slice(1)
+      : window.location.search;
+    const canonicalSearchString = buildCharacterPageSearchString(canonicalSearch);
+
+    if (characterId === canonicalCharacterRouteSlug && currentSearch === canonicalSearchString) {
+      return;
+    }
+
+    startTransition(() => {
+      void navigate({
+        to: "/character/$characterId",
+        params: { characterId: canonicalCharacterRouteSlug },
+        search: canonicalSearch,
+        replace: true,
+      });
+    });
+  }, [canonicalCharacterRouteSlug, characterId, focusMetric, layoutMode, navigate, timeFrame]);
+
   const updateCharacterPageSearch = useCallback(
     (nextSearch: Partial<CharacterPageSearch>) => {
       startTransition(() => {
         void navigate({
-          search: (previousSearch) => ({
-            ...previousSearch,
-            ...nextSearch,
-          }),
+          search: (previousSearch) =>
+            stripDefaultCharacterPageSearch({
+              ...validateCharacterPageSearch(previousSearch as CharacterPageSearchInput),
+              ...nextSearch,
+            }),
           replace: true,
         });
       });
@@ -3464,7 +3528,8 @@ function RouteComponent() {
 
   const { header, coreTimeline } = characterPage;
   const { character, latestSnapshot, firstSnapshotAt, snapshotCount } = header;
-  const isPinnedToQuickAccess = pinnedCharacterIdSet.has(characterId);
+  const resolvedCharacterId = character._id;
+  const isPinnedToQuickAccess = pinnedCharacterIdSet.has(resolvedCharacterId);
   const isBoosterCharacter = character.isBooster === true;
   const nonTradeableSlots = (character.nonTradeableSlots ?? []) as TradeSlotKey[];
   const isLoadingAllMythicPlusRuns =
@@ -3532,7 +3597,17 @@ function RouteComponent() {
     }
 
     try {
-      await navigator.clipboard.writeText(window.location.href);
+      const canonicalSearch = stripDefaultCharacterPageSearch({
+        timeFrame,
+        layoutMode,
+        focusMetric,
+      });
+      const canonicalSearchString = buildCharacterPageSearchString(canonicalSearch);
+      const routeSlug = canonicalCharacterRouteSlug ?? characterId;
+      const canonicalUrl = `${window.location.origin}/character/${encodeURIComponent(routeSlug)}${
+        canonicalSearchString ? `?${canonicalSearchString}` : ""
+      }`;
+      await navigator.clipboard.writeText(canonicalUrl);
       toast.success("Character link copied.");
     } catch {
       toast.error("Could not copy character link.");
@@ -3594,7 +3669,7 @@ function RouteComponent() {
                   type="button"
                   size="sm"
                   variant="outline"
-                  onClick={() => togglePinnedCharacter(characterId)}
+                  onClick={() => togglePinnedCharacter(resolvedCharacterId)}
                   className={
                     isPinnedToQuickAccess
                       ? "border-yellow-400/40 bg-yellow-400/10 text-yellow-300 hover:bg-yellow-400/15 hover:text-yellow-200"
@@ -3852,7 +3927,7 @@ function RouteComponent() {
           mythicPlusData={mythicPlusData}
           isLoadingAllMythicPlusRuns={isLoadingAllMythicPlusRuns}
           onRequestAllMythicPlusRuns={handleRequestAllMythicPlusRuns}
-          characterId={characterId}
+          characterId={resolvedCharacterId}
           characterName={character.name}
           characterRealm={character.realm}
           characterRegion={character.region}
