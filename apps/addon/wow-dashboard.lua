@@ -3947,6 +3947,9 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         if addon.RefreshMinimapButton then
             addon.RefreshMinimapButton()
         end
+        if addon.RefreshSettingsControls then
+            addon.RefreshSettingsControls()
+        end
         if addon.RefreshOverviewPanel then
             addon.RefreshOverviewPanel()
         end

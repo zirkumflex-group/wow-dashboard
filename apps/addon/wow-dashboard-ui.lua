@@ -149,6 +149,11 @@ function addon.RefreshMinimapButton()
 end
 
 function addon.RefreshSettingsControls()
+    if minimapToggle then
+        addon.EnsureMinimapSettings()
+        minimapToggle:SetChecked(not WowDashboardDB.minimap.hide)
+    end
+
     if playtimeSyncToggle and addon.ShouldSyncPlaytimeOnLogin then
         playtimeSyncToggle:SetChecked(addon.ShouldSyncPlaytimeOnLogin())
     end
