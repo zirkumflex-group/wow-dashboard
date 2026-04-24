@@ -40,6 +40,19 @@ docker compose --env-file deploy/.env.staging -f deploy/docker-compose.prod.yml 
 
 The `migrate` service runs Drizzle migrations before `api` and `worker` start.
 
+For an existing VPS checkout, use the update script instead of a bare `git pull` plus
+`docker compose up`:
+
+```bash
+cd ~/wow-dashboard
+bash deploy/update-staging.sh
+```
+
+The script pulls with `--ff-only`, rebuilds the Docker images, and forces the one-shot
+`migrate` service plus `api`, `worker`, `web`, and `caddy` to be recreated. If package
+or deploy metadata changed since the last successful deploy, it rebuilds without Docker
+layer cache so workspace/package changes cannot reuse stale install layers.
+
 ## Manual VPS workflow
 
 For now, the simplest flow is manual `rsync` plus `ssh vps`.
@@ -78,7 +91,7 @@ Then SSH into the VPS and deploy:
 ```bash
 ssh vps
 cd ~/wow-dashboard
-docker compose --env-file deploy/.env.staging -f deploy/docker-compose.prod.yml up -d --build
+bash deploy/update-staging.sh
 ```
 
 If you want to run the historical Convex import after deploy:

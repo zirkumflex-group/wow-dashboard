@@ -132,7 +132,8 @@ The current production-shaped stack is:
 Bring it up on the VPS with:
 
 ```bash
-docker compose --env-file deploy/.env.staging -f deploy/docker-compose.prod.yml up -d --build
+cd ~/wow-dashboard
+bash deploy/update-staging.sh
 ```
 
 ## Historical Convex Import
