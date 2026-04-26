@@ -1,5 +1,6 @@
 # Dependencies
 node_modules
+.pnpm-store
 .pnp
 .pnp.js
 
@@ -11,6 +12,8 @@ build
 # Environment variables
 .env
 .env*.local
+deploy/.env.staging
+deploy/.env.production
 
 # IDEs and editors
 .vscode/*
@@ -47,8 +50,11 @@ coverage
 # Misc
 *.tgz
 .cache
+.imports
 tmp
 temp
+.tmp
+packages/backend/
 
 # Codex local environment metadata
 .codex/environments/environment.toml

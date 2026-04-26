@@ -1,0 +1,22 @@
+{
+  "name": "@wow-dashboard/api-client",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "check-types": "tsc --noEmit --project tsconfig.json"
+  },
+  "dependencies": {
+    "@wow-dashboard/api-schema": "workspace:*",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.2",
+    "@wow-dashboard/config": "workspace:*",
+    "typescript": "^6.0.3"
+  }
+}

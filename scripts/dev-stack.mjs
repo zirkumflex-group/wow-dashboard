@@ -1,0 +1,480 @@
+import { existsSync } from "node:fs";
+import net from "node:net";
+import { dirname, resolve } from "node:path";
+import process from "node:process";
+import { fileURLToPath } from "node:url";
+import { spawn } from "node:child_process";
+import { config as loadDotenv } from "dotenv";
+
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const dockerCommand = process.platform === "win32" ? "docker.exe" : "docker";
+const pnpmInvocation = resolvePnpmInvocation();
+const composeArgs = ["compose", "-f", "deploy/docker-compose.dev.yml"];
+const trackedServices = [
+  { service: "postgres", container: "wow-dashboard-postgres-dev" },
+  { service: "redis", container: "wow-dashboard-redis-dev" },
+];
+
+let shuttingDown = false;
+const serviceProcesses = [];
+const servicesStartedByScript = new Set();
+const shutdownGraceMs = 5_000;
+const forcedShutdownGraceMs = 2_000;
+
+loadRootEnv();
+
+const apiPort = resolvePort(["PORT"], ["BETTER_AUTH_URL", "API_URL", "VITE_API_URL"], 3000);
+const webPort = resolvePort([], ["SITE_URL", "VITE_SITE_URL"], 3001);
+
+process.on("SIGINT", () => {
+  void shutdown(130);
+});
+
+process.on("SIGTERM", () => {
+  void shutdown(143);
+});
+
+process.on("uncaughtException", (error) => {
+  console.error("[dev]", error);
+  void shutdown(1);
+});
+
+process.on("unhandledRejection", (error) => {
+  console.error("[dev]", error);
+  void shutdown(1);
+});
+
+try {
+  await ensurePortFree(
+    apiPort,
+    `API port ${apiPort} is already in use. Stop the existing process or override PORT/API_URL/BETTER_AUTH_URL/VITE_API_URL before running pnpm dev.`,
+  );
+  await ensurePortFree(
+    webPort,
+    `Web port ${webPort} is already in use. Stop the existing process or override SITE_URL/VITE_SITE_URL before running pnpm dev.`,
+  );
+
+  await ensureDockerAvailable();
+
+  for (const { service, container } of trackedServices) {
+    if (!(await isContainerRunning(container))) {
+      servicesStartedByScript.add(service);
+    }
+  }
+
+  console.log("[dev] starting local Postgres and Redis");
+  await runChecked(dockerCommand, [...composeArgs, "up", "-d", "postgres", "redis"]);
+
+  console.log("[dev] waiting for local infrastructure");
+  for (const { container } of trackedServices) {
+    await waitForHealthyContainer(container);
+  }
+
+  console.log("[dev] applying database migrations");
+  await runChecked(pnpmInvocation.command, [
+    ...pnpmInvocation.args,
+    "-F",
+    "@wow-dashboard/db",
+    "migrate",
+  ]);
+
+  console.log("[dev] starting API, worker, web, and Electron");
+  startService("@wow-dashboard/api", ["-F", "@wow-dashboard/api", "dev"], process.env);
+  startService("@wow-dashboard/worker", ["-F", "@wow-dashboard/worker", "dev"], process.env);
+  startService("web", ["-F", "web", "dev"], withoutPortEnv(process.env));
+  startService("app", ["-F", "app", "dev"], withoutPortEnv(process.env));
+} catch (error) {
+  console.error("[dev]", error instanceof Error ? error.message : error);
+  await shutdown(1);
+}
+
+function loadRootEnv() {
+  const nodeEnv = process.env.NODE_ENV ?? "development";
+  const envFiles = [`.env.${nodeEnv}.local`, ".env.local", `.env.${nodeEnv}`, ".env"].map(
+    (fileName) => resolve(repoRoot, fileName),
+  );
+
+  for (const path of envFiles) {
+    if (!existsSync(path)) continue;
+    loadDotenv({ path, override: false });
+  }
+}
+
+function resolvePnpmInvocation() {
+  if (process.platform !== "win32") {
+    return { command: "pnpm", args: [] };
+  }
+
+  const appDataPnpm = process.env.APPDATA
+    ? resolve(process.env.APPDATA, "npm", "node_modules", "pnpm", "bin", "pnpm.cjs")
+    : null;
+
+  if (appDataPnpm && existsSync(appDataPnpm)) {
+    return { command: process.execPath, args: [appDataPnpm] };
+  }
+
+  return { command: "cmd.exe", args: ["/d", "/s", "/c", "pnpm.cmd"] };
+}
+
+function resolvePort(directEnvKeys, urlEnvKeys, fallbackPort) {
+  for (const key of directEnvKeys) {
+    const value = process.env[key];
+    if (!value) continue;
+    const parsedPort = Number.parseInt(value, 10);
+    if (!Number.isNaN(parsedPort) && parsedPort > 0) {
+      return parsedPort;
+    }
+  }
+
+  for (const key of urlEnvKeys) {
+    const value = process.env[key];
+    if (!value) continue;
+
+    try {
+      const url = new URL(value);
+      if (url.port) {
+        return Number.parseInt(url.port, 10);
+      }
+
+      return url.protocol === "https:" ? 443 : 80;
+    } catch {
+      // Ignore malformed values here; the app-specific env validation will report them later.
+    }
+  }
+
+  return fallbackPort;
+}
+
+function ensurePortFree(port, message) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const server = net.createServer();
+
+    server.once("error", (error) => {
+      if (error && typeof error === "object" && "code" in error && error.code === "EADDRINUSE") {
+        rejectPromise(new Error(message));
+        return;
+      }
+
+      rejectPromise(error);
+    });
+
+    server.once("listening", () => {
+      server.close((error) => {
+        if (error) {
+          rejectPromise(error);
+          return;
+        }
+
+        resolvePromise();
+      });
+    });
+
+    server.listen(port, "127.0.0.1");
+  });
+}
+
+async function ensureDockerAvailable() {
+  let result;
+
+  try {
+    result = await runCaptured(dockerCommand, ["info"], { allowFailure: true });
+  } catch (error) {
+    throw new Error(
+      [
+        "Docker is required to run local Postgres and Redis for pnpm dev, but the Docker CLI could not be started.",
+        process.platform === "win32"
+          ? "Install or repair Docker Desktop, then rerun pnpm dev."
+          : "Install Docker and start the Docker daemon, then rerun pnpm dev.",
+        error instanceof Error ? `Docker error: ${error.message}` : undefined,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    );
+  }
+
+  if (result.code === 0) {
+    return;
+  }
+
+  const dockerError = (result.stderr || result.stdout).trim();
+
+  throw new Error(
+    [
+      "Docker is required to run local Postgres and Redis for pnpm dev, but the Docker daemon is not reachable.",
+      process.platform === "win32"
+        ? "Start Docker Desktop and wait until the engine is running, then rerun pnpm dev."
+        : "Start the Docker daemon, then rerun pnpm dev.",
+      dockerError ? `Docker reported: ${dockerError}` : undefined,
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  );
+}
+
+async function isContainerRunning(containerName) {
+  const { code, stdout } = await runCaptured(
+    dockerCommand,
+    ["inspect", "--format", "{{.State.Running}}", containerName],
+    { allowFailure: true },
+  );
+
+  return code === 0 && stdout.trim() === "true";
+}
+
+async function waitForHealthyContainer(containerName) {
+  const deadline = Date.now() + 60_000;
+
+  while (Date.now() < deadline) {
+    const { code, stdout } = await runCaptured(
+      dockerCommand,
+      [
+        "inspect",
+        "--format",
+        "{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}",
+        containerName,
+      ],
+      { allowFailure: true },
+    );
+
+    const status = stdout.trim();
+
+    if (code === 0 && (status === "healthy" || status === "running")) {
+      return;
+    }
+
+    if (code === 0 && status === "exited") {
+      throw new Error(`${containerName} exited before it became ready.`);
+    }
+
+    await sleep(1_000);
+  }
+
+  throw new Error(`Timed out waiting for ${containerName} to become ready.`);
+}
+
+function runChecked(command, args) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn(command, args, {
+      cwd: repoRoot,
+      env: process.env,
+      stdio: "inherit",
+    });
+
+    child.on("error", rejectPromise);
+    child.on("exit", (code, signal) => {
+      if (code === 0) {
+        resolvePromise();
+        return;
+      }
+
+      rejectPromise(
+        new Error(
+          signal
+            ? `${command} ${args.join(" ")} terminated with signal ${signal}.`
+            : `${command} ${args.join(" ")} exited with code ${code}.`,
+        ),
+      );
+    });
+  });
+}
+
+function runCaptured(command, args, options = {}) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn(command, args, {
+      cwd: repoRoot,
+      env: process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    child.on("error", rejectPromise);
+    child.on("exit", (code) => {
+      if (!options.allowFailure && code !== 0) {
+        rejectPromise(
+          new Error(stderr.trim() || `${command} ${args.join(" ")} exited with code ${code}.`),
+        );
+        return;
+      }
+
+      resolvePromise({
+        code: code ?? 1,
+        stdout,
+        stderr,
+      });
+    });
+  });
+}
+
+function startService(name, args, env) {
+  const child = spawn(pnpmInvocation.command, [...pnpmInvocation.args, ...args], {
+    cwd: repoRoot,
+    env,
+    detached: process.platform !== "win32",
+    stdio: "inherit",
+  });
+
+  serviceProcesses.push({ name, child });
+
+  child.on("error", (error) => {
+    if (shuttingDown) return;
+    console.error(`[dev] ${name} failed to start:`, error);
+    void shutdown(1);
+  });
+
+  child.on("exit", (code, signal) => {
+    if (shuttingDown) return;
+
+    const exitReason = signal ? `signal ${signal}` : `code ${code ?? 1}`;
+    if (code === 0) {
+      console.log(`[dev] ${name} exited with ${exitReason}; shutting down`);
+      void shutdown(0);
+      return;
+    }
+
+    console.error(`[dev] ${name} exited with ${exitReason}`);
+    void shutdown(code ?? exitCodeFromSignal(signal));
+  });
+}
+
+function withoutPortEnv(sourceEnv) {
+  const env = { ...sourceEnv };
+  delete env.PORT;
+  return env;
+}
+
+async function shutdown(exitCode) {
+  if (shuttingDown) {
+    return;
+  }
+
+  shuttingDown = true;
+
+  await stopServiceProcesses();
+
+  if (servicesStartedByScript.size > 0) {
+    const services = [...servicesStartedByScript];
+
+    try {
+      console.log(`[dev] stopping local ${services.join(" + ")}`);
+      await runChecked(dockerCommand, [...composeArgs, "stop", ...services]);
+    } catch (error) {
+      console.error("[dev]", error instanceof Error ? error.message : error);
+    }
+  }
+
+  process.exit(exitCode);
+}
+
+async function stopServiceProcesses() {
+  const runningServices = serviceProcesses.filter(({ child }) => isChildRunning(child));
+
+  if (runningServices.length === 0) {
+    return;
+  }
+
+  await Promise.all(runningServices.map((service) => stopServiceProcessTree(service)));
+  await waitForServiceProcesses(runningServices, shutdownGraceMs);
+}
+
+async function stopServiceProcessTree({ child }) {
+  if (!isChildRunning(child) || !child.pid) {
+    return;
+  }
+
+  if (process.platform === "win32") {
+    await runCaptured("taskkill.exe", ["/pid", String(child.pid), "/T", "/F"], {
+      allowFailure: true,
+    });
+    return;
+  }
+
+  try {
+    process.kill(-child.pid, "SIGINT");
+  } catch {
+    child.kill("SIGINT");
+  }
+}
+
+async function waitForServiceProcesses(services, timeoutMs) {
+  const exits = Promise.all(services.map(({ child }) => onceExit(child)));
+  const timeout = sleep(timeoutMs).then(() => "timeout");
+  const result = await Promise.race([exits, timeout]);
+
+  if (result !== "timeout") {
+    return;
+  }
+
+  const stillRunning = services.filter(({ child }) => isChildRunning(child));
+  if (stillRunning.length === 0) {
+    return;
+  }
+
+  console.log(`[dev] forcing ${stillRunning.map(({ name }) => name).join(", ")} to stop`);
+
+  for (const { child } of stillRunning) {
+    if (!child.pid) continue;
+
+    if (process.platform === "win32") {
+      await runCaptured("taskkill.exe", ["/pid", String(child.pid), "/T", "/F"], {
+        allowFailure: true,
+      });
+      continue;
+    }
+
+    try {
+      process.kill(-child.pid, "SIGKILL");
+    } catch {
+      child.kill("SIGKILL");
+    }
+  }
+
+  await Promise.race([
+    Promise.all(stillRunning.map(({ child }) => onceExit(child))),
+    sleep(forcedShutdownGraceMs),
+  ]);
+}
+
+function isChildRunning(child) {
+  return child.exitCode === null && child.signalCode === null;
+}
+
+function exitCodeFromSignal(signal) {
+  if (signal === "SIGINT") {
+    return 130;
+  }
+
+  if (signal === "SIGTERM") {
+    return 143;
+  }
+
+  return 1;
+}
+
+function onceExit(child) {
+  return new Promise((resolvePromise) => {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      resolvePromise();
+      return;
+    }
+
+    child.once("exit", () => {
+      resolvePromise();
+    });
+  });
+}
+
+function sleep(ms) {
+  return new Promise((resolvePromise) => {
+    setTimeout(resolvePromise, ms);
+  });
+}

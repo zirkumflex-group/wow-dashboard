@@ -1,7 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useConvexAuth, useMutation } from "convex/react";
-import { api } from "@wow-dashboard/backend/convex/_generated/api";
 import { useEffect, useRef, useState } from "react";
+
+import { apiClient } from "@/lib/api-client";
+import { authClient } from "@/lib/auth-client";
 
 export const Route = createFileRoute("/auth/electron-callback")({
   component: ElectronCallback,
@@ -9,33 +10,24 @@ export const Route = createFileRoute("/auth/electron-callback")({
 
 function ElectronCallback() {
   const [deepLinkUrl, setDeepLinkUrl] = useState<string | null>(null);
-  const [error, setError] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const anchorRef = useRef<HTMLAnchorElement>(null);
-  const { isAuthenticated, isLoading } = useConvexAuth();
-  const storeLoginCode = useMutation(api.loginCodes.storeLoginCode);
+  const session = authClient.useSession();
 
   useEffect(() => {
-    if (isLoading) return;
-    if (!isAuthenticated) {
-      setError(true);
+    if (session.isPending || deepLinkUrl) return;
+    if (!session.data) {
+      setError("Could not retrieve session token. Please try logging in again.");
       return;
     }
 
-    // Hand the desktop app the Better Auth session token so it can mint
-    // fresh Convex JWTs after cold start instead of persisting an expired JWT.
-    fetch("/api/auth/get-session")
-      .then((r) => r.json())
-      .then(async (data: unknown) => {
-        const token = (data as { session?: { token?: string } })?.session?.token;
-        if (!token) {
-          setError(true);
-          return;
-        }
-        const code = await storeLoginCode({ token });
-        setDeepLinkUrl(`wow-dashboard://auth?code=${encodeURIComponent(code)}`);
+    apiClient
+      .createLoginCode()
+      .then((data) => {
+        setDeepLinkUrl(`wow-dashboard://auth?code=${encodeURIComponent(data.code)}`);
       })
-      .catch(() => setError(true));
-  }, [isAuthenticated, isLoading, storeLoginCode]);
+      .catch(() => setError("Could not retrieve session token. Please try logging in again."));
+  }, [deepLinkUrl, session.data, session.isPending]);
 
   // Auto-click the hidden anchor once the URL is ready — this counts as a user-gesture
   // chain from the original page load and is the most reliable way to trigger custom protocols.
@@ -49,9 +41,7 @@ function ElectronCallback() {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-4">
         <p className="text-lg font-medium">Login failed</p>
-        <p className="text-muted-foreground text-sm">
-          Could not retrieve session token. Please try logging in again.
-        </p>
+        <p className="text-muted-foreground text-sm">{error}</p>
       </div>
     );
   }

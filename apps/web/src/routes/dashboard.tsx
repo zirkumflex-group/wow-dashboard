@@ -1,16 +1,17 @@
-import { createFileRoute, Link, redirect, useNavigate } from "@tanstack/react-router";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { createFileRoute, Link, redirect } from "@tanstack/react-router";
 import { toast } from "sonner";
-import { api } from "@wow-dashboard/backend/convex/_generated/api";
 import { Badge } from "@wow-dashboard/ui/components/badge";
 import { Button } from "@wow-dashboard/ui/components/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@wow-dashboard/ui/components/card";
 import { Checkbox } from "@wow-dashboard/ui/components/checkbox";
 import { Input } from "@wow-dashboard/ui/components/input";
 import { Skeleton } from "@wow-dashboard/ui/components/skeleton";
-import { Authenticated, AuthLoading, Unauthenticated, useMutation, useQuery } from "convex/react";
 import { HeartPulse, RefreshCw, Shield, Star, Swords } from "lucide-react";
 import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createCharacterRouteSlug } from "@wow-dashboard/api-schema";
+import { apiClient, apiQueryOptions } from "@/lib/api-client";
 import { PlaytimeBreakdown } from "../components/playtime-breakdown";
 import { getClassBgColor, getClassTextColor } from "../lib/class-colors";
 
@@ -26,14 +27,6 @@ export const Route = createFileRoute("/dashboard")({
   },
   component: RouteComponent,
 });
-
-function RedirectToHome() {
-  const navigate = useNavigate();
-  useEffect(() => {
-    void navigate({ to: "/" });
-  }, [navigate]);
-  return null;
-}
 
 function classColor(cls: string) {
   return getClassTextColor(cls);
@@ -165,7 +158,11 @@ function CharacterCard({
   const cls = char.class.toLowerCase();
 
   return (
-    <Link to="/character/$characterId" params={{ characterId: char._id }} className="block">
+    <Link
+      to="/character/$characterId"
+      params={{ characterId: createCharacterRouteSlug(char) }}
+      className="block"
+    >
       <Card
         className={`relative h-full transition-all hover:scale-[1.01] hover:shadow-lg border ${classBg(cls)}`}
       >
@@ -312,8 +309,11 @@ function RoleSection({
 }
 
 function Dashboard() {
-  const characters = useQuery(api.characters.getMyCharactersWithSnapshot);
-  const resync = useMutation(api.characters.resyncCharacters);
+  const charactersQuery = useQuery(apiQueryOptions.myCharacters());
+  const characters = charactersQuery.data;
+  const resync = useMutation({
+    mutationFn: () => apiClient.resyncCharacters(),
+  });
   const [syncing, setSyncing] = useState(false);
   const { isCoolingDown, remaining, setCooldown, formatRemaining } = useResyncCooldown();
   const { favorites, toggle: toggleFavorite } = useFavorites();
@@ -376,7 +376,7 @@ function Dashboard() {
     if (isCoolingDown || syncing) return;
     setSyncing(true);
     try {
-      const result = await resync();
+      const result = await resync.mutateAsync();
       if (result?.nextAllowedAt) {
         setCooldown(result.nextAllowedAt);
         toast.error("Too many requests — please wait before trying again.");
@@ -516,19 +516,5 @@ function Dashboard() {
 }
 
 function RouteComponent() {
-  return (
-    <>
-      <Authenticated>
-        <Dashboard />
-      </Authenticated>
-      <Unauthenticated>
-        <RedirectToHome />
-      </Unauthenticated>
-      <AuthLoading>
-        <div className="flex h-full items-center justify-center">
-          <p className="text-muted-foreground text-sm">Loading...</p>
-        </div>
-      </AuthLoading>
-    </>
-  );
+  return <Dashboard />;
 }

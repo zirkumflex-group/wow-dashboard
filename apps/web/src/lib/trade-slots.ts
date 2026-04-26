@@ -1,4 +1,4 @@
-export const TRADE_SLOT_OPTIONS = [
+const TRADE_SLOT_OPTIONS = [
   { key: "head", label: "Head" },
   { key: "shoulders", label: "Shoulders" },
   { key: "chest", label: "Chest" },
@@ -39,10 +39,6 @@ export const TRADE_SLOT_EDITOR_OPTIONS = [
   label: string;
   slotKeys: readonly TradeSlotKey[];
 }>;
-
-export const TRADE_SLOT_LABELS: Record<TradeSlotKey, string> = Object.fromEntries(
-  TRADE_SLOT_OPTIONS.map((slot) => [slot.key, slot.label]),
-) as Record<TradeSlotKey, string>;
 
 const TRADE_SLOT_EXPORT_LABELS: Record<TradeSlotKey, string> = {
   head: "Head",

@@ -1,6 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { Button } from "@wow-dashboard/ui/components/button";
-import { Authenticated, AuthLoading, Unauthenticated } from "convex/react";
 import { useEffect } from "react";
 
 import { authClient } from "@/lib/auth-client";
@@ -18,37 +17,39 @@ function RedirectToDashboard() {
 }
 
 function HomeComponent() {
+  const session = authClient.useSession();
+
+  if (session.isPending) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <p className="text-muted-foreground text-sm">Loading...</p>
+      </div>
+    );
+  }
+
+  if (session.data) {
+    return <RedirectToDashboard />;
+  }
+
   return (
-    <>
-      <Authenticated>
-        <RedirectToDashboard />
-      </Authenticated>
-      <Unauthenticated>
-        <div className="flex h-full flex-col items-center justify-center gap-8">
-          <div className="text-center">
-            <h1 className="text-4xl font-bold tracking-tight">WoW Dashboard</h1>
-            <p className="text-muted-foreground mt-2 text-lg">
-              Track your characters across all realms
-            </p>
-          </div>
-          <Button
-            size="lg"
-            onClick={() =>
-              authClient.signIn.social({
-                provider: "battlenet",
-                callbackURL: "/dashboard",
-              })
-            }
-          >
-            Sign in with Battle.net
-          </Button>
-        </div>
-      </Unauthenticated>
-      <AuthLoading>
-        <div className="flex h-full items-center justify-center">
-          <p className="text-muted-foreground text-sm">Loading...</p>
-        </div>
-      </AuthLoading>
-    </>
+    <div className="flex h-full flex-col items-center justify-center gap-8">
+      <div className="text-center">
+        <h1 className="text-4xl font-bold tracking-tight">WoW Dashboard</h1>
+        <p className="text-muted-foreground mt-2 text-lg">
+          Track your characters across all realms
+        </p>
+      </div>
+      <Button
+        size="lg"
+        onClick={() =>
+          authClient.signIn.oauth2({
+            providerId: "battlenet",
+            callbackURL: new URL("/dashboard", window.location.origin).toString(),
+          })
+        }
+      >
+        Sign in with Battle.net
+      </Button>
+    </div>
   );
 }

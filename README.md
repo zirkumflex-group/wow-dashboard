@@ -1,93 +1,154 @@
 # wow-dashboard
 
-This project was created with [Better-T-Stack](https://github.com/AmanVarshney01/create-better-t-stack), a modern TypeScript stack that combines React, TanStack Start, Convex, and more.
+WoW Dashboard is a self-hosted WoW character dashboard with:
 
-## Features
+- `apps/web` for the browser UI
+- `apps/app` for the Electron desktop client
+- `apps/addon` for snapshot generation inside WoW
+- `apps/api` + `apps/worker` for the self-hosted backend
+- Postgres + Redis for persistence, jobs, and rate limiting
 
-- **TypeScript** - For type safety and improved developer experience
-- **TanStack Start** - SSR framework with TanStack Router
-- **TailwindCSS** - Utility-first CSS for rapid UI development
-- **Shared UI package** - shadcn/ui primitives live in `packages/ui`
-- **Convex** - Reactive backend-as-a-service platform
-- **Authentication** - Better-Auth
-- **Oxlint** - Oxlint + Oxfmt (linting & formatting)
-- **Turborepo** - Optimized monorepo build system
+The legacy Convex runtime has been removed from the active workspace. The remaining Convex-related code is the historical importer plus `legacy_convex_id` mapping retained for backfills.
 
-## Getting Started
+## Current Status
 
-First, install the dependencies:
+- Staging stack is running at `https://wow-staging.zirkumflex.io`
+- Battle.net auth works on staging
+- Postgres-backed API, worker, web, and desktop flows are the active path
+- Historical Convex exports can still be replayed through the importer when needed
+
+## Repository Layout
+
+```text
+wow-dashboard/
+|-- apps/
+|   |-- api/      # Hono API + Better Auth + import tooling
+|   |-- app/      # Electron desktop app
+|   |-- web/      # TanStack Start web app
+|   |-- worker/   # pg-boss worker
+|   `-- addon/    # WoW addon
+|-- packages/
+|   |-- api-client/
+|   |-- api-schema/
+|   |-- db/
+|   |-- env/
+|   `-- ui/
+`-- deploy/
+    |-- docker-compose.dev.yml
+    |-- docker-compose.prod.yml
+    |-- Dockerfile.api   # shared api/worker/migrate build
+    |-- Dockerfile.web
+    `-- Caddyfile
+```
+
+## Local Development
+
+Prerequisite: Docker Desktop or Docker Engine must be installed and running. The local dev stack uses Docker for Postgres and Redis.
+
+Install dependencies:
 
 ```bash
 pnpm install
 ```
 
-## Convex Setup
-
-This project uses Convex as a backend. You'll need to set up Convex before running the app:
+Create local env from the repo root:
 
 ```bash
-pnpm run dev:setup
+cp .env.example .env.local
 ```
 
-Follow the prompts to create a new Convex project and connect it to your application.
-
-Copy environment variables from `packages/backend/.env.local` to `apps/*/.env`.
-
-Then, run the development server:
+Start the full local stack:
 
 ```bash
 pnpm run dev
 ```
 
-Open [http://localhost:3001](http://localhost:3001) in your browser to see the web application.
-Your app will connect to the Convex cloud backend automatically.
+That one command will:
 
-## UI Customization
+- start local Postgres + Redis
+- wait for both containers to become healthy
+- apply Drizzle migrations
+- run `apps/api`, `apps/worker`, `apps/web`, and `apps/app`
+- stop the local Postgres + Redis containers it started when you press `Ctrl+C`
 
-React web apps in this stack share shadcn/ui primitives through `packages/ui`.
-
-- Change design tokens and global styles in `packages/ui/src/styles/globals.css`
-- Update shared primitives in `packages/ui/src/components/*`
-- Adjust shadcn aliases or style config in `packages/ui/components.json` and `apps/web/components.json`
-
-### Add more shared components
-
-Run this from the project root to add more primitives to the shared UI package:
+If you want the manual step-by-step flow instead, use:
 
 ```bash
-npx shadcn@latest add accordion dialog popover sheet table -c packages/ui
+docker compose -f deploy/docker-compose.dev.yml up -d postgres redis
+pnpm -F @wow-dashboard/db migrate
+pnpm run dev:services
 ```
 
-Import shared components like this:
+To stop only the local dev containers manually:
 
-```tsx
-import { Button } from "@wow-dashboard/ui/components/button";
+```bash
+pnpm run dev:stop
 ```
 
-### Add app-specific blocks
+If `localhost:3000` or `localhost:3001` is already occupied, `pnpm run dev` will exit early with a clear error so you do not accidentally point the web or desktop client at the wrong service. If you intentionally use a different API port, override `PORT`, `API_URL`, `BETTER_AUTH_URL`, and `VITE_API_URL` together.
 
-If you want to add app-specific blocks instead of shared primitives, run the shadcn CLI from `apps/web`.
+If a local Postgres or Redis service already uses the default infrastructure ports, override `POSTGRES_PORT` or `REDIS_PORT` in `.env.local`. Keep `DATABASE_URL` and `REDIS_URL` pointed at the same host ports.
 
-## Git Hooks and Formatting
+Optional browser-only dev:
 
-- Format and lint fix: `pnpm run check`
-
-## Project Structure
-
-```
-wow-dashboard/
-├── apps/
-│   ├── web/         # Frontend application (React + TanStack Start)
-├── packages/
-│   ├── ui/          # Shared shadcn/ui components and styles
-│   ├── backend/     # Convex backend functions and schema
+```bash
+pnpm run dev:web
 ```
 
-## Available Scripts
+Note: The Electron dev/start scripts clear `ELECTRON_RUN_AS_NODE` automatically, because that environment variable forces Electron into plain Node mode and crashes the desktop app on startup.
 
-- `pnpm run dev`: Start all applications in development mode
-- `pnpm run build`: Build all applications
-- `pnpm run dev:web`: Start only the web application
-- `pnpm run dev:setup`: Setup and configure your Convex project
-- `pnpm run check-types`: Check TypeScript types across all apps
-- `pnpm run check`: Run Oxlint and Oxfmt
+Useful local URLs:
+
+- Web: `http://localhost:3001`
+- API: `http://localhost:3000`
+- Auth probe: `http://localhost:3000/dev/auth`
+
+## Electron Against Staging
+
+For a staging desktop smoke test, run the Electron app with staging env overrides:
+
+```bash
+SITE_URL=https://wow-staging.zirkumflex.io \
+API_URL=https://wow-staging.zirkumflex.io/api \
+BETTER_AUTH_URL=https://wow-staging.zirkumflex.io \
+VITE_SITE_URL=https://wow-staging.zirkumflex.io \
+VITE_API_URL=https://wow-staging.zirkumflex.io/api \
+pnpm -F app dev
+```
+
+## VPS / Staging Deploy
+
+Use the deploy guide in [deploy/README.md](deploy/README.md).
+
+The current production-shaped stack is:
+
+- `caddy`
+- `web`
+- `api`
+- `worker`
+- `postgres`
+- `redis`
+
+Bring it up on the VPS with:
+
+```bash
+cd ~/wow-dashboard
+bash deploy/update-server.sh
+```
+
+## Historical Convex Import
+
+The one-shot importer is bundled into the API image for historical backfills. Copy the export ZIP into the `api` container first, then run:
+
+```bash
+docker compose --env-file deploy/.env.staging -f deploy/docker-compose.prod.yml exec -T api \
+  node apps/api/dist/importConvexExport.cjs \
+  /tmp/<convex-export>.zip \
+  --apply
+```
+
+## Checks
+
+- Lint + format: `pnpm check`
+- Typecheck: `pnpm check-types`
+- API typecheck only: `pnpm -F @wow-dashboard/api check-types`

@@ -1,0 +1,50 @@
+# syntax=docker/dockerfile:1.7
+FROM node:24-slim AS base
+
+ENV PNPM_HOME=/pnpm
+ENV PATH="${PNPM_HOME}:${PATH}"
+
+RUN corepack enable && corepack prepare pnpm@10.33.1 --activate
+
+WORKDIR /app
+
+FROM base AS pruner
+
+COPY . .
+
+RUN --mount=type=cache,id=wowdash-pnpm-store,target=/pnpm/store,sharing=locked \
+  pnpm dlx turbo@2.9.6 prune --docker web --out-dir /pruned
+
+FROM base AS deps
+
+COPY --from=pruner /pruned/json/ .
+COPY --from=pruner /pruned/full/packages/ui ./packages/ui
+
+RUN --mount=type=cache,id=wowdash-pnpm-store,target=/pnpm/store,sharing=locked \
+  pnpm install --frozen-lockfile --fix-lockfile
+
+FROM deps AS build
+
+ARG VITE_API_URL
+
+COPY --from=pruner /pruned/full/ .
+
+ENV VITE_API_URL="${VITE_API_URL}"
+
+RUN pnpm -F web build
+
+FROM node:24-slim AS runtime
+
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV PORT=3001
+ENV HOST=0.0.0.0
+
+COPY --from=build --chown=node:node /app/apps/web/.output /app
+
+USER node
+
+EXPOSE 3001
+
+CMD ["node", "server/index.mjs"]

@@ -1,5 +1,5 @@
-import { createFileRoute, Link, redirect } from "@tanstack/react-router";
-import { api } from "@wow-dashboard/backend/convex/_generated/api";
+import { useQuery } from "@tanstack/react-query";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { Badge } from "@wow-dashboard/ui/components/badge";
 import { Card, CardContent } from "@wow-dashboard/ui/components/card";
 import { Checkbox } from "@wow-dashboard/ui/components/checkbox";
@@ -14,9 +14,10 @@ import {
   TableRow,
 } from "@wow-dashboard/ui/components/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@wow-dashboard/ui/components/tabs";
-import { useQuery } from "convex/react";
 import { ArrowDown, ArrowUp, ArrowUpDown, Trophy, Users } from "lucide-react";
 import { useEffect, useState } from "react";
+import { createCharacterRouteSlug } from "@wow-dashboard/api-schema";
+import { apiQueryOptions } from "@/lib/api-client";
 import { getClassTextColor } from "../lib/class-colors";
 import { getMythicPlusDungeonMeta, getRaiderIoScoreColor } from "../lib/mythic-plus-static";
 
@@ -25,9 +26,6 @@ const MIN_ILVL_KEY = "wow_dashboard_min_ilvl";
 const DEFAULT_MIN_ILVL = 200;
 
 export const Route = createFileRoute("/scoreboard")({
-  beforeLoad: ({ context }) => {
-    if (!context.isAuthenticated) throw redirect({ to: "/" });
-  },
   component: RouteComponent,
 });
 
@@ -147,7 +145,7 @@ type CharacterSort = "mplus" | "ilvl" | "key" | "playtime";
 type PlayerSort = "mplus" | "playtime" | "gold";
 
 function CharactersTab() {
-  const entries = useQuery(api.characters.getScoreboard);
+  const entries = useQuery(apiQueryOptions.scoreboardCharacters()).data;
   const [sort, setSort] = useState<CharacterSort>("mplus");
   const [dir, setDir] = useState<SortDir>("desc");
   const [hideBelow90, setHideBelow90] = useState<boolean>(() => readHideBelow90());
@@ -236,7 +234,9 @@ function CharactersTab() {
   });
 
   const averageIlvl =
-    filtered.length > 0 ? filtered.reduce((sum, entry) => sum + entry.itemLevel, 0) / filtered.length : 0;
+    filtered.length > 0
+      ? filtered.reduce((sum, entry) => sum + entry.itemLevel, 0) / filtered.length
+      : 0;
   const averageMythicPlus =
     filtered.length > 0
       ? filtered.reduce((sum, entry) => sum + entry.mythicPlusScore, 0) / filtered.length
@@ -264,7 +264,9 @@ function CharactersTab() {
             className="h-8 w-24 text-sm"
           />
         </label>
-        <span className="text-xs text-muted-foreground">{filtered.length} / {entries.length} shown</span>
+        <span className="text-xs text-muted-foreground">
+          {filtered.length} / {entries.length} shown
+        </span>
         <span className="text-xs text-muted-foreground">Avg iLvl {averageIlvl.toFixed(1)}</span>
         <span className="text-xs text-muted-foreground">
           Avg M+ {Math.round(averageMythicPlus).toLocaleString()}
@@ -332,7 +334,7 @@ function CharactersTab() {
                         <div className="space-y-0.5">
                           <Link
                             to="/character/$characterId"
-                            params={{ characterId: entry.characterId }}
+                            params={{ characterId: createCharacterRouteSlug(entry) }}
                             className={`font-semibold hover:underline ${classColor(entry.class)}`}
                           >
                             {entry.name}
@@ -396,7 +398,7 @@ function CharactersTab() {
 }
 
 function PlayersTab() {
-  const entries = useQuery(api.characters.getPlayerScoreboard);
+  const entries = useQuery(apiQueryOptions.playerScoreboard()).data;
   const [sort, setSort] = useState<PlayerSort>("mplus");
   const [dir, setDir] = useState<SortDir>("desc");
 
@@ -500,7 +502,8 @@ function PlayersTab() {
                       mapName: entry.bestKeystoneMapName ?? undefined,
                     },
               );
-              const highestScoreColor = getRaiderIoScoreColor(entry.highestMythicPlusScore) ?? "#f8fafc";
+              const highestScoreColor =
+                getRaiderIoScoreColor(entry.highestMythicPlusScore) ?? "#f8fafc";
 
               return (
                 <TableRow key={entry.playerId}>

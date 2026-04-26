@@ -1,4 +1,5 @@
 local addonName, addon = ...
+addon = addon or {}
 
 -- ============================================================
 -- WoW Dashboard — Expansion Overview Panel Style
@@ -8,6 +9,26 @@ local ADDON_PATH   = "Interface\\AddOns\\wow-dashboard"
 local FONT_BOLD    = ADDON_PATH .. "\\Fonts\\Lato-Bold.ttf"
 local BORDER_TEX   = ADDON_PATH .. "\\Art\\ExpansionLandingPage\\ExpansionBorder_TWW"
 local MINIMAP_ICON = ADDON_PATH .. "\\Art\\Logo\\WDIconTransparent"
+
+local function GetAddonMetadata(fieldName, fallback)
+    local value = nil
+    if type(C_AddOns) == "table" and type(C_AddOns.GetAddOnMetadata) == "function" then
+        value = C_AddOns.GetAddOnMetadata(addonName, fieldName)
+    end
+    if (value == nil or value == "") and type(GetAddOnMetadata) == "function" then
+        value = GetAddOnMetadata(addonName, fieldName)
+    end
+
+    if value ~= nil and value ~= "" then
+        return tostring(value)
+    end
+
+    return fallback
+end
+
+local ADDON_VERSION   = GetAddonMetadata("Version", "1.2.9")
+local ADDON_INTERFACE = GetAddonMetadata("Interface", "120001")
+local ADDON_EXPANSION = GetAddonMetadata("X-Expansion", "Midnight")
 
 local BG_R, BG_G, BG_B = 0.067, 0.040, 0.024
 
@@ -153,11 +174,18 @@ local function BuildInfoRow(parent, key, value, yOffset)
     val:SetText(value)
 end
 
+addon.uiHelpers = {
+    BuildSection = BuildSection,
+    CreateMajorDivider = CreateMajorDivider,
+    BuildCategoryBar = BuildCategoryBar,
+    BuildInfoRow = BuildInfoRow,
+}
+
 -- ============================================================
 -- Data Collection
 -- ============================================================
 -- Every SNAPSHOT_INTERVAL seconds the addon collects character
--- and snapshot fields that mirror the backend Convex schema and
+-- and snapshot fields that mirror the backend addon ingest schema and
 -- appends them to WowDashboardDB.characters[key].snapshots.
 --
 -- The SavedVariables file written by WoW is located at:
@@ -166,6 +194,8 @@ end
 -- Schema (WowDashboardDB):
 --   version        number   -- bump when layout changes
 --   panelOpen      boolean
+--   settings       table
+--     syncPlaytimeOnLogin boolean
 --   minimap        table
 --     minimapPos   number
 --     hide         boolean
@@ -211,6 +241,7 @@ end
 --       playtimeSeconds   number  -- total /played seconds
 --       playtimeThisLevelSeconds number  -- /played seconds on current level
 --       mythicPlusScore   number
+--       seasonID          number?
 --       ownedKeystone     table?
 --         level               number
 --         mapChallengeModeID  number?
@@ -222,18 +253,30 @@ end
 --         heroDawncrest        number
 --         mythDawncrest        number
 --         radiantSparkDust     number
+--       currencyDetails   table? -- keyed like currencies; includes caps and weekly earned values
 --       stats             table
 --         stamina              number
 --         strength             number
 --         agility              number
 --         intellect            number
+--         critRating           number
 --         critPercent          number
+--         hasteRating          number
 --         hastePercent         number
+--         masteryRating        number
 --         masteryPercent       number
+--         versatilityRating    number
 --         versatilityPercent   number
+--         speedRating          number
 --         speedPercent         number
+--         leechRating          number
 --         leechPercent         number
+--         avoidanceRating      number
 --         avoidancePercent     number
+--       equipment         table? -- keyed by equipment slot
+--       weeklyRewards     table?
+--       majorFactions     table?
+--       clientInfo        table?
 --   pendingMythicPlusMembers table -- keyed by "Name-Realm"
 --     capturedAt    number
 --     members       array
@@ -291,9 +334,23 @@ local RECENT_COMPLETION_EVENT_GRACE = 20
 local STALE_ATTEMPT_RECOVERY_SECONDS = 10 * 60
 local MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS = 4 * 60 * 60 * 1000
 local MYTHIC_PLUS_DEBUG_EVENT_LIMIT = 30
-local PLAYTIME_TIMEOUT = 30             -- seconds before we give up waiting for TIME_PLAYED_MSG
 local MAX_SNAPSHOTS_PER_CHARACTER = 500
+local MAX_MYTHIC_PLUS_RUNS_PER_CHARACTER = 5000
+local MAX_MYTHIC_PLUS_RUN_MEMBERS = 10
 local MAX_LOG_ENTRIES = 200
+
+addon.constants = {
+    ADDON_PATH = ADDON_PATH,
+    FONT_BOLD = FONT_BOLD,
+    BORDER_TEX = BORDER_TEX,
+    MINIMAP_ICON = MINIMAP_ICON,
+    ADDON_VERSION = ADDON_VERSION,
+    ADDON_INTERFACE = ADDON_INTERFACE,
+    ADDON_EXPANSION = ADDON_EXPANSION,
+    DEFAULT_MINIMAP_POS = DEFAULT_MINIMAP_POS,
+    MINIMAP_BUTTON_RADIUS = MINIMAP_BUTTON_RADIUS,
+    MAX_LOG_ENTRIES = MAX_LOG_ENTRIES,
+}
 
 -- Midnight S1 currency IDs.
 local CURRENCY_IDS = {
@@ -305,25 +362,37 @@ local CURRENCY_IDS = {
     radiantSparkDust    = 3212,  -- Radiant Spark Dust    (Midnight S1)
 }
 
+addon.SNAPSHOT_EQUIPMENT_SLOTS = {
+    { key = "head",      slotName = "HeadSlot" },
+    { key = "neck",      slotName = "NeckSlot" },
+    { key = "shoulders", slotName = "ShoulderSlot" },
+    { key = "back",      slotName = "BackSlot" },
+    { key = "chest",     slotName = "ChestSlot" },
+    { key = "wrist",     slotName = "WristSlot" },
+    { key = "hands",     slotName = "HandsSlot" },
+    { key = "waist",     slotName = "WaistSlot" },
+    { key = "legs",      slotName = "LegsSlot" },
+    { key = "feet",      slotName = "FeetSlot" },
+    { key = "finger1",   slotName = "Finger0Slot" },
+    { key = "finger2",   slotName = "Finger1Slot" },
+    { key = "trinket1",  slotName = "Trinket0Slot" },
+    { key = "trinket2",  slotName = "Trinket1Slot" },
+    { key = "mainHand",  slotName = "MainHandSlot" },
+    { key = "offHand",   slotName = "SecondaryHandSlot" },
+}
+
 local pendingSnapshot      = nil
 local nextSnapshotAt       = 0      -- GetTime() when next auto-snapshot fires
 local snapshotTicker       = nil    -- C_Timer handle, cancelled on force-refresh
 local refreshCooldownUntil = 0      -- GetTime() when force-refresh cooldown ends
 local lastSnapshotAt       = 0      -- GetTime() when last snapshot was committed
-local waitingForPlaytime   = false
-local queuedFreshSnapshot  = false
-local suppressedTimePlayedFrames = nil
 local initialized          = false  -- true after first PLAYER_ENTERING_WORLD
+local loginPlaytimeSyncRequested = false
 local pendingMPlusSync     = false
 local lastMPlusSyncAt      = 0
 local pendingCompletedRunMembers = nil
 local pendingActiveAttemptReconcile = false
 
--- UI widgets — assigned after frames are built; used by the ticker
-local timerLabel = nil
-local refreshBtn = nil
-local minimapToggle = nil
-local RefreshLog = nil  -- assigned after Snapshots panel is built
 local StartSnapshotTicker = nil
 
 local function GetCharKey()
@@ -334,13 +403,68 @@ end
 
 local function GetRegion()
     if GetCurrentRegionName then
-        return GetCurrentRegionName():lower()
+        local region = GetCurrentRegionName()
+        if type(region) == "string" and region ~= "" then
+            region = string.lower(region)
+            if region == "us" or region == "eu" or region == "kr" or region == "tw" then
+                return region
+            end
+        end
     end
     return "us"
 end
+addon.GetRegion = GetRegion
 
 local function PrintAddonMessage(message)
     print("|cff00ccff[WoW Dashboard]|r " .. message)
+end
+
+function addon.EnsureAddonSettings()
+    if not WowDashboardDB then
+        return
+    end
+
+    if type(WowDashboardDB.settings) ~= "table" then
+        WowDashboardDB.settings = {}
+    end
+    if WowDashboardDB.settings.syncPlaytimeOnLogin == nil then
+        WowDashboardDB.settings.syncPlaytimeOnLogin = true
+    end
+end
+
+function addon.ShouldSyncPlaytimeOnLogin()
+    if not WowDashboardDB then
+        return true
+    end
+
+    addon.EnsureAddonSettings()
+    return WowDashboardDB.settings.syncPlaytimeOnLogin ~= false
+end
+
+function addon.SetSyncPlaytimeOnLogin(enabled)
+    if not WowDashboardDB then
+        return
+    end
+
+    addon.EnsureAddonSettings()
+    WowDashboardDB.settings.syncPlaytimeOnLogin = enabled == true
+end
+
+local function TrimArrayToNewest(items, maxItems)
+    if type(items) ~= "table" or type(maxItems) ~= "number" or #items <= maxItems then
+        return items
+    end
+
+    local writeIndex = 1
+    for readIndex = #items - maxItems + 1, #items do
+        items[writeIndex] = items[readIndex]
+        writeIndex = writeIndex + 1
+    end
+    for index = writeIndex, #items do
+        items[index] = nil
+    end
+
+    return items
 end
 
 local function GetCharacterIdentity()
@@ -666,13 +790,7 @@ local function EnsureCharacterEntry(key, name, realm, charInfo)
     entry.mythicPlusDebug = nil
 
     -- Trim legacy oversized snapshot lists down to the cap (keeps newest)
-    if #entry.snapshots > MAX_SNAPSHOTS_PER_CHARACTER then
-        local trimmed = {}
-        for i = #entry.snapshots - MAX_SNAPSHOTS_PER_CHARACTER + 1, #entry.snapshots do
-            trimmed[#trimmed + 1] = entry.snapshots[i]
-        end
-        entry.snapshots = trimmed
-    end
+    TrimArrayToNewest(entry.snapshots, MAX_SNAPSHOTS_PER_CHARACTER)
 
     return entry
 end
@@ -690,14 +808,25 @@ local function NormalizeAndDeduplicateRuns(entry)
             end
         end
     end
-    local normalizedKeys = {}
-    for dedupKey, run in pairs(normalizedRunsByDedupKey) do
-        normalizedKeys[dedupKey] = true
+
+    for _, run in pairs(normalizedRunsByDedupKey) do
         normalizedRuns[#normalizedRuns + 1] = run
     end
     table.sort(normalizedRuns, function(a, b)
         return GetRunSortValue(a) > GetRunSortValue(b)
     end)
+    while #normalizedRuns > MAX_MYTHIC_PLUS_RUNS_PER_CHARACTER do
+        normalizedRuns[#normalizedRuns] = nil
+    end
+
+    local normalizedKeys = {}
+    for _, run in ipairs(normalizedRuns) do
+        local dedupKey = GetRunDedupKey(run)
+        if dedupKey then
+            normalizedKeys[dedupKey] = true
+        end
+    end
+
     entry.mythicPlusRuns = normalizedRuns
     entry.mythicPlusRunKeys = normalizedKeys
 end
@@ -870,6 +999,9 @@ local function NormalizeMythicPlusMembers(members)
             if not seenMembers[memberKey] then
                 seenMembers[memberKey] = true
                 normalizedMembers[#normalizedMembers + 1] = normalized
+                if #normalizedMembers >= MAX_MYTHIC_PLUS_RUN_MEMBERS then
+                    break
+                end
             end
         end
     end
@@ -991,7 +1123,9 @@ local function MergeMythicPlusMemberLists(...)
                 if normalized ~= nil then
                     local mergedIndex = FindMergeableMythicPlusMemberIndex(mergedMembers, normalized)
                     if mergedIndex == nil then
-                        mergedMembers[#mergedMembers + 1] = normalized
+                        if #mergedMembers < MAX_MYTHIC_PLUS_RUN_MEMBERS then
+                            mergedMembers[#mergedMembers + 1] = normalized
+                        end
                     else
                         mergedMembers[mergedIndex] = MergeMythicPlusMember(mergedMembers[mergedIndex], normalized)
                     end
@@ -2114,10 +2248,36 @@ local function NormalizeLifecycleTimestamp(value)
 end
 
 local function GetCurrentMythicPlusSeasonID()
-    if type(C_MythicPlus) == "table" and type(C_MythicPlus.GetCurrentSeason) == "function" then
+    local function NormalizeSeasonID(value)
+        local seasonID = tonumber(value)
+        if seasonID and seasonID > 0 then
+            return seasonID
+        end
+
+        return nil
+    end
+
+    if type(C_MythicPlus) ~= "table" then
+        return nil
+    end
+
+    if type(C_MythicPlus.RequestMapInfo) == "function" then
+        pcall(C_MythicPlus.RequestMapInfo)
+    end
+
+    if type(C_MythicPlus.GetCurrentSeason) == "function" then
         local ok, seasonID = pcall(C_MythicPlus.GetCurrentSeason)
-        if ok then
-            return tonumber(seasonID)
+        local normalized = ok and NormalizeSeasonID(seasonID) or nil
+        if normalized then
+            return normalized
+        end
+    end
+
+    if type(C_MythicPlus.GetCurrentUIDisplaySeason) == "function" then
+        local ok, seasonID = pcall(C_MythicPlus.GetCurrentUIDisplaySeason)
+        local normalized = ok and NormalizeSeasonID(seasonID) or nil
+        if normalized then
+            return normalized
         end
     end
 
@@ -2264,6 +2424,21 @@ local function PickDefinedValue(preferredValue, fallbackValue)
     return fallbackValue
 end
 
+local function PickMergedSeasonID(preferredValue, fallbackValue)
+    local preferredSeason = tonumber(preferredValue)
+    local fallbackSeason = tonumber(fallbackValue)
+    if preferredSeason ~= nil
+        and fallbackSeason ~= nil
+        and preferredSeason > 0
+        and fallbackSeason > 0
+        and preferredSeason ~= fallbackSeason
+    then
+        return math.max(preferredSeason, fallbackSeason)
+    end
+
+    return PickDefinedValue(preferredValue, fallbackValue)
+end
+
 MergeStoredMythicPlusRun = function(currentRun, candidateRun)
     if type(currentRun) ~= "table" then
         return candidateRun
@@ -2312,7 +2487,7 @@ MergeStoredMythicPlusRun = function(currentRun, candidateRun)
         fingerprint = PickDefinedValue(preferredRun.fingerprint, fallbackRun.fingerprint),
         attemptId = PickDefinedValue(GetRunAttemptID(preferredRun), GetRunAttemptID(fallbackRun)),
         observedAt = mergedObservedAt > 0 and mergedObservedAt or PickDefinedValue(preferredRun.observedAt, fallbackRun.observedAt),
-        seasonID = PickDefinedValue(preferredRun.seasonID, fallbackRun.seasonID),
+        seasonID = PickMergedSeasonID(preferredRun.seasonID, fallbackRun.seasonID),
         mapChallengeModeID = PickDefinedValue(preferredRun.mapChallengeModeID, fallbackRun.mapChallengeModeID),
         mapName = PickDefinedValue(preferredRun.mapName, fallbackRun.mapName),
         level = PickDefinedValue(preferredRun.level, fallbackRun.level),
@@ -2913,6 +3088,8 @@ local function MarkAttemptCompleted(reason, options)
 
     local completedAt = NormalizeLifecycleTimestamp(options.completedAt) or time()
     local completionMembers = NormalizeMythicPlusMembers(options.members)
+    local activeStartDate = type(activeRun) == "table" and NormalizeLifecycleTimestamp(activeRun.startDate) or nil
+    local completionStartDate = activeStartDate or NormalizeLifecycleTimestamp(options.startDate)
     local completionRun = {
         fingerprint = type(activeRun) == "table" and activeRun.fingerprint or nil,
         attemptId = type(activeRun) == "table" and activeRun.attemptId or nil,
@@ -2926,7 +3103,7 @@ local function MarkAttemptCompleted(reason, options)
         completedInTime = options.completedInTime,
         durationMs = tonumber(options.durationMs),
         runScore = tonumber(options.runScore),
-        startDate = NormalizeLifecycleTimestamp(options.startDate) or (type(activeRun) == "table" and activeRun.startDate),
+        startDate = completionStartDate,
         completedAt = completedAt,
         endedAt = completedAt,
         members = completionMembers,
@@ -3211,6 +3388,188 @@ local function ScheduleMythicPlusHistorySync(reason, delaySeconds, options)
     end)
 end
 
+function addon.BuildSnapshotClientInfo()
+    local gameVersion, buildNumber, buildDate, tocVersion = nil, nil, nil, nil
+    if type(GetBuildInfo) == "function" then
+        local ok, version, build, date, toc = pcall(GetBuildInfo)
+        if ok then
+            gameVersion = version
+            buildNumber = build
+            buildDate = date
+            tocVersion = tonumber(toc)
+        end
+    end
+
+    local locale = nil
+    if type(GetLocale) == "function" then
+        local ok, value = pcall(GetLocale)
+        if ok then
+            locale = value
+        end
+    end
+
+    return {
+        addonVersion = ADDON_VERSION,
+        interfaceVersion = tonumber(ADDON_INTERFACE),
+        gameVersion = gameVersion,
+        buildNumber = buildNumber,
+        buildDate = buildDate,
+        tocVersion = tocVersion,
+        expansion = ADDON_EXPANSION,
+        locale = locale,
+    }
+end
+
+function addon.BuildEquipmentSnapshot()
+    if type(GetInventorySlotInfo) ~= "function" then
+        return nil
+    end
+
+    local equipment = {}
+    for _, slot in ipairs(addon.SNAPSHOT_EQUIPMENT_SLOTS or {}) do
+        local slotID = GetInventorySlotInfo(slot.slotName)
+        if slotID then
+            local itemID = type(GetInventoryItemID) == "function" and GetInventoryItemID("player", slotID) or nil
+            local itemLink = type(GetInventoryItemLink) == "function" and GetInventoryItemLink("player", slotID) or nil
+            if itemID or itemLink then
+                local itemName, itemQuality, itemLevel, iconFileID = nil, nil, nil, nil
+                if itemLink and type(GetItemInfo) == "function" then
+                    local ok, name, link, quality, level, _, _, _, _, icon = pcall(GetItemInfo, itemLink)
+                    if ok then
+                        itemName = name
+                        itemLink = link or itemLink
+                        itemQuality = tonumber(quality)
+                        itemLevel = tonumber(level)
+                        iconFileID = tonumber(icon)
+                    end
+                end
+                if itemLink and type(GetDetailedItemLevelInfo) == "function" then
+                    local ok, detailedLevel = pcall(GetDetailedItemLevelInfo, itemLink)
+                    if ok and tonumber(detailedLevel) then
+                        itemLevel = tonumber(detailedLevel)
+                    end
+                end
+
+                equipment[slot.key] = {
+                    slot = slot.key,
+                    slotID = slotID,
+                    itemID = tonumber(itemID),
+                    itemName = itemName,
+                    itemLink = itemLink,
+                    itemLevel = itemLevel,
+                    quality = itemQuality,
+                    iconFileID = iconFileID,
+                }
+            end
+        end
+    end
+
+    if next(equipment) then
+        return equipment
+    end
+
+    return nil
+end
+
+function addon.BuildWeeklyRewardsSnapshot()
+    if type(C_WeeklyRewards) ~= "table" or type(C_WeeklyRewards.GetActivities) ~= "function" then
+        return nil
+    end
+
+    local activities = {}
+    local okActivities, rawActivities = pcall(C_WeeklyRewards.GetActivities)
+    if okActivities and type(rawActivities) == "table" then
+        for index, activity in ipairs(rawActivities) do
+            if type(activity) == "table" then
+                table.insert(activities, {
+                    type = tonumber(activity.type or activity.activityType),
+                    index = tonumber(activity.index) or index,
+                    id = tonumber(activity.id),
+                    level = tonumber(activity.level),
+                    threshold = tonumber(activity.threshold),
+                    progress = tonumber(activity.progress),
+                    activityTierID = tonumber(activity.activityTierID),
+                    itemLevel = tonumber(activity.itemLevel),
+                    name = activity.name and tostring(activity.name) or nil,
+                })
+            end
+        end
+    end
+
+    if #activities == 0 then
+        return nil
+    end
+
+    local canClaimRewards = nil
+    if type(C_WeeklyRewards.CanClaimRewards) == "function" then
+        local ok, value = pcall(C_WeeklyRewards.CanClaimRewards)
+        if ok then
+            canClaimRewards = value == true
+        end
+    end
+
+    local isCurrentPeriod = nil
+    if type(C_WeeklyRewards.AreRewardsForCurrentRewardPeriod) == "function" then
+        local ok, value = pcall(C_WeeklyRewards.AreRewardsForCurrentRewardPeriod)
+        if ok then
+            isCurrentPeriod = value == true
+        end
+    end
+
+    return {
+        canClaimRewards = canClaimRewards,
+        isCurrentPeriod = isCurrentPeriod,
+        activities = activities,
+    }
+end
+
+function addon.BuildMajorFactionsSnapshot()
+    if type(C_MajorFactions) ~= "table"
+        or type(C_MajorFactions.GetMajorFactionIDs) ~= "function"
+        or type(C_MajorFactions.GetMajorFactionData) ~= "function" then
+        return nil
+    end
+
+    local okIDs, majorFactionIDs = pcall(C_MajorFactions.GetMajorFactionIDs)
+    if not okIDs or type(majorFactionIDs) ~= "table" then
+        return nil
+    end
+
+    local factions = {}
+    for _, factionID in ipairs(majorFactionIDs) do
+        local numericFactionID = tonumber(factionID)
+        if numericFactionID then
+            local okData, data = pcall(C_MajorFactions.GetMajorFactionData, numericFactionID)
+            if okData and type(data) == "table" and data.isUnlocked ~= false then
+                local isWeeklyCapped = nil
+                if type(C_MajorFactions.IsWeeklyRenownCapped) == "function" then
+                    local okCapped, capped = pcall(C_MajorFactions.IsWeeklyRenownCapped, numericFactionID)
+                    if okCapped then
+                        isWeeklyCapped = capped == true
+                    end
+                end
+
+                table.insert(factions, {
+                    factionID = numericFactionID,
+                    name = data.name and tostring(data.name) or nil,
+                    expansionID = tonumber(data.expansionID),
+                    isUnlocked = data.isUnlocked == true,
+                    renownLevel = tonumber(data.renownLevel),
+                    renownReputationEarned = tonumber(data.renownReputationEarned),
+                    renownLevelThreshold = tonumber(data.renownLevelThreshold),
+                    isWeeklyCapped = isWeeklyCapped,
+                })
+            end
+        end
+    end
+
+    if #factions > 0 then
+        return { factions = factions }
+    end
+
+    return nil
+end
+
 local function BuildPendingSnapshot()
     local key, name, realm, charInfo = GetCharacterIdentity()
 
@@ -3227,9 +3586,30 @@ local function BuildPendingSnapshot()
     local _, equippedIlvl = GetAverageItemLevel()
 
     local currencies = {}
+    local currencyDetails = {}
     for fieldName, currencyID in pairs(CURRENCY_IDS) do
-        local info            = C_CurrencyInfo.GetCurrencyInfo(currencyID)
-        currencies[fieldName] = info and info.quantity or 0
+        local quantity = 0
+        if type(C_CurrencyInfo) == "table" and type(C_CurrencyInfo.GetCurrencyInfo) == "function" then
+            local ok, info = pcall(C_CurrencyInfo.GetCurrencyInfo, currencyID)
+            if ok and type(info) == "table" then
+                quantity = tonumber(info.quantity) or 0
+                currencyDetails[fieldName] = {
+                    currencyID = currencyID,
+                    name = info.name and tostring(info.name) or nil,
+                    quantity = quantity,
+                    iconFileID = tonumber(info.iconFileID),
+                    maxQuantity = tonumber(info.maxQuantity),
+                    canEarnPerWeek = info.canEarnPerWeek == true,
+                    quantityEarnedThisWeek = tonumber(info.quantityEarnedThisWeek),
+                    maxWeeklyQuantity = tonumber(info.maxWeeklyQuantity),
+                    totalEarned = tonumber(info.totalEarned),
+                    discovered = info.discovered == true,
+                    quality = tonumber(info.quality),
+                    useTotalEarnedForMaxQty = info.useTotalEarnedForMaxQty == true,
+                }
+            end
+        end
+        currencies[fieldName] = quantity
     end
 
     local _, stamina = UnitStat("player", LE_UNIT_STAT_STAMINA)
@@ -3242,18 +3622,28 @@ local function BuildPendingSnapshot()
         strength           = strength or 0,
         agility            = agility or 0,
         intellect          = intellect or 0,
+        critRating         = CR_CRIT_MELEE and GetCombatRating(CR_CRIT_MELEE) or 0,
         critPercent        = GetCritChance()    or 0,
+        hasteRating        = CR_HASTE_MELEE and GetCombatRating(CR_HASTE_MELEE) or 0,
         hastePercent       = GetMeleeHaste()    or 0,
+        masteryRating      = CR_MASTERY and GetCombatRating(CR_MASTERY) or 0,
         masteryPercent     = GetMasteryEffect() or 0,
+        versatilityRating  = CR_VERSATILITY_DAMAGE_DONE and GetCombatRating(CR_VERSATILITY_DAMAGE_DONE) or 0,
         versatilityPercent = GetCombatRatingBonus(CR_VERSATILITY_DAMAGE_DONE) or 0,
+        speedRating        = CR_SPEED and GetCombatRating(CR_SPEED) or 0,
         speedPercent       = CR_SPEED and GetCombatRatingBonus(CR_SPEED) or 0,
+        leechRating        = CR_LIFESTEAL and GetCombatRating(CR_LIFESTEAL) or 0,
         leechPercent       = CR_LIFESTEAL and GetCombatRatingBonus(CR_LIFESTEAL) or 0,
+        avoidanceRating    = CR_AVOIDANCE and GetCombatRating(CR_AVOIDANCE) or 0,
         avoidancePercent   = CR_AVOIDANCE and GetCombatRatingBonus(CR_AVOIDANCE) or 0,
     }
 
     local mplusScore = 0
-    if C_ChallengeMode and C_ChallengeMode.GetOverallDungeonScore then
-        mplusScore = C_ChallengeMode.GetOverallDungeonScore() or 0
+    if type(C_ChallengeMode) == "table" and type(C_ChallengeMode.GetOverallDungeonScore) == "function" then
+        local ok, score = pcall(C_ChallengeMode.GetOverallDungeonScore)
+        if ok then
+            mplusScore = tonumber(score) or 0
+        end
     end
 
     local ownedKeystone = nil
@@ -3283,6 +3673,12 @@ local function BuildPendingSnapshot()
         end
     end
 
+    local seasonID = GetCurrentMythicPlusSeasonID()
+    local equipment = addon.BuildEquipmentSnapshot()
+    local weeklyRewards = addon.BuildWeeklyRewardsSnapshot()
+    local majorFactions = addon.BuildMajorFactionsSnapshot()
+    local clientInfo = addon.BuildSnapshotClientInfo()
+
     return {
         key      = key,
         name     = name,
@@ -3298,39 +3694,106 @@ local function BuildPendingSnapshot()
             playtimeSeconds = 0,
             playtimeThisLevelSeconds = 0,
             mythicPlusScore = mplusScore,
+            seasonID        = seasonID,
             ownedKeystone   = ownedKeystone,
             currencies      = currencies,
+            currencyDetails = next(currencyDetails) and currencyDetails or nil,
             stats           = stats,
+            equipment       = equipment,
+            weeklyRewards   = weeklyRewards,
+            majorFactions   = majorFactions,
+            clientInfo      = clientInfo,
         },
     }
 end
 
-local function SuppressTimePlayedMessages()
-    if suppressedTimePlayedFrames then
+local function SetPlaytimeBaseline(totalSeconds, thisLevelSeconds, capturedAt, level)
+    local totalValue = tonumber(totalSeconds)
+    local thisLevelValue = tonumber(thisLevelSeconds)
+    if totalValue == nil and thisLevelValue == nil then
         return
     end
 
-    suppressedTimePlayedFrames = {}
-    for i = 1, NUM_CHAT_WINDOWS do
-        local frame = _G["ChatFrame" .. i]
-        if frame and frame:IsEventRegistered("TIME_PLAYED_MSG") then
-            suppressedTimePlayedFrames[#suppressedTimePlayedFrames + 1] = frame
-            frame:UnregisterEvent("TIME_PLAYED_MSG")
-        end
-    end
+    addon.playtimeBaseline = {
+        totalSeconds = totalValue or 0,
+        thisLevelSeconds = thisLevelValue or 0,
+        capturedAt = tonumber(capturedAt) or time(),
+        level = tonumber(level) or tonumber(UnitLevel("player")),
+    }
 end
 
-local function RestoreTimePlayedMessages()
-    if not suppressedTimePlayedFrames then
-        return
+local function GetLastKnownPlaytime(characterKey)
+    local characters = WowDashboardDB and WowDashboardDB.characters
+    local entry = type(characters) == "table" and characters[characterKey] or nil
+    local snapshots = type(entry) == "table" and entry.snapshots or nil
+    if type(snapshots) ~= "table" then
+        return 0, 0
     end
 
-    for _, frame in ipairs(suppressedTimePlayedFrames) do
-        if frame then
-            frame:RegisterEvent("TIME_PLAYED_MSG")
+    for index = #snapshots, 1, -1 do
+        local snap = snapshots[index]
+        if type(snap) == "table" then
+            local totalSeconds = tonumber(snap.playtimeSeconds)
+            local thisLevelSeconds = tonumber(snap.playtimeThisLevelSeconds)
+            if totalSeconds ~= nil or thisLevelSeconds ~= nil then
+                return totalSeconds or 0, thisLevelSeconds or 0, tonumber(snap.takenAt), tonumber(snap.level)
+            end
         end
     end
-    suppressedTimePlayedFrames = nil
+
+    return 0, 0
+end
+
+local function GetEstimatedPlaytime(characterKey)
+    local now = time()
+    local currentLevel = tonumber(UnitLevel("player"))
+    local baseline = addon.playtimeBaseline
+
+    if type(baseline) ~= "table" then
+        local totalSeconds, thisLevelSeconds, _, snapshotLevel = GetLastKnownPlaytime(characterKey)
+        if snapshotLevel ~= nil and currentLevel ~= nil and snapshotLevel ~= currentLevel then
+            thisLevelSeconds = 0
+        end
+        SetPlaytimeBaseline(totalSeconds, thisLevelSeconds, now, currentLevel)
+        baseline = addon.playtimeBaseline
+    end
+
+    if type(baseline) ~= "table" then
+        return 0, 0
+    end
+
+    local elapsed = math.max(0, now - (tonumber(baseline.capturedAt) or now))
+    local totalSeconds = (tonumber(baseline.totalSeconds) or 0) + elapsed
+    local thisLevelSeconds = tonumber(baseline.thisLevelSeconds) or 0
+    local baselineLevel = tonumber(baseline.level)
+
+    if baselineLevel == nil or currentLevel == nil or baselineLevel == currentLevel then
+        thisLevelSeconds = thisLevelSeconds + elapsed
+    else
+        thisLevelSeconds = 0
+    end
+
+    return math.floor(totalSeconds), math.floor(thisLevelSeconds)
+end
+
+local function RequestLoginPlaytimeSync()
+    if loginPlaytimeSyncRequested then
+        return false
+    end
+    if not addon.ShouldSyncPlaytimeOnLogin() then
+        return false
+    end
+    if not IsLoggedIn() or type(RequestTimePlayed) ~= "function" then
+        return false
+    end
+
+    loginPlaytimeSyncRequested = true
+    local ok = pcall(RequestTimePlayed)
+    if not ok then
+        loginPlaytimeSyncRequested = false
+    end
+
+    return ok == true
 end
 
 local function CommitSnapshot(totalSeconds, thisLevelSeconds)
@@ -3339,6 +3802,7 @@ local function CommitSnapshot(totalSeconds, thisLevelSeconds)
     pendingSnapshot = nil
     p.snap.playtimeSeconds = totalSeconds or 0
     p.snap.playtimeThisLevelSeconds = thisLevelSeconds or 0
+    SetPlaytimeBaseline(p.snap.playtimeSeconds, p.snap.playtimeThisLevelSeconds, p.snap.takenAt, p.snap.level)
 
     local db = WowDashboardDB
     local entry = EnsureCharacterEntry(p.key, p.name, p.realm, p.charInfo)
@@ -3346,50 +3810,26 @@ local function CommitSnapshot(totalSeconds, thisLevelSeconds)
     table.insert(entry.snapshots, p.snap)
 
     -- Bound snapshot retention per character
-    while #entry.snapshots > MAX_SNAPSHOTS_PER_CHARACTER do
-        table.remove(entry.snapshots, 1)
-    end
+    TrimArrayToNewest(entry.snapshots, MAX_SNAPSHOTS_PER_CHARACTER)
 
     lastSnapshotAt = GetTime()
-    if RefreshLog then
-        RefreshLog()
+    if addon.RefreshLog then
+        addon.RefreshLog()
+    end
+    if addon.RefreshOverviewPanel then
+        addon.RefreshOverviewPanel()
     end
 end
 
 local function CollectSnapshot(forceFresh)
     if not IsLoggedIn() then return false end
-    if waitingForPlaytime then
-        if forceFresh then
-            queuedFreshSnapshot = true
-            return true
-        end
-        return false
-    end
     if pendingSnapshot and not forceFresh then return false end
 
     local snapshot = BuildPendingSnapshot()
     if not snapshot then return false end
     pendingSnapshot = snapshot
 
-    -- Suppress the default chat output by temporarily unregistering
-    -- all chat frames from TIME_PLAYED_MSG before requesting.
-    SuppressTimePlayedMessages()
-    waitingForPlaytime = true
-    RequestTimePlayed()
-
-    -- Failsafe: if TIME_PLAYED_MSG never arrives, unblock after timeout
-    local timeoutSnapshot = snapshot
-    C_Timer.After(PLAYTIME_TIMEOUT, function()
-        if waitingForPlaytime and pendingSnapshot == timeoutSnapshot then
-            waitingForPlaytime = false
-            RestoreTimePlayedMessages()
-            pendingSnapshot = nil
-            if queuedFreshSnapshot then
-                queuedFreshSnapshot = false
-                CollectSnapshot(true)
-            end
-        end
-    end)
+    CommitSnapshot(GetEstimatedPlaytime(snapshot.key))
     return true
 end
 
@@ -3399,6 +3839,23 @@ local function RequestFreshSnapshot()
         StartSnapshotTicker()
     end
     return requested
+end
+addon.RequestFreshSnapshot = RequestFreshSnapshot
+
+function addon.IsSnapshotPending()
+    return pendingSnapshot ~= nil
+end
+
+function addon.GetNextSnapshotAt()
+    return nextSnapshotAt
+end
+
+function addon.GetRefreshCooldownUntil()
+    return refreshCooldownUntil
+end
+
+function addon.SetRefreshCooldownUntil(value)
+    refreshCooldownUntil = tonumber(value) or 0
 end
 
 StartSnapshotTicker = function()
@@ -3411,500 +3868,11 @@ StartSnapshotTicker = function()
 end
 
 -- ============================================================
--- Main Window
+-- ============================================================
+-- Dashboard UI is implemented in wow-dashboard-ui.lua.
+-- Keep this file focused on data capture and event handling.
 -- ============================================================
 
-local LEFT_W, RIGHT_W, HEIGHT = 206, 500, 450
-
-local MainFrame = CreateFrame("Frame", "WowDashboardFrame", UIParent)
-MainFrame:SetSize(LEFT_W + RIGHT_W, HEIGHT)
-MainFrame:SetPoint("CENTER")
-MainFrame:SetMovable(true)
-MainFrame:EnableMouse(true)
-MainFrame:RegisterForDrag("LeftButton")
-MainFrame:SetScript("OnDragStart", MainFrame.StartMoving)
-MainFrame:SetScript("OnDragStop",  MainFrame.StopMovingOrSizing)
-MainFrame:SetClampedToScreen(true)
-MainFrame:Hide()
-
-table.insert(UISpecialFrames, "WowDashboardFrame")
-
-MainFrame:SetScript("OnShow", function()
-    if WowDashboardDB then
-        WowDashboardDB.panelOpen = true
-    end
-end)
-
-MainFrame:SetScript("OnHide", function()
-    if WowDashboardDB then
-        WowDashboardDB.panelOpen = false
-    end
-end)
-
-local function SetDashboardShown(shown)
-    MainFrame:SetShown(shown)
-end
-
-local function ToggleDashboard()
-    SetDashboardShown(not MainFrame:IsShown())
-end
-
--- ============================================================
--- Minimap Button
--- ============================================================
-
-local minimapShapes = {
-    ["ROUND"] = { true, true, true, true },
-    ["SQUARE"] = { false, false, false, false },
-    ["CORNER-TOPLEFT"] = { false, false, false, true },
-    ["CORNER-TOPRIGHT"] = { false, false, true, false },
-    ["CORNER-BOTTOMLEFT"] = { false, true, false, false },
-    ["CORNER-BOTTOMRIGHT"] = { true, false, false, false },
-    ["SIDE-LEFT"] = { false, true, false, true },
-    ["SIDE-RIGHT"] = { true, false, true, false },
-    ["SIDE-TOP"] = { false, false, true, true },
-    ["SIDE-BOTTOM"] = { true, true, false, false },
-    ["TRICORNER-TOPLEFT"] = { false, true, true, true },
-    ["TRICORNER-TOPRIGHT"] = { true, false, true, true },
-    ["TRICORNER-BOTTOMLEFT"] = { true, true, false, true },
-    ["TRICORNER-BOTTOMRIGHT"] = { true, true, true, false },
-}
-
-local MinimapButton = nil
-
-local function EnsureMinimapSettings()
-    if type(WowDashboardDB.minimap) ~= "table" then
-        WowDashboardDB.minimap = {}
-    end
-    if WowDashboardDB.minimap.minimapPos == nil then
-        WowDashboardDB.minimap.minimapPos = DEFAULT_MINIMAP_POS
-    end
-    if WowDashboardDB.minimap.hide == nil then
-        WowDashboardDB.minimap.hide = false
-    end
-end
-
-local function UpdateMinimapButtonPosition(position)
-    if not MinimapButton then return end
-
-    local angle = math.rad(position or DEFAULT_MINIMAP_POS)
-    local x, y = math.cos(angle), math.sin(angle)
-    local quadrant = 1
-
-    if x < 0 then quadrant = quadrant + 1 end
-    if y > 0 then quadrant = quadrant + 2 end
-
-    local minimapShape = GetMinimapShape and GetMinimapShape() or "ROUND"
-    local quadrantInfo = minimapShapes[minimapShape] or minimapShapes["ROUND"]
-    local w = (Minimap:GetWidth() / 2) + MINIMAP_BUTTON_RADIUS
-    local h = (Minimap:GetHeight() / 2) + MINIMAP_BUTTON_RADIUS
-
-    if quadrantInfo[quadrant] then
-        x, y = x * w, y * h
-    else
-        local diagRadiusW = math.sqrt(2 * (w ^ 2)) - 10
-        local diagRadiusH = math.sqrt(2 * (h ^ 2)) - 10
-        x = math.max(-w, math.min(x * diagRadiusW, w))
-        y = math.max(-h, math.min(y * diagRadiusH, h))
-    end
-
-    MinimapButton:ClearAllPoints()
-    MinimapButton:SetPoint("CENTER", Minimap, "CENTER", x, y)
-end
-
-local function RefreshMinimapButton()
-    if not MinimapButton or not WowDashboardDB or not WowDashboardDB.minimap then return end
-
-    UpdateMinimapButtonPosition(WowDashboardDB.minimap.minimapPos)
-    MinimapButton:SetShown(not WowDashboardDB.minimap.hide)
-
-    if minimapToggle then
-        minimapToggle:SetChecked(not WowDashboardDB.minimap.hide)
-    end
-end
-
-local function UpdateDraggedMinimapButtonPosition()
-    local mx, my = Minimap:GetCenter()
-    local px, py = GetCursorPosition()
-    local scale = Minimap:GetEffectiveScale()
-
-    px, py = px / scale, py / scale
-
-    local position = math.deg(math.atan2(py - my, px - mx)) % 360
-    WowDashboardDB.minimap.minimapPos = position
-    UpdateMinimapButtonPosition(position)
-end
-
-local function CreateMinimapButton()
-    if MinimapButton then return MinimapButton end
-
-    local button = CreateFrame("Button", "WowDashboardMinimapButton", Minimap)
-    button:SetFrameStrata("MEDIUM")
-    button:SetFrameLevel(8)
-    button:SetSize(31, 31)
-    button:RegisterForClicks("AnyUp")
-    button:RegisterForDrag("LeftButton")
-    button:SetHighlightTexture(136477)
-
-    local overlay = button:CreateTexture(nil, "OVERLAY")
-    overlay:SetSize(50, 50)
-    overlay:SetTexture(136430)
-    overlay:SetPoint("TOPLEFT", button, "TOPLEFT")
-
-    local background = button:CreateTexture(nil, "BACKGROUND")
-    background:SetSize(24, 24)
-    background:SetTexture(136467)
-    background:SetPoint("CENTER", button, "CENTER")
-
-    local icon = button:CreateTexture(nil, "ARTWORK")
-    icon:SetSize(18, 18)
-    icon:SetTexture(MINIMAP_ICON)
-    icon:SetPoint("CENTER", button, "CENTER")
-
-    button:SetScript("OnClick", function(_, mouseButton)
-        if mouseButton == "RightButton" then
-            ReloadUI()
-            return
-        end
-
-        if mouseButton == "MiddleButton" then
-            RequestFreshSnapshot()
-            return
-        end
-
-        ToggleDashboard()
-    end)
-
-    button:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-        GameTooltip:SetText("WoW Dashboard", 1, 1, 1)
-        GameTooltip:AddLine("|cff00ff00Left click|r to open WoW Dashboard.", NORMAL_FONT_COLOR.r, NORMAL_FONT_COLOR.g, NORMAL_FONT_COLOR.b)
-        GameTooltip:AddLine("|cff00ff00Middle click|r to save a fresh snapshot.", NORMAL_FONT_COLOR.r, NORMAL_FONT_COLOR.g, NORMAL_FONT_COLOR.b)
-        GameTooltip:AddLine("|cff00ff00Right click|r to reload and flush SavedVariables to disk.", NORMAL_FONT_COLOR.r, NORMAL_FONT_COLOR.g, NORMAL_FONT_COLOR.b)
-        GameTooltip:Show()
-    end)
-    button:SetScript("OnLeave", GameTooltip_Hide)
-    button:SetScript("OnDragStart", function(self)
-        self:LockHighlight()
-        self:SetScript("OnUpdate", UpdateDraggedMinimapButtonPosition)
-        GameTooltip:Hide()
-    end)
-    button:SetScript("OnDragStop", function(self)
-        self:SetScript("OnUpdate", nil)
-        self:UnlockHighlight()
-    end)
-    button:Hide()
-
-    MinimapButton = button
-    return button
-end
-
--- ============================================================
--- Left Section
--- ============================================================
-
-local LeftSection = BuildSection(MainFrame, LEFT_W, HEIGHT, false)
-LeftSection:SetPoint("TOPLEFT", MainFrame, "TOPLEFT")
-
-BuildCategoryBar(LeftSection, "Information", 38)
-BuildInfoRow(LeftSection, "Version",    "1.0.0",         78)
-BuildInfoRow(LeftSection, "Author",     "wow-dashboard", 96)
-BuildInfoRow(LeftSection, "Interface",  "120001",       114)
-BuildInfoRow(LeftSection, "Expansion",  "TWW",          132)
-
-BuildCategoryBar(LeftSection, "Commands", 158)
-BuildInfoRow(LeftSection, "/wowdashboard", "open/help", 198)
-BuildInfoRow(LeftSection, "/wd",           "toggle",    216)
-
--- ============================================================
--- Right Section
--- ============================================================
-
-local RightSection = BuildSection(MainFrame, RIGHT_W, HEIGHT, true)
-RightSection:SetPoint("TOPLEFT", LeftSection, "TOPRIGHT")
-
-local twwBG = RightSection.NineSlice.Background
-twwBG:SetAtlas("thewarwithin-landingpage-background", false)
-twwBG:SetVertexColor(0.25, 0.25, 0.25)
-
-RightSection.NineSlice.CloseButton:SetScript("OnClick", function()
-    SetDashboardShown(false)
-end)
-
--- Header title
-local headerTitle = RightSection:CreateFontString(nil, "OVERLAY")
-headerTitle:SetFont(FONT_BOLD, 18, "")
-headerTitle:SetTextColor(1, 0.82, 0)
-headerTitle:SetPoint("TOPLEFT", RightSection, "TOPLEFT", 36, -36)
-headerTitle:SetText("WoW Dashboard")
-
--- Divider below header
--- Divider frame is 4px tall, anchored at y=-66 → bottom edge at y=-68
-local div = CreateMajorDivider(RightSection)
-div:SetPoint("LEFT",  RightSection, "LEFT",  36, -66)
-div:SetPoint("RIGHT", RightSection, "RIGHT", -36, -66)
-
--- ============================================================
--- Tab Bar  (positioned 8px below divider bottom → y=-78 from top)
--- Tabs are 26px tall, so content area starts at y=-108
--- ============================================================
-
--- Content panels share the same anchor (one shown at a time)
-local overviewPanel = CreateFrame("Frame", nil, RightSection)
-overviewPanel:SetPoint("TOPLEFT",     RightSection, "TOPLEFT",     36, -108)
-overviewPanel:SetPoint("BOTTOMRIGHT", RightSection, "BOTTOMRIGHT", -36, 30)
-
-local snapshotsPanel = CreateFrame("Frame", nil, RightSection)
-snapshotsPanel:SetPoint("TOPLEFT",     RightSection, "TOPLEFT",     36, -108)
-snapshotsPanel:SetPoint("BOTTOMRIGHT", RightSection, "BOTTOMRIGHT", -36, 30)
-snapshotsPanel:Hide()
-
--- Tab state
-local currentTab = "overview"
-
-local tabBtnOverview  = CreateFrame("Button", nil, RightSection)
-local tabBtnSnapshots = CreateFrame("Button", nil, RightSection)
-
-local function UpdateTabVisuals()
-    if currentTab == "overview" then
-        tabBtnOverview.lbl:SetTextColor(1, 1, 1)
-        tabBtnOverview.bar:Show()
-        tabBtnSnapshots.lbl:SetTextColor(1, 0.82, 0)
-        tabBtnSnapshots.bar:Hide()
-    else
-        tabBtnOverview.lbl:SetTextColor(1, 0.82, 0)
-        tabBtnOverview.bar:Hide()
-        tabBtnSnapshots.lbl:SetTextColor(1, 1, 1)
-        tabBtnSnapshots.bar:Show()
-    end
-end
-
-local function SelectTab(which)
-    currentTab = which
-    UpdateTabVisuals()
-    overviewPanel:SetShown(which == "overview")
-    snapshotsPanel:SetShown(which == "snapshots")
-    if which == "snapshots" and RefreshLog then RefreshLog() end
-end
-
-local function SetupTabButton(btn, label, xOffset)
-    btn:SetSize(110, 26)
-    btn:SetPoint("TOPLEFT", RightSection, "TOPLEFT", xOffset, -78)
-
-    btn.lbl = btn:CreateFontString(nil, "OVERLAY")
-    btn.lbl:SetFont(FONT_BOLD, 12, "")
-    btn.lbl:SetTextColor(1, 0.82, 0)
-    btn.lbl:SetPoint("CENTER", btn, "CENTER", 0, 1)
-    btn.lbl:SetText(label)
-
-    -- Active-tab underline bar
-    btn.bar = btn:CreateTexture(nil, "BORDER")
-    btn.bar:SetSize(90, 2)
-    btn.bar:SetPoint("BOTTOM", btn, "BOTTOM", 0, 2)
-    btn.bar:SetColorTexture(1, 1, 1, 0.85)
-    btn.bar:Hide()
-
-    btn:SetScript("OnEnter", function(self) self.lbl:SetTextColor(1, 1, 1) end)
-    btn:SetScript("OnLeave", function() UpdateTabVisuals() end)
-end
-
-SetupTabButton(tabBtnOverview,  "Overview",  36)
-SetupTabButton(tabBtnSnapshots, "Snapshots", 148)
-tabBtnOverview:SetScript("OnClick",  function() SelectTab("overview")   end)
-tabBtnSnapshots:SetScript("OnClick", function() SelectTab("snapshots")  end)
-UpdateTabVisuals()
-
--- ============================================================
--- Overview Panel — existing content + timer + force-refresh
--- ============================================================
-
--- Timer countdown
-timerLabel = overviewPanel:CreateFontString(nil, "OVERLAY")
-timerLabel:SetFont(FONT_BOLD, 13, "")
-timerLabel:SetTextColor(0.804, 0.667, 0.498)
-timerLabel:SetPoint("CENTER", overviewPanel, "CENTER", 0, 16)
-timerLabel:SetText("Next snapshot in  --:--")
-
--- Force-snapshot button (15-second cooldown)
-refreshBtn = CreateFrame("Button", nil, overviewPanel, "UIPanelButtonTemplate")
-refreshBtn:SetSize(160, 30)
-refreshBtn:SetPoint("TOP", timerLabel, "BOTTOM", 0, -14)
-refreshBtn:SetText("Force Snapshot")
-refreshBtn:GetFontString():SetFont(FONT_BOLD, 11, "")
-refreshBtn:SetFrameLevel(overviewPanel:GetFrameLevel() + 2)
-refreshBtn:SetScript("OnClick", function()
-    if GetTime() < refreshCooldownUntil then return end
-    refreshCooldownUntil = GetTime() + 15
-    RequestFreshSnapshot()
-end)
-
--- Manual snapshot button
-local uploadBtn = CreateFrame("Button", nil, overviewPanel, "UIPanelButtonTemplate")
-uploadBtn:SetSize(160, 30)
-uploadBtn:SetPoint("TOP", refreshBtn, "BOTTOM", 0, -10)
-uploadBtn:SetText("Save Snapshot")
-uploadBtn:GetFontString():SetFont(FONT_BOLD, 11, "")
-uploadBtn:SetFrameLevel(overviewPanel:GetFrameLevel() + 2)
-uploadBtn:SetScript("OnClick", function()
-    RequestFreshSnapshot()
-end)
-
-minimapToggle = CreateFrame("CheckButton", nil, overviewPanel, "UICheckButtonTemplate")
-minimapToggle:SetPoint("TOPLEFT", uploadBtn, "BOTTOMLEFT", 0, -18)
-minimapToggle:SetSize(24, 24)
-minimapToggle.Label = overviewPanel:CreateFontString(nil, "OVERLAY")
-minimapToggle.Label:SetFont(FONT_BOLD, 11, "")
-minimapToggle.Label:SetTextColor(0.80, 0.80, 0.80)
-minimapToggle.Label:SetPoint("LEFT", minimapToggle, "RIGHT", 4, 0)
-minimapToggle.Label:SetText("Show minimap icon")
-minimapToggle:SetScript("OnClick", function(self)
-    if not WowDashboardDB or not WowDashboardDB.minimap then return end
-
-    WowDashboardDB.minimap.hide = not self:GetChecked()
-    RefreshMinimapButton()
-end)
-
--- ============================================================
--- Snapshots Panel — scrollable log of saved snapshots
--- ============================================================
-
-local LOG_ROW_H     = 20
-local LOG_ROW_GAP   = 2
--- Content panel dimensions: RIGHT_W(500) - 72 margin = 428; height = 450 - 108 - 30 = 312
-local SCROLL_W      = RIGHT_W - 72 - 8   -- 420, leaves 4px each side inside panel
-local COL_CHAR_W    = 138
-local COL_TIME_W    = 88
-
-local scrollFrame = CreateFrame("ScrollFrame", nil, snapshotsPanel)
-scrollFrame:SetPoint("TOPLEFT",     snapshotsPanel, "TOPLEFT",     4, -4)
-scrollFrame:SetPoint("BOTTOMRIGHT", snapshotsPanel, "BOTTOMRIGHT", -4, 4)
-scrollFrame:EnableMouseWheel(true)
-scrollFrame:SetScript("OnMouseWheel", function(self, delta)
-    local cur = self:GetVerticalScroll()
-    local max = self:GetVerticalScrollRange()
-    self:SetVerticalScroll(math.min(math.max(cur - delta * 20, 0), max))
-end)
-
-local scrollChild = CreateFrame("Frame", nil, scrollFrame)
-scrollChild:SetWidth(SCROLL_W)
-scrollChild:SetHeight(1)
-scrollFrame:SetScrollChild(scrollChild)
-
--- Column header
-local logHeader = scrollChild:CreateFontString(nil, "OVERLAY")
-logHeader:SetFont(FONT_BOLD, 9, "")
-logHeader:SetTextColor(0.6, 0.5, 0.3)
-logHeader:SetJustifyH("LEFT")
-logHeader:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 4, -3)
-logHeader:SetText("CHARACTER              DATE/TIME        LV   ILVL    GOLD    M+")
-
--- Row pool
-local rowPool  = {}
-local rowCount = 0
-
-local function GetRow(i)
-    if rowPool[i] then return rowPool[i] end
-
-    local row = CreateFrame("Frame", nil, scrollChild)
-    local rowW = SCROLL_W - 8
-    row:SetSize(rowW, LOG_ROW_H)
-    row:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 4, -(14 + (i - 1) * (LOG_ROW_H + LOG_ROW_GAP)))
-
-    local bg = row:CreateTexture(nil, "BACKGROUND")
-    bg:SetAllPoints(row)
-    if i % 2 == 0 then
-        bg:SetColorTexture(0.10, 0.07, 0.04, 0.35)
-    else
-        bg:SetColorTexture(0.06, 0.04, 0.02, 0.15)
-    end
-
-    row.charText = row:CreateFontString(nil, "OVERLAY")
-    row.charText:SetFont(FONT_BOLD, 10, "")
-    row.charText:SetTextColor(1, 0.82, 0)
-    row.charText:SetWidth(COL_CHAR_W)
-    row.charText:SetJustifyH("LEFT")
-    row.charText:SetPoint("LEFT", row, "LEFT", 4, 0)
-
-    row.timeText = row:CreateFontString(nil, "OVERLAY")
-    row.timeText:SetFont(FONT_BOLD, 10, "")
-    row.timeText:SetTextColor(0.55, 0.55, 0.55)
-    row.timeText:SetWidth(COL_TIME_W)
-    row.timeText:SetJustifyH("LEFT")
-    row.timeText:SetPoint("LEFT", row, "LEFT", COL_CHAR_W + 8, 0)
-
-    row.statsText = row:CreateFontString(nil, "OVERLAY")
-    row.statsText:SetFont(FONT_BOLD, 10, "")
-    row.statsText:SetTextColor(0.80, 0.80, 0.80)
-    row.statsText:SetJustifyH("RIGHT")
-    row.statsText:SetPoint("RIGHT", row, "RIGHT", -4, 0)
-
-    rowPool[i] = row
-    return row
-end
-
-RefreshLog = function()
-    if not WowDashboardDB or not WowDashboardDB.characters then return end
-
-    -- Gather all snapshots across all characters, newest first
-    local all = {}
-    for key, charData in pairs(WowDashboardDB.characters) do
-        for _, snap in ipairs(charData.snapshots or {}) do
-            all[#all + 1] = { key = key, snap = snap }
-        end
-    end
-    table.sort(all, function(a, b) return a.snap.takenAt > b.snap.takenAt end)
-
-    local n = math.min(#all, MAX_LOG_ENTRIES)
-
-    -- Hide rows no longer needed
-    for i = n + 1, rowCount do
-        rowPool[i]:Hide()
-    end
-    rowCount = n
-
-    for i, entry in ipairs(all) do
-        local row  = GetRow(i)
-        local snap = entry.snap
-        row.charText:SetText(entry.key)
-        row.timeText:SetText(date("%m/%d %H:%M", snap.takenAt))
-        row.statsText:SetFormattedText("Lv%d  %d  %dg  %dM+",
-            snap.level, math.floor(snap.itemLevel),
-            math.floor(snap.gold), snap.mythicPlusScore)
-        row:Show()
-    end
-
-    scrollChild:SetHeight(math.max(14 + n * (LOG_ROW_H + LOG_ROW_GAP), 1))
-end
-
--- ============================================================
--- 1-Second UI Ticker  (timer label + cooldown display)
--- ============================================================
-
-local function OnSecondTick()
-    if timerLabel then
-        if pendingSnapshot then
-            timerLabel:SetText("Collecting snapshot...")
-        else
-            local remaining = math.max(0, math.ceil(nextSnapshotAt - GetTime()))
-            local mm = math.floor(remaining / 60)
-            local ss = remaining % 60
-            timerLabel:SetFormattedText("Next snapshot in  |cffffffff%d:%02d|r", mm, ss)
-        end
-    end
-
-    if refreshBtn then
-        local now = GetTime()
-        if now < refreshCooldownUntil then
-            refreshBtn:SetText(string.format("Wait  %ds", math.ceil(refreshCooldownUntil - now)))
-            refreshBtn:Disable()
-        else
-            if refreshBtn:IsEnabled() == 0 then
-                refreshBtn:SetText("Force Snapshot")
-                refreshBtn:Enable()
-            end
-        end
-    end
-end
 
 -- ============================================================
 -- Slash Commands & Events
@@ -3919,7 +3887,9 @@ end
 SlashCmdList["WOWDASHBOARD"] = function(msg)
     local input = msg and msg:match("^%s*(.-)%s*$") or ""
     if input == "" then
-        ToggleDashboard()
+        if addon.ToggleDashboard then
+            addon.ToggleDashboard()
+        end
         return
     end
 
@@ -3927,7 +3897,9 @@ SlashCmdList["WOWDASHBOARD"] = function(msg)
     command = command and command:lower() or ""
 
     if command == "open" then
-        SetDashboardShown(true)
+        if addon.SetDashboardShown then
+            addon.SetDashboardShown(true)
+        end
         return
     end
 
@@ -3962,6 +3934,9 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
                 version = DB_VERSION,
                 characters = {},
                 panelOpen = false,
+                settings = {
+                    syncPlaytimeOnLogin = true,
+                },
                 minimap = {
                     minimapPos = DEFAULT_MINIMAP_POS,
                     hide = false,
@@ -3977,14 +3952,24 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
             WowDashboardDB.pendingMythicPlusMembers = {}
         end
         if WowDashboardDB.panelOpen == nil then WowDashboardDB.panelOpen = false end
-        EnsureMinimapSettings()
-        if minimapToggle then
-            minimapToggle:SetChecked(not WowDashboardDB.minimap.hide)
+        addon.EnsureAddonSettings()
+        if addon.EnsureMinimapSettings then
+            addon.EnsureMinimapSettings()
         end
-        CreateMinimapButton()
+        if addon.CreateMinimapButton then
+            addon.CreateMinimapButton()
+        end
 
     elseif event == "PLAYER_ENTERING_WORLD" then
-        RefreshMinimapButton()
+        if addon.RefreshMinimapButton then
+            addon.RefreshMinimapButton()
+        end
+        if addon.RefreshSettingsControls then
+            addon.RefreshSettingsControls()
+        end
+        if addon.RefreshOverviewPanel then
+            addon.RefreshOverviewPanel()
+        end
         local enteringContext = GetCurrentActiveMythicPlusRunContext()
         local activeCache = ReconcileActiveMythicPlusMemberCache("player_entering_world")
         if enteringContext ~= nil then
@@ -3999,8 +3984,10 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         if not initialized then
             initialized = true
             print("|cff00ccff[WoW Dashboard]|r Loaded — type |cffffffff/wowdashboard|r to open.")
-            SetDashboardShown(WowDashboardDB.panelOpen == true)
-            C_Timer.NewTicker(1, OnSecondTick)
+            if addon.SetDashboardShown then
+                addon.SetDashboardShown(WowDashboardDB.panelOpen == true)
+            end
+            C_Timer.After(1, RequestLoginPlaytimeSync)
             -- First snapshot in 5 s, then every 15 min
             nextSnapshotAt = GetTime() + 5
             C_Timer.After(5, function()
@@ -4128,14 +4115,9 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
 
     elseif event == "TIME_PLAYED_MSG" then
         local totalSeconds, thisLevelSeconds = ...
-        if waitingForPlaytime then
-            waitingForPlaytime = false
-            RestoreTimePlayedMessages()
-        end
-        CommitSnapshot(totalSeconds, thisLevelSeconds)
-        if queuedFreshSnapshot then
-            queuedFreshSnapshot = false
-            CollectSnapshot(true)
+        SetPlaytimeBaseline(totalSeconds, thisLevelSeconds, time(), UnitLevel("player"))
+        if pendingSnapshot then
+            CommitSnapshot(totalSeconds, thisLevelSeconds)
         end
     end
 end)

@@ -1,13 +1,7 @@
-import { convexQuery } from "@convex-dev/react-query";
-import { useQuery as useTanStackQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
-import { api } from "@wow-dashboard/backend/convex/_generated/api";
-import type { Id } from "@wow-dashboard/backend/convex/_generated/dataModel";
-import {
-  getMythicPlusDungeonMeta,
-  getMythicPlusDungeonTimerMs,
-  getRaiderIoScoreColor,
-} from "../lib/mythic-plus-static";
+import type { SearchSchemaInput } from "@tanstack/react-router";
+import { getMythicPlusDungeonMeta } from "../lib/mythic-plus-static";
 import { getClassTextColor } from "../lib/class-colors";
 import { usePinnedCharacters } from "../lib/pinned-characters";
 import { formatPlaytime, PlaytimeBreakdown } from "../components/playtime-breakdown";
@@ -23,7 +17,15 @@ import {
   type ChartConfig,
 } from "@wow-dashboard/ui/components/chart";
 import { Checkbox } from "@wow-dashboard/ui/components/checkbox";
-import { Input } from "@wow-dashboard/ui/components/input";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from "@wow-dashboard/ui/components/dropdown-menu";
 import {
   Sheet,
   SheetContent,
@@ -32,34 +34,56 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "@wow-dashboard/ui/components/sheet";
-import { useMutation, useQuery as useConvexQuery } from "convex/react";
+import { Skeleton } from "@wow-dashboard/ui/components/skeleton";
+import { ToggleGroup, ToggleGroupItem } from "@wow-dashboard/ui/components/toggle-group";
 import {
-  Calculator,
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@wow-dashboard/ui/components/tooltip";
+import { cn } from "@wow-dashboard/ui/lib/utils";
+import {
+  CheckCircle2,
   Clock,
   Coins,
+  ChevronDown,
   Columns,
+  Copy,
   ExternalLink,
   Flame,
   Gem,
   History,
   LayoutGrid,
   LayoutList,
+  Lock,
   Maximize2,
   Star,
   Sword,
+  Trophy,
   X,
-  Eye,
-  EyeOff,
   Zap,
 } from "lucide-react";
-import { Suspense, lazy, memo, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Suspense,
+  lazy,
+  memo,
+  startTransition,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
+import { createCharacterRouteSlug } from "@wow-dashboard/api-schema";
 import {
   CartesianGrid,
   Line,
   LineChart,
   PolarAngleAxis,
   PolarGrid,
+  PolarRadiusAxis,
   Radar,
   RadarChart,
   XAxis,
@@ -74,27 +98,142 @@ import {
   toggleTradeSlotGroup,
   type TradeSlotKey,
 } from "../lib/trade-slots";
+import { apiClient, apiQueryKeys, apiQueryOptions } from "@/lib/api-client";
 
-const DEFAULT_TIME_FRAME = "all" as const;
+type TimeFrame = "7d" | "14d" | "30d" | "90d" | "all" | "tww-s3" | "mn-s1";
+type LayoutMode = "overview" | "focus" | "timeline";
+type FocusMetric = "ilvl" | "mplus" | "gold" | "stats" | "currencies" | "playtime";
 
-function getCharacterPageQueryOptions(characterId: Id<"characters">, timeFrame: TimeFrame) {
-  return convexQuery(api.characters.getCharacterPage, {
-    characterId,
-    timeFrame,
-    includeStats: false,
-  });
+type CharacterPageSearch = {
+  timeFrame: TimeFrame;
+  layoutMode: LayoutMode;
+  focusMetric: FocusMetric;
+};
+
+type CharacterPageSearchInput = SearchSchemaInput & Partial<CharacterPageSearch>;
+
+const CURRENT_SEASON_TIME_FRAME = "mn-s1" satisfies TimeFrame;
+const DEFAULT_TIME_FRAME: TimeFrame = CURRENT_SEASON_TIME_FRAME;
+const DEFAULT_LAYOUT_MODE: LayoutMode = "overview";
+const DEFAULT_FOCUS_METRIC: FocusMetric = "ilvl";
+const CHARACTER_PAGE_STALE_TIME_MS = 30 * 1000;
+const CHARACTER_PAGE_REFETCH_INTERVAL_MS = 30 * 1000;
+
+function isTimeFrame(value: unknown): value is TimeFrame {
+  return (
+    value === "7d" ||
+    value === "14d" ||
+    value === "30d" ||
+    value === "90d" ||
+    value === "all" ||
+    value === "tww-s3" ||
+    value === "mn-s1"
+  );
 }
 
-const LazyMythicPlannerPanel = lazy(() =>
-  import("../components/mythic-planner-panel").then((module) => ({
-    default: module.MythicPlannerPanel,
+function isCharacterPageTimeFrame(value: unknown): value is TimeFrame {
+  return (
+    value === "7d" || value === "14d" || value === "30d" || value === "tww-s3" || value === "mn-s1"
+  );
+}
+
+function isLayoutMode(value: unknown): value is LayoutMode {
+  return value === "overview" || value === "focus" || value === "timeline";
+}
+
+function isFocusMetric(value: unknown): value is FocusMetric {
+  return (
+    value === "ilvl" ||
+    value === "mplus" ||
+    value === "gold" ||
+    value === "stats" ||
+    value === "currencies" ||
+    value === "playtime"
+  );
+}
+
+function validateCharacterPageSearch(search: CharacterPageSearchInput): CharacterPageSearch {
+  return {
+    timeFrame: isCharacterPageTimeFrame(search.timeFrame) ? search.timeFrame : DEFAULT_TIME_FRAME,
+    layoutMode: isLayoutMode(search.layoutMode) ? search.layoutMode : DEFAULT_LAYOUT_MODE,
+    focusMetric: isFocusMetric(search.focusMetric) ? search.focusMetric : DEFAULT_FOCUS_METRIC,
+  };
+}
+
+function stripDefaultCharacterPageSearch(
+  search: Partial<CharacterPageSearch>,
+): CharacterPageSearchInput {
+  const nextSearch: Partial<CharacterPageSearch> = {};
+  const layoutMode = search.layoutMode ?? DEFAULT_LAYOUT_MODE;
+  if (search.timeFrame && search.timeFrame !== DEFAULT_TIME_FRAME) {
+    nextSearch.timeFrame = search.timeFrame;
+  }
+  if (layoutMode !== DEFAULT_LAYOUT_MODE) {
+    nextSearch.layoutMode = layoutMode;
+  }
+  if (
+    layoutMode === "focus" &&
+    search.focusMetric &&
+    search.focusMetric !== DEFAULT_FOCUS_METRIC
+  ) {
+    nextSearch.focusMetric = search.focusMetric;
+  }
+  return nextSearch as CharacterPageSearchInput;
+}
+
+function buildCharacterPageSearchString(search: Partial<CharacterPageSearch>) {
+  const searchParams = new URLSearchParams();
+  if (search.timeFrame) searchParams.set("timeFrame", search.timeFrame);
+  if (search.layoutMode) searchParams.set("layoutMode", search.layoutMode);
+  if (search.focusMetric) searchParams.set("focusMetric", search.focusMetric);
+  return searchParams.toString();
+}
+
+function getCharacterPageQueryOptions(characterId: string, timeFrame: TimeFrame) {
+  return {
+    ...apiQueryOptions.characterPage(characterId, {
+      timeFrame,
+      includeStats: false,
+    }),
+    staleTime: CHARACTER_PAGE_STALE_TIME_MS,
+  };
+}
+
+const LazyMythicPlusSection = lazy(() =>
+  import("../components/character-page-mythic-plus-section").then((module) => ({
+    default: module.MythicPlusSection,
   })),
 );
 
+function getCharacterStatsTimelineQueryOptions(characterId: string, timeFrame: TimeFrame) {
+  return {
+    ...apiQueryOptions.characterDetailTimeline(characterId, {
+      timeFrame,
+      metric: "stats",
+    }),
+    staleTime: CHARACTER_PAGE_STALE_TIME_MS,
+  };
+}
+
+function getCharacterMythicPlusAllRunsQueryOptions(characterId: string) {
+  return {
+    ...apiQueryOptions.characterMythicPlus(characterId, { includeAllRuns: true }),
+    staleTime: CHARACTER_PAGE_STALE_TIME_MS,
+  };
+}
+
 export const Route = createFileRoute("/character/$characterId")({
-  loader: ({ context, params }) =>
+  validateSearch: validateCharacterPageSearch,
+  search: {
+    middlewares: [
+      ({ search, next }) =>
+        stripDefaultCharacterPageSearch(next(search as CharacterPageSearch) as CharacterPageSearch),
+    ],
+  },
+  loaderDeps: ({ search }) => ({ timeFrame: search.timeFrame }),
+  loader: ({ context, params, deps }) =>
     context.queryClient.ensureQueryData(
-      getCharacterPageQueryOptions(params.characterId as Id<"characters">, DEFAULT_TIME_FRAME),
+      getCharacterPageQueryOptions(params.characterId, deps.timeFrame),
     ),
   component: RouteComponent,
 });
@@ -102,19 +241,6 @@ export const Route = createFileRoute("/character/$characterId")({
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const ROLE_LABELS: Record<string, string> = { tank: "Tank", healer: "Healer", dps: "DPS" };
-const INITIAL_RECENT_RUN_COUNT = 20;
-const RECENT_RUN_LOAD_INCREMENT = 20;
-const RUN_TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
-  hour: "2-digit",
-  minute: "2-digit",
-});
-const RUN_FULL_DATE_TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
-  year: "numeric",
-  month: "short",
-  day: "numeric",
-  hour: "2-digit",
-  minute: "2-digit",
-});
 const CARD_DATE_TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
   month: "short",
   day: "numeric",
@@ -124,14 +250,36 @@ const CARD_DATE_TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
 
 // ── Time frame ───────────────────────────────────────────────────────────────
 
-type TimeFrame = "7d" | "30d" | "90d" | "all";
+const SEASON_TIME_FRAME_OPTIONS: {
+  value: Extract<TimeFrame, "tww-s3" | "mn-s1">;
+  label: string;
+}[] = [
+  { value: "mn-s1", label: "MN-S1" },
+  { value: "tww-s3", label: "TWW-S3" },
+];
 
-const TIME_FRAME_OPTIONS: { value: TimeFrame; label: string }[] = [
-  { value: "all", label: "All" },
-  { value: "90d", label: "90D" },
+const RELATIVE_TIME_FRAME_OPTIONS: {
+  value: Extract<TimeFrame, "30d" | "14d" | "7d">;
+  label: string;
+}[] = [
   { value: "30d", label: "30D" },
+  { value: "14d", label: "14D" },
   { value: "7d", label: "7D" },
 ];
+
+function isSeasonTimeFrame(
+  timeFrame: TimeFrame,
+): timeFrame is (typeof SEASON_TIME_FRAME_OPTIONS)[number]["value"] {
+  return timeFrame === "tww-s3" || timeFrame === "mn-s1";
+}
+
+function getTimeFrameOptionLabel(timeFrame: TimeFrame) {
+  return (
+    SEASON_TIME_FRAME_OPTIONS.find((option) => option.value === timeFrame)?.label ??
+    RELATIVE_TIME_FRAME_OPTIONS.find((option) => option.value === timeFrame)?.label ??
+    (timeFrame === "all" ? "All" : timeFrame)
+  );
+}
 
 function TimeFramePicker({
   value,
@@ -140,38 +288,76 @@ function TimeFramePicker({
   value: TimeFrame;
   onChange: (v: TimeFrame) => void;
 }) {
+  const activeSeason = isSeasonTimeFrame(value)
+    ? SEASON_TIME_FRAME_OPTIONS.find((option) => option.value === value)
+    : null;
+
   return (
-    <div className="flex items-center gap-2">
-      <span className="text-muted-foreground text-xs">Zoom</span>
-      <div className="flex rounded-md border overflow-hidden">
-        {TIME_FRAME_OPTIONS.map((opt) => {
-          const isDisabled = opt.value !== "all";
-          return (
-            <button
-              key={opt.value}
+    <div className="flex flex-wrap items-center gap-2">
+      <span id="character-time-frame-label" className="text-xs text-muted-foreground">
+        Range
+      </span>
+      <div
+        className="flex flex-wrap items-center gap-2"
+        aria-labelledby="character-time-frame-label"
+      >
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
               type="button"
-              disabled={isDisabled}
-              onClick={() => onChange(opt.value)}
-              className={`px-3 py-1 text-xs transition-colors ${
-                value === opt.value
-                  ? "bg-primary text-primary-foreground"
-                  : isDisabled
-                    ? "cursor-not-allowed bg-muted/20 text-muted-foreground/50"
-                    : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
-              }`}
+              variant={activeSeason ? "default" : "outline"}
+              size="sm"
+              className="h-8 gap-1.5 px-3 text-xs"
             >
+              {activeSeason?.label ?? "Season"}
+              <ChevronDown data-icon="inline-end" aria-hidden="true" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-44">
+            <DropdownMenuGroup>
+              <DropdownMenuLabel>Season</DropdownMenuLabel>
+              <DropdownMenuRadioGroup
+                value={activeSeason?.value ?? ""}
+                onValueChange={(nextValue) => {
+                  if (isTimeFrame(nextValue) && isSeasonTimeFrame(nextValue)) {
+                    onChange(nextValue);
+                  }
+                }}
+              >
+                {SEASON_TIME_FRAME_OPTIONS.map((option) => (
+                  <DropdownMenuRadioItem key={option.value} value={option.value}>
+                    {option.label}
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+            </DropdownMenuGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <ToggleGroup
+          type="single"
+          value={RELATIVE_TIME_FRAME_OPTIONS.some((option) => option.value === value) ? value : ""}
+          onValueChange={(nextValue) => {
+            if (isTimeFrame(nextValue)) {
+              onChange(nextValue);
+            }
+          }}
+          variant="outline"
+          size="sm"
+          aria-label="Relative snapshot range"
+          className="justify-start"
+        >
+          {RELATIVE_TIME_FRAME_OPTIONS.map((opt) => (
+            <ToggleGroupItem key={opt.value} value={opt.value} className="px-3 text-xs">
               {opt.label}
-            </button>
-          );
-        })}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
       </div>
     </div>
   );
 }
 
 // ── Layout mode ───────────────────────────────────────────────────────────────
-
-type LayoutMode = "overview" | "focus" | "timeline";
 
 function LayoutSwitcher({
   value,
@@ -181,32 +367,41 @@ function LayoutSwitcher({
   onChange: (m: LayoutMode) => void;
 }) {
   const opts = [
-    { mode: "overview" as const, Icon: LayoutGrid, title: "Overview — radar sidebar + chart grid" },
-    { mode: "focus" as const, Icon: Columns, title: "Focus — single metric deep-dive" },
+    { mode: "overview" as const, Icon: LayoutGrid, label: "Overview" },
+    { mode: "focus" as const, Icon: Columns, label: "Focus" },
     {
       mode: "timeline" as const,
       Icon: LayoutList,
-      title: "Timeline — stacked charts + full history",
+      label: "Timeline",
     },
   ] as const;
   return (
-    <div className="flex items-center gap-0.5 rounded-md border p-0.5">
-      {opts.map(({ mode, Icon, title }) => (
-        <button
-          key={mode}
-          onClick={() => onChange(mode)}
-          title={title}
-          aria-label={title}
-          className={`p-1.5 rounded transition-colors ${
-            value === mode
-              ? "bg-primary text-primary-foreground"
-              : "text-muted-foreground hover:text-foreground"
-          }`}
-        >
-          <Icon size={14} />
-        </button>
-      ))}
-    </div>
+    <TooltipProvider delayDuration={200}>
+      <ToggleGroup
+        type="single"
+        value={value}
+        onValueChange={(nextValue) => {
+          if (isLayoutMode(nextValue)) {
+            onChange(nextValue);
+          }
+        }}
+        variant="outline"
+        size="sm"
+        aria-label="Character page layout"
+        className="justify-start"
+      >
+        {opts.map(({ mode, Icon, label }) => (
+          <Tooltip key={mode}>
+            <TooltipTrigger asChild>
+              <ToggleGroupItem value={mode} aria-label={label}>
+                <Icon data-icon="inline-start" aria-hidden="true" />
+              </ToggleGroupItem>
+            </TooltipTrigger>
+            <TooltipContent>{label}</TooltipContent>
+          </Tooltip>
+        ))}
+      </ToggleGroup>
+    </TooltipProvider>
   );
 }
 
@@ -261,10 +456,58 @@ function xAxisTickFormatter(ts: unknown, frame: TimeFrame): string {
   const d = new Date(parsedTs * 1000);
   if (Number.isNaN(d.getTime())) return "—";
 
-  if (frame === "7d") {
+  if (frame === "7d" || frame === "14d") {
     return d.toLocaleDateString(undefined, { weekday: "short", day: "numeric" });
   }
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function getTickBucketKey(timestamp: number, frame: TimeFrame) {
+  const date = new Date(timestamp * 1000);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  const year = date.getFullYear();
+  const month = date.getMonth();
+  const day = date.getDate();
+
+  if (frame === "all") {
+    return `${year}-${month}`;
+  }
+
+  return `${year}-${month}-${day}`;
+}
+
+function dedupeTicksByBucket(ticks: number[], frame: TimeFrame, preserveEndpoints = false) {
+  if (preserveEndpoints && ticks.length <= 2) {
+    return ticks;
+  }
+
+  const seenBuckets = new Set<string>();
+  const firstIndex = 0;
+  const lastIndex = ticks.length - 1;
+
+  if (preserveEndpoints) {
+    const firstBucket = getTickBucketKey(ticks[firstIndex]!, frame);
+    const lastBucket = getTickBucketKey(ticks[lastIndex]!, frame);
+    if (firstBucket) seenBuckets.add(firstBucket);
+    if (lastBucket) seenBuckets.add(lastBucket);
+  }
+
+  return ticks.filter((timestamp, index) => {
+    if (preserveEndpoints && (index === firstIndex || index === lastIndex)) {
+      return true;
+    }
+
+    const bucketKey = getTickBucketKey(timestamp, frame);
+    if (bucketKey === null || seenBuckets.has(bucketKey)) {
+      return false;
+    }
+
+    seenBuckets.add(bucketKey);
+    return true;
+  });
 }
 
 function capXAxisTicks(ticks: number[], maxCount: number) {
@@ -279,6 +522,26 @@ function capXAxisTicks(ticks: number[], maxCount: number) {
   }
 
   return Array.from(selectedTicks).sort((a, b) => a - b);
+}
+
+function getXAxisDomain(data: Record<string, number | undefined>[]): [number, number] | undefined {
+  const timestamps = data
+    .map((datum) => normalizeTimestampSeconds(datum.date))
+    .filter((timestamp): timestamp is number => timestamp !== null);
+  const uniqueTimestamps = Array.from(new Set(timestamps)).sort((a, b) => a - b);
+  if (uniqueTimestamps.length < 2) {
+    return undefined;
+  }
+
+  const minTimestamp = uniqueTimestamps[0]!;
+  const maxTimestamp = uniqueTimestamps[uniqueTimestamps.length - 1]!;
+  const span = maxTimestamp - minTimestamp;
+  if (span <= 0) {
+    return undefined;
+  }
+
+  const padding = Math.max(Math.round(span * 0.025), 1);
+  return [minTimestamp - padding, maxTimestamp + padding];
 }
 
 function getXAxisTicks(data: Record<string, number | undefined>[], frame: TimeFrame) {
@@ -303,7 +566,7 @@ function getXAxisTicks(data: Record<string, number | undefined>[], frame: TimeFr
     if (frame === "7d") {
       return true;
     }
-    if (frame === "30d") {
+    if (frame === "14d" || frame === "30d") {
       return date.getDay() === 1;
     }
     if (frame === "90d") {
@@ -311,13 +574,15 @@ function getXAxisTicks(data: Record<string, number | undefined>[], frame: TimeFr
     }
     return date.getDate() === 1;
   });
+  const dedupedImportantTicks = dedupeTicksByBucket(importantTicks, frame, true);
 
-  const maxTickCount = frame === "all" ? 8 : frame === "90d" ? 9 : frame === "30d" ? 7 : 8;
-  if (importantTicks.length >= 3) {
-    return capXAxisTicks(importantTicks, maxTickCount);
+  const maxTickCount =
+    frame === "all" || isSeasonTimeFrame(frame) ? 8 : frame === "90d" ? 9 : frame === "30d" ? 7 : 8;
+  if (dedupedImportantTicks.length >= 3) {
+    return capXAxisTicks(dedupedImportantTicks, maxTickCount);
   }
 
-  return capXAxisTicks(uniqueTimestamps, maxTickCount);
+  return capXAxisTicks(dedupeTicksByBucket(uniqueTimestamps, frame, true), maxTickCount);
 }
 
 function xTooltipLabelFormatter(
@@ -332,7 +597,7 @@ function xTooltipLabelFormatter(
   const d = new Date(parsedTs * 1000);
   if (Number.isNaN(d.getTime())) return "Unknown date";
 
-  if (frame === "7d") {
+  if (frame === "7d" || frame === "14d") {
     return d.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" });
   }
   return d.toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" });
@@ -356,169 +621,31 @@ function formatHours(totalHours: number) {
   return d > 0 ? `${d}d ${h}h` : `${h}h`;
 }
 
-function formatRunDate(ts?: number | null) {
-  if (!ts) return "—";
-  return new Date(ts * 1000).toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-  });
-}
-
-function formatRunDuration(durationMs?: number | null) {
-  if (!durationMs || durationMs <= 0 || durationMs > MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS) {
-    return "—";
-  }
-  const totalSeconds = Math.floor(durationMs / 1000);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
-}
-
-const MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS = 4 * 60 * 60 * 1000;
-
-function getRunDurationMs(run: MythicPlusRun): number | undefined {
-  if (
-    run.durationMs !== undefined &&
-    run.durationMs > 0 &&
-    run.durationMs <= MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS
-  ) {
-    return run.durationMs;
-  }
-
-  const runEndAt = run.endedAt ?? run.abandonedAt ?? run.completedAt;
-  if (
-    run.startDate !== undefined &&
-    runEndAt !== undefined &&
-    runEndAt >= run.startDate
-  ) {
-    const derivedDurationMs = (runEndAt - run.startDate) * 1000;
-    if (
-      Number.isFinite(derivedDurationMs) &&
-      derivedDurationMs > 0 &&
-      derivedDurationMs <= MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS
-    ) {
-      return derivedDurationMs;
-    }
-  }
-
-  return undefined;
-}
-
-function formatRunTimeComparison(run: MythicPlusRun) {
-  if (getMythicPlusRunStatus(run) === "active") {
-    return "In progress";
-  }
-
-  const actualTime = formatRunDuration(getRunDurationMs(run));
-  const timerMs = getMythicPlusDungeonTimerMs(run.mapChallengeModeID, run.mapName);
-  if (timerMs === null || timerMs === undefined) {
-    return actualTime;
-  }
-
-  const maxTime = formatRunDuration(timerMs);
-  return `${actualTime} / ${maxTime}`;
-}
-
-function formatKeyLevel(level?: number | null) {
-  if (level === undefined || level === null) return "—";
-  return `+${level}`;
-}
-
-function formatTimedKeyLevel(level?: number | null, upgradeCount?: number | null) {
-  if (level === undefined || level === null) return "-";
-  const normalizedUpgradeCount = Math.max(1, Math.min(3, upgradeCount ?? 1));
-  return `${"+".repeat(normalizedUpgradeCount)}${level}`;
-}
-
-function formatRunScore(value?: number | null) {
-  if (value === undefined || value === null) return "-";
-  const hasFraction = Math.abs(value % 1) > 0.001;
-  return value.toLocaleString(undefined, {
-    minimumFractionDigits: hasFraction ? 1 : 0,
-    maximumFractionDigits: 1,
-  });
-}
-
-function formatRunScoreIncrease(value?: number | null) {
-  if (value === undefined || value === null || value <= 0) return null;
-  const hasFraction = Math.abs(value % 1) > 0.001;
-  return value.toLocaleString(undefined, {
-    minimumFractionDigits: hasFraction ? 1 : 0,
-    maximumFractionDigits: 1,
-  });
-}
-
-function formatRunTime(ts?: number | null) {
-  if (!ts) return "--";
-  return RUN_TIME_FORMATTER.format(new Date(ts * 1000));
-}
-
-function formatRunDateTime(ts?: number | null) {
-  if (!ts) return "--";
-  return RUN_FULL_DATE_TIME_FORMATTER.format(new Date(ts * 1000));
-}
-
 function formatCardDateTime(ts?: number | null) {
   if (!ts) return "--";
   return CARD_DATE_TIME_FORMATTER.format(new Date(ts * 1000));
 }
 
-function formatSeasonLabel(seasonID: number | null) {
-  if (seasonID === null) return null;
-  if (seasonID === 17) return "Midnight Season 1";
-  return `Season ${seasonID}`;
+function getTimeFrameDeltaLabel(timeFrame: TimeFrame) {
+  if (timeFrame === CURRENT_SEASON_TIME_FRAME) {
+    return "last week";
+  }
+
+  if (isSeasonTimeFrame(timeFrame)) {
+    return getTimeFrameOptionLabel(timeFrame);
+  }
+
+  if (timeFrame === "all") {
+    return "all time";
+  }
+
+  return `last ${getTimeFrameOptionLabel(timeFrame)}`;
 }
 
-function getRunLabel(run: MythicPlusRun) {
-  if (run.mapName && run.mapName.trim() !== "") return run.mapName;
-  if (run.mapChallengeModeID !== undefined) return `Dungeon ${run.mapChallengeModeID}`;
-  return "Unknown Dungeon";
-}
-
-function getMythicPlusRunStatus(run: MythicPlusRun): MythicPlusRun["status"] | undefined {
-  if (run.status === "active" || run.status === "completed" || run.status === "abandoned") {
-    return run.status;
-  }
-
-  if (
-    run.completed === true ||
-    getRunDurationMs(run) !== undefined ||
-    run.runScore !== undefined ||
-    run.completedAt !== undefined
-  ) {
-    return "completed";
-  }
-
-  if (
-    run.abandonedAt !== undefined ||
-    run.abandonReason !== undefined ||
-    (run.endedAt !== undefined &&
-      run.durationMs === undefined &&
-      run.runScore === undefined &&
-      run.completedAt === undefined)
-  ) {
-    return "abandoned";
-  }
-
-  return undefined;
-}
-
-function isCompletedMythicPlusRun(run: MythicPlusRun) {
-  return getMythicPlusRunStatus(run) === "completed";
-}
-
-function getMythicPlusRunTimedState(run: MythicPlusRun): boolean | null {
-  if (getMythicPlusRunStatus(run) !== "completed") {
-    return null;
-  }
-  if (run.upgradeCount !== undefined && run.upgradeCount !== null) {
-    return run.upgradeCount > 0;
-  }
-  if (run.completedInTime !== undefined) {
-    return run.completedInTime;
-  }
-
-  return null;
+function formatSignedDelta(value: number, formatter: (absoluteValue: number) => string) {
+  if (!Number.isFinite(value)) return "--";
+  if (value === 0) return "0";
+  return `${value > 0 ? "+" : "-"}${formatter(Math.abs(value))}`;
 }
 
 // ── Shared display components ─────────────────────────────────────────────────
@@ -541,6 +668,159 @@ function StatRow({ label, value }: { label: string; value: React.ReactNode }) {
     <div className="flex justify-between text-sm">
       <span className="text-muted-foreground">{label}</span>
       <span className="font-medium tabular-nums">{value}</span>
+    </div>
+  );
+}
+
+type CombatStatSummary = {
+  label: string;
+  percent: number;
+  rating?: number;
+};
+
+type CombatRadarDatum = {
+  stat: string;
+  value: number;
+  percentValue: number;
+  ratingValue?: number;
+};
+
+const CORE_COMBAT_STATS = [
+  {
+    label: "Crit",
+    getPercent: (stats: Snapshot["stats"]) => stats.critPercent,
+    getRating: (stats: Snapshot["stats"]) => stats.critRating,
+  },
+  {
+    label: "Haste",
+    getPercent: (stats: Snapshot["stats"]) => stats.hastePercent,
+    getRating: (stats: Snapshot["stats"]) => stats.hasteRating,
+  },
+  {
+    label: "Mastery",
+    getPercent: (stats: Snapshot["stats"]) => stats.masteryPercent,
+    getRating: (stats: Snapshot["stats"]) => stats.masteryRating,
+  },
+  {
+    label: "Versatility",
+    getPercent: (stats: Snapshot["stats"]) => stats.versatilityPercent,
+    getRating: (stats: Snapshot["stats"]) => stats.versatilityRating,
+  },
+] as const;
+
+const TERTIARY_COMBAT_STATS = [
+  {
+    label: "Speed",
+    getPercent: (stats: Snapshot["stats"]) => stats.speedPercent ?? 0,
+    getRating: (stats: Snapshot["stats"]) => stats.speedRating,
+  },
+  {
+    label: "Leech",
+    getPercent: (stats: Snapshot["stats"]) => stats.leechPercent ?? 0,
+    getRating: (stats: Snapshot["stats"]) => stats.leechRating,
+  },
+  {
+    label: "Avoidance",
+    getPercent: (stats: Snapshot["stats"]) => stats.avoidancePercent ?? 0,
+    getRating: (stats: Snapshot["stats"]) => stats.avoidanceRating,
+  },
+] as const;
+
+function formatCombatStatPercent(value: number) {
+  return `${value.toFixed(2)}%`;
+}
+
+function formatCombatStatRating(value?: number) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.round(value).toLocaleString()
+    : null;
+}
+
+function renderCombatStatValue(stat: CombatStatSummary) {
+  const rating = formatCombatStatRating(stat.rating);
+  const percent = formatCombatStatPercent(stat.percent);
+
+  if (!rating) {
+    return percent;
+  }
+
+  return (
+    <span className="tabular-nums">
+      {rating}
+      <span className="text-muted-foreground"> ({percent})</span>
+    </span>
+  );
+}
+
+function getCoreCombatStats(snapshot: Snapshot): CombatStatSummary[] {
+  return CORE_COMBAT_STATS.map((stat) => ({
+    label: stat.label,
+    percent: stat.getPercent(snapshot.stats),
+    rating: stat.getRating(snapshot.stats),
+  }));
+}
+
+function getPrimaryStat(snapshot: Snapshot) {
+  const primaryStats = [
+    { label: "Strength", value: snapshot.stats.strength },
+    { label: "Agility", value: snapshot.stats.agility },
+    { label: "Intellect", value: snapshot.stats.intellect },
+  ];
+
+  const primaryStat = primaryStats.reduce((highest, current) =>
+    current.value > highest.value ? current : highest,
+  );
+
+  return primaryStat.value > 0 ? primaryStat : null;
+}
+
+function getTertiaryStats(snapshot: Snapshot) {
+  return TERTIARY_COMBAT_STATS.map((stat) => ({
+    label: stat.label,
+    percent: stat.getPercent(snapshot.stats),
+    rating: stat.getRating(snapshot.stats),
+  })).filter((stat) => stat.percent > 0 || (stat.rating ?? 0) > 0);
+}
+
+function CombatRadarTooltip({
+  active,
+  payload,
+}: {
+  active?: boolean;
+  payload?: Array<{ payload?: CombatRadarDatum }>;
+}) {
+  const datum = payload?.[0]?.payload;
+
+  if (!active || !datum) {
+    return null;
+  }
+
+  const rating = formatCombatStatRating(datum.ratingValue);
+
+  return (
+    <div className="grid min-w-36 gap-1.5 rounded-lg border border-border/50 bg-background px-2.5 py-1.5 text-xs shadow-xl">
+      <div className="font-medium">{datum.stat}</div>
+      {rating ? (
+        <>
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-muted-foreground">Rating</span>
+            <span className="font-mono font-medium text-foreground tabular-nums">{rating}</span>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-muted-foreground">Percent</span>
+            <span className="font-mono font-medium text-foreground tabular-nums">
+              {formatCombatStatPercent(datum.percentValue)}
+            </span>
+          </div>
+        </>
+      ) : (
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-muted-foreground">Percent</span>
+          <span className="font-mono font-medium text-foreground tabular-nums">
+            {formatCombatStatPercent(datum.percentValue)}
+          </span>
+        </div>
+      )}
     </div>
   );
 }
@@ -580,10 +860,12 @@ function TopMetricCard({
   label,
   meta,
   value,
+  delta,
 }: {
   label: string;
   meta?: string;
   value: React.ReactNode;
+  delta?: React.ReactNode;
 }) {
   return (
     <div className="rounded-md border border-border/60 bg-card px-4 py-3">
@@ -597,963 +879,42 @@ function TopMetricCard({
           </div>
         )}
       </div>
-      <div className="mt-3 min-w-0 text-xl font-semibold leading-none text-foreground">
-        {value}
-      </div>
+      <div className="mt-3 min-w-0 text-xl font-semibold leading-none text-foreground">{value}</div>
+      {delta ? <div className="mt-2">{delta}</div> : null}
     </div>
   );
 }
 
-function MythicPlusKeyPill({
-  level,
-  upgradeCount,
-  compact = false,
+function RangeDelta({
+  value,
+  formatter,
+  label,
 }: {
-  level?: number | null;
-  upgradeCount?: number | null;
-  compact?: boolean;
+  value: number;
+  formatter: (absoluteValue: number) => string;
+  label: string;
 }) {
-  if (level === undefined || level === null) {
-    return <span className="text-muted-foreground">-</span>;
-  }
-
-  const normalizedUpgradeCount = Math.max(1, Math.min(3, upgradeCount ?? 1));
-
-  return (
-    <span
-      className={`inline-flex items-center rounded-full border border-emerald-500/30 bg-emerald-500/10 font-semibold tabular-nums text-emerald-200 ${
-        compact ? "px-2 py-0.5 text-xs" : "px-2.5 py-1 text-sm"
-      }`}
-      title={normalizedUpgradeCount > 1 ? `Timed for +${normalizedUpgradeCount}` : "Timed"}
-    >
-      {formatTimedKeyLevel(level, normalizedUpgradeCount)}
-    </span>
-  );
-}
-
-function getRunPlayedAt(run: MythicPlusRun) {
-  if (run.playedAt !== undefined) {
-    return run.playedAt;
-  }
-  if (run.sortTimestamp !== undefined) {
-    return run.sortTimestamp;
-  }
-
-  return run.observedAt;
-}
-
-function getRecentRunRowKey(run: MythicPlusRun) {
-  if (typeof run.rowKey === "string" && run.rowKey.trim() !== "") {
-    return run.rowKey;
-  }
-
-  if (typeof run._id === "string" && run._id.trim() !== "") {
-    return run._id;
-  }
-
-  const identityTokens: string[] = [];
-  const explicitAttemptId = run.attemptId?.trim();
-  if (explicitAttemptId) {
-    identityTokens.push(`aid:${explicitAttemptId}`);
-  }
-
-  const explicitCanonicalKey = run.canonicalKey?.trim();
-  if (explicitCanonicalKey) {
-    identityTokens.push(`ck:${explicitCanonicalKey}`);
-  }
-
-  const normalizedFingerprint = run.fingerprint?.trim();
-  if (normalizedFingerprint) {
-    identityTokens.push(`fp:${normalizedFingerprint}`);
-  }
-
-  const identityKey = identityTokens.length > 0 ? identityTokens.join("|") : "run";
-  return `${identityKey}|${getRunPlayedAt(run) ?? 0}`;
-}
-
-function formatRunMemberName(member: MythicPlusRunMember, characterRealm: string) {
-  if (!member.realm || member.realm.trim().toLowerCase() === characterRealm.trim().toLowerCase()) {
-    return member.name;
-  }
-
-  return `${member.name}-${member.realm}`;
-}
-
-function getRunMemberRoleSortOrder(member: MythicPlusRunMember) {
-  const normalizedRole = member.role?.trim().toLowerCase();
-  if (normalizedRole === "tank") return 0;
-  if (normalizedRole === "dps") return 1;
-  if (normalizedRole === "healer") return 2;
-  return 3;
-}
-
-function getDisplayedRunMembers(members: MythicPlusRunMember[] | undefined) {
-  if (!members || members.length === 0) {
-    return [];
-  }
-
-  const displayedMembers: MythicPlusRunMember[] = [];
-  const seenMembers = new Set<string>();
-
-  for (const member of members) {
-    const normalizedName = member.name.trim();
-    if (normalizedName === "") {
-      continue;
-    }
-
-    const normalizedRealm = member.realm?.trim();
-    const memberKey = `${normalizedName.toLowerCase()}|${normalizedRealm?.toLowerCase() ?? ""}`;
-    if (seenMembers.has(memberKey)) {
-      continue;
-    }
-
-    seenMembers.add(memberKey);
-    displayedMembers.push({
-      ...member,
-      name: normalizedName,
-      realm: normalizedRealm || undefined,
-    });
-  }
-
-  return displayedMembers
-    .map((member, index) => ({
-      member,
-      index,
-      roleSortOrder: getRunMemberRoleSortOrder(member),
-    }))
-    .sort((a, b) => {
-      if (a.roleSortOrder !== b.roleSortOrder) {
-        return a.roleSortOrder - b.roleSortOrder;
-      }
-      return a.index - b.index;
-    })
-    .slice(0, 5)
-    .map(({ member }) => member);
-}
-
-// ── Hidden-player helpers ────────────────────────────────────────────────────
-
-const HIDDEN_PLAYERS_KEY = "wow-hidden-run-players";
-const HIDE_ALL_PLAYER_NAMES_KEY = "wow-hide-all-run-player-names";
-
-function getMemberKey(member: MythicPlusRunMember, characterRealm: string): string {
-  const realm = member.realm?.trim() || characterRealm.trim();
-  return `${member.name.toLowerCase()}|${realm.toLowerCase()}`;
-}
-
-function buildMemberRaiderIoUrl(
-  member: MythicPlusRunMember,
-  characterRealm: string,
-  characterRegion: string,
-): string {
-  const realm = member.realm?.trim() || characterRealm.trim();
-  const region = characterRegion.toLowerCase();
-  return `https://raider.io/characters/${region}/${encodeURIComponent(realm)}/${encodeURIComponent(member.name)}`;
-}
-
-function readHiddenPlayers(): Set<string> {
-  try {
-    const raw = localStorage.getItem(HIDDEN_PLAYERS_KEY);
-    if (!raw) return new Set();
-    return new Set(JSON.parse(raw) as string[]);
-  } catch {
-    return new Set();
-  }
-}
-
-function writeHiddenPlayers(keys: Set<string>) {
-  try {
-    localStorage.setItem(HIDDEN_PLAYERS_KEY, JSON.stringify([...keys]));
-  } catch {
-    /* ignore */
-  }
-}
-
-function readHideAllPlayerNames(): boolean {
-  try {
-    return localStorage.getItem(HIDE_ALL_PLAYER_NAMES_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
-
-function writeHideAllPlayerNames(enabled: boolean) {
-  try {
-    if (enabled) {
-      localStorage.setItem(HIDE_ALL_PLAYER_NAMES_KEY, "1");
-      return;
-    }
-    localStorage.removeItem(HIDE_ALL_PLAYER_NAMES_KEY);
-  } catch {
-    /* ignore */
-  }
-}
-
-function useHiddenPlayers() {
-  const [hidden, setHidden] = useState<Set<string>>(() => readHiddenPlayers());
-  const [hideAllNames, setHideAllNames] = useState<boolean>(() => readHideAllPlayerNames());
-
-  const hide = useCallback((key: string) => {
-    setHidden((prev) => {
-      const next = new Set(prev);
-      next.add(key);
-      writeHiddenPlayers(next);
-      return next;
-    });
-  }, []);
-
-  const unhide = useCallback((key: string) => {
-    setHidden((prev) => {
-      const next = new Set(prev);
-      next.delete(key);
-      writeHiddenPlayers(next);
-      return next;
-    });
-  }, []);
-
-  const unhideAll = useCallback(() => {
-    setHidden(new Set());
-    writeHiddenPlayers(new Set());
-  }, []);
-
-  const toggleHideAllNames = useCallback(() => {
-    setHideAllNames((prev) => {
-      const next = !prev;
-      writeHideAllPlayerNames(next);
-      return next;
-    });
-  }, []);
-
-  return { hidden, hide, unhide, unhideAll, hideAllNames, toggleHideAllNames };
-}
-
-function RecentRunPlayedAt({ run }: { run: MythicPlusRun }) {
-  const playedAt = getRunPlayedAt(run);
-
-  return (
-    <div className="space-y-0.5" title={formatRunDateTime(playedAt)}>
-      <div>{formatRunDate(playedAt)}</div>
-      <div className="text-xs text-muted-foreground/70">{formatRunTime(playedAt)}</div>
-    </div>
-  );
-}
-
-function RecentRunKeyCell({ run }: { run: MythicPlusRun }) {
-  return (
-    <div className="flex items-center justify-end gap-1.5">
-      <span className="font-medium tabular-nums">{formatKeyLevel(run.level)}</span>
-    </div>
-  );
-}
-
-function RecentRunPartyMembers({
-  run,
-  characterRealm,
-  characterRegion,
-  hiddenKeys,
-  hideAllNames,
-  onHide,
-}: {
-  run: MythicPlusRun;
-  characterRealm: string;
-  characterRegion: string;
-  hiddenKeys: Set<string>;
-  hideAllNames: boolean;
-  onHide: (key: string) => void;
-}) {
-  const allMembers = getDisplayedRunMembers(run.members);
-  if (allMembers.length === 0) return null;
-  if (hideAllNames) return null;
-
-  return (
-    <div className="mt-1 flex min-w-0 flex-nowrap items-center gap-x-0.5 overflow-visible whitespace-nowrap text-[11px] leading-tight">
-      {allMembers.map((member, index) => {
-        const key = getMemberKey(member, characterRealm);
-        const isHidden = hiddenKeys.has(key);
-
-        if (isHidden) {
-          return (
-            <span key={key} className="inline-flex shrink-0 items-center whitespace-nowrap">
-              {index > 0 && <span className="shrink-0 px-0.5 text-muted-foreground/25">/</span>}
-              <span
-                className="inline-block h-[0.65em] w-10 shrink-0 rounded-sm bg-muted-foreground/25 blur-[5px]"
-                aria-hidden="true"
-              />
-            </span>
-          );
-        }
-
-        const url = buildMemberRaiderIoUrl(member, characterRealm, characterRegion);
-        return (
-          <span
-            key={key}
-            className="group/member relative inline-flex shrink-0 items-center whitespace-nowrap after:absolute after:left-0 after:right-0 after:top-full after:h-2 after:content-['']"
-          >
-            {index > 0 && <span className="shrink-0 px-0.5 text-muted-foreground/25">/</span>}
-            <a
-              href={url}
-              target="_blank"
-              rel="noreferrer"
-              className={`inline-flex shrink-0 whitespace-nowrap font-medium hover:underline decoration-current/40 underline-offset-2 ${classColor(member.classTag ?? "")}`}
-              title={`View ${member.name} on Raider.IO`}
-            >
-              {formatRunMemberName(member, characterRealm)}
-            </a>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                onHide(key);
-              }}
-              className="pointer-events-none absolute left-1/2 top-[calc(100%+1px)] z-10 -translate-x-1/2 rounded-sm border border-border/70 bg-background/95 p-1 text-muted-foreground/55 opacity-0 shadow-sm transition-opacity duration-150 group-hover/member:pointer-events-auto group-hover/member:opacity-100 group-focus-within/member:pointer-events-auto group-focus-within/member:opacity-100 hover:text-foreground"
-              title={`Hide ${member.name}`}
-              aria-label={`Hide ${member.name}`}
-            >
-              <EyeOff size={9} className="shrink-0" />
-            </button>
-          </span>
-        );
-      })}
-    </div>
-  );
-}
-
-function HiddenPlayersControl({
-  hiddenKeys,
-  hideAllNames,
-  onToggleHideAllNames,
-  onUnhide,
-  onUnhideAll,
-}: {
-  hiddenKeys: Set<string>;
-  hideAllNames: boolean;
-  onToggleHideAllNames: () => void;
-  onUnhide: (key: string) => void;
-  onUnhideAll: () => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const keys = [...hiddenKeys].sort((a, b) => a.localeCompare(b));
-  const isActive = hideAllNames || keys.length > 0;
-
-  return (
-    <div className="relative">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className={`flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] transition-colors ${
-          isActive
-            ? "border-border/70 bg-muted/45 text-foreground hover:bg-muted/60"
-            : "border-border/60 bg-muted/30 text-muted-foreground hover:bg-muted/50 hover:text-foreground"
-        }`}
+  if (!Number.isFinite(value) || Math.abs(value) < 0.0001) {
+    return (
+      <Badge
+        variant="outline"
+        className="border-border/60 bg-background text-xs font-normal text-muted-foreground"
       >
-        {hideAllNames ? <EyeOff size={11} /> : <Eye size={11} />}
-        Names
-        {hideAllNames ? (
-          <span className="rounded bg-foreground/8 px-1 py-0.5 text-[10px] uppercase tracking-wider text-foreground/80">
-            Off
-          </span>
-        ) : keys.length > 0 ? (
-          <span className="rounded bg-foreground/8 px-1 py-0.5 text-[10px] uppercase tracking-wider text-foreground/80">
-            {keys.length} hidden
-          </span>
-        ) : null}
-      </button>
-      {open && (
-        <div className="absolute right-0 top-full z-20 mt-1 min-w-[220px] rounded-md border border-border/60 bg-card p-2 shadow-lg">
-          <button
-            type="button"
-            onClick={onToggleHideAllNames}
-            className="flex w-full items-center justify-between gap-3 rounded-md border border-border/60 bg-muted/20 px-2 py-2 text-left text-xs transition-colors hover:bg-muted/35"
-          >
-            <span className="flex items-center gap-2 text-foreground/90">
-              {hideAllNames ? <Eye size={12} /> : <EyeOff size={12} />}
-              Hide all names
-            </span>
-            <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
-              {hideAllNames ? "On" : "Off"}
-            </span>
-          </button>
+        No change over {label}
+      </Badge>
+    );
+  }
 
-          <div className="mt-2 border-t border-border/50 pt-2">
-            <div className="mb-1.5 flex items-center justify-between">
-              <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                Hidden players
-              </span>
-              {keys.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    onUnhideAll();
-                    setOpen(false);
-                  }}
-                  className="text-[10px] text-muted-foreground transition-colors hover:text-foreground"
-                >
-                  Show all
-                </button>
-              )}
-            </div>
-            {keys.length === 0 ? (
-              <div className="rounded px-1.5 py-1 text-xs text-muted-foreground">
-                No individually hidden players.
-              </div>
-            ) : (
-              <div className="space-y-0.5">
-                {keys.map((key) => {
-                  const [name] = key.split("|");
-                  return (
-                    <div
-                      key={key}
-                      className="flex items-center justify-between gap-2 rounded px-1.5 py-1 text-xs hover:bg-muted/30"
-                    >
-                      <span className="truncate text-foreground/80">{name}</span>
-                      <button
-                        type="button"
-                        onClick={() => onUnhide(key)}
-                        className="shrink-0 rounded p-0.5 text-muted-foreground/50 transition-colors hover:text-foreground"
-                        title="Show player"
-                      >
-                        <Eye size={12} />
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </div>
+  return (
+    <Badge
+      variant="outline"
+      className={cn(
+        "border-border/60 bg-background text-xs font-normal tabular-nums",
+        value > 0 ? "text-emerald-300" : "text-orange-300",
       )}
-    </div>
-  );
-}
-
-function DungeonIcon({
-  mapChallengeModeID,
-  mapName,
-}: {
-  mapChallengeModeID?: number | null;
-  mapName?: string | null;
-}) {
-  const dungeonMeta = getMythicPlusDungeonMeta(mapChallengeModeID, mapName);
-  const fallbackLabel = dungeonMeta?.shortName ?? mapName?.slice(0, 2).toUpperCase() ?? "M+";
-
-  if (!dungeonMeta?.iconUrl) {
-    return (
-      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-border/60 bg-muted/30 text-[10px] font-semibold text-muted-foreground">
-        {fallbackLabel}
-      </span>
-    );
-  }
-
-  return (
-    <img
-      src={dungeonMeta.iconUrl}
-      alt=""
-      loading="lazy"
-      decoding="async"
-      referrerPolicy="no-referrer"
-      className="h-6 w-6 shrink-0 rounded-md border border-border/60 object-cover"
-    />
-  );
-}
-
-function RaiderIoScoreText({ score, className }: { score?: number | null; className?: string }) {
-  return (
-    <span className={className} style={{ color: getRaiderIoScoreColor(score) }}>
-      {formatRunScore(score)}
-    </span>
-  );
-}
-
-function getPrimaryStat(snapshot: Snapshot) {
-  const primaryStats = [
-    { label: "Strength", value: snapshot.stats.strength },
-    { label: "Agility", value: snapshot.stats.agility },
-    { label: "Intellect", value: snapshot.stats.intellect },
-  ];
-
-  const primaryStat = primaryStats.reduce((highest, current) =>
-    current.value > highest.value ? current : highest,
-  );
-
-  return primaryStat.value > 0 ? primaryStat : null;
-}
-
-function getTertiaryStats(snapshot: Snapshot) {
-  return [
-    { label: "Speed", value: snapshot.stats.speedPercent ?? 0 },
-    { label: "Leech", value: snapshot.stats.leechPercent ?? 0 },
-    { label: "Avoidance", value: snapshot.stats.avoidancePercent ?? 0 },
-  ].filter((stat) => stat.value > 0);
-}
-
-function MythicPlusResultBadge({ run }: { run: MythicPlusRun }) {
-  const status = getMythicPlusRunStatus(run);
-  const timedState = getMythicPlusRunTimedState(run);
-  const normalizedUpgradeCount =
-    run.upgradeCount !== undefined && run.upgradeCount !== null
-      ? Math.max(1, Math.min(3, run.upgradeCount))
-      : null;
-
-  if (status === "active") {
-    return (
-      <Badge className="rounded-md border-sky-400/35 bg-sky-500/16 px-1.5 py-0.5 text-[11px] font-semibold tracking-[0.08em] text-sky-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-        Active
-      </Badge>
-    );
-  }
-  if (status === "abandoned") {
-    return (
-      <Badge className="rounded-md border-rose-400/35 bg-rose-500/16 px-1.5 py-0.5 text-[11px] font-semibold tracking-[0.08em] text-rose-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-        Abandoned
-      </Badge>
-    );
-  }
-  if (timedState === true) {
-    return (
-      <Badge className="rounded-md border-emerald-400/40 bg-emerald-500/18 px-1.5 py-0.5 text-[11px] font-semibold tracking-[0.08em] text-emerald-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-        {normalizedUpgradeCount !== null ? `+${normalizedUpgradeCount}` : "Timed"}
-      </Badge>
-    );
-  }
-  if (timedState === false) {
-    return (
-      <Badge className="rounded-md border-amber-400/35 bg-amber-500/16 px-1.5 py-0.5 text-[11px] font-semibold tracking-[0.08em] text-amber-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-        Deplete
-      </Badge>
-    );
-  }
-  if (isCompletedMythicPlusRun(run)) {
-    return (
-      <Badge className="rounded-md border-slate-400/35 bg-slate-500/12 px-1.5 py-0.5 text-[11px] font-semibold tracking-[0.08em] text-slate-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-        Completed
-      </Badge>
-    );
-  }
-  return null;
-}
-
-function DeferredMythicPlannerPanel({
-  characterId,
-  characterName,
-  currentScore,
-  dungeons,
-}: {
-  characterId: string;
-  characterName: string;
-  currentScore: number | null;
-  dungeons: MythicPlusSummary["currentSeasonDungeons"];
-}) {
-  return (
-    <Suspense
-      fallback={
-        <Card>
-          <CardHeader className="border-b pb-3">
-            <CardTitle className="flex items-center gap-2 text-lg">
-              <Calculator size={16} className="text-muted-foreground" />
-              Planner
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="pt-4 text-sm text-muted-foreground">
-            Loading planner...
-          </CardContent>
-        </Card>
-      }
     >
-      <LazyMythicPlannerPanel
-        characterId={characterId}
-        characterName={characterName}
-        currentScore={currentScore}
-        dungeons={dungeons}
-      />
-    </Suspense>
-  );
-}
-
-function MythicPlusSection({
-  data,
-  isLoadingAllRuns,
-  onRequestAllRuns,
-  characterId,
-  characterName,
-  characterRealm,
-  characterRegion,
-  currentScore,
-}: {
-  data: MythicPlusData | null | undefined;
-  isLoadingAllRuns: boolean;
-  onRequestAllRuns: () => void;
-  characterId: string;
-  characterName: string;
-  characterRealm: string;
-  characterRegion: string;
-  currentScore: number | null;
-}) {
-  const [visibleRecentRunCount, setVisibleRecentRunCount] = useState(INITIAL_RECENT_RUN_COUNT);
-  const {
-    hidden: hiddenPlayerKeys,
-    hide: hidePlayer,
-    unhide: unhidePlayer,
-    unhideAll: unhideAllPlayers,
-    hideAllNames,
-    toggleHideAllNames,
-  } = useHiddenPlayers();
-  const [summaryCardHeight, setSummaryCardHeight] = useState<number | null>(null);
-  const summaryCardRef = useRef<HTMLDivElement | null>(null);
-  const latestRunResetKey = data?.runs[0] ? getRecentRunRowKey(data.runs[0]) : "";
-  const recentRunsResetKey = `${data?.totalRunCount ?? 0}:${latestRunResetKey}`;
-  const totalRunCount = data?.totalRunCount ?? 0;
-  const hasMoreRecentRuns = visibleRecentRunCount < totalRunCount;
-
-  useEffect(() => {
-    setVisibleRecentRunCount(INITIAL_RECENT_RUN_COUNT);
-  }, [recentRunsResetKey]);
-
-  useEffect(() => {
-    const summaryElement = summaryCardRef.current;
-    if (!summaryElement || typeof ResizeObserver === "undefined") return;
-
-    const updateHeight = () => {
-      setSummaryCardHeight(Math.ceil(summaryElement.getBoundingClientRect().height));
-    };
-
-    updateHeight();
-
-    const resizeObserver = new ResizeObserver(() => {
-      updateHeight();
-    });
-
-    resizeObserver.observe(summaryElement);
-    return () => resizeObserver.disconnect();
-  }, [recentRunsResetKey]);
-
-  if (data === undefined) {
-    return null;
-  }
-
-  if (!data) {
-    return (
-      <Card>
-        <CardHeader className="border-b pb-3">
-          <CardTitle className="flex items-center gap-2 text-lg">
-            <History size={16} className="text-muted-foreground" />
-            Mythic+ History
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="pt-4">
-          <p className="text-sm text-muted-foreground">
-            No Mythic+ run history uploaded for this character yet.
-          </p>
-        </CardContent>
-      </Card>
-    );
-  }
-
-  const { summary, runs } = data;
-  if (runs.length === 0) {
-    return (
-      <div className="space-y-4">
-        <Card>
-          <CardHeader className="border-b pb-3">
-            <CardTitle className="flex items-center gap-2 text-lg">
-              <History size={16} className="text-muted-foreground" />
-              Mythic+ History
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="pt-4">
-            <p className="text-sm text-muted-foreground">
-              No Mythic+ run history uploaded for this character yet.
-            </p>
-          </CardContent>
-        </Card>
-
-        <DeferredMythicPlannerPanel
-          characterId={characterId}
-          characterName={characterName}
-          currentScore={currentScore}
-          dungeons={summary.currentSeasonDungeons}
-        />
-      </div>
-    );
-  }
-
-  const currentSeason = summary.currentSeason;
-  const visibleRecentRuns = runs.slice(0, Math.min(visibleRecentRunCount, runs.length));
-  const nextRecentRunCount = Math.min(
-    RECENT_RUN_LOAD_INCREMENT,
-    totalRunCount - visibleRecentRunCount,
-  );
-  const shouldRequestAllRuns = data.isPreview;
-
-  function loadMoreRecentRuns() {
-    setVisibleRecentRunCount((currentValue) => {
-      const nextVisibleCount = Math.min(currentValue + RECENT_RUN_LOAD_INCREMENT, totalRunCount);
-      if (nextVisibleCount > runs.length && shouldRequestAllRuns) {
-        onRequestAllRuns();
-      }
-      return nextVisibleCount;
-    });
-  }
-
-  return (
-    <div className="space-y-4">
-      <div className="grid items-start gap-4 xl:grid-cols-[1.1fr_0.9fr]">
-        <div ref={summaryCardRef}>
-          <Card>
-            <CardHeader className="border-b pb-3">
-              <div className="flex items-center justify-between gap-3">
-                <CardTitle className="flex items-center gap-2 text-lg">
-                  <History size={16} className="text-muted-foreground" />
-                  Mythic+ Summary
-                </CardTitle>
-                {formatSeasonLabel(summary.latestSeasonID) && (
-                  <Badge variant="outline">{formatSeasonLabel(summary.latestSeasonID)}</Badge>
-                )}
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-4 pt-4">
-              {currentSeason && (
-                <div className="space-y-3">
-                  <div className="flex items-center gap-2">
-                    <Flame size={14} className="text-muted-foreground" />
-                    <h3 className="text-sm font-semibold">Current Season</h3>
-                  </div>
-                  <div className="grid gap-1.5 sm:grid-cols-2 xl:grid-cols-3">
-                    <StatGrid
-                      compact
-                      label="Current Score"
-                      value={
-                        <RaiderIoScoreText score={summary.currentScore} className="tabular-nums" />
-                      }
-                    />
-                    <StatGrid
-                      compact
-                      label="Best Timed"
-                      value={
-                        <MythicPlusKeyPill
-                          level={currentSeason.bestTimedLevel}
-                          upgradeCount={currentSeason.bestTimedUpgradeCount}
-                          compact
-                        />
-                      }
-                    />
-                    <StatGrid
-                      compact
-                      label="Total Runs"
-                      value={(currentSeason.totalAttempts ?? currentSeason.totalRuns).toLocaleString()}
-                    />
-                  </div>
-                  <div className="grid gap-1.5 sm:grid-cols-2 xl:grid-cols-3">
-                    <StatGrid compact label="Timed" value={currentSeason.timedRuns.toLocaleString()} />
-                    <StatGrid
-                      compact
-                      label="Depleted"
-                      value={Math.max(
-                        0,
-                        currentSeason.completedRuns - currentSeason.timedRuns,
-                      ).toLocaleString()}
-                    />
-                    <StatGrid
-                      compact
-                      label="Abandoned"
-                      value={(currentSeason.abandonedRuns ?? 0).toLocaleString()}
-                    />
-                  </div>
-                  <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
-                    <StatGrid compact label="2+ Timed" value={currentSeason.timed2To9.toLocaleString()} />
-                    <StatGrid
-                      compact
-                      label="10+ Timed"
-                      value={currentSeason.timed10To11.toLocaleString()}
-                    />
-                    <StatGrid
-                      compact
-                      label="12+ Timed"
-                      value={currentSeason.timed12To13.toLocaleString()}
-                    />
-                    <StatGrid compact label="14+ Timed" value={currentSeason.timed14Plus.toLocaleString()} />
-                  </div>
-                </div>
-              )}
-
-              {summary.currentSeasonDungeons.length > 0 && (
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-2">
-                      <Sword size={14} className="text-muted-foreground" />
-                      <h3 className="text-sm font-semibold">Dungeon Bests</h3>
-                    </div>
-                    {summary.currentScore !== null && (
-                      <div className="text-xs text-muted-foreground">
-                        Score{" "}
-                        <RaiderIoScoreText
-                          score={summary.currentScore}
-                          className="font-semibold tabular-nums"
-                        />
-                      </div>
-                    )}
-                  </div>
-                  <div className="overflow-x-auto rounded-md border">
-                    <table className="w-full min-w-[560px] text-sm leading-tight">
-                      <thead className="bg-muted/40 text-muted-foreground">
-                        <tr>
-                          <th className="px-3 py-2 text-left font-medium">Dungeon</th>
-                          <th className="px-3 py-2 text-right font-medium">Timed</th>
-                          <th className="px-3 py-2 text-right font-medium">Level</th>
-                          <th className="px-3 py-2 text-right font-medium">Score</th>
-                          <th className="px-3 py-2 text-right font-medium">Time</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-border/70">
-                        {summary.currentSeasonDungeons.map((dungeon) => (
-                          <tr
-                            key={`${dungeon.mapChallengeModeID ?? "map"}-${dungeon.mapName}`}
-                            className="bg-background/20 transition-colors hover:bg-muted/20"
-                          >
-                            <td className="px-3 py-2.5">
-                              <div className="flex items-center gap-2.5">
-                                <DungeonIcon
-                                  mapChallengeModeID={dungeon.mapChallengeModeID}
-                                  mapName={dungeon.mapName}
-                                />
-                                <div className="font-medium text-foreground">{dungeon.mapName}</div>
-                              </div>
-                            </td>
-                            <td className="px-3 py-2.5 text-right tabular-nums text-muted-foreground">
-                              {dungeon.timedRuns}
-                            </td>
-                            <td className="px-3 py-2.5 text-right">
-                              <MythicPlusKeyPill
-                                level={dungeon.bestTimedLevel}
-                                upgradeCount={dungeon.bestTimedUpgradeCount}
-                                compact
-                              />
-                            </td>
-                            <td className="px-3 py-2.5 text-right tabular-nums">
-                              <RaiderIoScoreText
-                                score={dungeon.bestTimedScore}
-                                className="tabular-nums"
-                              />
-                            </td>
-                            <td className="px-3 py-2.5 text-right tabular-nums">
-                              {formatRunDuration(dungeon.bestTimedDurationMs)}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        </div>
-
-        <Card
-          className="flex flex-col"
-          style={summaryCardHeight === null ? undefined : { height: `${summaryCardHeight}px` }}
-        >
-          <CardHeader className="border-b pb-3">
-            <div className="flex items-center justify-between gap-3">
-              <CardTitle className="flex items-center gap-2 text-lg">
-                <Clock size={16} className="text-muted-foreground" />
-                Recent Runs
-              </CardTitle>
-              <HiddenPlayersControl
-                hiddenKeys={hiddenPlayerKeys}
-                hideAllNames={hideAllNames}
-                onToggleHideAllNames={toggleHideAllNames}
-                onUnhide={unhidePlayer}
-                onUnhideAll={unhideAllPlayers}
-              />
-            </div>
-          </CardHeader>
-          <CardContent className="flex min-h-0 flex-1 flex-col pt-4">
-            <div className="dark-scrollbar min-h-0 flex-1 overflow-auto rounded-md border border-border/60">
-              <table className="w-full min-w-[760px] text-sm">
-                <thead className="bg-muted/30 text-[11px] uppercase tracking-wider text-muted-foreground">
-                  <tr>
-                    <th className="px-3 py-2 text-left font-medium">Played</th>
-                    <th className="px-3 py-2 text-left font-medium">Dungeon</th>
-                    <th className="px-3 py-2 text-right font-medium">Key</th>
-                    <th className="px-3 py-2 text-left font-medium">Result</th>
-                    <th className="px-3 py-2 text-right font-medium">Score</th>
-                    <th className="w-[7rem] whitespace-nowrap px-3 py-2 text-right font-medium">Time</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border/50">
-                  {visibleRecentRuns.map((run) => (
-                    <tr key={getRecentRunRowKey(run)} className="transition-colors hover:bg-muted/15">
-                      <td className="px-3 py-2.5 text-muted-foreground align-top">
-                        <RecentRunPlayedAt run={run} />
-                      </td>
-                      <td className="px-3 py-2.5 align-top">
-                        <div className="flex items-center gap-2">
-                          <DungeonIcon
-                            mapChallengeModeID={run.mapChallengeModeID}
-                            mapName={run.mapName}
-                          />
-                          <div className="font-medium leading-tight text-foreground">
-                            {getRunLabel(run)}
-                          </div>
-                        </div>
-                        <RecentRunPartyMembers
-                          run={run}
-                          characterRealm={characterRealm}
-                          characterRegion={characterRegion}
-                          hiddenKeys={hiddenPlayerKeys}
-                          hideAllNames={hideAllNames}
-                          onHide={hidePlayer}
-                        />
-                      </td>
-                      <td className="px-3 py-2.5 align-top text-right">
-                        <RecentRunKeyCell run={run} />
-                      </td>
-                      <td className="px-3 py-2.5 align-top">
-                        <MythicPlusResultBadge run={run} />
-                      </td>
-                      <td className="px-3 py-2.5 align-top text-right">
-                        <div className="flex items-center justify-end gap-1.5 tabular-nums">
-                          <span>{formatRunScore(run.runScore)}</span>
-                          {formatRunScoreIncrease(run.scoreIncrease) && (
-                            <span className="text-xs font-medium text-emerald-300">
-                              (+{formatRunScoreIncrease(run.scoreIncrease)})
-                            </span>
-                          )}
-                        </div>
-                      </td>
-                      <td className="w-[7rem] whitespace-nowrap px-3 py-2.5 align-top text-right tabular-nums text-muted-foreground">
-                        {formatRunTimeComparison(run)}
-                      </td>
-                    </tr>
-                  ))}
-                  {hasMoreRecentRuns && (
-                    <tr className="bg-muted/10">
-                      <td colSpan={6} className="px-3 py-3 text-center">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={loadMoreRecentRuns}
-                          disabled={isLoadingAllRuns}
-                        >
-                          {isLoadingAllRuns ? "Loading more..." : `Load ${nextRecentRunCount} More`}
-                        </Button>
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-        <DeferredMythicPlannerPanel
-          characterId={characterId}
-          characterName={characterName}
-          currentScore={currentScore}
-          dungeons={summary.currentSeasonDungeons}
-        />
-    </div>
+      {formatSignedDelta(value, formatter)} over {label}
+    </Badge>
   );
 }
 
@@ -1568,6 +929,8 @@ function FullscreenOverlay({
   onClose: () => void;
   children: React.ReactNode;
 }) {
+  const titleId = useId();
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -1578,22 +941,31 @@ function FullscreenOverlay({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-50 bg-background/60 backdrop-blur-xl flex flex-col"
-      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={titleId}
+      className="fixed inset-0 z-50 flex flex-col bg-background/60 backdrop-blur-xl"
     >
-      <div
-        className="flex-1 flex flex-col p-6 max-w-6xl mx-auto w-full min-h-0"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between mb-4 shrink-0">
-          <h2 className="text-base font-semibold">{title}</h2>
-          <button
+      <button
+        type="button"
+        aria-label="Close fullscreen chart"
+        className="absolute inset-0 cursor-default"
+        onClick={onClose}
+      />
+      <div className="relative z-10 mx-auto flex min-h-0 w-full max-w-6xl flex-1 flex-col p-6">
+        <div className="mb-4 flex shrink-0 items-center justify-between">
+          <h2 id={titleId} className="text-base font-semibold">
+            {title}
+          </h2>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
             onClick={onClose}
-            className="text-muted-foreground hover:text-foreground p-1 rounded transition-colors"
             aria-label="Close fullscreen"
           >
-            <X size={16} className="transition-transform duration-200 hover:rotate-90" />
-          </button>
+            <X data-icon="inline-start" aria-hidden="true" />
+          </Button>
         </div>
         <div className="flex-1 min-h-0">{children}</div>
       </div>
@@ -1604,13 +976,16 @@ function FullscreenOverlay({
 
 function FullscreenButton({ onClick }: { onClick: () => void }) {
   return (
-    <button
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon"
       onClick={onClick}
-      className="text-muted-foreground hover:text-foreground p-1 rounded transition-colors"
-      aria-label="View fullscreen"
+      className="size-8 text-muted-foreground hover:text-foreground"
+      aria-label="View chart fullscreen"
     >
-      <Maximize2 size={13} className="transition-transform duration-200 hover:scale-110" />
-    </button>
+      <Maximize2 data-icon="inline-start" aria-hidden="true" />
+    </Button>
   );
 }
 
@@ -1626,6 +1001,7 @@ type Snapshot = {
   playtimeSeconds: number;
   playtimeThisLevelSeconds?: number;
   mythicPlusScore: number;
+  seasonID?: number;
   ownedKeystone?: {
     level: number;
     mapChallengeModeID?: number;
@@ -1639,18 +1015,92 @@ type Snapshot = {
     mythDawncrest: number;
     radiantSparkDust: number;
   };
+  currencyDetails?: Record<
+    string,
+    {
+      currencyID: number;
+      name?: string;
+      quantity: number;
+      iconFileID?: number;
+      maxQuantity?: number;
+      canEarnPerWeek?: boolean;
+      quantityEarnedThisWeek?: number;
+      maxWeeklyQuantity?: number;
+      totalEarned?: number;
+      discovered?: boolean;
+      quality?: number;
+      useTotalEarnedForMaxQty?: boolean;
+    }
+  >;
   stats: {
     stamina: number;
     strength: number;
     agility: number;
     intellect: number;
+    critRating?: number;
     critPercent: number;
+    hasteRating?: number;
     hastePercent: number;
+    masteryRating?: number;
     masteryPercent: number;
+    versatilityRating?: number;
     versatilityPercent: number;
+    speedRating?: number;
     speedPercent?: number;
+    leechRating?: number;
     leechPercent?: number;
+    avoidanceRating?: number;
     avoidancePercent?: number;
+  };
+  equipment?: Record<
+    string,
+    {
+      slot: string;
+      slotID: number;
+      itemID?: number;
+      itemName?: string;
+      itemLink?: string;
+      itemLevel?: number;
+      quality?: number;
+      iconFileID?: number;
+    }
+  >;
+  weeklyRewards?: {
+    canClaimRewards?: boolean;
+    isCurrentPeriod?: boolean;
+    activities: {
+      type?: number;
+      index?: number;
+      id?: number;
+      level?: number;
+      threshold?: number;
+      progress?: number;
+      activityTierID?: number;
+      itemLevel?: number;
+      name?: string;
+    }[];
+  };
+  majorFactions?: {
+    factions: {
+      factionID: number;
+      name?: string;
+      expansionID?: number;
+      isUnlocked?: boolean;
+      renownLevel?: number;
+      renownReputationEarned?: number;
+      renownLevelThreshold?: number;
+      isWeeklyCapped?: boolean;
+    }[];
+  };
+  clientInfo?: {
+    addonVersion?: string;
+    interfaceVersion?: number;
+    gameVersion?: string;
+    buildNumber?: string;
+    buildDate?: string;
+    tocVersion?: number;
+    expansion?: string;
+    locale?: string;
   };
 };
 
@@ -1669,6 +1119,19 @@ type StatsChartSnapshot = {
 };
 
 type CurrencyChartSnapshot = Pick<CoreChartSnapshot, "takenAt" | "currencies">;
+
+function getRangeBaselineSnapshot(
+  timeFrame: TimeFrame,
+  coreSnapshots: CoreChartSnapshot[],
+  latest: Snapshot | null,
+) {
+  if (timeFrame === CURRENT_SEASON_TIME_FRAME && latest) {
+    const cutoff = latest.takenAt - 7 * 86400;
+    return coreSnapshots.find((snapshot) => snapshot.takenAt >= cutoff) ?? latest;
+  }
+
+  return coreSnapshots[0] ?? latest;
+}
 
 type LayoutProps = {
   latest: Snapshot;
@@ -1695,7 +1158,7 @@ type MythicPlusRunMember = {
 };
 
 type MythicPlusRun = {
-  _id?: Id<"mythicPlusRuns">;
+  _id?: string;
   rowKey?: string;
   fingerprint: string;
   attemptId?: string;
@@ -1780,18 +1243,82 @@ type MythicPlusData = {
   isPreview: boolean;
 };
 
+function getMythicPlusRunCacheIdentity(run: MythicPlusRun) {
+  const normalizedString = (value: string | undefined) => {
+    const normalized = value?.trim();
+    return normalized ? normalized : null;
+  };
+
+  const rowKey = normalizedString(run.rowKey);
+  if (rowKey) {
+    return `row:${rowKey}`;
+  }
+
+  const id = normalizedString(run._id);
+  if (id) {
+    return `id:${id}`;
+  }
+
+  const fingerprint = normalizedString(run.fingerprint);
+  if (fingerprint) {
+    return `fp:${fingerprint}`;
+  }
+
+  const canonicalKey = normalizedString(run.canonicalKey);
+  if (canonicalKey) {
+    return `ck:${canonicalKey}`;
+  }
+
+  const attemptId = normalizedString(run.attemptId);
+  if (attemptId) {
+    return `aid:${attemptId}`;
+  }
+
+  const playedAt = run.playedAt ?? run.sortTimestamp ?? run.observedAt;
+  const dungeon = run.mapChallengeModeID ?? run.mapName ?? "unknown";
+  return [
+    "run",
+    playedAt,
+    run.seasonID ?? "unknown",
+    dungeon,
+    run.level ?? "unknown",
+    run.status ?? "unknown",
+  ].join(":");
+}
+
+function isFullMythicPlusDataFreshForPreview(
+  fullData: MythicPlusData,
+  previewData: MythicPlusData,
+) {
+  const previewLastRunAt = previewData.summary.overall.lastRunAt;
+  if (previewLastRunAt !== null) {
+    const fullLastRunAt = fullData.summary.overall.lastRunAt;
+    if (fullLastRunAt === null || fullLastRunAt < previewLastRunAt) {
+      return false;
+    }
+  }
+
+  const latestPreviewRun = previewData.runs[0];
+  if (!latestPreviewRun) {
+    return true;
+  }
+
+  const latestPreviewRunKey = getMythicPlusRunCacheIdentity(latestPreviewRun);
+  return fullData.runs.some((run) => getMythicPlusRunCacheIdentity(run) === latestPreviewRunKey);
+}
+
 // ── Snapshot grouping ─────────────────────────────────────────────────────────
 
 // ── Chart palette ─────────────────────────────────────────────────────────────
 
 const C = {
-  blue: "oklch(0.72 0.20 245)",
-  red: "oklch(0.72 0.22 20)",
-  gold: "oklch(0.84 0.18 80)",
-  purple: "oklch(0.73 0.20 295)",
-  teal: "oklch(0.75 0.18 190)",
-  green: "oklch(0.76 0.18 155)",
-  pink: "oklch(0.75 0.18 330)",
+  blue: "oklch(0.74 0.14 245)",
+  red: "oklch(0.71 0.16 25)",
+  gold: "oklch(0.82 0.14 82)",
+  purple: "oklch(0.72 0.14 295)",
+  teal: "oklch(0.74 0.13 190)",
+  green: "oklch(0.75 0.13 155)",
+  pink: "oklch(0.74 0.14 330)",
 } as const;
 
 const ilvlConfig: ChartConfig = { itemLevel: { label: "Item Level", color: C.blue } };
@@ -1817,6 +1344,7 @@ const currenciesConfig: ChartConfig = {
 
 type YScaleOptions = {
   includeZero?: boolean;
+  minDomain?: number;
   minSpan?: number;
   minPadding?: number;
   padRatio?: number;
@@ -1839,24 +1367,28 @@ type EndpointDotProps = {
 };
 
 const ITEM_LEVEL_AUTO_SCALE: YScaleOptions = {
+  minDomain: 0,
   minSpan: 4,
   minPadding: 0.5,
   padRatio: 0.18,
   stepFloor: 0.5,
 };
 const MPLUS_AUTO_SCALE: YScaleOptions = {
+  includeZero: true,
   minSpan: 150,
   minPadding: 40,
   padRatio: 0.16,
   stepFloor: 25,
 };
 const GOLD_SCALE: YScaleOptions = {
+  minDomain: 0,
   minSpan: 20,
   minPadding: 2,
   padRatio: 0.2,
   stepFloor: 1,
 };
 const SECONDARY_STATS_SCALE: YScaleOptions = {
+  minDomain: 0,
   minSpan: 6,
   minPadding: 0.4,
   padRatio: 0.14,
@@ -1870,6 +1402,7 @@ const CURRENCIES_SCALE: YScaleOptions = {
   stepFloor: 5,
 };
 const PLAYTIME_SCALE: YScaleOptions = {
+  minDomain: 0,
   minSpan: 24,
   minPadding: 6,
   padRatio: 0.14,
@@ -1918,6 +1451,9 @@ function getAdaptiveYDomain(
   let domainMin = Math.floor((minValue - padding) / step) * step;
   let domainMax = Math.ceil((maxValue + padding) / step) * step;
 
+  if (options.minDomain !== undefined && domainMin < options.minDomain) {
+    domainMin = options.minDomain;
+  }
   if (options.includeZero && minValue >= 0 && domainMin < 0) {
     domainMin = 0;
   }
@@ -1926,10 +1462,35 @@ function getAdaptiveYDomain(
   }
 
   if (domainMin === domainMax) {
+    if (options.minDomain !== undefined && domainMin <= options.minDomain) {
+      return [options.minDomain, domainMax + step];
+    }
+
     return [domainMin - step, domainMax + step];
   }
 
   return [domainMin, domainMax];
+}
+
+function getYAxisWidth(
+  domain: [number, number],
+  valueFormatter?: (value: number) => string,
+  minWidth = 52,
+) {
+  const labelCandidates = Array.from(
+    new Set(
+      [domain[0], domain[1], 0].filter(
+        (value): value is number => typeof value === "number" && Number.isFinite(value),
+      ),
+    ),
+  );
+
+  const maxLabelLength = labelCandidates.reduce((longest, value) => {
+    const label = valueFormatter?.(value) ?? value.toLocaleString();
+    return Math.max(longest, label.length);
+  }, 0);
+
+  return Math.min(96, Math.max(minWidth, Math.ceil(maxLabelLength * 7.5 + 12)));
 }
 
 function getPrimaryLineKey(
@@ -1966,6 +1527,7 @@ function SnapshotLineChart({
   timeFrame,
   lineEmphasis = "primary",
   showLatestValue,
+  yAxisWidth,
 }: {
   data: Record<string, number | undefined>[];
   lines: SnapshotLineSeries[];
@@ -1978,6 +1540,7 @@ function SnapshotLineChart({
   timeFrame?: TimeFrame;
   lineEmphasis?: LineEmphasisMode;
   showLatestValue?: boolean;
+  yAxisWidth?: number;
 }) {
   if (data.length < 2) {
     return (
@@ -1986,6 +1549,7 @@ function SnapshotLineChart({
   }
 
   const xAxisTicks = getXAxisTicks(data, timeFrame ?? "all");
+  const xAxisDomain = getXAxisDomain(data);
   const latestDatum = data[data.length - 1];
   const hasPrimaryEmphasis = lineEmphasis === "primary" && lines.length > 1;
   const primaryLineKey = hasPrimaryEmphasis ? getPrimaryLineKey(lines, latestDatum) : undefined;
@@ -1996,6 +1560,7 @@ function SnapshotLineChart({
     .filter((v): v is number => typeof v === "number" && !Number.isNaN(v));
   const yDomain: [number, number] =
     yDomainOverride ?? getAdaptiveYDomain(allValues, data.length, yScaleOptions);
+  const resolvedYAxisWidth = yAxisWidth ?? getYAxisWidth(yDomain, valueFormatter);
 
   const renderEndpointMarker =
     ({
@@ -2013,19 +1578,16 @@ function SnapshotLineChart({
       }
 
       const numericValue =
-        typeof value === "number"
-          ? value
-          : typeof value === "string"
-            ? Number(value)
-            : Number.NaN;
+        typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
       const label =
         showLabel && Number.isFinite(numericValue)
-          ? valueFormatter?.(numericValue) ?? numericValue.toLocaleString()
+          ? (valueFormatter?.(numericValue) ?? numericValue.toLocaleString())
           : null;
       const showLabelBelow = cy < 28;
       const markerOpacity = variant === "primary" ? 1 : variant === "equal" ? 0.9 : 0.65;
-      const markerRadius = variant === "primary" ? 4.5 : variant === "equal" ? 3.5 : 3;
-      const markerStrokeWidth = variant === "primary" ? 2.5 : 2;
+      const markerRadius = variant === "primary" ? 4 : variant === "equal" ? 3.5 : 3;
+      const markerStrokeWidth = variant === "primary" ? 2 : 1.5;
+      const markerGlow = variant === "primary" ? 4 : variant === "equal" ? 3 : 2;
 
       return (
         <g opacity={markerOpacity}>
@@ -2036,6 +1598,7 @@ function SnapshotLineChart({
             fill={color}
             stroke="var(--card)"
             strokeWidth={markerStrokeWidth}
+            style={{ filter: `drop-shadow(0 0 ${markerGlow}px ${color})` }}
           />
           {label ? (
             <text
@@ -2049,7 +1612,8 @@ function SnapshotLineChart({
               letterSpacing="0.01em"
               paintOrder="stroke"
               stroke="var(--card)"
-              strokeWidth={4}
+              strokeWidth={3}
+              style={{ fontVariantNumeric: "tabular-nums" }}
             >
               {label}
             </text>
@@ -2058,19 +1622,33 @@ function SnapshotLineChart({
       );
     };
 
+  // Sparse data reads crisper as straight segments; dense data benefits from smoothing.
+  const curveType: "linear" | "monotone" = data.length <= 20 ? "linear" : "monotone";
+
   return (
-    <ChartContainer config={config} className={`w-full ${className ?? "h-[200px]"}`}>
+    <ChartContainer
+      config={config}
+      className={`w-full [&_text]:tabular-nums ${className ?? "h-[200px]"}`}
+    >
       <LineChart data={data} margin={{ top: 16, right: 12, left: 4, bottom: 8 }}>
-        <CartesianGrid vertical={false} stroke="var(--border)" strokeOpacity={0.14} />
+        <CartesianGrid
+          vertical={false}
+          stroke="var(--border)"
+          strokeOpacity={0.45}
+          strokeDasharray="3 3"
+        />
         <XAxis
           dataKey="date"
+          type="number"
+          scale="time"
+          domain={xAxisDomain}
           tickLine={false}
           axisLine={false}
-          tickMargin={6}
+          tickMargin={8}
           tick={{
-            fontSize: 10,
+            fontSize: 11,
             fill: "var(--muted-foreground)",
-            fillOpacity: 0.7,
+            fillOpacity: 0.75,
           }}
           ticks={xAxisTicks}
           interval={0}
@@ -2080,14 +1658,14 @@ function SnapshotLineChart({
         <YAxis
           tickLine={false}
           axisLine={false}
-          tickMargin={4}
+          tickMargin={6}
           tick={{
-            fontSize: 10,
+            fontSize: 11,
             fill: "var(--muted-foreground)",
-            fillOpacity: 0.7,
+            fillOpacity: 0.75,
           }}
           tickFormatter={valueFormatter}
-          width={52}
+          width={resolvedYAxisWidth}
           domain={yDomain}
           tickCount={yScaleOptions?.tickCount ?? 5}
           allowDataOverflow={!!yDomainOverride}
@@ -2103,14 +1681,13 @@ function SnapshotLineChart({
                   payload as ReadonlyArray<ChartTooltipPayloadItem>,
                 )
               }
+              valueFormatter={valueFormatter}
               indicator="dot"
             />
           }
         />
         {showLegend && (
-          <ChartLegend
-            content={<ChartLegendContent className="text-muted-foreground/85" />}
-          />
+          <ChartLegend content={<ChartLegendContent className="text-muted-foreground/85" />} />
         )}
         {lines.map(({ key, color }) => {
           const isPrimaryLine = primaryLineKey === undefined || key === primaryLineKey;
@@ -2123,27 +1700,20 @@ function SnapshotLineChart({
           return (
             <Line
               key={key}
-              type="monotone"
+              type={curveType}
               dataKey={key}
               stroke={color}
-              strokeWidth={lineVariant === "primary" ? 3.2 : lineVariant === "equal" ? 2.45 : 2}
-              strokeOpacity={lineVariant === "primary" ? 1 : lineVariant === "equal" ? 0.96 : 0.58}
+              strokeWidth={lineVariant === "primary" ? 2 : lineVariant === "equal" ? 1.75 : 1.5}
+              strokeOpacity={lineVariant === "primary" ? 1 : lineVariant === "equal" ? 0.9 : 0.5}
               strokeLinecap="round"
-              style={{
-                filter:
-                  lineVariant === "primary"
-                    ? `drop-shadow(0 0 3px ${color})`
-                    : lineVariant === "equal"
-                      ? `drop-shadow(0 0 2px ${color})`
-                      : `drop-shadow(0 0 1.5px ${color})`,
-              }}
+              strokeLinejoin="round"
               dot={renderEndpointMarker({
                 color,
                 variant: lineVariant,
                 showLabel: shouldShowLatestValue && isPrimaryLine,
               })}
               activeDot={{
-                r: lineVariant === "primary" ? 5.5 : lineVariant === "equal" ? 5 : 4.5,
+                r: lineVariant === "primary" ? 5 : 4,
                 fill: color,
                 stroke: "var(--card)",
                 strokeWidth: 2,
@@ -2160,22 +1730,28 @@ function SnapshotLineChart({
 // ── Radar panel (always-visible, reused across layouts) ───────────────────────
 
 function RadarPanel({ snapshot }: { snapshot: Snapshot }) {
-  const radarData = [
-    { stat: "Crit", value: snapshot.stats.critPercent },
-    { stat: "Haste", value: snapshot.stats.hastePercent },
-    { stat: "Mastery", value: snapshot.stats.masteryPercent },
-    { stat: "Versatility", value: snapshot.stats.versatilityPercent },
-  ];
+  const combatStats = getCoreCombatStats(snapshot);
+  const radarData = combatStats.map<CombatRadarDatum>((stat) => ({
+    stat: stat.label,
+    value: stat.percent,
+    percentValue: stat.percent,
+    ratingValue: stat.rating,
+  }));
+  const radarMax = Math.max(
+    10,
+    Math.ceil(Math.max(...radarData.map((stat) => stat.value)) / 5) * 5,
+  );
   const tertiaryStats = getTertiaryStats(snapshot);
   const primaryStat = getPrimaryStat(snapshot);
 
   return (
-    <div className="space-y-3">
-      <ChartContainer config={radarConfig} className="h-[150px] w-full">
-        <RadarChart data={radarData}>
+    <div className="flex flex-col gap-3">
+      <ChartContainer config={radarConfig} className="h-[170px] w-full">
+        <RadarChart data={radarData} margin={{ top: 14, right: 22, bottom: 14, left: 22 }}>
           <PolarGrid />
+          <PolarRadiusAxis axisLine={false} tick={false} domain={[0, radarMax]} />
           <PolarAngleAxis dataKey="stat" tick={{ fontSize: 11 }} />
-          <ChartTooltip cursor={false} content={<ChartTooltipContent indicator="dot" />} />
+          <ChartTooltip cursor={false} content={<CombatRadarTooltip />} />
           <Radar
             dataKey="value"
             fill={C.blue}
@@ -2186,19 +1762,18 @@ function RadarPanel({ snapshot }: { snapshot: Snapshot }) {
           />
         </RadarChart>
       </ChartContainer>
-      <div className="space-y-1 text-sm">
+      <div className="flex flex-col gap-1 text-sm">
         <StatRow label="Stamina" value={snapshot.stats.stamina.toLocaleString()} />
         {primaryStat && (
           <StatRow label={primaryStat.label} value={primaryStat.value.toLocaleString()} />
         )}
         <div className="border-t border-border/50 my-1" />
-        <StatRow label="Crit" value={`${snapshot.stats.critPercent.toFixed(2)}%`} />
-        <StatRow label="Haste" value={`${snapshot.stats.hastePercent.toFixed(2)}%`} />
-        <StatRow label="Mastery" value={`${snapshot.stats.masteryPercent.toFixed(2)}%`} />
-        <StatRow label="Versatility" value={`${snapshot.stats.versatilityPercent.toFixed(2)}%`} />
+        {combatStats.map((stat) => (
+          <StatRow key={stat.label} label={stat.label} value={renderCombatStatValue(stat)} />
+        ))}
         {tertiaryStats.length > 0 && <div className="border-t border-border/50 my-1" />}
         {tertiaryStats.map((stat) => (
-          <StatRow key={stat.label} label={stat.label} value={`${stat.value.toFixed(2)}%`} />
+          <StatRow key={stat.label} label={stat.label} value={renderCombatStatValue(stat)} />
         ))}
       </div>
     </div>
@@ -2207,12 +1782,17 @@ function RadarPanel({ snapshot }: { snapshot: Snapshot }) {
 
 // Compact horizontal radar for Timeline layout
 function RadarStrip({ snapshot }: { snapshot: Snapshot }) {
-  const radarData = [
-    { stat: "Crit", value: snapshot.stats.critPercent },
-    { stat: "Haste", value: snapshot.stats.hastePercent },
-    { stat: "Mastery", value: snapshot.stats.masteryPercent },
-    { stat: "Versatility", value: snapshot.stats.versatilityPercent },
-  ];
+  const combatStats = getCoreCombatStats(snapshot);
+  const radarData = combatStats.map<CombatRadarDatum>((stat) => ({
+    stat: stat.label,
+    value: stat.percent,
+    percentValue: stat.percent,
+    ratingValue: stat.rating,
+  }));
+  const radarMax = Math.max(
+    10,
+    Math.ceil(Math.max(...radarData.map((stat) => stat.value)) / 5) * 5,
+  );
   const tertiaryStats = getTertiaryStats(snapshot);
   const primaryStat = getPrimaryStat(snapshot);
   return (
@@ -2220,11 +1800,12 @@ function RadarStrip({ snapshot }: { snapshot: Snapshot }) {
       <CardContent className="py-4">
         <div className="flex items-center gap-6">
           <div className="shrink-0">
-            <ChartContainer config={radarConfig} className="w-[130px] h-[130px]">
-              <RadarChart data={radarData}>
+            <ChartContainer config={radarConfig} className="h-[150px] w-[150px]">
+              <RadarChart data={radarData} margin={{ top: 12, right: 18, bottom: 12, left: 18 }}>
                 <PolarGrid />
+                <PolarRadiusAxis axisLine={false} tick={false} domain={[0, radarMax]} />
                 <PolarAngleAxis dataKey="stat" tick={{ fontSize: 10 }} />
-                <ChartTooltip cursor={false} content={<ChartTooltipContent indicator="dot" />} />
+                <ChartTooltip cursor={false} content={<CombatRadarTooltip />} />
                 <Radar
                   dataKey="value"
                   fill={C.blue}
@@ -2236,15 +1817,11 @@ function RadarStrip({ snapshot }: { snapshot: Snapshot }) {
               </RadarChart>
             </ChartContainer>
           </div>
-          <div className="flex-1 space-y-2">
+          <div className="flex flex-1 flex-col gap-2">
             <div className="grid grid-cols-2 gap-x-8 gap-y-1.5 text-sm">
-              <StatRow label="Crit" value={`${snapshot.stats.critPercent.toFixed(2)}%`} />
-              <StatRow label="Haste" value={`${snapshot.stats.hastePercent.toFixed(2)}%`} />
-              <StatRow label="Mastery" value={`${snapshot.stats.masteryPercent.toFixed(2)}%`} />
-              <StatRow
-                label="Versatility"
-                value={`${snapshot.stats.versatilityPercent.toFixed(2)}%`}
-              />
+              {combatStats.map((stat) => (
+                <StatRow key={stat.label} label={stat.label} value={renderCombatStatValue(stat)} />
+              ))}
               <StatRow label="Stamina" value={snapshot.stats.stamina.toLocaleString()} />
               {primaryStat && (
                 <StatRow label={primaryStat.label} value={primaryStat.value.toLocaleString()} />
@@ -2256,7 +1833,7 @@ function RadarStrip({ snapshot }: { snapshot: Snapshot }) {
                   <StatRow
                     key={stat.label}
                     label={stat.label}
-                    value={`${stat.value.toFixed(2)}%`}
+                    value={renderCombatStatValue(stat)}
                   />
                 ))}
               </div>
@@ -2270,7 +1847,13 @@ function RadarStrip({ snapshot }: { snapshot: Snapshot }) {
 
 // ── Chart cards used in Overview ──────────────────────────────────────────────
 
-function IlvlChartCard({ snapshots, timeFrame }: { snapshots: CoreChartSnapshot[]; timeFrame: TimeFrame }) {
+function IlvlChartCard({
+  snapshots,
+  timeFrame,
+}: {
+  snapshots: CoreChartSnapshot[];
+  timeFrame: TimeFrame;
+}) {
   const [fullscreen, setFullscreen] = useState(false);
   const data = snapshots.map((s) => ({ date: s.takenAt, itemLevel: s.itemLevel }));
   const lines = [{ key: "itemLevel", color: C.blue }];
@@ -2360,7 +1943,13 @@ function MplusChartCard({
     </Card>
   );
 }
-function GoldChartCard({ snapshots, timeFrame }: { snapshots: CoreChartSnapshot[]; timeFrame: TimeFrame }) {
+function GoldChartCard({
+  snapshots,
+  timeFrame,
+}: {
+  snapshots: CoreChartSnapshot[];
+  timeFrame: TimeFrame;
+}) {
   const [fullscreen, setFullscreen] = useState(false);
   const data = snapshots.map((s) => ({ date: s.takenAt, gold: s.gold }));
   const lines = [{ key: "gold", color: C.gold }];
@@ -2429,12 +2018,12 @@ function SecondaryStatsChartCard({
   ];
   return (
     <Card className={className}>
-      <CardHeader className="pb-0">
-        <CardTitle className="text-sm font-medium flex items-center gap-1.5">
+      <CardHeader className="px-4 pb-0 pt-4">
+        <CardTitle className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
           <Zap size={14} className="text-muted-foreground" /> Secondary Stats
         </CardTitle>
       </CardHeader>
-      <CardContent>
+      <CardContent className="px-4 pb-4 pt-2">
         <SnapshotLineChart
           data={data}
           lines={lines}
@@ -2505,12 +2094,12 @@ function PlaytimeChartCard({
   const lines = [{ key: "playtimeHours", color: C.purple }];
   return (
     <Card className={className}>
-      <CardHeader className="pb-0">
-        <CardTitle className="text-sm font-medium flex items-center gap-1.5">
+      <CardHeader className="px-4 pb-0 pt-4">
+        <CardTitle className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
           <Clock size={14} className="text-muted-foreground" /> Playtime
         </CardTitle>
       </CardHeader>
-      <CardContent>
+      <CardContent className="px-4 pb-4 pt-2">
         <SnapshotLineChart
           data={data}
           lines={lines}
@@ -2526,15 +2115,499 @@ function PlaytimeChartCard({
 
 // ── Sidebar: current snapshot values ─────────────────────────────────────────
 
+type SnapshotCurrencyKey = keyof Snapshot["currencies"];
+type SnapshotCurrencyDetail = NonNullable<Snapshot["currencyDetails"]>[string];
+type WeeklyRewardActivity = NonNullable<Snapshot["weeklyRewards"]>["activities"][number];
+
+const SNAPSHOT_CURRENCY_ROWS: { key: SnapshotCurrencyKey; label: string }[] = [
+  { key: "adventurerDawncrest", label: "Adv. Crest" },
+  { key: "veteranDawncrest", label: "Vet. Crest" },
+  { key: "championDawncrest", label: "Champ. Crest" },
+  { key: "heroDawncrest", label: "Hero Crest" },
+  { key: "mythDawncrest", label: "Myth Crest" },
+  { key: "radiantSparkDust", label: "Spark Dust" },
+];
+
+const SNAPSHOT_CURRENCY_CAP_FALLBACKS: Partial<Record<SnapshotCurrencyKey, number>> = {
+  adventurerDawncrest: 900,
+};
+
+function getBoundedPercent(value: number, max: number) {
+  if (!Number.isFinite(value) || !Number.isFinite(max) || max <= 0) {
+    return null;
+  }
+
+  return Math.max(0, Math.min(100, (value / max) * 100));
+}
+
+function getCurrencyCapProgressQuantity(
+  quantity: number,
+  detail: SnapshotCurrencyDetail | undefined,
+) {
+  if (detail?.useTotalEarnedForMaxQty !== true) {
+    return quantity;
+  }
+
+  const totalEarned = detail.totalEarned;
+  if (totalEarned === undefined || !Number.isFinite(totalEarned)) {
+    return quantity;
+  }
+
+  return Math.max(quantity, totalEarned);
+}
+
+function getCurrencyProgress(
+  quantity: number,
+  detail: SnapshotCurrencyDetail | undefined,
+  fallbackMaxQuantity: number | undefined,
+): { label: string; percent: number | null } | null {
+  if (!detail && !fallbackMaxQuantity) {
+    return null;
+  }
+
+  if (detail?.discovered === false) {
+    return { label: "Not discovered", percent: null };
+  }
+
+  const labels: string[] = [];
+  let percent: number | null = null;
+
+  if (detail?.maxWeeklyQuantity && detail.maxWeeklyQuantity > 0) {
+    const earned = detail.quantityEarnedThisWeek ?? 0;
+    labels.push(`${earned.toLocaleString()}/${detail.maxWeeklyQuantity.toLocaleString()} weekly`);
+    percent = getBoundedPercent(earned, detail.maxWeeklyQuantity);
+  }
+
+  const maxQuantity =
+    detail?.maxQuantity && detail.maxQuantity > 0
+      ? detail.maxQuantity
+      : detail
+        ? undefined
+        : fallbackMaxQuantity;
+  if (maxQuantity && maxQuantity > 0) {
+    const capProgressQuantity = getCurrencyCapProgressQuantity(quantity, detail);
+    labels.push(`${capProgressQuantity.toLocaleString()}/${maxQuantity.toLocaleString()} cap`);
+    percent ??= getBoundedPercent(capProgressQuantity, maxQuantity);
+  }
+
+  if (labels.length > 0) {
+    return {
+      label: labels.join(" / "),
+      percent,
+    };
+  }
+
+  return null;
+}
+
+function CurrencyProgressRow({
+  label,
+  quantity,
+  detail,
+  fallbackMaxQuantity,
+}: {
+  label: string;
+  quantity: number;
+  detail?: SnapshotCurrencyDetail;
+  fallbackMaxQuantity?: number;
+}) {
+  const progress = getCurrencyProgress(quantity, detail, fallbackMaxQuantity);
+
+  return (
+    <div className="grid gap-1 py-1">
+      <div className="flex items-center justify-between gap-3 text-sm">
+        <span className="min-w-0 truncate text-muted-foreground">{detail?.name ?? label}</span>
+        <span className="shrink-0 font-medium tabular-nums">{quantity.toLocaleString()}</span>
+      </div>
+      {progress ? (
+        <div className="grid gap-1">
+          <div className="text-right text-[11px] font-medium leading-tight text-muted-foreground">
+            {progress.label}
+          </div>
+          {progress.percent !== null ? (
+            <div className="h-1 overflow-hidden rounded-full bg-muted">
+              <div
+                className="h-full rounded-full bg-yellow-400/80"
+                style={{ width: `${progress.percent}%` }}
+              />
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+type GreatVaultGroupKey = "raid" | "dungeons" | "world";
+
+const GREAT_VAULT_GROUPS = [
+  {
+    key: "raid",
+    label: "Raids",
+    singularObjective: "boss",
+    pluralObjective: "bosses",
+    thresholds: [2, 4, 6],
+  },
+  {
+    key: "dungeons",
+    label: "Dungeons",
+    singularObjective: "dungeon",
+    pluralObjective: "dungeons",
+    thresholds: [1, 4, 8],
+  },
+  {
+    key: "world",
+    label: "World",
+    singularObjective: "activity",
+    pluralObjective: "activities",
+    thresholds: [2, 4, 8],
+  },
+] as const satisfies readonly {
+  key: GreatVaultGroupKey;
+  label: string;
+  singularObjective: string;
+  pluralObjective: string;
+  thresholds: readonly number[];
+}[];
+
+type GreatVaultGroup = (typeof GREAT_VAULT_GROUPS)[number];
+
+const GREAT_VAULT_ACTIVITY_TYPE_MAP: Partial<Record<number, GreatVaultGroupKey>> = {
+  1: "dungeons",
+  3: "raid",
+  6: "world",
+};
+
+type GreatVaultSlotSummary = {
+  threshold: number;
+  progress: number;
+  unlocked: boolean;
+  level: number | null;
+  itemLevel: number | null;
+};
+
+type GreatVaultItemTrack = {
+  label: string;
+  className: string;
+};
+
+const GREAT_VAULT_ITEM_TRACKS = [
+  { minItemLevel: 272, label: "Myth", className: "text-rose-300" },
+  { minItemLevel: 259, label: "Hero", className: "text-amber-300" },
+  { minItemLevel: 246, label: "Champion", className: "text-emerald-300" },
+  { minItemLevel: 233, label: "Veteran", className: "text-cyan-300" },
+  { minItemLevel: 220, label: "Adventurer", className: "text-sky-300" },
+] as const satisfies readonly (GreatVaultItemTrack & { minItemLevel: number })[];
+
+const GREAT_VAULT_DUNGEON_REWARDS_BY_LEVEL = [
+  { minLevel: 10, itemLevel: 272 },
+  { minLevel: 7, itemLevel: 269 },
+  { minLevel: 6, itemLevel: 266 },
+  { minLevel: 4, itemLevel: 263 },
+  { minLevel: 2, itemLevel: 259 },
+] as const;
+
+const GREAT_VAULT_RAID_TRACKS_BY_DIFFICULTY_ID = [
+  { difficultyId: 17, label: "Veteran" },
+  { difficultyId: 14, label: "Champion" },
+  { difficultyId: 15, label: "Hero" },
+  { difficultyId: 16, label: "Myth" },
+] as const;
+
+function getVaultActivityGroupKey(
+  activity: WeeklyRewardActivity,
+  fallbackIndex: number,
+): GreatVaultGroupKey {
+  const activityName = activity.name?.toLowerCase() ?? "";
+  if (activityName.includes("raid") || activityName.includes("boss")) {
+    return "raid";
+  }
+  if (
+    activityName.includes("dungeon") ||
+    activityName.includes("mythic") ||
+    activityName.includes("timewalking")
+  ) {
+    return "dungeons";
+  }
+  if (
+    activityName.includes("world") ||
+    activityName.includes("delve") ||
+    activityName.includes("prey")
+  ) {
+    return "world";
+  }
+
+  const mappedType =
+    activity.type === undefined ? undefined : GREAT_VAULT_ACTIVITY_TYPE_MAP[activity.type];
+  if (mappedType) {
+    return mappedType;
+  }
+
+  return (
+    GREAT_VAULT_GROUPS[Math.min(Math.floor(fallbackIndex / 3), GREAT_VAULT_GROUPS.length - 1)]
+      ?.key ?? "world"
+  );
+}
+
+function groupVaultActivities(activities: WeeklyRewardActivity[]) {
+  const grouped: Record<GreatVaultGroupKey, WeeklyRewardActivity[]> = {
+    raid: [],
+    dungeons: [],
+    world: [],
+  };
+
+  activities.forEach((activity, index) => {
+    grouped[getVaultActivityGroupKey(activity, index)].push(activity);
+  });
+
+  for (const group of GREAT_VAULT_GROUPS) {
+    grouped[group.key].sort((a, b) => {
+      const thresholdDelta = (a.threshold ?? 0) - (b.threshold ?? 0);
+      if (thresholdDelta !== 0) {
+        return thresholdDelta;
+      }
+      return (a.index ?? 0) - (b.index ?? 0);
+    });
+  }
+
+  return grouped;
+}
+
+function getVaultGroupProgress(activities: WeeklyRewardActivity[]) {
+  return activities.reduce((highest, activity) => Math.max(highest, activity.progress ?? 0), 0);
+}
+
+function getVaultGroupThresholds(group: GreatVaultGroup, activities: WeeklyRewardActivity[]) {
+  const observedThresholds = Array.from(
+    new Set(
+      activities.map((activity) => activity.threshold ?? 0).filter((threshold) => threshold > 0),
+    ),
+  ).sort((a, b) => a - b);
+
+  if (observedThresholds.length === 0) {
+    return group.thresholds;
+  }
+
+  return Array.from(new Set([...observedThresholds, ...group.thresholds]))
+    .sort((a, b) => a - b)
+    .slice(0, 3);
+}
+
+function getVaultGroupSlots(
+  group: GreatVaultGroup,
+  activities: WeeklyRewardActivity[],
+): GreatVaultSlotSummary[] {
+  const groupProgress = getVaultGroupProgress(activities);
+
+  return getVaultGroupThresholds(group, activities).map((threshold, index) => {
+    const activity =
+      activities.find((candidate) => candidate.threshold === threshold) ?? activities[index];
+    const progress = Math.max(groupProgress, activity?.progress ?? 0);
+
+    return {
+      threshold,
+      progress,
+      unlocked: progress >= threshold,
+      level: activity?.level ?? null,
+      itemLevel: activity?.itemLevel ?? null,
+    };
+  });
+}
+
+function getVaultSummary(weeklyRewards: Snapshot["weeklyRewards"]) {
+  const activities = weeklyRewards?.activities ?? [];
+  if (activities.length === 0) {
+    return null;
+  }
+
+  const groupedActivities = groupVaultActivities(activities);
+  const groups = GREAT_VAULT_GROUPS.map((group) => ({
+    group,
+    slots: getVaultGroupSlots(group, groupedActivities[group.key]),
+  }));
+
+  return {
+    groups,
+  };
+}
+
+function formatVaultObjective(group: GreatVaultGroup, threshold: number) {
+  const noun = threshold === 1 ? group.singularObjective : group.pluralObjective;
+  return `${threshold} ${noun}`;
+}
+
+function formatVaultProgressLabel(group: GreatVaultGroup, progress: number) {
+  const noun = progress === 1 ? group.singularObjective : group.pluralObjective;
+  return noun;
+}
+
+function getVaultItemTrack(itemLevel: number | null): GreatVaultItemTrack | null {
+  if (itemLevel === null || !Number.isFinite(itemLevel)) {
+    return null;
+  }
+
+  return GREAT_VAULT_ITEM_TRACKS.find((track) => itemLevel >= track.minItemLevel) ?? null;
+}
+
+function getVaultItemTrackByLabel(label: string): GreatVaultItemTrack | null {
+  return GREAT_VAULT_ITEM_TRACKS.find((track) => track.label === label) ?? null;
+}
+
+function getDungeonVaultItemLevel(level: number | null): number | null {
+  if (level === null || !Number.isFinite(level)) {
+    return null;
+  }
+
+  return (
+    GREAT_VAULT_DUNGEON_REWARDS_BY_LEVEL.find((reward) => level >= reward.minLevel)?.itemLevel ??
+    null
+  );
+}
+
+function getRaidVaultItemTrack(level: number | null): GreatVaultItemTrack | null {
+  if (level === null || !Number.isFinite(level)) {
+    return null;
+  }
+
+  const raidTrack = GREAT_VAULT_RAID_TRACKS_BY_DIFFICULTY_ID.find(
+    (track) => track.difficultyId === level,
+  );
+
+  return raidTrack ? getVaultItemTrackByLabel(raidTrack.label) : null;
+}
+
+function getVaultSlotReward(
+  group: GreatVaultGroup,
+  slot: GreatVaultSlotSummary,
+): { itemLevel: number | null; track: GreatVaultItemTrack | null } {
+  const itemLevel =
+    slot.itemLevel ?? (group.key === "dungeons" ? getDungeonVaultItemLevel(slot.level) : null);
+
+  return {
+    itemLevel,
+    track:
+      getVaultItemTrack(itemLevel) ??
+      (group.key === "raid" ? getRaidVaultItemTrack(slot.level) : null),
+  };
+}
+
+function GreatVaultRewardLabel({
+  reward,
+  className,
+}: {
+  reward: { itemLevel: number | null; track: GreatVaultItemTrack | null };
+  className?: string;
+}) {
+  if (!reward.itemLevel && !reward.track) {
+    return null;
+  }
+
+  const roundedItemLevel = reward.itemLevel ? Math.round(reward.itemLevel) : null;
+
+  if (!reward.track) {
+    return <span className={cn("tabular-nums", className)}>{roundedItemLevel}</span>;
+  }
+
+  return (
+    <span className={cn("inline-flex min-w-0 items-baseline gap-1", className)}>
+      <span className={cn("min-w-0 truncate font-semibold", reward.track.className)}>
+        {reward.track.label}
+      </span>
+      {roundedItemLevel ? (
+        <span className="shrink-0 tabular-nums text-muted-foreground">{roundedItemLevel}</span>
+      ) : null}
+    </span>
+  );
+}
+
+function GreatVaultSlot({ group, slot }: { group: GreatVaultGroup; slot: GreatVaultSlotSummary }) {
+  const reward = getVaultSlotReward(group, slot);
+  const rewardTitle = reward.track
+    ? `, ${reward.track.label}${reward.itemLevel ? ` ${reward.itemLevel}` : ""}`
+    : "";
+
+  return (
+    <div
+      className={cn(
+        "flex h-10 min-w-0 flex-col items-center justify-center gap-0.5 rounded-md border px-1 py-1 text-[10px] font-semibold",
+        slot.unlocked
+          ? "border-violet-300/50 bg-violet-400/15 text-violet-100"
+          : "border-border/60 bg-background text-muted-foreground",
+      )}
+      title={`${formatVaultObjective(group, slot.threshold)}${rewardTitle}`}
+    >
+      {slot.unlocked ? (
+        reward.itemLevel || reward.track ? (
+          <GreatVaultRewardLabel reward={reward} className="max-w-full justify-center truncate" />
+        ) : (
+          <span className="flex items-center justify-center gap-1 leading-none">
+            <CheckCircle2 size={11} />
+            <span className="tabular-nums">{slot.threshold.toLocaleString()}</span>
+          </span>
+        )
+      ) : (
+        <span className="flex items-center justify-center gap-1 leading-none">
+          <Lock size={10} />
+          <span className="tabular-nums">{slot.threshold.toLocaleString()}</span>
+        </span>
+      )}
+    </div>
+  );
+}
+
+function GreatVaultGroupRow({
+  group,
+  slots,
+}: {
+  group: GreatVaultGroup;
+  slots: GreatVaultSlotSummary[];
+}) {
+  const unlocked = slots.filter((slot) => slot.unlocked).length;
+  const progress = slots.reduce((highest, slot) => Math.max(highest, slot.progress), 0);
+  const finalThreshold = slots.reduce((highest, slot) => Math.max(highest, slot.threshold), 0);
+  const progressPercent = getBoundedPercent(progress, finalThreshold) ?? 0;
+  const shownProgress = Math.min(progress, finalThreshold);
+
+  return (
+    <div className="grid gap-1.5 border-t border-border/50 pt-2.5 first:border-t-0 first:pt-0">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0 font-semibold text-foreground">{group.label}</div>
+        <div className="shrink-0 text-[11px] text-muted-foreground">
+          <span className="font-semibold tabular-nums text-foreground">{unlocked}/3</span> slots
+        </div>
+      </div>
+      <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+        <span className="min-w-0 truncate">
+          <span className="font-medium tabular-nums text-foreground">
+            {shownProgress.toLocaleString()}/{finalThreshold.toLocaleString()}
+          </span>{" "}
+          {formatVaultProgressLabel(group, shownProgress)}
+        </span>
+      </div>
+      <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+        <div
+          className="h-full rounded-full bg-violet-400"
+          style={{ width: `${progressPercent}%` }}
+        />
+      </div>
+      <div className="grid grid-cols-3 gap-1.5">
+        {slots.map((slot) => (
+          <GreatVaultSlot key={slot.threshold} group={group} slot={slot} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function CurrentSnapshotCard({ snapshot }: { snapshot: Snapshot }) {
   return (
     <Card>
       <CardHeader className="border-b px-4 pb-2 pt-4">
         <CardTitle className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-          Snapshot Totals
+          Currencies
         </CardTitle>
       </CardHeader>
-      <CardContent className="space-y-1 px-4 pb-4 pt-2">
+      <CardContent className="flex flex-col gap-1 px-4 pb-4 pt-2">
         <StatRow label="Gold" value={<GoldDisplay value={snapshot.gold} />} />
         <StatRow
           label="Playtime"
@@ -2548,17 +2621,49 @@ function CurrentSnapshotCard({ snapshot }: { snapshot: Snapshot }) {
           }
         />
         <div className="border-t border-border/50 my-2" />
-        <StatRow
-          label="Adv. Crest"
-          value={snapshot.currencies.adventurerDawncrest.toLocaleString()}
-        />
-        <StatRow label="Vet. Crest" value={snapshot.currencies.veteranDawncrest.toLocaleString()} />
-        <StatRow
-          label="Champ. Crest"
-          value={snapshot.currencies.championDawncrest.toLocaleString()}
-        />
-        <StatRow label="Hero Crest" value={snapshot.currencies.heroDawncrest.toLocaleString()} />
-        <StatRow label="Myth Crest" value={snapshot.currencies.mythDawncrest.toLocaleString()} />
+        {SNAPSHOT_CURRENCY_ROWS.map((row) => (
+          <CurrencyProgressRow
+            key={row.key}
+            label={row.label}
+            quantity={snapshot.currencies[row.key]}
+            detail={snapshot.currencyDetails?.[row.key]}
+            fallbackMaxQuantity={SNAPSHOT_CURRENCY_CAP_FALLBACKS[row.key]}
+          />
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
+function GreatVaultCard({ weeklyRewards }: { weeklyRewards?: Snapshot["weeklyRewards"] }) {
+  const summary = getVaultSummary(weeklyRewards);
+  if (!summary) {
+    return null;
+  }
+
+  return (
+    <Card className="overflow-hidden">
+      <CardHeader className="border-b bg-muted/10 px-4 pb-2 pt-4">
+        <CardTitle className="flex items-center justify-between gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+          <span className="flex items-center gap-1.5">
+            <Trophy size={14} className="text-violet-300" /> Great Vault
+          </span>
+          {weeklyRewards?.canClaimRewards ? (
+            <Badge
+              variant="outline"
+              className="border-emerald-400/40 bg-emerald-400/10 text-[10px] text-emerald-300"
+            >
+              Claim
+            </Badge>
+          ) : null}
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="grid gap-3 px-4 pb-3 pt-3">
+        <div className="grid gap-3">
+          {summary.groups.map(({ group, slots }) => (
+            <GreatVaultGroupRow key={group.key} group={group} slots={slots} />
+          ))}
+        </div>
       </CardContent>
     </Card>
   );
@@ -2583,6 +2688,38 @@ function OwnedKeystoneMetric({ keystone }: { keystone?: Snapshot["ownedKeystone"
   );
 }
 
+function DungeonIcon({
+  mapChallengeModeID,
+  mapName,
+}: {
+  mapChallengeModeID?: number | null;
+  mapName?: string | null;
+}) {
+  const dungeonMeta = getMythicPlusDungeonMeta(mapChallengeModeID, mapName);
+  const fallbackLabel = dungeonMeta?.shortName ?? mapName?.slice(0, 2).toUpperCase() ?? "M+";
+
+  if (!dungeonMeta?.iconUrl) {
+    return (
+      <span className="flex size-6 shrink-0 items-center justify-center rounded-md border border-border/60 bg-muted/30 text-[10px] font-semibold text-muted-foreground">
+        {fallbackLabel}
+      </span>
+    );
+  }
+
+  return (
+    <img
+      src={dungeonMeta.iconUrl}
+      alt=""
+      width={24}
+      height={24}
+      loading="lazy"
+      decoding="async"
+      referrerPolicy="no-referrer"
+      className="size-6 shrink-0 rounded-md border border-border/60 object-cover"
+    />
+  );
+}
+
 // ── Snapshot history table ────────────────────────────────────────────────────
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -2597,19 +2734,16 @@ function OverviewLayout({
   mythicPlus,
   mythicPlusIsLoadingAllRuns,
   requestAllMythicPlusRuns,
-  characterId,
-  characterName,
   characterRealm,
   characterRegion,
-  currentMythicPlusScore,
   timeFrame,
   setTimeFrame,
 }: LayoutProps) {
   return (
-    <div className="space-y-3">
+    <div className="flex flex-col gap-3">
       <div className="grid items-start gap-3 lg:grid-cols-[16rem_minmax(0,1fr)]">
         {/* Sidebar */}
-        <div className="w-full space-y-3 lg:sticky lg:top-4">
+        <div className="flex w-full flex-col gap-3 lg:sticky lg:top-4">
           <Card>
             <CardHeader className="border-b px-4 pb-2 pt-4">
               <CardTitle className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
@@ -2621,10 +2755,11 @@ function OverviewLayout({
             </CardContent>
           </Card>
           <CurrentSnapshotCard snapshot={latest} />
+          <GreatVaultCard weeklyRewards={latest.weeklyRewards} />
         </div>
 
         {/* Main charts */}
-        <div className="min-w-0 space-y-3">
+        <div className="flex min-w-0 flex-col gap-3">
           <div className="flex items-center justify-between flex-wrap gap-2">
             <TimeFramePicker value={timeFrame} onChange={setTimeFrame} />
             <span className="text-muted-foreground text-xs">
@@ -2639,16 +2774,15 @@ function OverviewLayout({
             <CurrenciesChartCard snapshots={coreSnapshots} timeFrame={timeFrame} />
           </div>
 
-          <MythicPlusSection
-            data={mythicPlus}
-            isLoadingAllRuns={mythicPlusIsLoadingAllRuns ?? false}
-            onRequestAllRuns={requestAllMythicPlusRuns ?? (() => undefined)}
-            characterId={characterId}
-            characterName={characterName}
-            characterRealm={characterRealm}
-            characterRegion={characterRegion}
-            currentScore={currentMythicPlusScore}
-          />
+          <Suspense fallback={<MythicPlusSectionFallback />}>
+            <LazyMythicPlusSection
+              data={mythicPlus}
+              isLoadingAllRuns={mythicPlusIsLoadingAllRuns ?? false}
+              onRequestAllRuns={requestAllMythicPlusRuns ?? (() => undefined)}
+              characterRealm={characterRealm}
+              characterRegion={characterRegion}
+            />
+          </Suspense>
         </div>
       </div>
     </div>
@@ -2660,8 +2794,6 @@ function OverviewLayout({
 // Metric tab bar → single large chart
 // Right sidebar: radar + key stats (sticky)
 // ════════════════════════════════════════════════════════════════════════════
-
-type FocusMetric = "ilvl" | "mplus" | "gold" | "stats" | "currencies" | "playtime";
 
 const FOCUS_METRICS: { value: FocusMetric; label: string; Icon: React.ElementType }[] = [
   { value: "ilvl", label: "Item Level", Icon: Sword },
@@ -2693,15 +2825,10 @@ function FocusCurrentValue({ metric, snapshot }: { metric: FocusMetric; snapshot
     case "stats":
       return (
         <div className="flex flex-wrap gap-4 text-sm">
-          {[
-            { l: "Crit", v: snapshot.stats.critPercent },
-            { l: "Haste", v: snapshot.stats.hastePercent },
-            { l: "Mastery", v: snapshot.stats.masteryPercent },
-            { l: "Versatility", v: snapshot.stats.versatilityPercent },
-          ].map(({ l, v }) => (
-            <span key={l}>
-              <span className="text-muted-foreground">{l} </span>
-              <strong className="tabular-nums">{v.toFixed(1)}%</strong>
+          {getCoreCombatStats(snapshot).map((stat) => (
+            <span key={stat.label}>
+              <span className="text-muted-foreground">{stat.label} </span>
+              <strong className="tabular-nums">{renderCombatStatValue(stat)}</strong>
             </span>
           ))}
         </div>
@@ -2791,7 +2918,7 @@ function FocusChart({
     if (!statsSnapshots) {
       return (
         <div className={`${h} flex items-center justify-center text-sm text-muted-foreground`}>
-          Loading stat history...
+          Loading stat history…
         </div>
       );
     }
@@ -2823,7 +2950,7 @@ function FocusChart({
     if (!currencySnapshots) {
       return (
         <div className={`${h} flex items-center justify-center text-sm text-muted-foreground`}>
-          Loading currency history...
+          Loading currency history…
         </div>
       );
     }
@@ -2881,24 +3008,28 @@ function FocusLayout({
   return (
     <div className="flex flex-col lg:flex-row gap-4 items-start">
       {/* Main chart area */}
-      <div className="flex-1 min-w-0 space-y-4">
+      <div className="flex min-w-0 flex-1 flex-col gap-4">
         {/* Metric selector */}
-        <div className="flex flex-wrap gap-1.5">
+        <ToggleGroup
+          type="single"
+          value={metric}
+          onValueChange={(nextValue) => {
+            if (isFocusMetric(nextValue)) {
+              setMetric(nextValue);
+            }
+          }}
+          variant="outline"
+          size="sm"
+          aria-label="Focused metric"
+          className="flex flex-wrap justify-start"
+        >
           {FOCUS_METRICS.map(({ value, label, Icon }) => (
-            <button
-              key={value}
-              onClick={() => setMetric(value)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm border transition-colors ${
-                metric === value
-                  ? "bg-primary text-primary-foreground border-primary"
-                  : "text-muted-foreground border-border hover:text-foreground hover:bg-muted/50"
-              }`}
-            >
-              <Icon size={13} />
+            <ToggleGroupItem key={value} value={value} aria-label={label} className="px-3">
+              <Icon data-icon="inline-start" aria-hidden="true" />
               {label}
-            </button>
+            </ToggleGroupItem>
           ))}
-        </div>
+        </ToggleGroup>
 
         {/* Current value spotlight */}
         <div className="min-h-[2.5rem] flex items-center">
@@ -2926,7 +3057,7 @@ function FocusLayout({
       </div>
 
       {/* Right sidebar */}
-      <div className="w-full lg:w-64 shrink-0 lg:sticky lg:top-4 space-y-4">
+      <div className="flex w-full shrink-0 flex-col gap-4 lg:sticky lg:top-4 lg:w-64">
         <Card>
           <CardHeader className="border-b pb-3">
             <CardTitle className="text-sm font-medium flex items-center gap-1.5">
@@ -2980,7 +3111,7 @@ function TimelineLayout({
   const chartH = "h-[260px]";
 
   return (
-    <div className="space-y-4">
+    <div className="flex flex-col gap-4">
       {/* Time picker — prominent at top */}
       <div className="flex items-center justify-between flex-wrap gap-2">
         <TimeFramePicker value={timeFrame} onChange={setTimeFrame} />
@@ -3062,7 +3193,7 @@ function TimelineLayout({
               <Zap size={14} className="text-muted-foreground" /> Secondary Stats
             </CardTitle>
           </CardHeader>
-          <CardContent className="text-sm text-muted-foreground">Loading stat history...</CardContent>
+          <CardContent className="text-sm text-muted-foreground">Loading stat history…</CardContent>
         </Card>
       )}
       {currencySnapshots ? (
@@ -3075,7 +3206,7 @@ function TimelineLayout({
             </CardTitle>
           </CardHeader>
           <CardContent className="px-4 pb-4 pt-2 text-sm text-muted-foreground">
-            Loading currency history...
+            Loading currency history…
           </CardContent>
         </Card>
       )}
@@ -3088,30 +3219,40 @@ function TimelineLayout({
 
 // ── External site links ───────────────────────────────────────────────────────
 
+function characterPathSegment(value: string) {
+  return encodeURIComponent(value.trim());
+}
+
 const EXTERNAL_LINKS = [
   {
     label: "Raider.IO",
     color: "hover:text-orange-400",
     url: (region: string, realm: string, name: string) =>
-      `https://raider.io/characters/${region}/${realm}/${name}`,
+      `https://raider.io/characters/${region}/${characterPathSegment(realm)}/${characterPathSegment(name)}`,
   },
   {
     label: "Armory",
     color: "hover:text-blue-400",
     url: (region: string, realm: string, name: string) =>
-      `https://worldofwarcraft.blizzard.com/en-${region}/character/${region}/${encodeURIComponent(realm.toLowerCase())}/${encodeURIComponent(name.toLowerCase())}`,
+      `https://worldofwarcraft.blizzard.com/en-${region}/character/${region}/${characterPathSegment(realm.toLowerCase())}/${characterPathSegment(name.toLowerCase())}`,
   },
   {
     label: "WoWProgress",
     color: "hover:text-green-400",
     url: (region: string, realm: string, name: string) =>
-      `https://www.wowprogress.com/character/${region}/${realm}/${name}`,
+      `https://www.wowprogress.com/character/${region}/${characterPathSegment(realm)}/${characterPathSegment(name)}`,
   },
   {
     label: "WarcraftLogs",
     color: "hover:text-purple-400",
     url: (region: string, realm: string, name: string) =>
-      `https://www.warcraftlogs.com/character/${region}/${realm}/${name}`,
+      `https://www.warcraftlogs.com/character/${region}/${characterPathSegment(realm)}/${characterPathSegment(name)}`,
+  },
+  {
+    label: "Mythic Planner",
+    color: "hover:text-cyan-400",
+    url: (region: string, realm: string, name: string) =>
+      `https://mythicplanner.com/share/${region}/${characterPathSegment(realm.toLowerCase())}/${characterPathSegment(name)}/3500?maxKeyLevel=18`,
   },
 ] as const;
 
@@ -3126,11 +3267,27 @@ function CharacterLinks({ region, realm, name }: { region: string; realm: string
           rel="noopener noreferrer"
           className={`flex items-center gap-1 text-xs text-muted-foreground transition-colors ${color}`}
         >
-          <ExternalLink size={11} />
+          <ExternalLink size={11} aria-hidden="true" />
           {label}
         </a>
       ))}
     </div>
+  );
+}
+
+function MythicPlusSectionFallback() {
+  return (
+    <Card>
+      <CardHeader className="border-b pb-3">
+        <CardTitle className="flex items-center gap-2 text-lg">
+          <History size={16} className="text-muted-foreground" />
+          Mythic+ History
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="pt-4 text-sm text-muted-foreground">
+        Loading Mythic+ details…
+      </CardContent>
+    </Card>
   );
 }
 
@@ -3194,85 +3351,88 @@ const CharacterPageContent = memo(function CharacterPageContent({
     <>
       {layoutMode === "overview" && <OverviewLayout {...layoutProps} />}
       {layoutMode === "focus" && (
-        <FocusLayout
-          {...layoutProps}
-          metric={focusMetric}
-          setMetric={onFocusMetricChange}
-        />
+        <FocusLayout {...layoutProps} metric={focusMetric} setMetric={onFocusMetricChange} />
       )}
       {layoutMode === "timeline" && <TimelineLayout {...layoutProps} />}
 
       {layoutMode !== "overview" && (
-        <MythicPlusSection
-          data={mythicPlusData}
-          isLoadingAllRuns={isLoadingAllMythicPlusRuns}
-          onRequestAllRuns={onRequestAllMythicPlusRuns}
-          characterId={characterId}
-          characterName={characterName}
-          characterRealm={characterRealm}
-          characterRegion={characterRegion}
-          currentScore={currentMythicPlusScore}
-        />
+        <Suspense fallback={<MythicPlusSectionFallback />}>
+          <LazyMythicPlusSection
+            data={mythicPlusData}
+            isLoadingAllRuns={isLoadingAllMythicPlusRuns}
+            onRequestAllRuns={onRequestAllMythicPlusRuns}
+            characterRealm={characterRealm}
+            characterRegion={characterRegion}
+          />
+        </Suspense>
       )}
     </>
   );
 });
 
+function CharacterPageState({
+  title,
+  description,
+  isLoading = false,
+}: {
+  title: string;
+  description: string;
+  isLoading?: boolean;
+}) {
+  return (
+    <div className="w-full px-4 py-6 sm:px-6 lg:px-8">
+      <Card className="border-border/60 bg-background">
+        <CardContent className="flex flex-col gap-4 px-6 py-6">
+          {isLoading ? (
+            <>
+              <Skeleton className="h-8 w-64" />
+              <Skeleton className="h-4 w-full max-w-md" />
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                {Array.from({ length: 4 }).map((_, index) => (
+                  <Skeleton key={index} className="h-24 rounded-md" />
+                ))}
+              </div>
+            </>
+          ) : (
+            <>
+              <CardTitle className="text-xl font-semibold tracking-tight">{title}</CardTitle>
+              <p className="max-w-2xl text-sm text-muted-foreground">{description}</p>
+            </>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
 function RouteComponent() {
+  const queryClient = useQueryClient();
   const { characterId } = Route.useParams();
-  const characterRecordId = characterId as Id<"characters">;
-  const [timeFrame, setTimeFrame] = useState<TimeFrame>(DEFAULT_TIME_FRAME);
+  const navigate = Route.useNavigate();
+  const { timeFrame, layoutMode, focusMetric } = Route.useSearch();
   const { pinnedCharacterIdSet, togglePinnedCharacter } = usePinnedCharacters();
-  const [discordUserIdInput, setDiscordUserIdInput] = useState("");
   const [nonTradeableSlotsDraft, setNonTradeableSlotsDraft] = useState<TradeSlotKey[]>([]);
-  const [isSavingDiscordUserId, setIsSavingDiscordUserId] = useState(false);
   const [isUpdatingBooster, setIsUpdatingBooster] = useState(false);
   const [isSavingTradeSlots, setIsSavingTradeSlots] = useState(false);
-  const [isDiscordSheetOpen, setIsDiscordSheetOpen] = useState(false);
-  const [focusMetric, setFocusMetric] = useState<FocusMetric>("ilvl");
   const [shouldLoadFullMythicPlusRuns, setShouldLoadFullMythicPlusRuns] = useState(false);
-  const [layoutMode, setLayoutMode] = useState<LayoutMode>(() => {
-    try {
-      return (localStorage.getItem("wow-char-layout") as LayoutMode) ?? "overview";
-    } catch {
-      return "overview";
-    }
+  const characterPageQuery = useQuery({
+    ...getCharacterPageQueryOptions(characterId, timeFrame),
+    refetchInterval: CHARACTER_PAGE_REFETCH_INTERVAL_MS,
   });
-  const characterPageQuery = useTanStackQuery(getCharacterPageQueryOptions(characterRecordId, timeFrame));
   const characterPage = characterPageQuery.data;
   const pageHeader = characterPage?.header;
-  const mythicPlusAllRuns = useConvexQuery(
-    api.characters.getCharacterMythicPlus,
-    shouldLoadFullMythicPlusRuns
-      ? {
-          characterId: characterRecordId,
-          includeAllRuns: true,
-        }
-      : "skip",
-  );
-  const setCharacterBoosterStatus = useMutation((api as any).characters.setCharacterBoosterStatus);
-  const setCharacterNonTradeableSlots = useMutation(
-    (api as any).characters.setCharacterNonTradeableSlots,
-  );
-  const setPlayerDiscordUserId = useMutation((api as any).players.setPlayerDiscordUserId);
+  const mythicPlusAllRuns = useQuery({
+    ...getCharacterMythicPlusAllRunsQueryOptions(characterId),
+    enabled: shouldLoadFullMythicPlusRuns,
+  }).data;
   const needsStatsTimeline =
     layoutMode === "timeline" || (layoutMode === "focus" && focusMetric === "stats");
   const needsCurrencyTimeline =
     layoutMode === "timeline" || (layoutMode === "focus" && focusMetric === "currencies");
-  const statsTimeline = useConvexQuery(
-    api.characters.getCharacterDetailTimeline,
-    needsStatsTimeline
-      ? {
-          characterId: characterRecordId,
-          timeFrame,
-          metric: "stats",
-        }
-      : "skip",
-  );
-
-  useEffect(() => {
-    setDiscordUserIdInput(pageHeader?.owner?.discordUserId ?? "");
-  }, [characterId, pageHeader?.owner?.discordUserId]);
+  const statsTimeline = useQuery({
+    ...getCharacterStatsTimelineQueryOptions(characterId, timeFrame),
+    enabled: needsStatsTimeline,
+  }).data;
 
   useEffect(() => {
     setShouldLoadFullMythicPlusRuns(false);
@@ -3298,70 +3458,227 @@ function RouteComponent() {
     document.title = `${characterPage.header.character.name} (${characterPage.header.character.realm}) | ${appTitle}`;
   }, [characterPage]);
 
-  function handleLayoutChange(mode: LayoutMode) {
-    startTransition(() => {
-      setLayoutMode(mode);
-    });
-    try {
-      localStorage.setItem("wow-char-layout", mode);
-    } catch {
-      /* ignore */
+  const canonicalCharacterRouteSlug = characterPage
+    ? createCharacterRouteSlug(characterPage.header.character)
+    : null;
+
+  useEffect(() => {
+    if (!canonicalCharacterRouteSlug || typeof window === "undefined") {
+      return;
     }
+
+    const canonicalSearch = stripDefaultCharacterPageSearch({
+      timeFrame,
+      layoutMode,
+      focusMetric,
+    });
+    const currentSearch = window.location.search.startsWith("?")
+      ? window.location.search.slice(1)
+      : window.location.search;
+    const canonicalSearchString = buildCharacterPageSearchString(canonicalSearch);
+
+    if (characterId === canonicalCharacterRouteSlug && currentSearch === canonicalSearchString) {
+      return;
+    }
+
+    startTransition(() => {
+      void navigate({
+        to: "/character/$characterId",
+        params: { characterId: canonicalCharacterRouteSlug },
+        search: canonicalSearch,
+        replace: true,
+      });
+    });
+  }, [canonicalCharacterRouteSlug, characterId, focusMetric, layoutMode, navigate, timeFrame]);
+
+  const updateCharacterPageSearch = useCallback(
+    (nextSearch: Partial<CharacterPageSearch>) => {
+      startTransition(() => {
+        void navigate({
+          search: (previousSearch) =>
+            stripDefaultCharacterPageSearch({
+              ...validateCharacterPageSearch(previousSearch as CharacterPageSearchInput),
+              ...nextSearch,
+            }),
+          replace: true,
+        });
+      });
+    },
+    [navigate],
+  );
+
+  function handleLayoutChange(mode: LayoutMode) {
+    if (mode === layoutMode) {
+      return;
+    }
+
+    if (mode !== "overview") {
+      void import("../components/character-page-mythic-plus-section");
+    }
+    if (mode === "timeline" || (mode === "focus" && focusMetric === "stats")) {
+      void queryClient.prefetchQuery(getCharacterStatsTimelineQueryOptions(characterId, timeFrame));
+    }
+    updateCharacterPageSearch({ layoutMode: mode });
   }
 
-  const handleTimeFrameChange = useCallback((nextFrame: TimeFrame) => {
-    startTransition(() => {
-      setTimeFrame(nextFrame);
-    });
-  }, []);
+  const handleTimeFrameChange = useCallback(
+    (nextFrame: TimeFrame) => {
+      if (nextFrame === timeFrame) {
+        return;
+      }
+      updateCharacterPageSearch({ timeFrame: nextFrame });
+    },
+    [timeFrame, updateCharacterPageSearch],
+  );
 
-  const handleFocusMetricChange = useCallback((metric: FocusMetric) => {
-    startTransition(() => {
-      setFocusMetric(metric);
-    });
-  }, []);
+  const handleFocusMetricChange = useCallback(
+    (metric: FocusMetric) => {
+      if (metric === focusMetric) {
+        return;
+      }
+
+      if (layoutMode === "focus" && metric === "stats") {
+        void queryClient.prefetchQuery(
+          getCharacterStatsTimelineQueryOptions(characterId, timeFrame),
+        );
+      }
+      updateCharacterPageSearch({ focusMetric: metric });
+    },
+    [characterId, focusMetric, layoutMode, queryClient, timeFrame, updateCharacterPageSearch],
+  );
 
   const handleRequestAllMythicPlusRuns = useCallback(() => {
-    setShouldLoadFullMythicPlusRuns(true);
-  }, []);
+    void queryClient.prefetchQuery(getCharacterMythicPlusAllRunsQueryOptions(characterId));
+    startTransition(() => {
+      setShouldLoadFullMythicPlusRuns(true);
+    });
+  }, [characterId, queryClient]);
 
   const baseMythicPlusData = (characterPage?.mythicPlus ?? null) as MythicPlusData | null;
+
+  useEffect(() => {
+    if (
+      !baseMythicPlusData ||
+      !mythicPlusAllRuns ||
+      isFullMythicPlusDataFreshForPreview(mythicPlusAllRuns, baseMythicPlusData)
+    ) {
+      return;
+    }
+
+    void queryClient.invalidateQueries({
+      queryKey: apiQueryKeys.characterMythicPlus(characterId, { includeAllRuns: true }),
+    });
+  }, [baseMythicPlusData, characterId, mythicPlusAllRuns, queryClient]);
+
   const mythicPlusData = useMemo(() => {
     if (!baseMythicPlusData) {
       return baseMythicPlusData;
     }
+    const usableMythicPlusAllRuns =
+      mythicPlusAllRuns &&
+      isFullMythicPlusDataFreshForPreview(mythicPlusAllRuns, baseMythicPlusData)
+        ? mythicPlusAllRuns
+        : null;
+
     return {
       ...baseMythicPlusData,
-      runs: mythicPlusAllRuns?.runs ?? baseMythicPlusData.runs,
-      totalRunCount: mythicPlusAllRuns?.totalRunCount ?? baseMythicPlusData.totalRunCount,
-      isPreview: mythicPlusAllRuns ? false : baseMythicPlusData.isPreview,
+      runs: usableMythicPlusAllRuns?.runs ?? baseMythicPlusData.runs,
+      totalRunCount:
+        usableMythicPlusAllRuns?.totalRunCount ?? baseMythicPlusData.totalRunCount,
+      isPreview: usableMythicPlusAllRuns?.isPreview ?? baseMythicPlusData.isPreview,
     };
   }, [baseMythicPlusData, mythicPlusAllRuns]);
 
+  const invalidateCharacterPageQueries = useCallback(async () => {
+    await queryClient.invalidateQueries({
+      queryKey: ["api", "characters", characterId, "page"],
+    });
+  }, [characterId, queryClient]);
+
+  const invalidateBoosterExportQueries = useCallback(async () => {
+    await queryClient.invalidateQueries({
+      queryKey: apiQueryKeys.boosterCharactersForExport(),
+    });
+  }, [queryClient]);
+
+  const invalidateOwnerQueries = useCallback(async () => {
+    const ownerPlayerId = characterPage?.header.owner?.playerId;
+    if (!ownerPlayerId) {
+      return;
+    }
+    await queryClient.invalidateQueries({
+      queryKey: apiQueryKeys.playerCharacters(ownerPlayerId),
+    });
+  }, [characterPage?.header.owner?.playerId, queryClient]);
+
+  const setCharacterBoosterStatus = useMutation({
+    mutationFn: (isBooster: boolean) =>
+      apiClient.updateCharacterBoosterStatus(characterId, {
+        isBooster,
+      }),
+    onSuccess: async () => {
+      await Promise.all([
+        invalidateCharacterPageQueries(),
+        invalidateBoosterExportQueries(),
+        queryClient.invalidateQueries({ queryKey: apiQueryKeys.myCharacters() }),
+      ]);
+    },
+  });
+
+  const setCharacterNonTradeableSlots = useMutation({
+    mutationFn: (draftSlots: TradeSlotKey[]) =>
+      apiClient.updateCharacterNonTradeableSlots(characterId, {
+        nonTradeableSlots: draftSlots,
+      }),
+    onSuccess: async () => {
+      await Promise.all([
+        invalidateCharacterPageQueries(),
+        invalidateBoosterExportQueries(),
+        invalidateOwnerQueries(),
+      ]);
+    },
+  });
+
+  if (characterPageQuery.isError) {
+    return (
+      <CharacterPageState
+        title="Character could not be loaded"
+        description={
+          characterPageQuery.error instanceof Error
+            ? characterPageQuery.error.message
+            : "The character request failed."
+        }
+      />
+    );
+  }
+
   if (characterPage === undefined) {
     return (
-      <div className="w-full px-4 py-6 sm:px-6 lg:px-8" />
+      <CharacterPageState
+        title="Loading character"
+        description="Fetching the latest character snapshot."
+        isLoading
+      />
     );
   }
 
   if (characterPage === null) {
     return (
-      <div className="container mx-auto max-w-3xl px-4 py-6">
-        <p className="text-muted-foreground text-sm">Character not found.</p>
-      </div>
+      <CharacterPageState
+        title="Character not found"
+        description="This character is no longer available or has not been imported."
+      />
     );
   }
 
   const { header, coreTimeline } = characterPage;
   const { character, latestSnapshot, firstSnapshotAt, snapshotCount } = header;
-  const owner = header.owner;
-  const isPinnedToQuickAccess = pinnedCharacterIdSet.has(characterId);
+  const resolvedCharacterId = character._id;
+  const isPinnedToQuickAccess = pinnedCharacterIdSet.has(resolvedCharacterId);
   const isBoosterCharacter = character.isBooster === true;
   const nonTradeableSlots = (character.nonTradeableSlots ?? []) as TradeSlotKey[];
   const isLoadingAllMythicPlusRuns =
     shouldLoadFullMythicPlusRuns && mythicPlusAllRuns === undefined;
-  const normalizedDiscordUserIdInput = discordUserIdInput.trim();
-  const hasDiscordUserIdChanges = normalizedDiscordUserIdInput !== (owner?.discordUserId ?? "");
   const hasTradeSlotChanges =
     JSON.stringify(nonTradeableSlotsDraft) !== JSON.stringify(nonTradeableSlots);
 
@@ -3369,11 +3686,15 @@ function RouteComponent() {
   const coreSnapshots = (coreTimeline?.snapshots ?? []) as CoreChartSnapshot[];
   const statsSnapshots =
     needsStatsTimeline && statsTimeline ? (statsTimeline.snapshots as StatsChartSnapshot[]) : null;
-  const currencySnapshots = needsCurrencyTimeline ? (coreSnapshots as CurrencyChartSnapshot[]) : null;
+  const currencySnapshots = needsCurrencyTimeline
+    ? (coreSnapshots as CurrencyChartSnapshot[])
+    : null;
   const lastMythicPlusRunAt = mythicPlusData?.summary.overall.lastRunAt ?? null;
   const trackingCountLabel = snapshotCount === null ? "Tracked Points" : "Snapshots";
   const trackingCountValue =
     snapshotCount === null ? coreSnapshots.length.toLocaleString() : snapshotCount.toLocaleString();
+  const rangeBaselineSnapshot = getRangeBaselineSnapshot(timeFrame, coreSnapshots, latest);
+  const rangeDeltaLabel = getTimeFrameDeltaLabel(timeFrame);
 
   async function handleBoosterToggle() {
     if (isUpdatingBooster) {
@@ -3382,34 +3703,11 @@ function RouteComponent() {
 
     setIsUpdatingBooster(true);
     try {
-      await setCharacterBoosterStatus({
-        characterId: characterId as Id<"characters">,
-        isBooster: !isBoosterCharacter,
-      });
+      await setCharacterBoosterStatus.mutateAsync(!isBoosterCharacter);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not update booster flag.");
     } finally {
       setIsUpdatingBooster(false);
-    }
-  }
-
-  async function handleDiscordUserIdSave() {
-    if (!owner || isSavingDiscordUserId || !hasDiscordUserIdChanges) {
-      return;
-    }
-
-    setIsSavingDiscordUserId(true);
-    try {
-      await setPlayerDiscordUserId({
-        playerId: owner.playerId,
-        discordUserId: normalizedDiscordUserIdInput === "" ? null : normalizedDiscordUserIdInput,
-      });
-      setIsDiscordSheetOpen(false);
-      toast.success(normalizedDiscordUserIdInput === "" ? "Discord ID cleared." : "Discord ID saved.");
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not save Discord ID.");
-    } finally {
-      setIsSavingDiscordUserId(false);
     }
   }
 
@@ -3424,10 +3722,7 @@ function RouteComponent() {
 
     setIsSavingTradeSlots(true);
     try {
-      await setCharacterNonTradeableSlots({
-        characterId: characterId as Id<"characters">,
-        nonTradeableSlots: nonTradeableSlotsDraft,
-      });
+      await setCharacterNonTradeableSlots.mutateAsync(nonTradeableSlotsDraft);
       toast.success(
         nonTradeableSlotsDraft.length === 0
           ? "All slots marked tradeable."
@@ -3440,13 +3735,37 @@ function RouteComponent() {
     }
   }
 
+  async function handleCopyCharacterLink() {
+    if (typeof window === "undefined" || !navigator.clipboard) {
+      toast.error("Could not copy character link.");
+      return;
+    }
+
+    try {
+      const canonicalSearch = stripDefaultCharacterPageSearch({
+        timeFrame,
+        layoutMode,
+        focusMetric,
+      });
+      const canonicalSearchString = buildCharacterPageSearchString(canonicalSearch);
+      const routeSlug = canonicalCharacterRouteSlug ?? characterId;
+      const canonicalUrl = `${window.location.origin}/character/${encodeURIComponent(routeSlug)}${
+        canonicalSearchString ? `?${canonicalSearchString}` : ""
+      }`;
+      await navigator.clipboard.writeText(canonicalUrl);
+      toast.success("Character link copied.");
+    } catch {
+      toast.error("Could not copy character link.");
+    }
+  }
+
   return (
-    <div className="w-full px-4 py-6 sm:px-6 lg:px-8 space-y-4">
+    <div className="flex w-full flex-col gap-4 px-4 py-6 sm:px-6 lg:px-8">
       {/* Character header */}
       <Card className="overflow-hidden border-border/60 bg-background">
         <CardHeader className="border-b border-border/60 bg-background pb-4">
           <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-            <div className="space-y-4">
+            <div className="flex flex-col gap-4">
               {latest && (
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge
@@ -3463,7 +3782,9 @@ function RouteComponent() {
                   </Badge>
                 </div>
               )}
-              <CardTitle className={`text-3xl font-bold tracking-tight sm:text-4xl ${classColor(character.class)}`}>
+              <CardTitle
+                className={`text-3xl font-bold tracking-tight sm:text-4xl ${classColor(character.class)}`}
+              >
                 {character.name}
               </CardTitle>
               <p className="hidden">
@@ -3493,7 +3814,7 @@ function RouteComponent() {
                   type="button"
                   size="sm"
                   variant="outline"
-                  onClick={() => togglePinnedCharacter(characterId)}
+                  onClick={() => togglePinnedCharacter(resolvedCharacterId)}
                   className={
                     isPinnedToQuickAccess
                       ? "border-yellow-400/40 bg-yellow-400/10 text-yellow-300 hover:bg-yellow-400/15 hover:text-yellow-200"
@@ -3501,10 +3822,21 @@ function RouteComponent() {
                   }
                 >
                   <Star
-                    size={14}
+                    data-icon="inline-start"
+                    aria-hidden="true"
                     className={isPinnedToQuickAccess ? "fill-current text-yellow-400" : ""}
                   />
                   {isPinnedToQuickAccess ? "Pinned" : "Pin"}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={handleCopyCharacterLink}
+                  className="border-border/60 bg-card text-muted-foreground hover:text-foreground"
+                >
+                  <Copy data-icon="inline-start" aria-hidden="true" />
+                  Copy Link
                 </Button>
                 <Button
                   type="button"
@@ -3518,49 +3850,13 @@ function RouteComponent() {
                       : "border-border/60 bg-card text-muted-foreground hover:text-foreground"
                   }
                 >
-                  <Zap size={14} className={isBoosterCharacter ? "text-emerald-300" : ""} />
+                  <Zap
+                    data-icon="inline-start"
+                    aria-hidden="true"
+                    className={isBoosterCharacter ? "text-emerald-300" : ""}
+                  />
                   {isBoosterCharacter ? "Booster" : "Set Booster"}
                 </Button>
-                {owner && !owner.discordUserId && (
-                  <Sheet open={isDiscordSheetOpen} onOpenChange={setIsDiscordSheetOpen}>
-                    <SheetTrigger asChild>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        className="border-orange-500/40 bg-orange-500/10 text-orange-200 hover:bg-orange-500/15 hover:text-orange-100"
-                      >
-                        Set Discord ID
-                      </Button>
-                    </SheetTrigger>
-                    <SheetContent className="w-full sm:max-w-md">
-                      <SheetHeader>
-                        <SheetTitle>Owner Discord ID</SheetTitle>
-                        <SheetDescription>
-                          Shared across all characters for {owner.battleTag || character.name}.
-                        </SheetDescription>
-                      </SheetHeader>
-                      <div className="mt-6 space-y-3">
-                        <Input
-                          value={discordUserIdInput}
-                          onChange={(event) => setDiscordUserIdInput(event.target.value)}
-                          placeholder="Discord user ID or <@mention>"
-                          className="h-9"
-                        />
-                        <p className="text-xs text-muted-foreground">
-                          Stored globally on the account owner and used by Copy Helper exports.
-                        </p>
-                        <Button
-                          type="button"
-                          onClick={handleDiscordUserIdSave}
-                          disabled={!hasDiscordUserIdChanges || isSavingDiscordUserId}
-                        >
-                          {isSavingDiscordUserId ? "Saving..." : "Save Discord ID"}
-                        </Button>
-                      </div>
-                    </SheetContent>
-                  </Sheet>
-                )}
                 <Sheet>
                   <SheetTrigger asChild>
                     <Button
@@ -3570,7 +3866,9 @@ function RouteComponent() {
                       className="border-border/60 bg-card text-muted-foreground hover:text-foreground"
                     >
                       Trade Locks
-                      {nonTradeableSlots.length > 0 ? ` ${getTradeSlotEditorCount(nonTradeableSlots)}` : ""}
+                      {nonTradeableSlots.length > 0
+                        ? ` ${getTradeSlotEditorCount(nonTradeableSlots)}`
+                        : ""}
                     </Button>
                   </SheetTrigger>
                   <SheetContent className="w-full sm:max-w-lg">
@@ -3581,7 +3879,7 @@ function RouteComponent() {
                         character and shown in Copy Helper.
                       </SheetDescription>
                     </SheetHeader>
-                    <div className="mt-6 space-y-5">
+                    <div className="mt-6 flex flex-col gap-5">
                       <div className="grid gap-3 sm:grid-cols-2">
                         {TRADE_SLOT_EDITOR_OPTIONS.map((slot) => (
                           <label
@@ -3589,23 +3887,29 @@ function RouteComponent() {
                             className="flex cursor-pointer items-start gap-3 rounded-lg border border-border/60 bg-card/50 p-3"
                           >
                             <Checkbox
-                              checked={slot.slotKeys.every((slotKey) => nonTradeableSlotsDraft.includes(slotKey))}
+                              checked={slot.slotKeys.every((slotKey) =>
+                                nonTradeableSlotsDraft.includes(slotKey),
+                              )}
                               onCheckedChange={() => toggleNonTradeableSlot(slot.slotKeys)}
                             />
                             <div>
                               <p className="text-sm font-medium text-foreground">{slot.label}</p>
-                              <p className="text-xs text-muted-foreground">Drop in this slot stays bound.</p>
+                              <p className="text-xs text-muted-foreground">
+                                Drop in this slot stays bound.
+                              </p>
                             </div>
                           </label>
                         ))}
                       </div>
                       {nonTradeableSlotsDraft.length === 0 ? (
                         <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-200">
-                          No locked slots. This character is marked as able to trade all tracked slots.
+                          No locked slots. This character is marked as able to trade all tracked
+                          slots.
                         </div>
                       ) : (
                         <div className="rounded-xl border border-orange-500/30 bg-orange-500/10 p-3 text-sm text-orange-200">
-                          Locked slots: {getTradeSlotExportLabels(nonTradeableSlotsDraft).join(", ")}
+                          Locked slots:{" "}
+                          {getTradeSlotExportLabels(nonTradeableSlotsDraft).join(", ")}
                         </div>
                       )}
                       <div className="flex flex-wrap gap-2">
@@ -3622,7 +3926,7 @@ function RouteComponent() {
                           onClick={handleTradeSlotSave}
                           disabled={!hasTradeSlotChanges || isSavingTradeSlots}
                         >
-                          {isSavingTradeSlots ? "Saving..." : "Save Slots"}
+                          {isSavingTradeSlots ? "Saving…" : "Save Slots"}
                         </Button>
                       </div>
                     </div>
@@ -3651,11 +3955,31 @@ function RouteComponent() {
                 label="Item level"
                 meta="Equipped"
                 value={<span className="tabular-nums">{latest.itemLevel.toFixed(1)}</span>}
+                delta={
+                  rangeBaselineSnapshot ? (
+                    <RangeDelta
+                      value={latest.itemLevel - rangeBaselineSnapshot.itemLevel}
+                      formatter={(value) => value.toFixed(1)}
+                      label={rangeDeltaLabel}
+                    />
+                  ) : null
+                }
               />
               <TopMetricCard
                 label="M+ score"
                 meta="Current"
-                value={<span className="tabular-nums">{latest.mythicPlusScore.toLocaleString()}</span>}
+                value={
+                  <span className="tabular-nums">{latest.mythicPlusScore.toLocaleString()}</span>
+                }
+                delta={
+                  rangeBaselineSnapshot ? (
+                    <RangeDelta
+                      value={latest.mythicPlusScore - rangeBaselineSnapshot.mythicPlusScore}
+                      formatter={(value) => Math.round(value).toLocaleString()}
+                      label={rangeDeltaLabel}
+                    />
+                  ) : null
+                }
               />
               <TopMetricCard
                 label="Keystone"
@@ -3676,6 +4000,15 @@ function RouteComponent() {
                     </span>
                   </span>
                 }
+                delta={
+                  rangeBaselineSnapshot ? (
+                    <RangeDelta
+                      value={latest.playtimeSeconds - rangeBaselineSnapshot.playtimeSeconds}
+                      formatter={(value) => formatPlaytime(value)}
+                      label={rangeDeltaLabel}
+                    />
+                  ) : null
+                }
               />
             </div>
 
@@ -3684,7 +4017,7 @@ function RouteComponent() {
                 <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground/75">
                   Character
                 </div>
-                <div className="mt-3 space-y-2">
+                <div className="mt-3 flex flex-col gap-2">
                   <StatRow label="Race" value={character.race} />
                   <StatRow label="Class" value={character.class} />
                 </div>
@@ -3693,7 +4026,7 @@ function RouteComponent() {
                 <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground/75">
                   Server
                 </div>
-                <div className="mt-3 space-y-2">
+                <div className="mt-3 flex flex-col gap-2">
                   <StatRow label="Server" value={character.realm} />
                   <StatRow label="Region" value={character.region.toUpperCase()} />
                 </div>
@@ -3702,7 +4035,7 @@ function RouteComponent() {
                 <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground/75">
                   Tracking
                 </div>
-                <div className="mt-3 space-y-2">
+                <div className="mt-3 flex flex-col gap-2">
                   <StatRow label="Since" value={formatDate(firstSnapshotAt ?? latest.takenAt)} />
                   <StatRow label={trackingCountLabel} value={trackingCountValue} />
                 </div>
@@ -3711,13 +4044,13 @@ function RouteComponent() {
                 <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground/75">
                   Activity
                 </div>
-                <div className="mt-3 space-y-2">
+                <div className="mt-3 flex flex-col gap-2">
                   <StatRow label="Last Snapshot" value={formatCardDateTime(latest.takenAt)} />
                   <StatRow
                     label="Last M+ Run"
                     value={
                       mythicPlusData === undefined
-                        ? "Loading..."
+                        ? "Loading…"
                         : lastMythicPlusRunAt
                           ? formatCardDateTime(lastMythicPlusRunAt)
                           : "No runs"
@@ -3730,7 +4063,7 @@ function RouteComponent() {
         )}
       </Card>
       {/* Active layout */}
-      {latest && coreSnapshots.length > 0 && (
+      {latest && coreSnapshots.length > 0 ? (
         <CharacterPageContent
           latest={latest}
           coreSnapshots={coreSnapshots}
@@ -3739,7 +4072,7 @@ function RouteComponent() {
           mythicPlusData={mythicPlusData}
           isLoadingAllMythicPlusRuns={isLoadingAllMythicPlusRuns}
           onRequestAllMythicPlusRuns={handleRequestAllMythicPlusRuns}
-          characterId={characterId}
+          characterId={resolvedCharacterId}
           characterName={character.name}
           characterRealm={character.realm}
           characterRegion={character.region}
@@ -3752,6 +4085,17 @@ function RouteComponent() {
           focusMetric={focusMetric}
           onFocusMetricChange={handleFocusMetricChange}
         />
+      ) : (
+        <Card className="border-border/60 bg-background">
+          <CardContent className="px-6 py-6">
+            <CardTitle className="text-lg font-semibold tracking-tight">
+              No snapshots available
+            </CardTitle>
+            <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
+              This character exists, but there is no timeline data to chart yet.
+            </p>
+          </CardContent>
+        </Card>
       )}
     </div>
   );

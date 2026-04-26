@@ -1,17 +1,93 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ConvexReactClient, ConvexProviderWithAuth, useMutation, useQuery } from "convex/react";
-import { api } from "@wow-dashboard/backend/convex/_generated/api";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ApiClientError } from "@wow-dashboard/api-client";
 import { env } from "@wow-dashboard/env/app";
+import type { DesktopAuthSessionState } from "../../shared/auth";
 import type {
   AddonUpdateCheckResult,
   AddonUpdateState,
   AppInstallUpdateResult,
   AppUpdateState,
 } from "../../shared/update";
+import { apiClient, apiQueryKeys, apiQueryOptions } from "./lib/api-client";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+
+interface SnapshotCurrencyInfo {
+  currencyID: number;
+  name?: string;
+  quantity: number;
+  iconFileID?: number;
+  maxQuantity?: number;
+  canEarnPerWeek?: boolean;
+  quantityEarnedThisWeek?: number;
+  maxWeeklyQuantity?: number;
+  totalEarned?: number;
+  discovered?: boolean;
+  quality?: number;
+  useTotalEarnedForMaxQty?: boolean;
+}
+
+type SnapshotCurrencyDetails = Record<string, SnapshotCurrencyInfo>;
+
+interface SnapshotEquipmentItem {
+  slot: string;
+  slotID: number;
+  itemID?: number;
+  itemName?: string;
+  itemLink?: string;
+  itemLevel?: number;
+  quality?: number;
+  iconFileID?: number;
+}
+
+type SnapshotEquipment = Record<string, SnapshotEquipmentItem>;
+
+interface SnapshotWeeklyRewardActivity {
+  type?: number;
+  index?: number;
+  id?: number;
+  level?: number;
+  threshold?: number;
+  progress?: number;
+  activityTierID?: number;
+  itemLevel?: number;
+  name?: string;
+}
+
+interface SnapshotWeeklyRewards {
+  canClaimRewards?: boolean;
+  isCurrentPeriod?: boolean;
+  activities: SnapshotWeeklyRewardActivity[];
+}
+
+interface SnapshotMajorFaction {
+  factionID: number;
+  name?: string;
+  expansionID?: number;
+  isUnlocked?: boolean;
+  renownLevel?: number;
+  renownReputationEarned?: number;
+  renownLevelThreshold?: number;
+  isWeeklyCapped?: boolean;
+}
+
+interface SnapshotMajorFactions {
+  factions: SnapshotMajorFaction[];
+}
+
+interface SnapshotClientInfo {
+  addonVersion?: string;
+  interfaceVersion?: number;
+  gameVersion?: string;
+  buildNumber?: string;
+  buildDate?: string;
+  tocVersion?: number;
+  expansion?: string;
+  locale?: string;
+}
 
 interface SnapshotData {
   takenAt: number;
@@ -23,6 +99,7 @@ interface SnapshotData {
   playtimeSeconds: number;
   playtimeThisLevelSeconds?: number;
   mythicPlusScore: number;
+  seasonID?: number;
   currencies: {
     adventurerDawncrest: number;
     veteranDawncrest: number;
@@ -31,19 +108,31 @@ interface SnapshotData {
     mythDawncrest: number;
     radiantSparkDust: number;
   };
+  currencyDetails?: SnapshotCurrencyDetails;
   stats: {
     stamina: number;
     strength: number;
     agility: number;
     intellect: number;
+    critRating?: number;
     critPercent: number;
+    hasteRating?: number;
     hastePercent: number;
+    masteryRating?: number;
     masteryPercent: number;
+    versatilityRating?: number;
     versatilityPercent: number;
+    speedRating?: number;
     speedPercent?: number;
+    leechRating?: number;
     leechPercent?: number;
+    avoidanceRating?: number;
     avoidancePercent?: number;
   };
+  equipment?: SnapshotEquipment;
+  weeklyRewards?: SnapshotWeeklyRewards;
+  majorFactions?: SnapshotMajorFactions;
+  clientInfo?: SnapshotClientInfo;
 }
 
 interface MythicPlusRunData {
@@ -140,9 +229,21 @@ declare global {
       version: string;
       auth: {
         login: () => Promise<boolean>;
-        getToken: () => Promise<string | null>;
-        getSession: () => Promise<unknown>;
+        getSession: () => Promise<DesktopAuthSessionState>;
         logout: () => Promise<boolean>;
+      };
+      api: {
+        fetch: (request: {
+          url: string;
+          method?: string;
+          headers?: Array<[string, string]>;
+          body?: string;
+        }) => Promise<{
+          status: number;
+          statusText: string;
+          headers: Array<[string, string]>;
+          body: string;
+        }>;
       };
       wow: {
         getRetailPath: () => Promise<string | null>;
@@ -154,8 +255,10 @@ declare global {
         } | null>;
         checkAddonInstalled: () => Promise<boolean>;
         getInstalledAddonVersion: () => Promise<string | null>;
-        installAddon: (downloadUrl: string, checksumUrl: string | null) => Promise<void>;
-        getLatestAddonRelease: () => Promise<{ url: string; checksumUrl: string | null; version: string }>;
+        installAddon: () => Promise<{ version: string }>;
+        getLatestAddonRelease: () => Promise<{
+          version: string;
+        }>;
         getAddonUpdateStatus: () => Promise<AddonUpdateState>;
         triggerAddonUpdateCheck: () => Promise<AddonUpdateCheckResult>;
         watchAddonFile: () => Promise<boolean>;
@@ -189,39 +292,48 @@ declare global {
 }
 
 // ---------------------------------------------------------------------------
-// Module-level auth token store (shared across hook instances)
+// Module-level auth state store (shared across hook instances)
 // ---------------------------------------------------------------------------
-let _token: string | null | undefined = undefined; // undefined = still loading
+let _token: "authenticated" | null | undefined = undefined; // undefined = still loading
 const _listeners = new Set<() => void>();
 
 function _notify() {
   _listeners.forEach((fn) => fn());
 }
 
+async function _clearToken(): Promise<void> {
+  try {
+    await window.electron.auth.logout();
+  } catch {
+    // Best effort; local auth state is still cleared below.
+  }
+  _token = null;
+  _notify();
+}
+
 async function _fetchToken(): Promise<string | null> {
   try {
-    const t = await window.electron.auth.getToken();
-    _token = t;
+    const sessionState = await window.electron.auth.getSession();
+    if (sessionState.status === "unauthenticated") {
+      await _clearToken();
+      return null;
+    }
+
+    _token = "authenticated";
     _notify();
-    return t;
+    return _token;
   } catch {
-    _token = null;
+    // Preserve local auth state on transient validation failures. The API proxy
+    // will still surface request-level auth errors if the session has actually expired.
+    _token = "authenticated";
     _notify();
-    return null;
+    return _token;
   }
 }
 
 // Kick off initial token fetch as soon as the module loads
 _fetchToken();
 
-// ---------------------------------------------------------------------------
-// Convex client
-// ---------------------------------------------------------------------------
-const client = new ConvexReactClient(env.VITE_CONVEX_URL);
-
-// ---------------------------------------------------------------------------
-// Custom useAuth hook for ConvexProviderWithAuth
-// ---------------------------------------------------------------------------
 function useElectronAuth() {
   const [, forceUpdate] = useState(0);
 
@@ -233,22 +345,12 @@ function useElectronAuth() {
     };
   }, []);
 
-  const fetchAccessToken = useCallback(
-    async ({ forceRefreshToken = false } = {}): Promise<string | null> => {
-      if (!forceRefreshToken && _token) return _token;
-      return _fetchToken();
-    },
-    [],
-  );
-
   return useMemo(
     () => ({
       isLoading: _token === undefined,
       isAuthenticated: _token !== null && _token !== undefined,
-      fetchAccessToken,
     }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [_token, fetchAccessToken],
+    [_token],
   );
 }
 
@@ -284,11 +386,21 @@ function formatBytes(bytes: number) {
 }
 
 function formatDate(ms: number) {
-  return new Date(ms).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  return new Date(ms).toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
 }
 
 function formatDateTime(ms: number) {
-  return new Date(ms).toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  return new Date(ms).toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function formatLastSyncTime(lastSyncedAt: number) {
@@ -306,6 +418,11 @@ function isUploadableSnapshot(snapshot: SnapshotData, sinceTs: number) {
 }
 
 const MYTHIC_PLUS_UPLOAD_LOOKBACK_SECONDS = 2 * 60 * 60;
+const ADDON_UPLOAD_CHARACTERS_PER_BATCH = 20;
+const ADDON_UPLOAD_SNAPSHOTS_PER_CHARACTER = 100;
+const ADDON_UPLOAD_RUNS_PER_CHARACTER = 150;
+const ADDON_UPLOAD_MAX_BATCH_BODY_BYTES = 768 * 1024;
+const uploadBodyEncoder = new TextEncoder();
 
 function normalizePositiveTimestampSeconds(value: unknown): number | null {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
@@ -339,19 +456,78 @@ function isUploadableMythicPlusRun(run: MythicPlusRunData, sinceTs: number) {
   return lastMutationAt > effectiveSinceTs;
 }
 
-function getPendingUploadCounts(
-  chars: CharacterData[],
-  sinceTs: number,
-): PendingUploadCounts {
+function getPendingUploadCounts(chars: CharacterData[], sinceTs: number): PendingUploadCounts {
   return chars.reduce(
     (totals, char) => ({
-      snapshots: totals.snapshots + char.snapshots.filter((snapshot) => isUploadableSnapshot(snapshot, sinceTs)).length,
+      snapshots:
+        totals.snapshots +
+        char.snapshots.filter((snapshot) => isUploadableSnapshot(snapshot, sinceTs)).length,
       mythicPlusRuns:
         totals.mythicPlusRuns +
         char.mythicPlusRuns.filter((run) => isUploadableMythicPlusRun(run, sinceTs)).length,
     }),
     { snapshots: 0, mythicPlusRuns: 0 },
   );
+}
+
+function chunkCharacterForUpload(character: CharacterData): CharacterData[] {
+  const chunkCount = Math.max(
+    Math.ceil(character.snapshots.length / ADDON_UPLOAD_SNAPSHOTS_PER_CHARACTER),
+    Math.ceil(character.mythicPlusRuns.length / ADDON_UPLOAD_RUNS_PER_CHARACTER),
+    1,
+  );
+  const chunks: CharacterData[] = [];
+
+  for (let index = 0; index < chunkCount; index++) {
+    const snapshots = character.snapshots.slice(
+      index * ADDON_UPLOAD_SNAPSHOTS_PER_CHARACTER,
+      (index + 1) * ADDON_UPLOAD_SNAPSHOTS_PER_CHARACTER,
+    );
+    const mythicPlusRuns = character.mythicPlusRuns.slice(
+      index * ADDON_UPLOAD_RUNS_PER_CHARACTER,
+      (index + 1) * ADDON_UPLOAD_RUNS_PER_CHARACTER,
+    );
+    if (snapshots.length === 0 && mythicPlusRuns.length === 0) {
+      continue;
+    }
+
+    chunks.push({
+      ...character,
+      snapshots,
+      mythicPlusRuns,
+    });
+  }
+
+  return chunks;
+}
+
+function createAddonUploadBatches(characters: CharacterData[]): CharacterData[][] {
+  const chunks = characters.flatMap((character) => chunkCharacterForUpload(character));
+  const batches: CharacterData[][] = [];
+  let currentBatch: CharacterData[] = [];
+
+  for (const chunk of chunks) {
+    const candidateBatch = [...currentBatch, chunk];
+    const exceedsCharacterLimit = candidateBatch.length > ADDON_UPLOAD_CHARACTERS_PER_BATCH;
+    const exceedsBodyLimit =
+      currentBatch.length > 0 &&
+      uploadBodyEncoder.encode(JSON.stringify({ characters: candidateBatch })).byteLength >
+        ADDON_UPLOAD_MAX_BATCH_BODY_BYTES;
+
+    if (exceedsCharacterLimit || exceedsBodyLimit) {
+      batches.push(currentBatch);
+      currentBatch = [chunk];
+      continue;
+    }
+
+    currentBatch = candidateBatch;
+  }
+
+  if (currentBatch.length > 0) {
+    batches.push(currentBatch);
+  }
+
+  return batches;
 }
 
 // ---------------------------------------------------------------------------
@@ -369,6 +545,7 @@ function LoadingScreen() {
 function LoginScreen({ onLogin }: { onLogin: () => Promise<void> }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const loginUrl = new URL("/auth/electron-login", env.VITE_SITE_URL).toString();
 
   async function handleLogin() {
     setLoading(true);
@@ -399,6 +576,17 @@ function LoginScreen({ onLogin }: { onLogin: () => Promise<void> }) {
         </button>
 
         {error && <p className="text-sm text-red-400">{error}</p>}
+
+        {(error || !loading) && (
+          <div className="space-y-2">
+            <p className="text-xs text-gray-500">
+              If your browser doesn&apos;t open automatically, open this URL manually:
+            </p>
+            <p className="rounded-md border border-gray-800 bg-gray-900 px-3 py-2 text-left font-mono text-xs text-gray-300 select-text break-all">
+              {loginUrl}
+            </p>
+          </div>
+        )}
 
         <p className="text-xs text-gray-600">Requires the web app running on {env.VITE_SITE_URL}</p>
       </div>
@@ -434,9 +622,19 @@ function SwitchRow({ checked, onChange, label }: Toggle) {
 }
 
 function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
-  const uploadAddon = useMutation(api.addonIngest.ingestAddonData);
-  const resync = useMutation(api.characters.resyncCharacters);
-  const characters = useQuery(api.characters.getMyCharactersWithSnapshot);
+  const queryClient = useQueryClient();
+  const uploadAddon = useMutation({
+    mutationFn: (input: { characters: CharacterData[] }) =>
+      apiClient.ingestAddonData({
+        characters: input.characters as Parameters<
+          typeof apiClient.ingestAddonData
+        >[0]["characters"],
+      }),
+  });
+  const resync = useMutation({
+    mutationFn: () => apiClient.resyncCharacters(),
+  });
+  const characters = useQuery(apiQueryOptions.myCharacters()).data;
 
   const [syncing, setSyncing] = useState(false);
   const [retailPath, setRetailPath] = useState<string | null>(null);
@@ -446,7 +644,9 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
   const [lastSyncedAt, setLastSyncedAt] = useState(0);
   const [addonInstalled, setAddonInstalled] = useState<boolean | null>(null);
   const [addonVersion, setAddonVersion] = useState<string | null>(null);
-  const [addonUpdateState, setAddonUpdateState] = useState<AddonUpdateState>(INITIAL_ADDON_UPDATE_STATE);
+  const [addonUpdateState, setAddonUpdateState] = useState<AddonUpdateState>(
+    INITIAL_ADDON_UPDATE_STATE,
+  );
   const [installing, setInstalling] = useState(false);
   const [addonActionError, setAddonActionError] = useState<string | null>(null);
   const [appUpdateState, setAppUpdateState] = useState<AppUpdateState>(INITIAL_APP_UPDATE_STATE);
@@ -566,50 +766,55 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
       window.electron.wow.getRetailPath(),
       window.electron.settings.getAppSettings(),
       window.electron.wow.getAddonUpdateStatus(),
-    ]).then(([versionResult, appUpdateResult, retailPathResult, settingsResult, addonUpdateResult]) => {
-      if (cancelled) return;
+    ]).then(
+      ([versionResult, appUpdateResult, retailPathResult, settingsResult, addonUpdateResult]) => {
+        if (cancelled) return;
 
-      if (versionResult.status === "fulfilled") {
-        setAppVersion(versionResult.value);
-      } else {
-        console.warn("[wow-dashboard] Failed to hydrate app version:", versionResult.reason);
-      }
+        if (versionResult.status === "fulfilled") {
+          setAppVersion(versionResult.value);
+        } else {
+          console.warn("[wow-dashboard] Failed to hydrate app version:", versionResult.reason);
+        }
 
-      if (appUpdateResult.status === "fulfilled") {
-        setAppUpdateState(appUpdateResult.value);
-        setAppVersion((currentVersion) => appUpdateResult.value.currentVersion || currentVersion);
-      } else {
-        console.warn(
-          "[wow-dashboard] Failed to hydrate desktop update state:",
-          appUpdateResult.reason,
-        );
-      }
+        if (appUpdateResult.status === "fulfilled") {
+          setAppUpdateState(appUpdateResult.value);
+          setAppVersion((currentVersion) => appUpdateResult.value.currentVersion || currentVersion);
+        } else {
+          console.warn(
+            "[wow-dashboard] Failed to hydrate desktop update state:",
+            appUpdateResult.reason,
+          );
+        }
 
-      if (retailPathResult.status === "fulfilled") {
-        setRetailPath(retailPathResult.value);
-      } else {
-        console.warn("[wow-dashboard] Failed to hydrate WoW retail path:", retailPathResult.reason);
-      }
+        if (retailPathResult.status === "fulfilled") {
+          setRetailPath(retailPathResult.value);
+        } else {
+          console.warn(
+            "[wow-dashboard] Failed to hydrate WoW retail path:",
+            retailPathResult.reason,
+          );
+        }
 
-      if (settingsResult.status === "fulfilled") {
-        setCloseBehavior(settingsResult.value.closeBehavior);
-        setAutostart(settingsResult.value.autostart);
-        setLaunchMinimized(settingsResult.value.launchMinimized);
-        setLastSyncedAt(settingsResult.value.lastSyncedAt);
-        lastSyncedAtRef.current = settingsResult.value.lastSyncedAt;
-      } else {
-        console.warn("[wow-dashboard] Failed to hydrate app settings:", settingsResult.reason);
-      }
+        if (settingsResult.status === "fulfilled") {
+          setCloseBehavior(settingsResult.value.closeBehavior);
+          setAutostart(settingsResult.value.autostart);
+          setLaunchMinimized(settingsResult.value.launchMinimized);
+          setLastSyncedAt(settingsResult.value.lastSyncedAt);
+          lastSyncedAtRef.current = settingsResult.value.lastSyncedAt;
+        } else {
+          console.warn("[wow-dashboard] Failed to hydrate app settings:", settingsResult.reason);
+        }
 
-      if (addonUpdateResult.status === "fulfilled") {
-        applyAddonUpdateSnapshot(addonUpdateResult.value);
-      } else {
-        console.warn(
-          "[wow-dashboard] Failed to hydrate addon update state:",
-          addonUpdateResult.reason,
-        );
-      }
-    });
+        if (addonUpdateResult.status === "fulfilled") {
+          applyAddonUpdateSnapshot(addonUpdateResult.value);
+        } else {
+          console.warn(
+            "[wow-dashboard] Failed to hydrate addon update state:",
+            addonUpdateResult.reason,
+          );
+        }
+      },
+    );
 
     return () => {
       cancelled = true;
@@ -687,8 +892,7 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
     setInstalling(true);
     setAddonActionError(null);
     try {
-      const { url, checksumUrl, version } = await window.electron.wow.getLatestAddonRelease();
-      await window.electron.wow.installAddon(url, checksumUrl ?? null);
+      const { version } = await window.electron.wow.installAddon();
       setAddonInstalled(true);
       setAddonVersion(version);
       setAddonUpdateState((current) => ({
@@ -784,18 +988,30 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
             .map((c) => ({
               ...c,
               snapshots: c.snapshots.filter((snapshot) => isUploadableSnapshot(snapshot, sinceTs)),
-              mythicPlusRuns: c.mythicPlusRuns.filter((run) => isUploadableMythicPlusRun(run, sinceTs)),
+              mythicPlusRuns: c.mythicPlusRuns.filter((run) =>
+                isUploadableMythicPlusRun(run, sinceTs),
+              ),
             }))
             .filter((c) => c.snapshots.length > 0 || c.mythicPlusRuns.length > 0);
 
           if (pendingChars.length > 0) {
-            const result = await uploadAddon({
-              characters: pendingChars as Parameters<typeof uploadAddon>[0]["characters"],
-            });
+            const aggregateResult = {
+              newChars: 0,
+              newSnapshots: 0,
+              newMythicPlusRuns: 0,
+            };
+            for (const batch of createAddonUploadBatches(pendingChars)) {
+              const result = await uploadAddon.mutateAsync({
+                characters: batch,
+              });
+              aggregateResult.newChars += result.newChars;
+              aggregateResult.newSnapshots += result.newSnapshots;
+              aggregateResult.newMythicPlusRuns += result.newMythicPlusRuns;
+            }
             setLastUploadResult({
-              newChars: result.newChars,
-              newSnapshots: result.newSnapshots,
-              newMythicPlusRuns: result.newMythicPlusRuns,
+              newChars: aggregateResult.newChars,
+              newSnapshots: aggregateResult.newSnapshots,
+              newMythicPlusRuns: aggregateResult.newMythicPlusRuns,
             });
             const now = Math.floor(Date.now() / 1000);
             setLastSyncedAt(now);
@@ -811,8 +1027,17 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
       }
 
       // Resync from Battle.net
-      await resync();
+      await resync.mutateAsync();
+      await queryClient.invalidateQueries({
+        queryKey: apiQueryKeys.myCharacters(),
+      });
     } catch (e) {
+      if (e instanceof ApiClientError && e.status === 401) {
+        await _clearToken();
+        queryClient.clear();
+        setUploadError("Session expired — please sign in again.");
+        return;
+      }
       const msg = e instanceof Error ? e.message : String(e);
       if (msg.includes("RateLimited") || msg.includes("Too many")) {
         setUploadError("Too many requests — please wait a moment before trying again.");
@@ -830,9 +1055,12 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
 
   // 15-minute fallback sync; primary sync is triggered by the file watcher.
   useEffect(() => {
-    const id = setInterval(() => {
-      void doUploadRef.current();
-    }, 15 * 60 * 1000);
+    const id = setInterval(
+      () => {
+        void doUploadRef.current();
+      },
+      15 * 60 * 1000,
+    );
     return () => clearInterval(id);
   }, []);
 
@@ -879,17 +1107,15 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
           : "Downloading…"
         : appUpdateState.status === "installing"
           ? "Installing…"
-        : appUpdateState.status === "upToDate"
-          ? "Up to date"
-          : appUpdateState.status === "downloaded"
-            ? "Update ready"
-            : appUpdateState.status === "unsupported"
-              ? "Updates unavailable in dev"
-              : "Check for Updates";
+          : appUpdateState.status === "upToDate"
+            ? "Up to date"
+            : appUpdateState.status === "downloaded"
+              ? "Update ready"
+              : appUpdateState.status === "unsupported"
+                ? "Updates unavailable in dev"
+                : "Check for Updates";
   const addonCheckDisabled =
-    installing ||
-    addonUpdateState.status === "checking" ||
-    addonUpdateState.status === "updating";
+    installing || addonUpdateState.status === "checking" || addonUpdateState.status === "updating";
   const checkingAddonUpdate =
     addonUpdateState.status === "checking" || addonUpdateState.status === "updating";
   const addonUpToDate =
@@ -918,8 +1144,8 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
         {appUpdateState.status === "downloaded" && appUpdateReadyVersion && (
           <div className="flex items-center justify-between gap-3 rounded-lg border border-green-700 bg-green-950 px-4 py-3 text-sm text-green-300">
             <p>
-              App v{appUpdateReadyVersion} is ready to install. It will still install
-              automatically the next time WoW Dashboard fully exits.
+              App v{appUpdateReadyVersion} is ready to install. It will still install automatically
+              the next time WoW Dashboard fully exits.
             </p>
             <button
               onClick={handleInstallAppUpdate}
@@ -936,13 +1162,13 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
         )}
         {(appUpdateState.status === "available" || appUpdateState.status === "downloading") &&
           appUpdateState.availableVersion && (
-          <div className="rounded-lg border border-blue-700 bg-blue-950 px-4 py-3 text-sm text-blue-300">
-            App update v{appUpdateState.availableVersion} is downloading in the background
-            {appUpdateState.status === "downloading" && appUpdateState.progressPercent !== null
-              ? ` (${Math.round(appUpdateState.progressPercent)}%)`
-              : ""}
-          </div>
-        )}
+            <div className="rounded-lg border border-blue-700 bg-blue-950 px-4 py-3 text-sm text-blue-300">
+              App update v{appUpdateState.availableVersion} is downloading in the background
+              {appUpdateState.status === "downloading" && appUpdateState.progressPercent !== null
+                ? ` (${Math.round(appUpdateState.progressPercent)}%)`
+                : ""}
+            </div>
+          )}
         {appUpdateError && (
           <div className="rounded-lg border border-red-700 bg-red-950 px-4 py-3 text-sm text-red-300">
             {appUpdateError}
@@ -1044,8 +1270,8 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
                   {(addonUpdateState.status === "error" ||
                     addonUpdateState.status === "invalidRetailPath") &&
                     addonUpdateError && (
-                    <p className="mt-0.5 text-xs text-red-400">{addonUpdateError}</p>
-                  )}
+                      <p className="mt-0.5 text-xs text-red-400">{addonUpdateError}</p>
+                    )}
                 </>
               )}
             </div>
@@ -1106,7 +1332,8 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
             </button>
           </div>
           <p className="text-xs text-gray-500">
-            Manual sync uploads addon snapshots and Mythic+ runs, then refreshes Battle.net character data.
+            Manual sync uploads addon snapshots and Mythic+ runs, then refreshes Battle.net
+            character data.
           </p>
           <p className="text-xs text-gray-500">
             Last successful sync: {formatLastSyncTime(lastSyncedAt)}
@@ -1130,7 +1357,8 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
               {(lastUploadResult.newSnapshots > 0 || lastUploadResult.newMythicPlusRuns > 0) && (
                 <span className="text-xs text-gray-500">
                   ({lastUploadResult.newSnapshots} new snapshot
-                  {lastUploadResult.newSnapshots !== 1 ? "s" : ""}, {lastUploadResult.newMythicPlusRuns} new M+ run
+                  {lastUploadResult.newSnapshots !== 1 ? "s" : ""},{" "}
+                  {lastUploadResult.newMythicPlusRuns} new M+ run
                   {lastUploadResult.newMythicPlusRuns !== 1 ? "s" : ""} uploaded)
                 </span>
               )}
@@ -1145,7 +1373,8 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
             </p>
           ) : (
             <p className="text-sm text-yellow-400">
-              {pendingUploadCounts.snapshots} snapshot{pendingUploadCounts.snapshots !== 1 ? "s" : ""} and{" "}
+              {pendingUploadCounts.snapshots} snapshot
+              {pendingUploadCounts.snapshots !== 1 ? "s" : ""} and{" "}
               {pendingUploadCounts.mythicPlusRuns} M+ run
               {pendingUploadCounts.mythicPlusRuns !== 1 ? "s" : ""} pending upload
             </p>
@@ -1155,9 +1384,13 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
           {addonFileStats && (
             <div className="grid grid-cols-2 gap-x-4 gap-y-1 pt-1 text-xs text-gray-500">
               <span>Total snapshots</span>
-              <span className="text-gray-400">{addonFileStats.totalSnapshots.toLocaleString()}</span>
+              <span className="text-gray-400">
+                {addonFileStats.totalSnapshots.toLocaleString()}
+              </span>
               <span>Total M+ runs</span>
-              <span className="text-gray-400">{addonFileStats.totalMythicPlusRuns.toLocaleString()}</span>
+              <span className="text-gray-400">
+                {addonFileStats.totalMythicPlusRuns.toLocaleString()}
+              </span>
               <span>File size</span>
               <span className="text-gray-400">{formatBytes(addonFileStats.totalBytes)}</span>
               <span>Created</span>
@@ -1165,9 +1398,7 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
               <span>Last modified</span>
               <span className="text-gray-400">{formatDate(addonFileStats.modifiedAt)}</span>
               <span>Last synced</span>
-              <span className="text-gray-400">
-                {formatLastSyncTime(lastSyncedAt)}
-              </span>
+              <span className="text-gray-400">{formatLastSyncTime(lastSyncedAt)}</span>
             </div>
           )}
         </div>
@@ -1221,21 +1452,23 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
 // Root App
 // ---------------------------------------------------------------------------
 export default function App() {
+  const queryClient = useQueryClient();
+
   async function handleLogin() {
     await window.electron.auth.login();
     await _fetchToken();
+    await queryClient.invalidateQueries();
   }
 
   async function handleLogout() {
-    await window.electron.auth.logout();
-    _token = null;
-    _notify();
+    await _clearToken();
+    queryClient.clear();
   }
 
   const authState = useElectronAuth();
 
   return (
-    <ConvexProviderWithAuth client={client} useAuth={useElectronAuth}>
+    <>
       {authState.isLoading ? (
         <LoadingScreen />
       ) : authState.isAuthenticated ? (
@@ -1248,6 +1481,6 @@ export default function App() {
           DEV
         </div>
       )}
-    </ConvexProviderWithAuth>
+    </>
   );
 }

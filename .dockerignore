@@ -7,6 +7,9 @@ node_modules
 **/.tanstack
 **/.turbo
 .turbo
+.pnpm-store
+.tmp
+backup.json
 
 # ---- git ----
 .git
@@ -17,6 +20,19 @@ node_modules
 .env.*
 **/.env
 **/.env.*
+.imports
+temp
+tmp
+
+# ---- local tooling / docs not needed for image builds ----
+.agents
+.claude
+.github
+docs
+scripts
+apps/addon
+apps/app
+packages/backend
 
 # ---- editor / OS noise ----
 .vscode

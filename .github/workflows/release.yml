@@ -7,7 +7,14 @@ on:
     paths:
       - "apps/app/**"
       - "apps/addon/**"
-      - "packages/backend/**"
+      - "packages/api-client/**"
+      - "packages/api-schema/**"
+      - "packages/config/**"
+      - "packages/env/**"
+      - "packages/ui/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
 
 permissions:
   contents: write
@@ -21,12 +28,12 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 10.11.0
+          version: 10.33.1
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: pnpm
 
       - name: Install dependencies
@@ -40,7 +47,6 @@ jobs:
     outputs:
       app: ${{ steps.filter.outputs.app }}
       addon: ${{ steps.filter.outputs.addon }}
-      backend: ${{ steps.filter.outputs.backend }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -49,38 +55,16 @@ jobs:
           filters: |
             app:
               - 'apps/app/**'
+              - 'packages/api-client/**'
+              - 'packages/api-schema/**'
+              - 'packages/config/**'
+              - 'packages/env/**'
+              - 'packages/ui/**'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
             addon:
               - 'apps/addon/**'
-            backend:
-              - 'packages/backend/**'
-
-  deploy-backend:
-    needs: [check, changes]
-    if: needs.changes.outputs.backend == 'true'
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10.11.0
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Deploy backend
-        run: pnpm --filter @wow-dashboard/backend run deploy
-        env:
-          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
 
   bump-versions:
     needs: [check, changes]
@@ -132,7 +116,7 @@ jobs:
 
           if [ "$APP_CHANGED" = "true" ]; then
             CURRENT=$(node -p "require('./apps/app/package.json').version")
-            APP_VERSION=$(bump_semver "$CURRENT" "apps/app/ packages/ui/ packages/env/ packages/config/" "app-v*")
+            APP_VERSION=$(bump_semver "$CURRENT" "apps/app/ packages/api-client/ packages/api-schema/ packages/config/ packages/env/ packages/ui/ package.json pnpm-lock.yaml pnpm-workspace.yaml" "app-v*")
             # Update package.json version
             node -e "
               const fs = require('fs');
@@ -183,12 +167,12 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 10.11.0
+          version: 10.33.1
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: pnpm
 
       - name: Clean install state
@@ -202,18 +186,15 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --force
 
-      - name: Debug Rollup native package
-        shell: pwsh
-        run: |
-          pnpm why @rollup/rollup-win32-x64-msvc
-          Test-Path "node_modules/.pnpm/@rollup+rollup-win32-x64-msvc@4.59.0/node_modules/@rollup/rollup-win32-x64-msvc"
-
       - name: Create .env file
         shell: bash
         run: |
-          echo "VITE_CONVEX_URL=${{ secrets.VITE_CONVEX_URL }}" > apps/app/.env
-          echo "VITE_CONVEX_SITE_URL=${{ secrets.VITE_CONVEX_SITE_URL }}" >> apps/app/.env
-          echo "VITE_SITE_URL=${{ secrets.VITE_SITE_URL }}" >> apps/app/.env
+          SITE_URL="${{ secrets.VITE_SITE_URL }}"
+          SITE_URL="${SITE_URL%/}"
+          {
+            echo "VITE_SITE_URL=${SITE_URL}"
+            echo "VITE_API_URL=${SITE_URL}/api"
+          } > apps/app/.env
 
       - name: Build app (electron-vite)
         run: pnpm --filter app build

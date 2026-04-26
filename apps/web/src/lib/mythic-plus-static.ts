@@ -1,11 +1,11 @@
 import scoreTiers from "./raiderio-score-tiers-season-mn-1.json";
 
-export type RaiderIoScoreTier = {
+type RaiderIoScoreTier = {
   score: number;
   color: string;
 };
 
-export type MythicPlusDungeonMeta = {
+type MythicPlusDungeonMeta = {
   mapChallengeModeID: number;
   name: string;
   shortName: string;
@@ -132,7 +132,7 @@ export function getMythicPlusDungeonEaseRank(
   return getMythicPlusDungeonMeta(mapChallengeModeID, mapName)?.easeRank ?? CURRENT_SEASON_DUNGEONS.length;
 }
 
-export function getRaiderIoScoreTier(score?: number | null) {
+function getRaiderIoScoreTier(score?: number | null) {
   if (score === undefined || score === null || !Number.isFinite(score)) return undefined;
 
   for (const tier of SCORE_TIERS) {
@@ -148,7 +148,7 @@ export function getRaiderIoScoreColor(score?: number | null) {
   return getRaiderIoScoreTier(score)?.color;
 }
 
-export function getRaiderIoOverallEquivalentFromDungeonScore(
+function getRaiderIoOverallEquivalentFromDungeonScore(
   dungeonScore?: number | null,
   dungeonCount = CURRENT_SEASON_DUNGEONS.length,
 ) {

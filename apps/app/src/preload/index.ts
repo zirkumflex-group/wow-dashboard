@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
+import type { DesktopAuthSessionState } from "../shared/auth";
 import type {
   AddonUpdateCheckResult,
   AddonUpdateState,
@@ -24,9 +25,23 @@ contextBridge.exposeInMainWorld("electron", {
   version: process.versions.electron,
   auth: {
     login: () => ipcRenderer.invoke("auth:login"),
-    getToken: () => ipcRenderer.invoke("auth:getToken"),
-    getSession: () => ipcRenderer.invoke("auth:getSession"),
+    getSession: () =>
+      ipcRenderer.invoke("auth:getSession") as Promise<DesktopAuthSessionState>,
     logout: () => ipcRenderer.invoke("auth:logout"),
+  },
+  api: {
+    fetch: (request: {
+      url: string;
+      method?: string;
+      headers?: Array<[string, string]>;
+      body?: string;
+    }) =>
+      ipcRenderer.invoke("api:fetch", request) as Promise<{
+        status: number;
+        statusText: string;
+        headers: Array<[string, string]>;
+        body: string;
+      }>,
   },
   wow: {
     getRetailPath: () => ipcRenderer.invoke("wow:getRetailPath") as Promise<string | null>,
@@ -35,12 +50,12 @@ contextBridge.exposeInMainWorld("electron", {
     checkAddonInstalled: () => ipcRenderer.invoke("wow:checkAddonInstalled") as Promise<boolean>,
     getInstalledAddonVersion: () =>
       ipcRenderer.invoke("wow:getInstalledAddonVersion") as Promise<string | null>,
-    installAddon: (downloadUrl: string, checksumUrl: string | null) =>
-      ipcRenderer.invoke("wow:installAddon", downloadUrl, checksumUrl),
+    installAddon: () =>
+      ipcRenderer.invoke("wow:installAddon") as Promise<{
+        version: string;
+      }>,
     getLatestAddonRelease: () =>
       ipcRenderer.invoke("wow:getLatestAddonRelease") as Promise<{
-        url: string;
-        checksumUrl: string | null;
         version: string;
       }>,
     getAddonUpdateStatus: () =>

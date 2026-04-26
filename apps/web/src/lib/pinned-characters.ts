@@ -3,6 +3,8 @@ import { useCallback, useMemo, useSyncExternalStore } from "react";
 const PINNED_CHARACTERS_KEY = "wow_dashboard_quick_access_pins";
 const PINNED_CHARACTERS_EVENT = "wow-dashboard:pinned-characters";
 const EMPTY_PINNED_CHARACTER_IDS: string[] = [];
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 let cachedPinnedCharacterIds: string[] = EMPTY_PINNED_CHARACTER_IDS;
 let cachedPinnedCharacterIdsRaw = "";
@@ -16,7 +18,13 @@ function normalizePinnedCharacterIds(value: unknown): string[] {
   for (const item of value) {
     if (typeof item !== "string") continue;
     const trimmedItem = item.trim();
-    if (trimmedItem === "" || seen.has(trimmedItem)) continue;
+    if (
+      trimmedItem === "" ||
+      !UUID_PATTERN.test(trimmedItem) ||
+      seen.has(trimmedItem)
+    ) {
+      continue;
+    }
     seen.add(trimmedItem);
     pinnedCharacterIds.push(trimmedItem);
   }

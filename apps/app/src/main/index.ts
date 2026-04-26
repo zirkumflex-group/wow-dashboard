@@ -12,12 +12,15 @@ import {
   nativeImage,
 } from "electron";
 import { autoUpdater } from "electron-updater";
+import { env as appEnv } from "@wow-dashboard/env/app";
+import { execFile } from "node:child_process";
 import * as fs from "fs";
 import * as path from "path";
 import { join, resolve, sep } from "path";
 import * as crypto from "crypto";
 import * as os from "os";
 import * as unzipper from "unzipper";
+import { fileURLToPath } from "node:url";
 import type {
   AddonApplyStagedResult,
   AddonUpdateCheckResult,
@@ -25,11 +28,13 @@ import type {
   AppInstallUpdateResult,
   AppUpdateState,
 } from "../shared/update";
+import type { DesktopAuthSessionState } from "../shared/auth";
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let isQuitting = false;
 let isInstallingAppUpdate = false;
+let isEndingWindowsSession = false;
 let mainWindowReady = false;
 let pendingWindowReveal = false;
 // Cache close behavior so the window close handler can be synchronous (event.preventDefault
@@ -38,7 +43,6 @@ let closeBehaviorCache: "tray" | "exit" = "tray";
 let launchMinimizedCache = true;
 let addonWatcher: ReturnType<typeof fs.watch> | null = null;
 let addonWatchDebounce: ReturnType<typeof setTimeout> | null = null;
-let cachedElectronToken: string | null = null;
 let storedSessionToken: string | null = null;
 let pendingLoginResolve: ((token: string) => void) | null = null;
 let pendingLoginReject: ((err: Error) => void) | null = null;
@@ -47,10 +51,18 @@ let applyingStagedAddonUpdate = false;
 let appUpdateCheckInFlight: Promise<void> | null = null;
 let addonUpdateCheckInFlight: Promise<AddonUpdateCheckResult> | null = null;
 let appUpdaterListenersRegistered = false;
+let addonUpdateCheckTimer: ReturnType<typeof setInterval> | null = null;
+let addonUpdateApplyTimer: ReturnType<typeof setInterval> | null = null;
+let appUpdateCheckTimer: ReturnType<typeof setInterval> | null = null;
 
 const DEFAULT_APP_UPDATE_CHECK_INTERVAL_MINUTES = 60;
 const DEFAULT_ADDON_UPDATE_CHECK_INTERVAL_MINUTES = 60;
 const DEFAULT_ADDON_UPDATE_APPLY_INTERVAL_MINUTES = 1;
+
+if (!app.isPackaged) {
+  app.setName("WoW Dashboard Dev");
+  app.setPath("userData", join(app.getPath("appData"), "WoW Dashboard Dev"));
+}
 
 const appUpdateState: AppUpdateState = {
   status: app.isPackaged ? "idle" : "unsupported",
@@ -71,6 +83,161 @@ const addonUpdateState: AddonUpdateState = {
   error: null,
   lastCheckedAt: null,
 };
+const SITE_URL = appEnv.VITE_SITE_URL;
+const API_URL = appEnv.VITE_API_URL;
+const RENDERER_DEV_URL = process.env["ELECTRON_RENDERER_URL"] ?? null;
+const RENDERER_FILE_PATH = join(__dirname, "../renderer/index.html");
+const RENDERER_DIR = resolve(__dirname, "../renderer");
+
+function isHttpUrl(url: URL): boolean {
+  return url.protocol === "https:" || url.protocol === "http:";
+}
+
+function isPathInside(parentPath: string, childPath: string): boolean {
+  const relativePath = path.relative(resolve(parentPath), resolve(childPath));
+  return relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
+}
+
+function isTrustedRendererUrl(rawUrl: string): boolean {
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(rawUrl);
+  } catch {
+    return false;
+  }
+
+  if (RENDERER_DEV_URL) {
+    try {
+      const devUrl = new URL(RENDERER_DEV_URL);
+      return parsedUrl.origin === devUrl.origin;
+    } catch {
+      return false;
+    }
+  }
+
+  if (parsedUrl.protocol !== "file:") {
+    return false;
+  }
+
+  try {
+    const filePath = fileURLToPath(parsedUrl);
+    return isPathInside(RENDERER_DIR, filePath);
+  } catch {
+    return false;
+  }
+}
+
+function handleBlockedRendererNavigation(rawUrl: string): void {
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(rawUrl);
+  } catch {
+    return;
+  }
+
+  if (isHttpUrl(parsedUrl)) {
+    void openUrlInExternalBrowser(rawUrl).catch((error) => {
+      console.warn("[wow-dashboard] Failed to open blocked renderer navigation externally:", error);
+    });
+  }
+}
+
+type MainApiFetchRequest = {
+  url: string;
+  method?: string;
+  headers?: Array<[string, string]>;
+  body?: string;
+};
+
+type MainApiFetchResponse = {
+  status: number;
+  statusText: string;
+  headers: Array<[string, string]>;
+  body: string;
+};
+
+function isTrustedApiUrl(rawUrl: string): boolean {
+  try {
+    const parsedUrl = new URL(rawUrl);
+    const apiBaseUrl = new URL(API_URL.endsWith("/") ? API_URL : `${API_URL}/`);
+    return (
+      parsedUrl.origin === apiBaseUrl.origin &&
+      (parsedUrl.pathname === apiBaseUrl.pathname.slice(0, -1) ||
+        parsedUrl.pathname.startsWith(apiBaseUrl.pathname))
+    );
+  } catch {
+    return false;
+  }
+}
+
+function buildApiProxyHeaders(inputHeaders: Array<[string, string]> | undefined): Headers {
+  const headers = new Headers();
+  for (const [name, value] of inputHeaders ?? []) {
+    const normalizedName = name.toLowerCase();
+    if (normalizedName === "accept" || normalizedName === "content-type") {
+      headers.set(name, value);
+    }
+  }
+
+  headers.set("Origin", SITE_URL);
+  if (storedSessionToken) {
+    headers.set("Authorization", `Bearer ${storedSessionToken}`);
+  }
+  return headers;
+}
+
+function getElectronLoginUrl(): string {
+  return new URL("/auth/electron-login", SITE_URL).toString();
+}
+
+function getApiAuthUrl(pathname: string): string {
+  return new URL(
+    pathname.replace(/^\//, ""),
+    API_URL.endsWith("/") ? API_URL : `${API_URL}/`,
+  ).toString();
+}
+
+function persistDesktopSessionToken(token: string): void {
+  storedSessionToken = token;
+  saveSessionToken(token);
+}
+
+function runOpenCommand(command: string, args: readonly string[]): Promise<void> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    execFile(command, args, { windowsHide: true }, (error) => {
+      if (error) {
+        rejectPromise(error);
+        return;
+      }
+      resolvePromise();
+    });
+  });
+}
+
+async function openUrlInExternalBrowser(url: string): Promise<void> {
+  try {
+    await shell.openExternal(url);
+    return;
+  } catch (error) {
+    console.warn("[wow-dashboard] shell.openExternal failed:", error);
+  }
+
+  if (process.platform === "linux") {
+    for (const [command, args] of [
+      ["xdg-open", [url]],
+      ["gio", ["open", url]],
+    ] as const) {
+      try {
+        await runOpenCommand(command, args);
+        return;
+      } catch (error) {
+        console.warn(`[wow-dashboard] ${command} failed:`, error);
+      }
+    }
+  }
+
+  throw new Error(`Could not open your browser automatically. Open ${url} manually.`);
+}
 
 // ─── Token persistence via OS keychain (safeStorage) ──────────────────────────
 
@@ -90,7 +257,10 @@ function loadStoredAuth(): void {
         return;
       }
     } catch {
-      cachedElectronToken = raw;
+      if (raw) {
+        storedSessionToken = raw;
+        saveSessionToken(raw);
+      }
     }
   } catch {
     return;
@@ -113,51 +283,6 @@ function saveSessionToken(token: string | null): void {
     fs.writeFileSync(tokenPath, safeStorage.encryptString(JSON.stringify({ sessionToken: token })));
   } catch (err) {
     console.warn("[wow-dashboard] Failed to persist token:", err);
-  }
-}
-
-function getJwtExpirationMs(token: string): number | null {
-  const parts = token.split(".");
-  if (parts.length !== 3) return null;
-  const payloadPart = parts[1];
-  if (!payloadPart) return null;
-  try {
-    const payload = JSON.parse(Buffer.from(payloadPart, "base64url").toString("utf8")) as {
-      exp?: number;
-    };
-    return typeof payload.exp === "number" ? payload.exp * 1000 : null;
-  } catch {
-    return null;
-  }
-}
-
-function isJwtExpired(token: string, nowMs = Date.now(), skewMs = 60_000): boolean {
-  const exp = getJwtExpirationMs(token);
-  if (!exp) return true;
-  return nowMs >= exp - skewMs;
-}
-
-async function fetchFreshConvexToken(): Promise<string | null> {
-  if (!storedSessionToken) return null;
-  try {
-    const resp = await net.fetch(`${SITE_URL}/api/auth/convex/token`, {
-      headers: {
-        Origin: SITE_URL,
-        Authorization: `Bearer ${storedSessionToken}`,
-      },
-    });
-    if (!resp.ok) {
-      if (resp.status === 401 || resp.status === 403) {
-        storedSessionToken = null;
-        saveSessionToken(null);
-      }
-      return null;
-    }
-    const data = (await resp.json()) as { token?: string };
-    cachedElectronToken = data?.token ?? null;
-    return cachedElectronToken;
-  } catch {
-    return null;
   }
 }
 
@@ -219,12 +344,47 @@ function updateAddonUpdateState(patch: Partial<AddonUpdateState>): AddonUpdateSt
   return snapshot;
 }
 
-function quitApplication(): void {
+function destroyTray(): void {
+  if (!tray) return;
+  tray.destroy();
+  tray = null;
+}
+
+function clearBackgroundTimers(): void {
+  if (addonUpdateCheckTimer) {
+    clearInterval(addonUpdateCheckTimer);
+    addonUpdateCheckTimer = null;
+  }
+  if (addonUpdateApplyTimer) {
+    clearInterval(addonUpdateApplyTimer);
+    addonUpdateApplyTimer = null;
+  }
+  if (appUpdateCheckTimer) {
+    clearInterval(appUpdateCheckTimer);
+    appUpdateCheckTimer = null;
+  }
+}
+
+function prepareForQuit(options?: { windowsSessionEnding?: boolean }): void {
   isQuitting = true;
+
+  if (options?.windowsSessionEnding) {
+    isEndingWindowsSession = true;
+    autoUpdater.autoInstallOnAppQuit = false;
+  }
+
+  clearBackgroundTimers();
+  stopAddonWatcher();
+  destroyTray();
+}
+
+function quitApplication(): void {
+  prepareForQuit();
   app.quit();
 }
 
 function revealWindow(): void {
+  if (isQuitting) return;
   pendingWindowReveal = false;
   mainWindow?.setSkipTaskbar(false);
   mainWindow?.show();
@@ -232,6 +392,8 @@ function revealWindow(): void {
 }
 
 function showWindow(): void {
+  if (isQuitting) return;
+
   if (!mainWindow) {
     pendingWindowReveal = true;
     createWindow();
@@ -532,6 +694,80 @@ interface MythicPlusRunData {
   members?: MythicPlusRunMemberData[];
 }
 
+interface SnapshotCurrencyInfo {
+  currencyID: number;
+  name?: string;
+  quantity: number;
+  iconFileID?: number;
+  maxQuantity?: number;
+  canEarnPerWeek?: boolean;
+  quantityEarnedThisWeek?: number;
+  maxWeeklyQuantity?: number;
+  totalEarned?: number;
+  discovered?: boolean;
+  quality?: number;
+  useTotalEarnedForMaxQty?: boolean;
+}
+
+type SnapshotCurrencyDetails = Record<string, SnapshotCurrencyInfo>;
+
+interface SnapshotEquipmentItem {
+  slot: string;
+  slotID: number;
+  itemID?: number;
+  itemName?: string;
+  itemLink?: string;
+  itemLevel?: number;
+  quality?: number;
+  iconFileID?: number;
+}
+
+type SnapshotEquipment = Record<string, SnapshotEquipmentItem>;
+
+interface SnapshotWeeklyRewardActivity {
+  type?: number;
+  index?: number;
+  id?: number;
+  level?: number;
+  threshold?: number;
+  progress?: number;
+  activityTierID?: number;
+  itemLevel?: number;
+  name?: string;
+}
+
+interface SnapshotWeeklyRewards {
+  canClaimRewards?: boolean;
+  isCurrentPeriod?: boolean;
+  activities: SnapshotWeeklyRewardActivity[];
+}
+
+interface SnapshotMajorFaction {
+  factionID: number;
+  name?: string;
+  expansionID?: number;
+  isUnlocked?: boolean;
+  renownLevel?: number;
+  renownReputationEarned?: number;
+  renownLevelThreshold?: number;
+  isWeeklyCapped?: boolean;
+}
+
+interface SnapshotMajorFactions {
+  factions: SnapshotMajorFaction[];
+}
+
+interface SnapshotClientInfo {
+  addonVersion?: string;
+  interfaceVersion?: number;
+  gameVersion?: string;
+  buildNumber?: string;
+  buildDate?: string;
+  tocVersion?: number;
+  expansion?: string;
+  locale?: string;
+}
+
 interface SnapshotData {
   takenAt: number;
   level: number;
@@ -542,6 +778,7 @@ interface SnapshotData {
   playtimeSeconds: number;
   playtimeThisLevelSeconds?: number;
   mythicPlusScore: number;
+  seasonID?: number;
   ownedKeystone?: {
     level: number;
     mapChallengeModeID?: number;
@@ -555,19 +792,31 @@ interface SnapshotData {
     mythDawncrest: number;
     radiantSparkDust: number;
   };
+  currencyDetails?: SnapshotCurrencyDetails;
   stats: {
     stamina: number;
     strength: number;
     agility: number;
     intellect: number;
+    critRating?: number;
     critPercent: number;
+    hasteRating?: number;
     hastePercent: number;
+    masteryRating?: number;
     masteryPercent: number;
+    versatilityRating?: number;
     versatilityPercent: number;
+    speedRating?: number;
     speedPercent?: number;
+    leechRating?: number;
     leechPercent?: number;
+    avoidanceRating?: number;
     avoidancePercent?: number;
   };
+  equipment?: SnapshotEquipment;
+  weeklyRewards?: SnapshotWeeklyRewards;
+  majorFactions?: SnapshotMajorFactions;
+  clientInfo?: SnapshotClientInfo;
 }
 
 interface CharacterData {
@@ -594,7 +843,20 @@ function getSnapshotCompletenessScore(snapshot: SnapshotData): number {
 
   if (snapshot.playtimeSeconds > 0) score += 1;
   if (snapshot.playtimeThisLevelSeconds !== undefined) score += 1;
+  if (snapshot.seasonID !== undefined) score += 1;
   if (snapshot.ownedKeystone !== undefined) score += 1;
+  if (snapshot.currencyDetails !== undefined) score += 1;
+  if (snapshot.equipment !== undefined) score += 2;
+  if (snapshot.weeklyRewards !== undefined) score += 1;
+  if (snapshot.majorFactions !== undefined) score += 1;
+  if (snapshot.clientInfo !== undefined) score += 1;
+  if (snapshot.stats.critRating !== undefined) score += 1;
+  if (snapshot.stats.hasteRating !== undefined) score += 1;
+  if (snapshot.stats.masteryRating !== undefined) score += 1;
+  if (snapshot.stats.versatilityRating !== undefined) score += 1;
+  if (snapshot.stats.speedRating !== undefined) score += 1;
+  if (snapshot.stats.leechRating !== undefined) score += 1;
+  if (snapshot.stats.avoidanceRating !== undefined) score += 1;
   if (snapshot.stats.speedPercent !== undefined) score += 2;
   if (snapshot.stats.leechPercent !== undefined) score += 2;
   if (snapshot.stats.avoidancePercent !== undefined) score += 2;
@@ -610,12 +872,26 @@ function mergeSnapshotData(current: SnapshotData, candidate: SnapshotData): Snap
 
   return {
     ...preferred,
-    playtimeSeconds: preferred.playtimeSeconds > 0 ? preferred.playtimeSeconds : fallback.playtimeSeconds,
+    playtimeSeconds:
+      preferred.playtimeSeconds > 0 ? preferred.playtimeSeconds : fallback.playtimeSeconds,
     playtimeThisLevelSeconds:
       preferred.playtimeThisLevelSeconds ?? fallback.playtimeThisLevelSeconds,
+    seasonID: preferred.seasonID ?? fallback.seasonID,
     ownedKeystone: preferred.ownedKeystone ?? fallback.ownedKeystone,
+    currencyDetails: preferred.currencyDetails ?? fallback.currencyDetails,
+    equipment: preferred.equipment ?? fallback.equipment,
+    weeklyRewards: preferred.weeklyRewards ?? fallback.weeklyRewards,
+    majorFactions: preferred.majorFactions ?? fallback.majorFactions,
+    clientInfo: preferred.clientInfo ?? fallback.clientInfo,
     stats: {
       ...preferred.stats,
+      critRating: preferred.stats.critRating ?? fallback.stats.critRating,
+      hasteRating: preferred.stats.hasteRating ?? fallback.stats.hasteRating,
+      masteryRating: preferred.stats.masteryRating ?? fallback.stats.masteryRating,
+      versatilityRating: preferred.stats.versatilityRating ?? fallback.stats.versatilityRating,
+      speedRating: preferred.stats.speedRating ?? fallback.stats.speedRating,
+      leechRating: preferred.stats.leechRating ?? fallback.stats.leechRating,
+      avoidanceRating: preferred.stats.avoidanceRating ?? fallback.stats.avoidanceRating,
       speedPercent: preferred.stats.speedPercent ?? fallback.stats.speedPercent,
       leechPercent: preferred.stats.leechPercent ?? fallback.stats.leechPercent,
       avoidancePercent: preferred.stats.avoidancePercent ?? fallback.stats.avoidancePercent,
@@ -637,6 +913,216 @@ function toOptionalBoolean(value: unknown): boolean | undefined {
 
 function toOptionalString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
+}
+
+function normalizeCurrencyDetails(value: unknown): SnapshotCurrencyDetails | undefined {
+  if (!isRecord(value)) return undefined;
+
+  const details: SnapshotCurrencyDetails = {};
+  for (const [key, rawInfo] of Object.entries(value)) {
+    if (!isRecord(rawInfo)) continue;
+    const currencyID = toOptionalNumber(rawInfo.currencyID);
+    const quantity = toOptionalNumber(rawInfo.quantity);
+    if (currencyID === undefined || quantity === undefined) continue;
+
+    details[key] = {
+      currencyID,
+      quantity,
+      ...(toOptionalString(rawInfo.name) !== undefined
+        ? { name: toOptionalString(rawInfo.name) }
+        : {}),
+      ...(toOptionalNumber(rawInfo.iconFileID) !== undefined
+        ? { iconFileID: toOptionalNumber(rawInfo.iconFileID) }
+        : {}),
+      ...(toOptionalNumber(rawInfo.maxQuantity) !== undefined
+        ? { maxQuantity: toOptionalNumber(rawInfo.maxQuantity) }
+        : {}),
+      ...(toOptionalBoolean(rawInfo.canEarnPerWeek) !== undefined
+        ? { canEarnPerWeek: toOptionalBoolean(rawInfo.canEarnPerWeek) }
+        : {}),
+      ...(toOptionalNumber(rawInfo.quantityEarnedThisWeek) !== undefined
+        ? { quantityEarnedThisWeek: toOptionalNumber(rawInfo.quantityEarnedThisWeek) }
+        : {}),
+      ...(toOptionalNumber(rawInfo.maxWeeklyQuantity) !== undefined
+        ? { maxWeeklyQuantity: toOptionalNumber(rawInfo.maxWeeklyQuantity) }
+        : {}),
+      ...(toOptionalNumber(rawInfo.totalEarned) !== undefined
+        ? { totalEarned: toOptionalNumber(rawInfo.totalEarned) }
+        : {}),
+      ...(toOptionalBoolean(rawInfo.discovered) !== undefined
+        ? { discovered: toOptionalBoolean(rawInfo.discovered) }
+        : {}),
+      ...(toOptionalNumber(rawInfo.quality) !== undefined
+        ? { quality: toOptionalNumber(rawInfo.quality) }
+        : {}),
+      ...(toOptionalBoolean(rawInfo.useTotalEarnedForMaxQty) !== undefined
+        ? { useTotalEarnedForMaxQty: toOptionalBoolean(rawInfo.useTotalEarnedForMaxQty) }
+        : {}),
+    };
+  }
+
+  return Object.keys(details).length > 0 ? details : undefined;
+}
+
+function normalizeSnapshotEquipment(value: unknown): SnapshotEquipment | undefined {
+  if (!isRecord(value)) return undefined;
+
+  const equipment: SnapshotEquipment = {};
+  for (const [key, rawItem] of Object.entries(value)) {
+    if (!isRecord(rawItem)) continue;
+    const slot = toOptionalString(rawItem.slot) ?? key;
+    const slotID = toOptionalNumber(rawItem.slotID);
+    if (slotID === undefined) continue;
+
+    equipment[key] = {
+      slot,
+      slotID,
+      ...(toOptionalNumber(rawItem.itemID) !== undefined
+        ? { itemID: toOptionalNumber(rawItem.itemID) }
+        : {}),
+      ...(toOptionalString(rawItem.itemName) !== undefined
+        ? { itemName: toOptionalString(rawItem.itemName) }
+        : {}),
+      ...(toOptionalString(rawItem.itemLink) !== undefined
+        ? { itemLink: toOptionalString(rawItem.itemLink) }
+        : {}),
+      ...(toOptionalNumber(rawItem.itemLevel) !== undefined
+        ? { itemLevel: toOptionalNumber(rawItem.itemLevel) }
+        : {}),
+      ...(toOptionalNumber(rawItem.quality) !== undefined
+        ? { quality: toOptionalNumber(rawItem.quality) }
+        : {}),
+      ...(toOptionalNumber(rawItem.iconFileID) !== undefined
+        ? { iconFileID: toOptionalNumber(rawItem.iconFileID) }
+        : {}),
+    };
+  }
+
+  return Object.keys(equipment).length > 0 ? equipment : undefined;
+}
+
+function normalizeWeeklyRewards(value: unknown): SnapshotWeeklyRewards | undefined {
+  if (!isRecord(value)) return undefined;
+
+  const activitiesRaw = Array.isArray(value.activities) ? value.activities : [];
+  const activities: SnapshotWeeklyRewardActivity[] = [];
+  for (const [index, rawActivity] of activitiesRaw.entries()) {
+    if (!isRecord(rawActivity)) continue;
+    const activity = {
+      ...(toOptionalNumber(rawActivity.type) !== undefined
+        ? { type: toOptionalNumber(rawActivity.type) }
+        : {}),
+      ...(toOptionalNumber(rawActivity.index) !== undefined
+        ? { index: toOptionalNumber(rawActivity.index) }
+        : { index: index + 1 }),
+      ...(toOptionalNumber(rawActivity.id) !== undefined
+        ? { id: toOptionalNumber(rawActivity.id) }
+        : {}),
+      ...(toOptionalNumber(rawActivity.level) !== undefined
+        ? { level: toOptionalNumber(rawActivity.level) }
+        : {}),
+      ...(toOptionalNumber(rawActivity.threshold) !== undefined
+        ? { threshold: toOptionalNumber(rawActivity.threshold) }
+        : {}),
+      ...(toOptionalNumber(rawActivity.progress) !== undefined
+        ? { progress: toOptionalNumber(rawActivity.progress) }
+        : {}),
+      ...(toOptionalNumber(rawActivity.activityTierID) !== undefined
+        ? { activityTierID: toOptionalNumber(rawActivity.activityTierID) }
+        : {}),
+      ...(toOptionalNumber(rawActivity.itemLevel) !== undefined
+        ? { itemLevel: toOptionalNumber(rawActivity.itemLevel) }
+        : {}),
+      ...(toOptionalString(rawActivity.name) !== undefined
+        ? { name: toOptionalString(rawActivity.name) }
+        : {}),
+    };
+    activities.push(activity);
+  }
+
+  if (activities.length === 0) return undefined;
+
+  return {
+    ...(toOptionalBoolean(value.canClaimRewards) !== undefined
+      ? { canClaimRewards: toOptionalBoolean(value.canClaimRewards) }
+      : {}),
+    ...(toOptionalBoolean(value.isCurrentPeriod) !== undefined
+      ? { isCurrentPeriod: toOptionalBoolean(value.isCurrentPeriod) }
+      : {}),
+    activities,
+  };
+}
+
+function normalizeMajorFactions(value: unknown): SnapshotMajorFactions | undefined {
+  if (!isRecord(value)) return undefined;
+
+  const factionsRaw = Array.isArray(value.factions) ? value.factions : [];
+  const factions: SnapshotMajorFaction[] = [];
+  for (const rawFaction of factionsRaw) {
+    if (!isRecord(rawFaction)) continue;
+    const factionID = toOptionalNumber(rawFaction.factionID);
+    if (factionID === undefined) continue;
+
+    factions.push({
+      factionID,
+      ...(toOptionalString(rawFaction.name) !== undefined
+        ? { name: toOptionalString(rawFaction.name) }
+        : {}),
+      ...(toOptionalNumber(rawFaction.expansionID) !== undefined
+        ? { expansionID: toOptionalNumber(rawFaction.expansionID) }
+        : {}),
+      ...(toOptionalBoolean(rawFaction.isUnlocked) !== undefined
+        ? { isUnlocked: toOptionalBoolean(rawFaction.isUnlocked) }
+        : {}),
+      ...(toOptionalNumber(rawFaction.renownLevel) !== undefined
+        ? { renownLevel: toOptionalNumber(rawFaction.renownLevel) }
+        : {}),
+      ...(toOptionalNumber(rawFaction.renownReputationEarned) !== undefined
+        ? { renownReputationEarned: toOptionalNumber(rawFaction.renownReputationEarned) }
+        : {}),
+      ...(toOptionalNumber(rawFaction.renownLevelThreshold) !== undefined
+        ? { renownLevelThreshold: toOptionalNumber(rawFaction.renownLevelThreshold) }
+        : {}),
+      ...(toOptionalBoolean(rawFaction.isWeeklyCapped) !== undefined
+        ? { isWeeklyCapped: toOptionalBoolean(rawFaction.isWeeklyCapped) }
+        : {}),
+    });
+  }
+
+  return factions.length > 0 ? { factions } : undefined;
+}
+
+function normalizeClientInfo(value: unknown): SnapshotClientInfo | undefined {
+  if (!isRecord(value)) return undefined;
+
+  const clientInfo: SnapshotClientInfo = {
+    ...(toOptionalString(value.addonVersion) !== undefined
+      ? { addonVersion: toOptionalString(value.addonVersion) }
+      : {}),
+    ...(toOptionalNumber(value.interfaceVersion) !== undefined
+      ? { interfaceVersion: toOptionalNumber(value.interfaceVersion) }
+      : {}),
+    ...(toOptionalString(value.gameVersion) !== undefined
+      ? { gameVersion: toOptionalString(value.gameVersion) }
+      : {}),
+    ...(toOptionalString(value.buildNumber) !== undefined
+      ? { buildNumber: toOptionalString(value.buildNumber) }
+      : {}),
+    ...(toOptionalString(value.buildDate) !== undefined
+      ? { buildDate: toOptionalString(value.buildDate) }
+      : {}),
+    ...(toOptionalNumber(value.tocVersion) !== undefined
+      ? { tocVersion: toOptionalNumber(value.tocVersion) }
+      : {}),
+    ...(toOptionalString(value.expansion) !== undefined
+      ? { expansion: toOptionalString(value.expansion) }
+      : {}),
+    ...(toOptionalString(value.locale) !== undefined
+      ? { locale: toOptionalString(value.locale) }
+      : {}),
+  };
+
+  return Object.keys(clientInfo).length > 0 ? clientInfo : undefined;
 }
 
 function isTemporaryAttemptFingerprint(value: unknown): boolean {
@@ -837,7 +1323,7 @@ function findMergeableRunMemberIndex(
     return exactIndex;
   }
   if (candidateRealm === "") {
-    return sameNameCount === 1 ? unresolvedIndex ?? sameNameIndex : undefined;
+    return sameNameCount === 1 ? (unresolvedIndex ?? sameNameIndex) : undefined;
   }
 
   return unresolvedCount === 1 ? unresolvedIndex : undefined;
@@ -859,7 +1345,10 @@ function mergeMythicPlusRunMembers(
   currentMembers: MythicPlusRunMemberData[] | undefined,
   candidateMembers: MythicPlusRunMemberData[] | undefined,
 ) {
-  if ((!currentMembers || currentMembers.length === 0) && (!candidateMembers || candidateMembers.length === 0)) {
+  if (
+    (!currentMembers || currentMembers.length === 0) &&
+    (!candidateMembers || candidateMembers.length === 0)
+  ) {
     return undefined;
   }
 
@@ -1062,11 +1551,7 @@ function getSanitizedRunDurationMs(run: Partial<MythicPlusRunData>): number | un
   }
 
   const runEndAt = run.completedAt ?? run.endedAt ?? run.abandonedAt;
-  if (
-    run.startDate !== undefined &&
-    runEndAt !== undefined &&
-    runEndAt >= run.startDate
-  ) {
+  if (run.startDate !== undefined && runEndAt !== undefined && runEndAt >= run.startDate) {
     const derivedDurationMs = (runEndAt - run.startDate) * 1000;
     if (
       Number.isFinite(derivedDurationMs) &&
@@ -1281,7 +1766,9 @@ function getMythicPlusRunCanonicalKey(run: Partial<MythicPlusRunData>): string |
   return buildRunCanonicalKeyWithIdentityTimestamp(run, identityTimestamp);
 }
 
-function buildCanonicalMythicPlusRunFingerprint(run: Partial<MythicPlusRunData>): string | undefined {
+function buildCanonicalMythicPlusRunFingerprint(
+  run: Partial<MythicPlusRunData>,
+): string | undefined {
   return getMythicPlusRunCanonicalKey(run);
 }
 
@@ -1405,7 +1892,11 @@ function getMythicPlusRunDedupKeys(run: Partial<MythicPlusRunData>): string[] {
 }
 
 function getMythicPlusRunDedupKey(run: Partial<MythicPlusRunData>): string {
-  return getMythicPlusRunCanonicalKey(run) ?? getMythicPlusRunDedupKeys(run)[0] ?? buildRunFingerprint(run);
+  return (
+    getMythicPlusRunCanonicalKey(run) ??
+    getMythicPlusRunDedupKeys(run)[0] ??
+    buildRunFingerprint(run)
+  );
 }
 
 function getRunStrictEventTimestamps(run: Partial<MythicPlusRunData>): number[] {
@@ -1479,7 +1970,10 @@ function hasCompatibleLegacyDstShift(
   leftRun: Partial<MythicPlusRunData>,
   rightRun: Partial<MythicPlusRunData>,
 ): boolean {
-  if (!hasStrongCompletedRunIdentitySignature(leftRun) || !hasStrongCompletedRunIdentitySignature(rightRun)) {
+  if (
+    !hasStrongCompletedRunIdentitySignature(leftRun) ||
+    !hasStrongCompletedRunIdentitySignature(rightRun)
+  ) {
     return false;
   }
 
@@ -1627,12 +2121,14 @@ function findMatchingMythicPlusRunByIdentity(
 
 function getMythicPlusRunCompletionEstimate(run: Partial<MythicPlusRunData>): number | undefined {
   const durationMs = getSanitizedRunDurationMs(run);
-  return run.endedAt ??
+  return (
+    run.endedAt ??
     run.abandonedAt ??
     run.completedAt ??
     (run.startDate !== undefined && durationMs !== undefined
       ? run.startDate + Math.floor(durationMs / 1000 + 0.5)
-      : undefined);
+      : undefined)
+  );
 }
 
 function getMythicPlusRunSortValue(run: Partial<MythicPlusRunData>): number {
@@ -1893,9 +2389,7 @@ function normalizeStoredMythicPlusRun(runRaw: LuaTable): MythicPlusRunData {
     attemptId:
       normalizeAttemptId(runRaw.attemptId) ??
       normalizeAttemptId(runRaw.attemptID) ??
-      (legacyRaw
-        ? normalizeAttemptId(legacyRaw.attemptId ?? legacyRaw.attemptID)
-        : undefined) ??
+      (legacyRaw ? normalizeAttemptId(legacyRaw.attemptId ?? legacyRaw.attemptID) : undefined) ??
       undefined,
     canonicalKey:
       normalizeCanonicalKey(runRaw.canonicalKey) ??
@@ -1914,7 +2408,11 @@ function normalizeStoredMythicPlusRun(runRaw: LuaTable): MythicPlusRunData {
       toOptionalNumber(runRaw.mapChallengeModeID) ??
       toOptionalNumber(runRaw.challengeModeID) ??
       toOptionalNumber(runRaw.mapID) ??
-      (legacyRaw ? toOptionalNumber(legacyRaw.mapChallengeModeID ?? legacyRaw.challengeModeID ?? legacyRaw.mapID) : undefined),
+      (legacyRaw
+        ? toOptionalNumber(
+            legacyRaw.mapChallengeModeID ?? legacyRaw.challengeModeID ?? legacyRaw.mapID,
+          )
+        : undefined),
     mapName:
       toOptionalString(runRaw.mapName) ??
       toOptionalString(runRaw.name) ??
@@ -2004,7 +2502,8 @@ function normalizeStoredMythicPlusRun(runRaw: LuaTable): MythicPlusRunData {
   }
 
   run.fingerprint =
-    (toOptionalString(runRaw.fingerprint) && isTemporaryAttemptFingerprint(toOptionalString(runRaw.fingerprint))
+    (toOptionalString(runRaw.fingerprint) &&
+    isTemporaryAttemptFingerprint(toOptionalString(runRaw.fingerprint))
       ? toOptionalString(runRaw.fingerprint)
       : undefined) ??
     buildCanonicalMythicPlusRunFingerprint(run) ??
@@ -2261,12 +2760,17 @@ function upsertMythicPlusRunByIdentity(
 
   const mergedRun = mergeMythicPlusRunData(existingRun, incomingRun);
   Object.assign(existingRun, mergedRun);
-  registerMythicPlusRunLookups(lookups, existingRun, [incomingRun.fingerprint, mergedRun.fingerprint]);
+  registerMythicPlusRunLookups(lookups, existingRun, [
+    incomingRun.fingerprint,
+    mergedRun.fingerprint,
+  ]);
 }
 
 function extractCharacters(db: Record<string, unknown>): CharacterData[] {
   const characters = (db.characters ?? {}) as Record<string, unknown>;
-  const pendingMembersStore = isRecord(db.pendingMythicPlusMembers) ? db.pendingMythicPlusMembers : {};
+  const pendingMembersStore = isRecord(db.pendingMythicPlusMembers)
+    ? db.pendingMythicPlusMembers
+    : {};
   const result: CharacterData[] = [];
   const validRegions: Region[] = ["us", "eu", "kr", "tw"];
 
@@ -2301,6 +2805,7 @@ function extractCharacters(db: Record<string, unknown>): CharacterData[] {
         playtimeSeconds: Number(snap.playtimeSeconds),
         playtimeThisLevelSeconds: toOptionalNumber(snap.playtimeThisLevelSeconds),
         mythicPlusScore: Number(snap.mythicPlusScore),
+        seasonID: toOptionalNumber(snap.seasonID),
         ownedKeystone:
           ownedKeystoneLevel && ownedKeystoneLevel > 0
             ? {
@@ -2317,19 +2822,31 @@ function extractCharacters(db: Record<string, unknown>): CharacterData[] {
           mythDawncrest: Number(currencies.mythDawncrest ?? 0),
           radiantSparkDust: Number(currencies.radiantSparkDust ?? 0),
         },
+        currencyDetails: normalizeCurrencyDetails(snap.currencyDetails),
         stats: {
           stamina: Number(stats.stamina ?? 0),
           strength: Number(stats.strength ?? 0),
           agility: Number(stats.agility ?? 0),
           intellect: Number(stats.intellect ?? 0),
+          critRating: toOptionalNumber(stats.critRating),
           critPercent: Number(stats.critPercent ?? 0),
+          hasteRating: toOptionalNumber(stats.hasteRating),
           hastePercent: Number(stats.hastePercent ?? 0),
+          masteryRating: toOptionalNumber(stats.masteryRating),
           masteryPercent: Number(stats.masteryPercent ?? 0),
+          versatilityRating: toOptionalNumber(stats.versatilityRating),
           versatilityPercent: Number(stats.versatilityPercent ?? 0),
+          speedRating: toOptionalNumber(stats.speedRating),
           speedPercent: toOptionalNumber(stats.speedPercent),
+          leechRating: toOptionalNumber(stats.leechRating),
           leechPercent: toOptionalNumber(stats.leechPercent),
+          avoidanceRating: toOptionalNumber(stats.avoidanceRating),
           avoidancePercent: toOptionalNumber(stats.avoidancePercent),
         },
+        equipment: normalizeSnapshotEquipment(snap.equipment),
+        weeklyRewards: normalizeWeeklyRewards(snap.weeklyRewards),
+        majorFactions: normalizeMajorFactions(snap.majorFactions),
+        clientInfo: normalizeClientInfo(snap.clientInfo),
       });
     }
 
@@ -2363,9 +2880,7 @@ function extractCharacters(db: Record<string, unknown>): CharacterData[] {
   return result;
 }
 
-async function findAndParseAddonData(
-  retailPath: string,
-): Promise<{
+async function findAndParseAddonData(retailPath: string): Promise<{
   characters: CharacterData[];
   accountsFound: string[];
   fileStats: AddonFileStats | null;
@@ -2419,7 +2934,9 @@ async function findAndParseAddonData(
       if (!existing) {
         allChars.set(key, char);
       } else {
-        const snapshotsByTime = new Map(existing.snapshots.map((snapshot) => [snapshot.takenAt, snapshot]));
+        const snapshotsByTime = new Map(
+          existing.snapshots.map((snapshot) => [snapshot.takenAt, snapshot]),
+        );
         for (const snap of char.snapshots) {
           const current = snapshotsByTime.get(snap.takenAt);
           if (!current) {
@@ -2464,21 +2981,44 @@ function createWindow(): void {
     show: process.platform !== "win32", // on Windows start hidden in tray; show immediately on other platforms
     webPreferences: {
       preload: join(__dirname, "../preload/index.js"),
+      contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
+      webSecurity: true,
     },
   });
 
-  if (process.env["ELECTRON_RENDERER_URL"]) {
-    mainWindow.loadURL(process.env["ELECTRON_RENDERER_URL"]);
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    handleBlockedRendererNavigation(url);
+    return { action: "deny" };
+  });
+
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    if (isTrustedRendererUrl(url)) {
+      return;
+    }
+    event.preventDefault();
+    handleBlockedRendererNavigation(url);
+  });
+
+  mainWindow.webContents.on("will-redirect", (event, url) => {
+    if (isTrustedRendererUrl(url)) {
+      return;
+    }
+    event.preventDefault();
+    handleBlockedRendererNavigation(url);
+  });
+
+  if (RENDERER_DEV_URL) {
+    mainWindow.loadURL(RENDERER_DEV_URL);
   } else {
-    mainWindow.loadFile(join(__dirname, "../renderer/index.html"));
+    mainWindow.loadFile(RENDERER_FILE_PATH);
   }
 
   mainWindow.once("ready-to-show", () => {
     mainWindowReady = true;
 
-    if (process.platform !== "win32" || pendingWindowReveal) {
+    if (!isQuitting && (process.platform !== "win32" || pendingWindowReveal)) {
       pendingWindowReveal = false;
       mainWindow?.setSkipTaskbar(false);
       mainWindow?.show();
@@ -2486,11 +3026,19 @@ function createWindow(): void {
     }
   });
 
+  mainWindow.on("query-session-end", () => {
+    prepareForQuit({ windowsSessionEnding: true });
+  });
+
+  mainWindow.on("session-end", () => {
+    prepareForQuit({ windowsSessionEnding: true });
+  });
+
   // Use the cached close behavior so event.preventDefault() is called synchronously.
   // Awaiting inside a close handler is too late — Electron processes the event before
   // the async callback resumes, so the window would be destroyed even with preventDefault.
   mainWindow.on("close", (event) => {
-    if (isQuitting || isInstallingAppUpdate) return;
+    if (isQuitting || isInstallingAppUpdate || isEndingWindowsSession) return;
     if (closeBehaviorCache === "tray") {
       event.preventDefault();
       mainWindow?.setSkipTaskbar(true);
@@ -2505,10 +3053,6 @@ function createWindow(): void {
   });
 }
 
-// Build-time constants from .env — never read from renderer input.
-const CONVEX_SITE_URL: string = (import.meta as unknown as { env: Record<string, string> }).env
-  .VITE_CONVEX_SITE_URL ?? "";
-
 function handleDeepLink(url: string): void {
   try {
     const parsed = new URL(url);
@@ -2520,9 +3064,9 @@ function handleDeepLink(url: string): void {
         pendingLoginResolve = null;
         pendingLoginReject = null;
 
-        // Exchange the one-time code for the actual token via the Convex HTTP action.
+        // Exchange the one-time code for the long-lived API bearer token.
         net
-          .fetch(`${CONVEX_SITE_URL}/api/auth/redeem-code`, {
+          .fetch(getApiAuthUrl("/auth/redeem-code"), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ code }),
@@ -2532,7 +3076,6 @@ function handleDeepLink(url: string): void {
             const data = (await resp.json()) as { token?: string; error?: string };
             if (!data.token) throw new Error(data.error ?? "No token in response");
             storedSessionToken = data.token;
-            cachedElectronToken = null;
             saveSessionToken(data.token);
             resolve(data.token);
           })
@@ -2548,79 +3091,103 @@ function handleDeepLink(url: string): void {
 
 // ─── IPC handlers ─────────────────────────────────────────────────────────────
 
-// Trusted site URL — read from build-time env, never from renderer input.
-const SITE_URL: string = (import.meta as unknown as { env: Record<string, string> }).env
-  .VITE_SITE_URL ?? "";
-
 // Auth
 ipcMain.handle("auth:login", () => {
   return new Promise<boolean>((resolve, reject) => {
-    // Set up pending deep-link resolution with a 10-minute timeout.
-    const timeout = setTimeout(() => {
-      pendingLoginReject?.(new Error("Login timed out"));
+    const loginUrl = getElectronLoginUrl();
+    let settled = false;
+
+    const finalizeSuccess = (token?: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
       pendingLoginResolve = null;
       pendingLoginReject = null;
-    }, 10 * 60 * 1000);
-
-    pendingLoginResolve = (_token: string) => {
-      clearTimeout(timeout);
+      if (token) {
+        persistDesktopSessionToken(token);
+      }
+      if (mainWindow) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.focus();
+      }
       resolve(true);
     };
-    pendingLoginReject = (err: Error) => {
+
+    const finalizeError = (error: Error) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timeout);
-      reject(err);
+      pendingLoginResolve = null;
+      pendingLoginReject = null;
+      reject(error);
+    };
+
+    // Set up pending deep-link resolution with a 10-minute timeout.
+    const timeout = setTimeout(
+      () => {
+        finalizeError(new Error("Login timed out"));
+      },
+      10 * 60 * 1000,
+    );
+
+    pendingLoginResolve = (token: string) => {
+      finalizeSuccess(token);
+    };
+    pendingLoginReject = (err: Error) => {
+      finalizeError(err);
     };
 
     // Open the login page in the browser. The browser initiates the OAuth flow so the
     // state cookie lands in the browser session (not Electron's), which means better-auth
     // can validate the callback and honour the callbackURL → /auth/electron-callback.
-    void shell.openExternal(`${SITE_URL}/auth/electron-login`);
+    void openUrlInExternalBrowser(loginUrl).catch((error: Error) => {
+      finalizeError(error);
+    });
   });
 });
 
-ipcMain.handle("auth:getToken", async () => {
-  if (cachedElectronToken && !isJwtExpired(cachedElectronToken)) return cachedElectronToken;
-
-  const refreshed = await fetchFreshConvexToken();
-  if (refreshed) return refreshed;
-
-  // Fallback: fetch from session cookies (legacy / future in-app flows).
-  try {
-    const resp = await session.defaultSession.fetch(`${SITE_URL}/api/auth/convex/token`, {
-      headers: { Origin: SITE_URL },
-    });
-    if (!resp.ok) return null;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const data: any = await resp.json();
-    cachedElectronToken = data?.token ?? null;
-    return cachedElectronToken;
-  } catch {
-    return null;
-  }
-});
-
 ipcMain.handle("auth:getSession", async () => {
+  if (!storedSessionToken) {
+    return {
+      status: "unauthenticated",
+    } satisfies DesktopAuthSessionState;
+  }
+
   try {
-    const resp = await session.defaultSession.fetch(`${SITE_URL}/api/auth/get-session`, {
+    const resp = await session.defaultSession.fetch(getApiAuthUrl("/auth/get-session"), {
       headers: {
         Origin: SITE_URL,
         ...(storedSessionToken ? { Authorization: `Bearer ${storedSessionToken}` } : {}),
       },
     });
-    if (!resp.ok) return null;
-    return await resp.json();
+    if (!resp.ok) {
+      if (resp.status === 401) {
+        saveSessionToken(null);
+        return {
+          status: "unauthenticated",
+        } satisfies DesktopAuthSessionState;
+      }
+      return {
+        status: "unknown",
+      } satisfies DesktopAuthSessionState;
+    }
+    return {
+      status: "valid",
+      session: await resp.json(),
+    } satisfies DesktopAuthSessionState;
   } catch {
-    return null;
+    return {
+      status: "unknown",
+    } satisfies DesktopAuthSessionState;
   }
 });
 
 ipcMain.handle("auth:logout", async () => {
   const sessionToken = storedSessionToken;
-  cachedElectronToken = null;
   storedSessionToken = null;
   saveSessionToken(null);
   try {
-    await session.defaultSession.fetch(`${SITE_URL}/api/auth/sign-out`, {
+    await session.defaultSession.fetch(getApiAuthUrl("/auth/sign-out"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -2634,6 +3201,33 @@ ipcMain.handle("auth:logout", async () => {
     return false;
   }
 });
+
+ipcMain.handle(
+  "api:fetch",
+  async (_, request: MainApiFetchRequest): Promise<MainApiFetchResponse> => {
+    if (!request || typeof request.url !== "string" || !isTrustedApiUrl(request.url)) {
+      throw new Error("Blocked untrusted API request");
+    }
+
+    const method = (request.method ?? "GET").toUpperCase();
+    if (method !== "GET" && method !== "POST" && method !== "PATCH") {
+      throw new Error(`Blocked unsupported API method: ${method}`);
+    }
+
+    const response = await session.defaultSession.fetch(request.url, {
+      method,
+      headers: buildApiProxyHeaders(request.headers),
+      ...(method !== "GET" && request.body !== undefined ? { body: request.body } : {}),
+    });
+
+    return {
+      status: response.status,
+      statusText: response.statusText,
+      headers: Array.from(response.headers.entries()),
+      body: await response.text(),
+    };
+  },
+);
 
 // WoW addon data
 function getStoredRetailPath(settings: Record<string, unknown>): string | null {
@@ -2689,7 +3283,9 @@ async function getValidatedRetailPathFromSettings(): Promise<string | null> {
   return validatedRetailPath;
 }
 
-function getAddonRetailPathStatus(reason: "missing" | "invalid" | null): "noRetailPath" | "invalidRetailPath" {
+function getAddonRetailPathStatus(
+  reason: "missing" | "invalid" | null,
+): "noRetailPath" | "invalidRetailPath" {
   return reason === "invalid" ? "invalidRetailPath" : "noRetailPath";
 }
 
@@ -2773,14 +3369,18 @@ const GITHUB_REPO = "zirkumflex-group/wow-dashboard";
 
 interface AddonReleaseInfo {
   url: string;
-  checksumUrl: string | null;
+  checksumUrl: string;
   version: string;
 }
 
 interface StagedAddonUpdate {
   version: string;
-  checksumUrl: string | null;
+  checksumUrl: string;
   downloadedAt: number;
+}
+
+interface ExposedAddonReleaseInfo {
+  version: string;
 }
 
 function getAddonPath(retailPath: string): string {
@@ -2884,18 +3484,35 @@ async function getInstalledAddonVersionForRetailPath(retailPath: string): Promis
   }
 }
 
-function validateGitHubUrl(url: string): void {
+function validateOfficialAddonReleaseUrl(url: string, tagName: string, assetName: string): void {
   let parsedUrl: URL;
   try {
     parsedUrl = new URL(url);
   } catch {
     throw new Error("Invalid URL");
   }
+
+  const [repoOwner, repoName] = GITHUB_REPO.split("/");
+  if (!repoOwner || !repoName) {
+    throw new Error("Invalid GitHub repository configuration");
+  }
+  const pathSegments = parsedUrl.pathname.split("/").map((segment) => decodeURIComponent(segment));
+  const expectedSegments = [
+    "",
+    repoOwner,
+    repoName,
+    "releases",
+    "download",
+    tagName,
+    assetName,
+  ];
   if (
-    parsedUrl.hostname !== "objects.githubusercontent.com" &&
-    parsedUrl.hostname !== "github.com"
+    parsedUrl.protocol !== "https:" ||
+    parsedUrl.hostname !== "github.com" ||
+    pathSegments.length !== expectedSegments.length ||
+    pathSegments.some((segment, index) => segment !== expectedSegments[index])
   ) {
-    throw new Error(`Untrusted download host: ${parsedUrl.hostname}`);
+    throw new Error(`Untrusted addon release asset URL: ${url}`);
   }
 }
 
@@ -2909,12 +3526,14 @@ async function computeFileSha256(filePath: string): Promise<string> {
   });
 }
 
-async function verifyAddonPackage(zipPath: string, checksumPath: string | null): Promise<void> {
-  if (!checksumPath) return;
+async function verifyAddonPackage(zipPath: string, checksumPath: string): Promise<void> {
   const checksumContent = await fs.promises.readFile(checksumPath, "utf-8");
-  const expectedHash = checksumContent.trim().split(/\s+/)[0];
+  const expectedHash = checksumContent.trim().split(/\s+/)[0] ?? "";
+  if (!/^[a-f0-9]{64}$/i.test(expectedHash)) {
+    throw new Error("Invalid addon checksum format");
+  }
   const actualHash = await computeFileSha256(zipPath);
-  if (actualHash !== expectedHash) {
+  if (actualHash.toLowerCase() !== expectedHash.toLowerCase()) {
     throw new Error(
       `Checksum mismatch - addon package may be corrupted or tampered with.\nExpected: ${expectedHash}\nGot: ${actualHash}`,
     );
@@ -2923,36 +3542,18 @@ async function verifyAddonPackage(zipPath: string, checksumPath: string | null):
 
 async function downloadAddonPackage(
   downloadUrl: string,
-  checksumUrl: string | null,
+  checksumUrl: string,
   zipPath: string,
-  checksumPath: string | null,
+  checksumPath: string,
 ): Promise<void> {
-  validateGitHubUrl(downloadUrl);
-  if (checksumUrl) validateGitHubUrl(checksumUrl);
-
   await fs.promises.mkdir(path.dirname(zipPath), { recursive: true });
   await downloadFile(downloadUrl, zipPath);
-
-  if (!checksumUrl) {
-    if (checksumPath) {
-      await fs.promises.rm(checksumPath, { force: true }).catch(() => {});
-    }
-    return;
-  }
-
-  if (!checksumPath) {
-    throw new Error("Checksum URL provided without a checksum destination");
-  }
 
   await downloadFile(checksumUrl, checksumPath);
   await verifyAddonPackage(zipPath, checksumPath);
 }
 
-async function installAddonFromPackage(
-  retailPath: string,
-  zipPath: string,
-  checksumPath: string | null,
-): Promise<void> {
+async function installAddonFromPackage(retailPath: string, zipPath: string, checksumPath: string) {
   await verifyAddonPackage(zipPath, checksumPath);
 
   const extractDir = await fs.promises.mkdtemp(join(os.tmpdir(), "wow-dashboard-addon-extract-"));
@@ -2994,18 +3595,38 @@ async function fetchLatestAddonRelease(): Promise<AddonReleaseInfo> {
   const releases = (await res.json()) as any[];
   const addonRelease = releases.find(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (release: any) => release.tag_name.startsWith("addon-v") && !release.draft && !release.prerelease,
+    (release: any) =>
+      typeof release.tag_name === "string" &&
+      release.tag_name.startsWith("addon-v") &&
+      !release.draft &&
+      !release.prerelease,
   );
   if (!addonRelease) throw new Error("No addon release found on GitHub");
+  const tagName = addonRelease.tag_name as string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const asset = addonRelease.assets.find((asset: any) => asset.name === "wow-dashboard.zip");
   if (!asset) throw new Error("No wow-dashboard.zip asset found in latest addon release");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const checksumAsset = addonRelease.assets.find((asset: any) => asset.name === "wow-dashboard.zip.sha256");
+  const checksumAsset = addonRelease.assets.find(
+    (asset: any) => asset.name === "wow-dashboard.zip.sha256",
+  );
+  if (!checksumAsset) {
+    throw new Error("No wow-dashboard.zip.sha256 asset found in latest addon release");
+  }
+  const url = asset.browser_download_url as string;
+  const checksumUrl = checksumAsset.browser_download_url as string;
+  validateOfficialAddonReleaseUrl(url, tagName, "wow-dashboard.zip");
+  validateOfficialAddonReleaseUrl(checksumUrl, tagName, "wow-dashboard.zip.sha256");
   return {
-    url: asset.browser_download_url as string,
-    checksumUrl: checksumAsset ? (checksumAsset.browser_download_url as string) : null,
-    version: (addonRelease.tag_name as string).replace("addon-v", ""),
+    url,
+    checksumUrl,
+    version: tagName.replace("addon-v", ""),
+  };
+}
+
+function exposeAddonReleaseInfo(release: AddonReleaseInfo): ExposedAddonReleaseInfo {
+  return {
+    version: release.version,
   };
 }
 
@@ -3014,9 +3635,10 @@ async function readStagedAddonUpdate(): Promise<StagedAddonUpdate | null> {
     const raw = await fs.promises.readFile(getStagedAddonMetaPath(), "utf-8");
     const parsed = JSON.parse(raw) as Partial<StagedAddonUpdate>;
     if (typeof parsed.version !== "string") return null;
+    if (typeof parsed.checksumUrl !== "string") return null;
     return {
       version: parsed.version,
-      checksumUrl: typeof parsed.checksumUrl === "string" ? parsed.checksumUrl : null,
+      checksumUrl: parsed.checksumUrl,
       downloadedAt: typeof parsed.downloadedAt === "number" ? parsed.downloadedAt : 0,
     };
   } catch {
@@ -3033,12 +3655,10 @@ async function clearStagedAddonUpdate(): Promise<void> {
   await fs.promises.rm(getAddonUpdateStageDir(), { recursive: true, force: true }).catch(() => {});
 }
 
-async function stagedAddonPayloadExists(checksumUrl: string | null): Promise<boolean> {
+async function stagedAddonPayloadExists(): Promise<boolean> {
   try {
     await fs.promises.access(getStagedAddonZipPath(), fs.constants.F_OK);
-    if (checksumUrl) {
-      await fs.promises.access(getStagedAddonChecksumPath(), fs.constants.F_OK);
-    }
+    await fs.promises.access(getStagedAddonChecksumPath(), fs.constants.F_OK);
     return true;
   } catch {
     return false;
@@ -3051,7 +3671,7 @@ async function downloadAndInstallAddonRelease(
 ): Promise<void> {
   const downloadDir = await fs.promises.mkdtemp(join(os.tmpdir(), "wow-dashboard-addon-download-"));
   const zipPath = join(downloadDir, "wow-dashboard.zip");
-  const checksumPath = release.checksumUrl ? join(downloadDir, "wow-dashboard.zip.sha256") : null;
+  const checksumPath = join(downloadDir, "wow-dashboard.zip.sha256");
   try {
     await downloadAddonPackage(release.url, release.checksumUrl, zipPath, checksumPath);
     await installAddonFromPackage(retailPath, zipPath, checksumPath);
@@ -3063,7 +3683,7 @@ async function downloadAndInstallAddonRelease(
 async function getUsableStagedAddonUpdate(): Promise<StagedAddonUpdate | null> {
   const staged = await readStagedAddonUpdate();
   if (!staged) return null;
-  if (await stagedAddonPayloadExists(staged.checksumUrl)) {
+  if (await stagedAddonPayloadExists()) {
     return staged;
   }
   await clearStagedAddonUpdate();
@@ -3090,8 +3710,11 @@ async function applyStagedAddonUpdateIfReady(): Promise<AddonApplyStagedResult> 
       };
     }
 
-    const { validatedRetailPath, error: retailPathError, reason } =
-      await resolveRetailPathFromSettings();
+    const {
+      validatedRetailPath,
+      error: retailPathError,
+      reason,
+    } = await resolveRetailPathFromSettings();
     if (!validatedRetailPath) {
       updateAddonUpdateState({
         status: getAddonRetailPathStatus(reason),
@@ -3141,7 +3764,7 @@ async function applyStagedAddonUpdateIfReady(): Promise<AddonApplyStagedResult> 
       await installAddonFromPackage(
         validatedRetailPath,
         getStagedAddonZipPath(),
-        staged.checksumUrl ? getStagedAddonChecksumPath() : null,
+        getStagedAddonChecksumPath(),
       );
       await clearStagedAddonUpdate();
       broadcastToRenderers("wow:addonUpdateApplied", staged.version);
@@ -3187,236 +3810,237 @@ async function stageLatestAddonUpdate(): Promise<AddonUpdateCheckResult> {
     return addonUpdateCheckInFlight;
   }
 
-  const updateCheckPromise: Promise<AddonUpdateCheckResult> = (async (): Promise<AddonUpdateCheckResult> => {
-    if (stagingAddonUpdate) {
-      return {
-        status: addonUpdateState.status === "applied" ? "applied" : "staged",
-        installedVersion: addonUpdateState.installedVersion,
-        latestVersion: addonUpdateState.latestVersion,
-        stagedVersion: addonUpdateState.stagedVersion,
-        error: addonUpdateState.error,
-      } satisfies AddonUpdateCheckResult;
-    }
-
-    stagingAddonUpdate = true;
-    const startedAt = Date.now();
-
-    try {
-      const stagedAtStart = await getUsableStagedAddonUpdate();
-      updateAddonUpdateState({
-        status: "checking",
-        stagedVersion: stagedAtStart?.version ?? null,
-        error: null,
-        lastCheckedAt: startedAt,
-      });
-
-      const { validatedRetailPath, error: retailPathError, reason } =
-        await resolveRetailPathFromSettings();
-
-      if (!validatedRetailPath) {
-        const status = getAddonRetailPathStatus(reason);
-        updateAddonUpdateState({
-          status,
-          installedVersion: null,
-          error: retailPathError,
-          lastCheckedAt: startedAt,
-        });
+  const updateCheckPromise: Promise<AddonUpdateCheckResult> =
+    (async (): Promise<AddonUpdateCheckResult> => {
+      if (stagingAddonUpdate) {
         return {
-          status,
-          installedVersion: null,
+          status: addonUpdateState.status === "applied" ? "applied" : "staged",
+          installedVersion: addonUpdateState.installedVersion,
           latestVersion: addonUpdateState.latestVersion,
-          stagedVersion: stagedAtStart?.version ?? null,
-          error: retailPathError,
+          stagedVersion: addonUpdateState.stagedVersion,
+          error: addonUpdateState.error,
         } satisfies AddonUpdateCheckResult;
       }
 
-      const installedVersion = await getInstalledAddonVersionForRetailPath(validatedRetailPath);
-      updateAddonUpdateState({
-        installedVersion,
-        error: null,
-        lastCheckedAt: startedAt,
-      });
+      stagingAddonUpdate = true;
+      const startedAt = Date.now();
 
-      if (!installedVersion) {
-        await clearStagedAddonUpdate();
+      try {
+        const stagedAtStart = await getUsableStagedAddonUpdate();
         updateAddonUpdateState({
-          status: "notInstalled",
-          stagedVersion: null,
-          latestVersion: null,
-        });
-        return {
-          status: "notInstalled",
-          installedVersion: null,
-          latestVersion: null,
-          stagedVersion: null,
+          status: "checking",
+          stagedVersion: stagedAtStart?.version ?? null,
           error: null,
-        };
-      }
+          lastCheckedAt: startedAt,
+        });
 
-      const latestRelease = await fetchLatestAddonRelease();
-      updateAddonUpdateState({
-        latestVersion: latestRelease.version,
-        error: null,
-        lastCheckedAt: startedAt,
-      });
+        const {
+          validatedRetailPath,
+          error: retailPathError,
+          reason,
+        } = await resolveRetailPathFromSettings();
 
-      if (!isOutdatedVersion(installedVersion, latestRelease.version)) {
-        const staged = await getUsableStagedAddonUpdate();
-        if (staged && !isOutdatedVersion(installedVersion, staged.version)) {
-          await clearStagedAddonUpdate();
+        if (!validatedRetailPath) {
+          const status = getAddonRetailPathStatus(reason);
+          updateAddonUpdateState({
+            status,
+            installedVersion: null,
+            error: retailPathError,
+            lastCheckedAt: startedAt,
+          });
+          return {
+            status,
+            installedVersion: null,
+            latestVersion: addonUpdateState.latestVersion,
+            stagedVersion: stagedAtStart?.version ?? null,
+            error: retailPathError,
+          } satisfies AddonUpdateCheckResult;
         }
+
+        const installedVersion = await getInstalledAddonVersionForRetailPath(validatedRetailPath);
         updateAddonUpdateState({
-          status: "upToDate",
+          installedVersion,
+          error: null,
+          lastCheckedAt: startedAt,
+        });
+
+        if (!installedVersion) {
+          await clearStagedAddonUpdate();
+          updateAddonUpdateState({
+            status: "notInstalled",
+            stagedVersion: null,
+            latestVersion: null,
+          });
+          return {
+            status: "notInstalled",
+            installedVersion: null,
+            latestVersion: null,
+            stagedVersion: null,
+            error: null,
+          };
+        }
+
+        const latestRelease = await fetchLatestAddonRelease();
+        updateAddonUpdateState({
+          latestVersion: latestRelease.version,
+          error: null,
+          lastCheckedAt: startedAt,
+        });
+
+        if (!isOutdatedVersion(installedVersion, latestRelease.version)) {
+          const staged = await getUsableStagedAddonUpdate();
+          if (staged && !isOutdatedVersion(installedVersion, staged.version)) {
+            await clearStagedAddonUpdate();
+          }
+          updateAddonUpdateState({
+            status: "upToDate",
+            installedVersion,
+            latestVersion: latestRelease.version,
+            stagedVersion: null,
+            error: null,
+          });
+          return {
+            status: "upToDate",
+            installedVersion,
+            latestVersion: latestRelease.version,
+            stagedVersion: null,
+            error: null,
+          };
+        }
+
+        updateAddonUpdateState({
+          status: "updating",
           installedVersion,
           latestVersion: latestRelease.version,
-          stagedVersion: null,
           error: null,
         });
-        return {
-          status: "upToDate",
-          installedVersion,
-          latestVersion: latestRelease.version,
-          stagedVersion: null,
-          error: null,
-        };
-      }
 
-      updateAddonUpdateState({
-        status: "updating",
-        installedVersion,
-        latestVersion: latestRelease.version,
-        error: null,
-      });
+        const staged = await getUsableStagedAddonUpdate();
+        if (
+          staged &&
+          staged.version === latestRelease.version &&
+          staged.checksumUrl === latestRelease.checksumUrl
+        ) {
+          updateAddonUpdateState({
+            status: "staged",
+            stagedVersion: staged.version,
+            error: null,
+          });
+        } else {
+          await downloadAddonPackage(
+            latestRelease.url,
+            latestRelease.checksumUrl,
+            getStagedAddonZipPath(),
+            getStagedAddonChecksumPath(),
+          );
+          await writeStagedAddonUpdate({
+            version: latestRelease.version,
+            checksumUrl: latestRelease.checksumUrl,
+            downloadedAt: Date.now(),
+          });
+          broadcastToRenderers("wow:addonUpdateStaged", latestRelease.version);
+          updateAddonUpdateState({
+            status: "staged",
+            stagedVersion: latestRelease.version,
+            error: null,
+          });
+        }
 
-      const staged = await getUsableStagedAddonUpdate();
-      if (
-        staged &&
-        staged.version === latestRelease.version &&
-        staged.checksumUrl === latestRelease.checksumUrl
-      ) {
-        updateAddonUpdateState({
-          status: "staged",
-          stagedVersion: staged.version,
-          error: null,
-        });
-      } else {
-        const checksumPath = latestRelease.checksumUrl ? getStagedAddonChecksumPath() : null;
-        await downloadAddonPackage(
-          latestRelease.url,
-          latestRelease.checksumUrl,
-          getStagedAddonZipPath(),
-          checksumPath,
-        );
-        await writeStagedAddonUpdate({
-          version: latestRelease.version,
-          checksumUrl: latestRelease.checksumUrl,
-          downloadedAt: Date.now(),
-        });
-        broadcastToRenderers("wow:addonUpdateStaged", latestRelease.version);
-        updateAddonUpdateState({
-          status: "staged",
-          stagedVersion: latestRelease.version,
-          error: null,
-        });
-      }
+        const applyResult = await applyStagedAddonUpdateIfReady();
+        if (applyResult.outcome === "applied") {
+          return {
+            status: "applied",
+            installedVersion: latestRelease.version,
+            latestVersion: latestRelease.version,
+            stagedVersion: null,
+            error: null,
+          };
+        }
 
-      const applyResult = await applyStagedAddonUpdateIfReady();
-      if (applyResult.outcome === "applied") {
-        return {
-          status: "applied",
-          installedVersion: latestRelease.version,
-          latestVersion: latestRelease.version,
-          stagedVersion: null,
-          error: null,
-        };
-      }
+        if (applyResult.outcome === "retryableError" || applyResult.outcome === "fatalError") {
+          const postInstallVersion =
+            await getInstalledAddonVersionForRetailPath(validatedRetailPath);
+          return {
+            status: "error",
+            installedVersion: postInstallVersion,
+            latestVersion: latestRelease.version,
+            stagedVersion: applyResult.stagedVersion,
+            error: applyResult.error,
+          };
+        }
 
-      if (
-        applyResult.outcome === "retryableError" ||
-        applyResult.outcome === "fatalError"
-      ) {
+        const currentAddonUpdateState = getAddonUpdateStateSnapshot();
+        if (
+          currentAddonUpdateState.status === "noRetailPath" ||
+          currentAddonUpdateState.status === "invalidRetailPath" ||
+          currentAddonUpdateState.status === "notInstalled" ||
+          currentAddonUpdateState.status === "upToDate"
+        ) {
+          return {
+            status: currentAddonUpdateState.status,
+            installedVersion: currentAddonUpdateState.installedVersion,
+            latestVersion: currentAddonUpdateState.latestVersion ?? latestRelease.version,
+            stagedVersion: currentAddonUpdateState.stagedVersion,
+            error: currentAddonUpdateState.error,
+          };
+        }
+
+        const remainingStaged = await getUsableStagedAddonUpdate();
+        if (remainingStaged && currentAddonUpdateState.status !== "error") {
+          updateAddonUpdateState({
+            status: "staged",
+            stagedVersion: remainingStaged.version,
+            installedVersion,
+            latestVersion: latestRelease.version,
+            error: null,
+          });
+          return {
+            status: "staged",
+            installedVersion,
+            latestVersion: latestRelease.version,
+            stagedVersion: remainingStaged.version,
+            error: null,
+          };
+        }
+
         const postInstallVersion = await getInstalledAddonVersionForRetailPath(validatedRetailPath);
+        const errorMessage = addonUpdateState.error ?? "Addon update could not be applied.";
+        updateAddonUpdateState({
+          status: "error",
+          installedVersion: postInstallVersion,
+          latestVersion: latestRelease.version,
+          stagedVersion: null,
+          error: errorMessage,
+        });
         return {
           status: "error",
           installedVersion: postInstallVersion,
           latestVersion: latestRelease.version,
-          stagedVersion: applyResult.stagedVersion,
-          error: applyResult.error,
+          stagedVersion: null,
+          error: errorMessage,
         };
-      }
-
-      const currentAddonUpdateState = getAddonUpdateStateSnapshot();
-      if (
-        currentAddonUpdateState.status === "noRetailPath" ||
-        currentAddonUpdateState.status === "invalidRetailPath" ||
-        currentAddonUpdateState.status === "notInstalled" ||
-        currentAddonUpdateState.status === "upToDate"
-      ) {
-        return {
-          status: currentAddonUpdateState.status,
-          installedVersion: currentAddonUpdateState.installedVersion,
-          latestVersion: currentAddonUpdateState.latestVersion ?? latestRelease.version,
-          stagedVersion: currentAddonUpdateState.stagedVersion,
-          error: currentAddonUpdateState.error,
-        };
-      }
-
-      const remainingStaged = await getUsableStagedAddonUpdate();
-      if (remainingStaged && currentAddonUpdateState.status !== "error") {
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const staged = await getUsableStagedAddonUpdate();
         updateAddonUpdateState({
-          status: "staged",
-          stagedVersion: remainingStaged.version,
-          installedVersion,
-          latestVersion: latestRelease.version,
-          error: null,
+          status: "error",
+          stagedVersion: staged?.version ?? null,
+          error: message,
+          lastCheckedAt: startedAt,
         });
         return {
-          status: "staged",
-          installedVersion,
-          latestVersion: latestRelease.version,
-          stagedVersion: remainingStaged.version,
-          error: null,
+          status: "error",
+          installedVersion: addonUpdateState.installedVersion,
+          latestVersion: addonUpdateState.latestVersion,
+          stagedVersion: staged?.version ?? null,
+          error: message,
         };
+      } finally {
+        stagingAddonUpdate = false;
       }
-
-      const postInstallVersion = await getInstalledAddonVersionForRetailPath(validatedRetailPath);
-      const errorMessage = addonUpdateState.error ?? "Addon update could not be applied.";
-      updateAddonUpdateState({
-        status: "error",
-        installedVersion: postInstallVersion,
-        latestVersion: latestRelease.version,
-        stagedVersion: null,
-        error: errorMessage,
-      });
-      return {
-        status: "error",
-        installedVersion: postInstallVersion,
-        latestVersion: latestRelease.version,
-        stagedVersion: null,
-        error: errorMessage,
-      };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const staged = await getUsableStagedAddonUpdate();
-      updateAddonUpdateState({
-        status: "error",
-        stagedVersion: staged?.version ?? null,
-        error: message,
-        lastCheckedAt: startedAt,
-      });
-      return {
-        status: "error",
-        installedVersion: addonUpdateState.installedVersion,
-        latestVersion: addonUpdateState.latestVersion,
-        stagedVersion: staged?.version ?? null,
-        error: message,
-      };
-    } finally {
-      stagingAddonUpdate = false;
-    }
-  })().finally(() => {
-    addonUpdateCheckInFlight = null;
-  });
+    })().finally(() => {
+      addonUpdateCheckInFlight = null;
+    });
 
   addonUpdateCheckInFlight = updateCheckPromise;
   return updateCheckPromise;
@@ -3434,26 +4058,28 @@ ipcMain.handle("wow:getInstalledAddonVersion", async () => {
   return getInstalledAddonVersionForRetailPath(retailPath);
 });
 
-ipcMain.handle("wow:installAddon", async (_, downloadUrl: string, checksumUrl: string | null) => {
+ipcMain.handle("wow:installAddon", async () => {
   const { validatedRetailPath, error } = await resolveRetailPathFromSettings();
   if (!validatedRetailPath) {
     throw new Error(error ?? "WoW retail path is not configured");
   }
 
-  await downloadAndInstallAddonRelease(
-    { url: downloadUrl, checksumUrl, version: "" },
-    validatedRetailPath,
-  );
+  const latestRelease = await fetchLatestAddonRelease();
+  await downloadAndInstallAddonRelease(latestRelease, validatedRetailPath);
   await clearStagedAddonUpdate();
   updateAddonUpdateState({
     status: "applied",
-    installedVersion: await getInstalledAddonVersionForRetailPath(validatedRetailPath),
+    installedVersion: latestRelease.version,
+    latestVersion: latestRelease.version,
     stagedVersion: null,
     error: null,
   });
+  return exposeAddonReleaseInfo(latestRelease);
 });
 
-ipcMain.handle("wow:getLatestAddonRelease", () => fetchLatestAddonRelease());
+ipcMain.handle("wow:getLatestAddonRelease", async () =>
+  exposeAddonReleaseInfo(await fetchLatestAddonRelease()),
+);
 
 ipcMain.handle("wow:getAddonUpdateStatus", async () => {
   const staged = await getUsableStagedAddonUpdate();
@@ -3665,6 +4291,8 @@ app.on("open-url", (event, url) => {
 // Grab the lock so only one instance runs; the second instance forwards its URL and quits.
 const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
+  const instanceLabel = app.isPackaged ? "instance" : "dev instance";
+  console.warn(`[wow-dashboard] Another WoW Dashboard ${instanceLabel} is already running.`);
   app.quit();
 } else {
   app.on("second-instance", (_, argv) => {
@@ -3750,12 +4378,12 @@ app.whenReady().then(async () => {
   void stageLatestAddonUpdate().catch((error) => {
     console.warn("[wow-dashboard] Failed to stage addon update:", error);
   });
-  setInterval(() => {
+  addonUpdateCheckTimer = setInterval(() => {
     void stageLatestAddonUpdate().catch((error) => {
       console.warn("[wow-dashboard] Failed to stage addon update:", error);
     });
   }, getConfiguredAddonUpdateCheckIntervalMs());
-  setInterval(() => {
+  addonUpdateApplyTimer = setInterval(() => {
     void applyStagedAddonUpdateIfReady().catch((error) => {
       console.warn("[wow-dashboard] Failed to apply staged addon update:", error);
     });
@@ -3764,7 +4392,7 @@ app.whenReady().then(async () => {
   void triggerAppUpdateCheck().catch((error) => {
     console.warn("[wow-dashboard] Failed to check for app updates:", error);
   });
-  setInterval(() => {
+  appUpdateCheckTimer = setInterval(() => {
     void triggerAppUpdateCheck().catch((error) => {
       console.warn("[wow-dashboard] Failed to check for app updates:", error);
     });
@@ -3776,8 +4404,7 @@ app.whenReady().then(async () => {
 });
 
 app.on("before-quit", () => {
-  isQuitting = true;
-  stopAddonWatcher();
+  prepareForQuit();
 });
 
 app.on("window-all-closed", () => {

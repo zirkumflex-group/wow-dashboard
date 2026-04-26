@@ -1,0 +1,26 @@
+{
+  "name": "@wow-dashboard/worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/start.ts --bundle --platform=node --target=node24 --format=cjs --outdir=dist --outbase=src --entry-names=[name] --out-extension:.js=.cjs --sourcemap --alias:@wow-dashboard/api-schema=../../packages/api-schema/src/index.ts --alias:@wow-dashboard/db=../../packages/db/src/index.ts --alias:@wow-dashboard/env/server=../../packages/env/src/server.ts",
+    "check-types": "tsc --noEmit --project tsconfig.json",
+    "dev": "tsx watch src/start.ts",
+    "start": "node dist/start.cjs"
+  },
+  "dependencies": {
+    "@wow-dashboard/api-schema": "workspace:*",
+    "@wow-dashboard/db": "workspace:*",
+    "@wow-dashboard/env": "workspace:*",
+    "drizzle-orm": "catalog:",
+    "pg-boss": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.2",
+    "@wow-dashboard/config": "workspace:*",
+    "esbuild": "^0.28.0",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3"
+  }
+}

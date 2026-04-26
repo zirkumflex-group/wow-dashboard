@@ -1,0 +1,33 @@
+{
+  "name": "@wow-dashboard/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/start.ts src/importConvexExport.ts --bundle --platform=node --target=node24 --format=cjs --outdir=dist --outbase=src --entry-names=[name] --out-extension:.js=.cjs --sourcemap --alias:@wow-dashboard/api-schema=../../packages/api-schema/src/index.ts --alias:@wow-dashboard/db=../../packages/db/src/index.ts --alias:@wow-dashboard/env/server=../../packages/env/src/server.ts",
+    "check-types": "tsc --noEmit --project tsconfig.json",
+    "dev": "tsx watch src/start.ts",
+    "import-convex-export": "tsx src/importConvexExport.ts",
+    "test": "tsx --test src/server.test.ts",
+    "start": "node dist/start.cjs"
+  },
+  "dependencies": {
+    "@hono/node-server": "catalog:",
+    "@wow-dashboard/api-schema": "workspace:*",
+    "@wow-dashboard/db": "workspace:*",
+    "@wow-dashboard/env": "workspace:*",
+    "better-auth": "^1.6.9",
+    "drizzle-orm": "catalog:",
+    "hono": "catalog:",
+    "ioredis": "catalog:",
+    "pg-boss": "catalog:",
+    "rate-limiter-flexible": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.2",
+    "@wow-dashboard/config": "workspace:*",
+    "esbuild": "^0.28.0",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3"
+  }
+}

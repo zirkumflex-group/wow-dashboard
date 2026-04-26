@@ -1,6 +1,15 @@
-import { convexClient } from "@convex-dev/better-auth/client/plugins";
 import { createAuthClient } from "better-auth/react";
+import { genericOAuthClient } from "better-auth/client/plugins";
+import { env } from "@wow-dashboard/env/web";
+
+function getAuthBaseUrl(apiUrl: string) {
+  const url = new URL(apiUrl);
+  url.pathname = url.pathname.replace(/\/api\/?$/, "");
+  return url.toString().replace(/\/$/, "");
+}
 
 export const authClient = createAuthClient({
-  plugins: [convexClient()],
+  baseURL: getAuthBaseUrl(env.VITE_API_URL),
+  credentials: "include",
+  plugins: [genericOAuthClient()],
 });

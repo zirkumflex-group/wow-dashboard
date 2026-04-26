@@ -6,32 +6,34 @@
     "packages/*"
   ],
   "type": "module",
+  "engines": {
+    "node": ">=24 <25"
+  },
   "scripts": {
-    "dev": "turbo dev",
-    "build": "turbo build",
-    "check-types": "turbo check-types",
-    "dev:web": "turbo -F web dev",
-    "dev:server": "turbo -F @wow-dashboard/backend dev",
-    "dev:setup": "turbo -F @wow-dashboard/backend dev:setup",
+    "dev": "node scripts/dev-stack.mjs",
+    "dev:services": "turbo run dev --filter=@wow-dashboard/api --filter=@wow-dashboard/worker --filter=web --filter=app",
+    "dev:stop": "docker compose -f deploy/docker-compose.dev.yml stop postgres redis",
+    "build": "turbo run build",
+    "check-types": "turbo run check-types",
+    "dev:web": "turbo run dev --filter=web",
     "check": "oxlint && oxfmt --write ."
   },
   "dependencies": {
-    "@wow-dashboard/env": "workspace:*",
-    "dotenv": "catalog:",
-    "zod": "catalog:"
+    "dotenv": "catalog:"
   },
   "devDependencies": {
     "@wow-dashboard/config": "workspace:*",
-    "lefthook": "^2.0.13",
-    "oxfmt": "^0.26.0",
-    "oxlint": "^1.41.0",
-    "turbo": "^2.8.20",
-    "typescript": "^5"
+    "lefthook": "^2.1.6",
+    "oxfmt": "^0.46.0",
+    "oxlint": "^1.61.0",
+    "turbo": "^2.9.6",
+    "typescript": "^6.0.3"
   },
-  "packageManager": "pnpm@10.11.0",
+  "packageManager": "pnpm@10.33.1",
   "pnpm": {
     "overrides": {
-      "tar": ">=7.5.11"
+      "tar": ">=7.5.11",
+      "@esbuild-kit/core-utils>esbuild": "0.25.12"
     }
   }
 }
