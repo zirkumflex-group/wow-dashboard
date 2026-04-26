@@ -419,8 +419,10 @@ function isUploadableSnapshot(snapshot: SnapshotData, sinceTs: number) {
 
 const MYTHIC_PLUS_UPLOAD_LOOKBACK_SECONDS = 2 * 60 * 60;
 const ADDON_UPLOAD_CHARACTERS_PER_BATCH = 20;
-const ADDON_UPLOAD_SNAPSHOTS_PER_CHARACTER = 200;
-const ADDON_UPLOAD_RUNS_PER_CHARACTER = 300;
+const ADDON_UPLOAD_SNAPSHOTS_PER_CHARACTER = 100;
+const ADDON_UPLOAD_RUNS_PER_CHARACTER = 150;
+const ADDON_UPLOAD_MAX_BATCH_BODY_BYTES = 768 * 1024;
+const uploadBodyEncoder = new TextEncoder();
 
 function normalizePositiveTimestampSeconds(value: unknown): number | null {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
@@ -502,9 +504,27 @@ function chunkCharacterForUpload(character: CharacterData): CharacterData[] {
 function createAddonUploadBatches(characters: CharacterData[]): CharacterData[][] {
   const chunks = characters.flatMap((character) => chunkCharacterForUpload(character));
   const batches: CharacterData[][] = [];
+  let currentBatch: CharacterData[] = [];
 
-  for (let index = 0; index < chunks.length; index += ADDON_UPLOAD_CHARACTERS_PER_BATCH) {
-    batches.push(chunks.slice(index, index + ADDON_UPLOAD_CHARACTERS_PER_BATCH));
+  for (const chunk of chunks) {
+    const candidateBatch = [...currentBatch, chunk];
+    const exceedsCharacterLimit = candidateBatch.length > ADDON_UPLOAD_CHARACTERS_PER_BATCH;
+    const exceedsBodyLimit =
+      currentBatch.length > 0 &&
+      uploadBodyEncoder.encode(JSON.stringify({ characters: candidateBatch })).byteLength >
+        ADDON_UPLOAD_MAX_BATCH_BODY_BYTES;
+
+    if (exceedsCharacterLimit || exceedsBodyLimit) {
+      batches.push(currentBatch);
+      currentBatch = [chunk];
+      continue;
+    }
+
+    currentBatch = candidateBatch;
+  }
+
+  if (currentBatch.length > 0) {
+    batches.push(currentBatch);
   }
 
   return batches;

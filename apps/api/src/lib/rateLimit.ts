@@ -11,7 +11,7 @@ const limiters = {
   addonIngest: new RateLimiterRedis({
     storeClient: getRedis(),
     keyPrefix: "rate-limit:addon-ingest",
-    points: 10,
+    points: 30,
     duration: 60,
   }),
   battlenetSync: new RateLimiterRedis({

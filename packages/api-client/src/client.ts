@@ -63,7 +63,13 @@ import {
 
 type AccessTokenResolver = () => Promise<string | null | undefined> | string | null | undefined;
 type HeadersResolver = () => Promise<HeadersInit | undefined> | HeadersInit | undefined;
-type QueryValue = string | number | boolean | null | undefined | readonly (string | number | boolean)[];
+type QueryValue =
+  | string
+  | number
+  | boolean
+  | null
+  | undefined
+  | readonly (string | number | boolean)[];
 
 export type ApiClientConfig = {
   baseUrl: string;
@@ -163,6 +169,32 @@ function parseResponseBody(text: string) {
   }
 }
 
+function truncateResponseText(value: string) {
+  const trimmed = value.trim();
+  if (trimmed.length <= 300) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, 300)}...`;
+}
+
+function getErrorMessageFromResponseBody(rawBody: unknown, status: number, statusText: string) {
+  const parsedError = apiErrorResponseSchema.safeParse(rawBody);
+  if (parsedError.success && parsedError.data.error.trim() !== "") {
+    return parsedError.data.error;
+  }
+
+  if (typeof rawBody === "string" && rawBody.trim() !== "") {
+    return truncateResponseText(rawBody);
+  }
+
+  const normalizedStatusText = statusText.trim();
+  if (normalizedStatusText !== "") {
+    return normalizedStatusText;
+  }
+
+  return `HTTP ${status}`;
+}
+
 function normalizeCharacterIds(input: CharactersLatestQuery) {
   return Array.from(new Set<string>(input.characterId)).sort((left, right) =>
     left.localeCompare(right),
@@ -212,9 +244,8 @@ export function createApiClient(config: ApiClientConfig) {
     const rawBody = parseResponseBody(await response.text());
 
     if (!response.ok) {
-      const parsedError = apiErrorResponseSchema.safeParse(rawBody);
       throw new ApiClientError(
-        parsedError.success ? parsedError.data.error : response.statusText,
+        getErrorMessageFromResponseBody(rawBody, response.status, response.statusText),
         response.status,
         rawBody,
         response.headers,
