@@ -242,12 +242,21 @@ jobs:
           OUT_DIR="apps/addon/dist/${ADDON_NAME}"
           mkdir -p "${OUT_DIR}"
           cp "apps/addon/${ADDON_NAME}.toc" "${OUT_DIR}/"
-          cp "apps/addon/${ADDON_NAME}.lua" "${OUT_DIR}/"
+          cp apps/addon/*.lua "${OUT_DIR}/"
           for dir in Art Fonts; do
             if [ -d "apps/addon/${dir}" ]; then
               cp -r "apps/addon/${dir}" "${OUT_DIR}/${dir}"
             fi
           done
+          toc_lua_files="$(mktemp)"
+          awk 'NF && $1 !~ /^##/ && $1 ~ /\.lua$/ { print $1 }' "${OUT_DIR}/${ADDON_NAME}.toc" > "${toc_lua_files}"
+          while IFS= read -r file; do
+            if [ ! -f "${OUT_DIR}/${file}" ]; then
+              echo "Missing addon file listed in TOC: ${file}" >&2
+              exit 1
+            fi
+          done < "${toc_lua_files}"
+          rm -f "${toc_lua_files}"
           cd apps/addon/dist
           zip -r "${ADDON_NAME}.zip" "${ADDON_NAME}/"
           sha256sum "${ADDON_NAME}.zip" > "${ADDON_NAME}.zip.sha256"
