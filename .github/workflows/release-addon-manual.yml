@@ -97,6 +97,7 @@ jobs:
           tag_name: addon-v${{ steps.version.outputs.version }}
           name: Addon v${{ steps.version.outputs.version }}
           prerelease: ${{ github.event.inputs.prerelease }}
+          make_latest: false
           files: |
             ${{ env.ZIP }}
             ${{ env.CHECKSUM }}
