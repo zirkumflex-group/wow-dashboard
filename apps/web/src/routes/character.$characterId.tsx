@@ -2224,9 +2224,7 @@ function getCurrencyProgress(
   const maxQuantity =
     detail?.maxQuantity && detail.maxQuantity > 0
       ? detail.maxQuantity
-      : detail
-        ? undefined
-        : fallbackMaxQuantity;
+      : fallbackMaxQuantity;
   if (maxQuantity && maxQuantity > 0) {
     const capProgressQuantity = getCurrencyCapProgressQuantity(quantity, detail);
     labels.push(`${capProgressQuantity.toLocaleString()}/${maxQuantity.toLocaleString()} cap`);

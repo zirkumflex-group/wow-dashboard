@@ -354,7 +354,7 @@ addon.constants = {
 
 -- Midnight S1 currency IDs.
 local CURRENCY_IDS = {
-    adventurerDawncrest = 3391,  -- Adventurer Dawncrest  (Midnight S1)
+    adventurerDawncrest = 3383,  -- Adventurer Dawncrest  (Midnight S1)
     veteranDawncrest    = 3341,  -- Veteran Dawncrest     (Midnight S1)
     championDawncrest   = 3343,  -- Champion Dawncrest    (Midnight S1)
     heroDawncrest       = 3345,  -- Hero Dawncrest        (Midnight S1)
