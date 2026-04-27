@@ -10,9 +10,12 @@ PULL_RETRIES="${PULL_RETRIES:-5}"
 BUILD_RETRIES="${BUILD_RETRIES:-3}"
 RETRY_DELAY_SECONDS="${RETRY_DELAY_SECONDS:-10}"
 SKIP_GIT_PULL="${SKIP_GIT_PULL:-0}"
+FORCE_FULL_DEPLOY="${FORCE_FULL_DEPLOY:-0}"
 
-build_services=(migrate api worker web)
-up_services=(migrate api worker web caddy)
+all_build_services=(migrate api worker web)
+all_up_services=(migrate api worker web caddy)
+build_services=("${all_build_services[@]}")
+up_services=("${all_up_services[@]}")
 
 retry_command() {
   local attempts="$1"
@@ -90,6 +93,73 @@ has_dockerfile_changes() {
   done < <(git diff --name-only "$base_rev" "$head_rev")
 
   return 1
+}
+
+select_deploy_services() {
+  local base_rev="$1"
+  local head_rev="$2"
+  local force_full="$3"
+  local changed_file
+  local needs_full=0
+  local needs_backend=0
+  local needs_web=0
+
+  if [[ "$force_full" == "1" ]]; then
+    build_services=("${all_build_services[@]}")
+    up_services=("${all_up_services[@]}")
+    echo "Deploying all services because a full deploy is required."
+    return
+  fi
+
+  while IFS= read -r changed_file; do
+    case "$changed_file" in
+      package.json | pnpm-lock.yaml | pnpm-workspace.yaml | .dockerignore)
+        needs_full=1
+        ;;
+      deploy/*)
+        needs_full=1
+        ;;
+      apps/api/* | apps/worker/* | packages/db/*)
+        needs_backend=1
+        ;;
+      packages/api-schema/* | packages/env/*)
+        needs_backend=1
+        needs_web=1
+        ;;
+      apps/web/* | packages/api-client/* | packages/ui/*)
+        needs_web=1
+        ;;
+    esac
+  done < <(git diff --name-only "$base_rev" "$head_rev")
+
+  if [[ "$needs_full" == "1" ]]; then
+    build_services=("${all_build_services[@]}")
+    up_services=("${all_up_services[@]}")
+    echo "Deploying all services because package or deploy metadata changed."
+    return
+  fi
+
+  build_services=()
+  up_services=()
+
+  if [[ "$needs_backend" == "1" ]]; then
+    build_services+=(migrate api worker)
+    up_services+=(migrate api worker)
+  fi
+
+  if [[ "$needs_web" == "1" ]]; then
+    build_services+=(web)
+    up_services+=(web)
+  fi
+
+  if [[ "${#build_services[@]}" == "0" ]]; then
+    build_services=("${all_build_services[@]}")
+    up_services=("${all_up_services[@]}")
+    echo "No deploy-specific file changes detected; running a full deploy."
+    return
+  fi
+
+  echo "Deploying changed services only: ${up_services[*]}"
 }
 
 dockerfile_base_images() {
@@ -189,6 +259,7 @@ after_rev="$(git rev-parse HEAD)"
 diff_base="$before_rev"
 force_clean_build=0
 should_pull_base_images=0
+force_full_deploy=0
 
 if [[ -n "$last_successful_rev" ]]; then
   if git cat-file -e "$last_successful_rev^{commit}" 2>/dev/null; then
@@ -200,14 +271,17 @@ if [[ -n "$last_successful_rev" ]]; then
 else
   force_clean_build=1
   should_pull_base_images=1
+  force_full_deploy=1
 fi
 
 if [[ "$diff_base" != "$after_rev" ]] && has_package_changes "$diff_base" "$after_rev"; then
   force_clean_build=1
+  force_full_deploy=1
 fi
 
 if [[ "$diff_base" != "$after_rev" ]] && has_dockerfile_changes "$diff_base" "$after_rev"; then
   should_pull_base_images=1
+  force_full_deploy=1
 fi
 
 case "$PULL_BASE_IMAGES" in
@@ -225,8 +299,22 @@ case "$PULL_BASE_IMAGES" in
     ;;
 esac
 
+case "$FORCE_FULL_DEPLOY" in
+  1 | true | yes)
+    force_full_deploy=1
+    ;;
+  0 | false | no)
+    ;;
+  *)
+    echo "Invalid FORCE_FULL_DEPLOY value: $FORCE_FULL_DEPLOY. Use 1 or 0." >&2
+    exit 1
+    ;;
+esac
+
 compose=(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE")
 build_args=()
+
+select_deploy_services "$diff_base" "$after_rev" "$force_full_deploy"
 
 if [[ "$force_clean_build" == "1" ]]; then
   echo "Package or deploy metadata changed since the last successful deploy; building without Docker layer cache."
