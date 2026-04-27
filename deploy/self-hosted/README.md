@@ -1,3 +1,12 @@
+# Historical Self-Hosted Convex Setup
+
+This document is historical and does not describe the active production stack.
+
+The live production stack uses `apps/api` + `apps/worker` + Postgres + Redis and is documented in
+[`deploy/README.md`](../README.md).
+
+---
+
 # Self-Hosted Debian VPS Setup
 
 This deploy bundle is designed for the current app shape:

@@ -1,148 +1,217 @@
-# VPS Deploy
+# Production Deploy
 
-This stack targets the staging hostname `wow-staging.zirkumflex.io` first and keeps the current
-`wow.zirkumflex.io` production hostname untouched.
+The active production stack runs at:
+
+- Web: `https://wow.zirkumflex.io`
+- API: `https://wow.zirkumflex.io/api`
+
+The active backend is the self-hosted `api` + `worker` + Postgres + Redis stack. The old
+hosted Convex deployment is only a historical import source.
 
 ## Files
 
-- `docker-compose.prod.yml`: staging/prod services for Caddy, web, api, worker, Postgres, and Redis
-- `Caddyfile`: reverse proxy and automatic TLS for the staging hostname
-- `.env.staging.example`: env template for the VPS
+- `docker-compose.prod.yml`: production services for Caddy, web, api, worker, Postgres, and Redis
+- `Caddyfile`: reverse proxy and automatic TLS for `SITE_HOST`
+- `.env.production.example`: production env template for the VPS
+- `update-server.sh`: pull, build, migrate, and recreate the public stack
+- `backup-postgres.sh`: create a custom-format Postgres backup
+- `test-postgres-backup-restore.sh`: restore-test a backup in a temporary Postgres container
+- `vacuum-analyze.sh`: run Postgres `VACUUM (ANALYZE)` after large imports
 
-## First-time setup
+## Production Env
 
-1. Copy the staging env template:
+Create the production env file on the VPS:
 
-   ```bash
-   cp deploy/.env.staging.example deploy/.env.staging
-   ```
+```bash
+cp deploy/.env.production.example deploy/.env.production
+```
 
-2. Edit `deploy/.env.staging`:
-   - set a real `BETTER_AUTH_SECRET`
-   - set the Battle.net client ID and secret
-   - change `POSTGRES_PASSWORD`
+If the VPS still has the cutover-era `deploy/.env.staging`, rename it:
 
-3. Point `wow-staging.zirkumflex.io` at the VPS IP and open inbound `80` and `443`.
+```bash
+mv deploy/.env.staging deploy/.env.production
+```
 
-4. Add the staging Battle.net callback URI:
+Then verify these values:
 
-   ```text
-   https://wow-staging.zirkumflex.io/api/auth/oauth2/callback/battlenet
-   ```
+```env
+SITE_HOST=wow.zirkumflex.io
+SITE_URL=https://wow.zirkumflex.io
+API_URL=https://wow.zirkumflex.io/api
+BETTER_AUTH_URL=https://wow.zirkumflex.io
+NODE_ENV=production
+LOG_LEVEL=info
+```
+
+Also set real values for:
+
+- `BETTER_AUTH_SECRET`
+- `BATTLENET_CLIENT_ID`
+- `BATTLENET_CLIENT_SECRET`
+- `POSTGRES_PASSWORD`
+
+The deploy tooling prefers `deploy/.env.production`. It still falls back to `deploy/.env.staging`
+to avoid breaking an existing server during the rename window.
+
+## DNS and Auth
+
+Cloudflare should point `wow.zirkumflex.io` at the VPS IP.
+
+Battle.net OAuth must include this callback:
+
+```text
+https://wow.zirkumflex.io/api/auth/oauth2/callback/battlenet
+```
 
 ## Deploy
 
-Build and start the full stack:
-
-```bash
-docker compose --env-file deploy/.env.staging -f deploy/docker-compose.prod.yml up -d --build
-```
-
-The `migrate` service runs Drizzle migrations before `api` and `worker` start.
-
-For an existing VPS checkout, use the update script instead of a bare `git pull` plus
-`docker compose up`:
+On the VPS:
 
 ```bash
 cd ~/wow-dashboard
 bash deploy/update-server.sh
 ```
 
-The script pulls with `--ff-only`, rebuilds the Docker images, and forces the one-shot
-`migrate` service plus `api`, `worker`, `web`, and `caddy` to be recreated. If package
-or deploy metadata changed since the last successful deploy, it rebuilds without Docker
-layer cache so workspace/package changes cannot reuse stale install layers. When
-Dockerfiles change, the script pulls base images such as `node:24-slim` with retries
-before building, then avoids forcing Docker Hub checks during every compose build.
+The script:
 
-If Docker Hub is having transient TLS or rate-limit issues, rerun the script. You can
-also force or skip the base-image pre-pull:
+- pulls the current branch with `--ff-only`
+- builds `migrate`, `api`, `worker`, and `web`
+- runs Drizzle migrations through the one-shot `migrate` service
+- recreates `api`, `worker`, `web`, and `caddy`
+- prints service status
+
+If package or deploy metadata changed since the last successful deploy, it rebuilds without Docker
+layer cache so stale install layers are not reused.
+
+Useful overrides:
 
 ```bash
+ENV_FILE=deploy/.env.production bash deploy/update-server.sh
 PULL_BASE_IMAGES=1 bash deploy/update-server.sh
 PULL_BASE_IMAGES=0 bash deploy/update-server.sh
+SKIP_GIT_PULL=1 bash deploy/update-server.sh
 ```
 
-## Manual VPS workflow
-
-For now, the simplest flow is manual `rsync` plus `ssh vps`.
-
-Sync the repo to the VPS:
+## Health Checks
 
 ```bash
-rsync -az --progress \
-  --exclude '.git/' \
-  --exclude 'node_modules/' \
-  --exclude '.turbo/' \
-  --exclude 'dist/' \
-  --exclude 'build/' \
-  --exclude '.output/' \
-  --exclude '.env.local' \
-  --exclude 'deploy/.env.staging' \
-  --exclude '.imports/' \
-  --exclude '.tmp/' \
-  --exclude 'temp/' \
-  --exclude 'tmp/' \
-  --exclude 'packages/backend/' \
-  ./ vps:~/wow-dashboard/
+curl -fsS https://wow.zirkumflex.io/readyz
+curl -fsS https://wow.zirkumflex.io/robots.txt
+
+docker compose --env-file deploy/.env.production -f deploy/docker-compose.prod.yml ps
+docker compose --env-file deploy/.env.production -f deploy/docker-compose.prod.yml logs -f caddy web api worker
 ```
 
-If you also want to move a historical Convex export ZIP for a backfill:
+Only Caddy publishes public ports. Postgres and Redis stay internal to Docker.
+
+## Backups
+
+Run an immediate backup:
 
 ```bash
-ssh vps 'mkdir -p ~/wow-dashboard/.imports'
-rsync -az --progress \
-  temp/<convex-export>.zip \
-  vps:~/wow-dashboard/.imports/
-```
-
-Then SSH into the VPS and deploy:
-
-```bash
-ssh vps
 cd ~/wow-dashboard
-bash deploy/update-server.sh
+bash deploy/backup-postgres.sh
 ```
 
-If you want to run the historical Convex import after deploy:
+By default backups are written to:
+
+```text
+~/wow-dashboard-backups/postgres
+```
+
+The script writes:
+
+- `wowdash-<timestamp>.dump`
+- `wowdash-<timestamp>.dump.sha256`
+- `latest.dump` symlink
+- `latest.dump.sha256` symlink
+
+Retention defaults to 14 days. Override it with:
 
 ```bash
-docker compose --env-file deploy/.env.staging -f deploy/docker-compose.prod.yml exec -T api \
+RETENTION_DAYS=30 bash deploy/backup-postgres.sh
+```
+
+To copy each backup off-server, set `REMOTE_BACKUP_TARGET`:
+
+```bash
+REMOTE_BACKUP_TARGET='backup-user@backup-host:/srv/backups/wow-dashboard/postgres/' \
+  bash deploy/backup-postgres.sh
+```
+
+Daily cron example:
+
+```cron
+15 3 * * * cd /home/Tristan/wow-dashboard && REMOTE_BACKUP_TARGET='backup-user@backup-host:/srv/backups/wow-dashboard/postgres/' bash deploy/backup-postgres.sh >> /home/Tristan/wow-dashboard-backups/postgres/backup.log 2>&1
+```
+
+Adjust the username/path if the VPS checkout is not under `/home/Tristan/wow-dashboard`.
+
+## Restore Test
+
+After the first backup, test that it restores:
+
+```bash
+cd ~/wow-dashboard
+bash deploy/test-postgres-backup-restore.sh ~/wow-dashboard-backups/postgres/latest.dump
+```
+
+This starts a temporary `postgres:16-alpine` container, restores the dump, prints row counts for
+the key tables, and removes the test container.
+
+## Historical Convex Import
+
+The one-shot importer is bundled into the API image. Copy the Convex export ZIP into the API
+container first:
+
+```bash
+cd ~/wow-dashboard
+api_container=$(docker compose --env-file deploy/.env.production -f deploy/docker-compose.prod.yml ps -q api)
+docker cp .imports/<convex-export>.zip "$api_container:/tmp/<convex-export>.zip"
+```
+
+Run the import:
+
+```bash
+docker compose --env-file deploy/.env.production -f deploy/docker-compose.prod.yml exec -T api \
   node apps/api/dist/importConvexExport.cjs \
   /tmp/<convex-export>.zip \
   --apply
 ```
 
-Copy the ZIP into the `api` container first:
+Do not pass `--include-sessions` for the production backfill. Old Convex sessions are not useful
+after the cutover.
+
+The importer is designed to be rerunnable. It deduplicates by legacy Convex IDs and natural keys
+such as Battle.net account, character identity, snapshot timestamp, daily snapshot day, and
+Mythic+ run identifiers.
+
+After a large import, refresh Postgres planner stats:
 
 ```bash
-api_container=$(docker compose --env-file deploy/.env.staging -f deploy/docker-compose.prod.yml ps -q api)
-docker cp .imports/<convex-export>.zip "$api_container:/tmp/<convex-export>.zip"
+bash deploy/vacuum-analyze.sh
 ```
 
-## Useful commands
+## Rollback
 
-Tail logs:
+For application regressions:
 
 ```bash
-docker compose --env-file deploy/.env.staging -f deploy/docker-compose.prod.yml logs -f caddy web api worker
+cd ~/wow-dashboard
+git log --oneline -10
+git checkout <known-good-commit>
+SKIP_GIT_PULL=1 bash deploy/update-server.sh
+git switch master
 ```
 
-Re-run migrations manually:
+`SKIP_GIT_PULL=1` is only for emergency rollback deploys from a checked-out commit. Normal deploys
+should let `update-server.sh` pull the current production branch.
+
+For data regressions, stop the app writers before restoring a database backup:
 
 ```bash
-docker compose --env-file deploy/.env.staging -f deploy/docker-compose.prod.yml run --rm migrate
+docker compose --env-file deploy/.env.production -f deploy/docker-compose.prod.yml stop api worker web
 ```
 
-Stop the stack:
-
-```bash
-docker compose --env-file deploy/.env.staging -f deploy/docker-compose.prod.yml down
-```
-
-## Notes
-
-- `docker-compose.prod.yml` now starts Caddy by default, so the main deploy command brings up the full public stack.
-- Only Caddy publishes ports to the internet. Postgres and Redis stay internal to Docker.
-- `api` and `worker` are bundled during the image build and run with plain `node` at runtime.
-- The one-shot Convex importer is bundled into the API image from `apps/api/src/importConvexExport.ts` and is safe to rerun for historical backfills.
+Then restore from a verified `pg_dump --format=custom` backup using `pg_restore`. Prefer testing
+the exact backup first with `deploy/test-postgres-backup-restore.sh`.

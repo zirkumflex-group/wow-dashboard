@@ -2,13 +2,14 @@
 set -euo pipefail
 
 APP_DIR="${APP_DIR:-$HOME/wow-dashboard}"
-ENV_FILE="${ENV_FILE:-deploy/.env.staging}"
+ENV_FILE="${ENV_FILE:-}"
 COMPOSE_FILE="${COMPOSE_FILE:-deploy/docker-compose.prod.yml}"
 DEPLOY_MARKER_NAME="wow-dashboard-last-successful-deploy"
 PULL_BASE_IMAGES="${PULL_BASE_IMAGES:-auto}"
 PULL_RETRIES="${PULL_RETRIES:-5}"
 BUILD_RETRIES="${BUILD_RETRIES:-3}"
 RETRY_DELAY_SECONDS="${RETRY_DELAY_SECONDS:-10}"
+SKIP_GIT_PULL="${SKIP_GIT_PULL:-0}"
 
 build_services=(migrate api worker web)
 up_services=(migrate api worker web caddy)
@@ -130,6 +131,17 @@ dockerfile_base_images() {
 
 cd "$APP_DIR"
 
+if [[ -z "$ENV_FILE" ]]; then
+  if [[ -f deploy/.env.production ]]; then
+    ENV_FILE="deploy/.env.production"
+  elif [[ -f deploy/.env.staging ]]; then
+    ENV_FILE="deploy/.env.staging"
+    echo "Using legacy deploy/.env.staging. Rename it to deploy/.env.production after the production cutover."
+  else
+    ENV_FILE="deploy/.env.production"
+  fi
+fi
+
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "Missing env file: $ENV_FILE" >&2
   exit 1
@@ -140,6 +152,17 @@ if [[ ! -f "$COMPOSE_FILE" ]]; then
   exit 1
 fi
 
+compose_dir="$(dirname "$COMPOSE_FILE")"
+env_dir="$(dirname "$ENV_FILE")"
+if [[ -z "${SERVICE_ENV_FILE:-}" ]]; then
+  if [[ "$env_dir" == "$compose_dir" ]]; then
+    SERVICE_ENV_FILE="$(basename "$ENV_FILE")"
+  else
+    SERVICE_ENV_FILE="$ENV_FILE"
+  fi
+fi
+export SERVICE_ENV_FILE
+
 git_dir="$(git rev-parse --git-dir)"
 deploy_marker="$git_dir/$DEPLOY_MARKER_NAME"
 before_rev="$(git rev-parse HEAD)"
@@ -149,7 +172,18 @@ if [[ -f "$deploy_marker" ]]; then
   last_successful_rev="$(<"$deploy_marker")"
 fi
 
-git pull --ff-only
+case "$SKIP_GIT_PULL" in
+  1 | true | yes)
+    echo "Skipping git pull because SKIP_GIT_PULL=$SKIP_GIT_PULL."
+    ;;
+  0 | false | no)
+    git pull --ff-only
+    ;;
+  *)
+    echo "Invalid SKIP_GIT_PULL value: $SKIP_GIT_PULL. Use 1 or 0." >&2
+    exit 1
+    ;;
+esac
 
 after_rev="$(git rev-parse HEAD)"
 diff_base="$before_rev"

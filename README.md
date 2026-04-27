@@ -12,8 +12,8 @@ The legacy Convex runtime has been removed from the active workspace. The remain
 
 ## Current Status
 
-- Staging stack is running at `https://wow-staging.zirkumflex.io`
-- Battle.net auth works on staging
+- Production stack is running at `https://wow.zirkumflex.io`
+- Battle.net auth works on production
 - Postgres-backed API, worker, web, and desktop flows are the active path
 - Historical Convex exports can still be replayed through the importer when needed
 
@@ -103,20 +103,20 @@ Useful local URLs:
 - API: `http://localhost:3000`
 - Auth probe: `http://localhost:3000/dev/auth`
 
-## Electron Against Staging
+## Electron Against Production
 
-For a staging desktop smoke test, run the Electron app with staging env overrides:
+For a production desktop smoke test, run the Electron app with production env overrides:
 
 ```bash
-SITE_URL=https://wow-staging.zirkumflex.io \
-API_URL=https://wow-staging.zirkumflex.io/api \
-BETTER_AUTH_URL=https://wow-staging.zirkumflex.io \
-VITE_SITE_URL=https://wow-staging.zirkumflex.io \
-VITE_API_URL=https://wow-staging.zirkumflex.io/api \
+SITE_URL=https://wow.zirkumflex.io \
+API_URL=https://wow.zirkumflex.io/api \
+BETTER_AUTH_URL=https://wow.zirkumflex.io \
+VITE_SITE_URL=https://wow.zirkumflex.io \
+VITE_API_URL=https://wow.zirkumflex.io/api \
 pnpm -F app dev
 ```
 
-## VPS / Staging Deploy
+## VPS / Production Deploy
 
 Use the deploy guide in [deploy/README.md](deploy/README.md).
 
@@ -141,7 +141,7 @@ bash deploy/update-server.sh
 The one-shot importer is bundled into the API image for historical backfills. Copy the export ZIP into the `api` container first, then run:
 
 ```bash
-docker compose --env-file deploy/.env.staging -f deploy/docker-compose.prod.yml exec -T api \
+docker compose --env-file deploy/.env.production -f deploy/docker-compose.prod.yml exec -T api \
   node apps/api/dist/importConvexExport.cjs \
   /tmp/<convex-export>.zip \
   --apply

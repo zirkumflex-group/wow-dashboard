@@ -51,6 +51,7 @@ coverage
 *.tgz
 .cache
 .imports
+backups
 tmp
 temp
 .tmp

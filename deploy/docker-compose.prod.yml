@@ -35,7 +35,7 @@ services:
       target: migrate
     restart: "no"
     env_file:
-      - .env.staging
+      - ${SERVICE_ENV_FILE:-.env.production}
     environment:
       DATABASE_URL: postgres://wowdash:${POSTGRES_PASSWORD}@postgres:5432/wowdash
       REDIS_URL: redis://redis:6379
@@ -50,7 +50,7 @@ services:
       target: runtime-api
     restart: unless-stopped
     env_file:
-      - .env.staging
+      - ${SERVICE_ENV_FILE:-.env.production}
     environment:
       DATABASE_URL: postgres://wowdash:${POSTGRES_PASSWORD}@postgres:5432/wowdash
       REDIS_URL: redis://redis:6379
@@ -85,7 +85,7 @@ services:
       target: runtime-worker
     restart: unless-stopped
     env_file:
-      - .env.staging
+      - ${SERVICE_ENV_FILE:-.env.production}
     environment:
       DATABASE_URL: postgres://wowdash:${POSTGRES_PASSWORD}@postgres:5432/wowdash
       REDIS_URL: redis://redis:6379
@@ -129,7 +129,7 @@ services:
     image: caddy:2-alpine
     restart: unless-stopped
     env_file:
-      - .env.staging
+      - ${SERVICE_ENV_FILE:-.env.production}
     environment:
       SITE_HOST: ${SITE_HOST}
     depends_on:

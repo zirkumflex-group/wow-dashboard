@@ -21,6 +21,7 @@ backup.json
 **/.env
 **/.env.*
 .imports
+backups
 temp
 tmp
 

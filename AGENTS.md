@@ -8,12 +8,12 @@ This repo has moved to a self-hosted backend.
 - `apps/web` and `apps/app` should be treated as self-hosted clients first.
 - The legacy Convex runtime has been removed from the active workspace.
 - The remaining Convex-related code is the historical importer path plus `legacy_convex_id` fields used for backfills.
-- Staging is live at `https://wow-staging.zirkumflex.io`.
+- Production is live at `https://wow.zirkumflex.io`.
 
 ## Important Paths
 
 - [README.md](README.md): current repo usage
-- [deploy/README.md](deploy/README.md): VPS/staging deploy flow
+- [deploy/README.md](deploy/README.md): VPS/production deploy flow
 - [deploy/docker-compose.prod.yml](deploy/docker-compose.prod.yml): production-shaped stack
 - [apps/api/src/importConvexExport.ts](apps/api/src/importConvexExport.ts): historical Convex export importer
 
@@ -22,12 +22,12 @@ This repo has moved to a self-hosted backend.
 - Prefer changing the self-hosted path unless the task is explicitly about legacy Convex cleanup.
 - Do not rely on files under `temp/` or `.tmp/` for durable project state. Both are ignored.
 - Keep the migration plan only under `temp/MIGRATION_PLAN.md`. It is intentionally untracked.
-- For desktop staging tests, point Electron at staging with:
-  - `SITE_URL=https://wow-staging.zirkumflex.io`
-  - `API_URL=https://wow-staging.zirkumflex.io/api`
-  - `BETTER_AUTH_URL=https://wow-staging.zirkumflex.io`
-  - `VITE_SITE_URL=https://wow-staging.zirkumflex.io`
-  - `VITE_API_URL=https://wow-staging.zirkumflex.io/api`
+- For desktop production smoke tests, point Electron at production with:
+  - `SITE_URL=https://wow.zirkumflex.io`
+  - `API_URL=https://wow.zirkumflex.io/api`
+  - `BETTER_AUTH_URL=https://wow.zirkumflex.io`
+  - `VITE_SITE_URL=https://wow.zirkumflex.io`
+  - `VITE_API_URL=https://wow.zirkumflex.io/api`
 
 ## Deploy Notes
 
