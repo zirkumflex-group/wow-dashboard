@@ -118,6 +118,8 @@ const DEFAULT_LAYOUT_MODE: LayoutMode = "overview";
 const DEFAULT_FOCUS_METRIC: FocusMetric = "ilvl";
 const CHARACTER_PAGE_STALE_TIME_MS = 30 * 1000;
 const CHARACTER_PAGE_REFETCH_INTERVAL_MS = 30 * 1000;
+const WOW_WEEKLY_RESET_DAY_UTC = 3;
+const WOW_WEEKLY_RESET_HOUR_UTC = 4;
 
 function isTimeFrame(value: unknown): value is TimeFrame {
   return (
@@ -628,7 +630,7 @@ function formatCardDateTime(ts?: number | null) {
 
 function getTimeFrameDeltaLabel(timeFrame: TimeFrame) {
   if (timeFrame === CURRENT_SEASON_TIME_FRAME) {
-    return "last week";
+    return "this week";
   }
 
   if (isSeasonTimeFrame(timeFrame)) {
@@ -894,13 +896,15 @@ function RangeDelta({
   formatter: (absoluteValue: number) => string;
   label: string;
 }) {
+  const suffix = label === "this week" ? label : `over ${label}`;
+
   if (!Number.isFinite(value) || Math.abs(value) < 0.0001) {
     return (
       <Badge
         variant="outline"
         className="border-border/60 bg-background text-xs font-normal text-muted-foreground"
       >
-        No change over {label}
+        No change {suffix}
       </Badge>
     );
   }
@@ -913,7 +917,7 @@ function RangeDelta({
         value > 0 ? "text-emerald-300" : "text-orange-300",
       )}
     >
-      {formatSignedDelta(value, formatter)} over {label}
+      {formatSignedDelta(value, formatter)} {suffix}
     </Badge>
   );
 }
@@ -1120,14 +1124,53 @@ type StatsChartSnapshot = {
 
 type CurrencyChartSnapshot = Pick<CoreChartSnapshot, "takenAt" | "currencies">;
 
+function getCurrentWowWeekStartAt(timestampSeconds: number) {
+  const timestampMs = timestampSeconds * 1000;
+  if (!Number.isFinite(timestampMs) || timestampMs <= 0) {
+    return null;
+  }
+
+  const date = new Date(timestampMs);
+  const weekStart = new Date(
+    Date.UTC(
+      date.getUTCFullYear(),
+      date.getUTCMonth(),
+      date.getUTCDate(),
+      WOW_WEEKLY_RESET_HOUR_UTC,
+    ),
+  );
+  const daysSinceResetDay = (weekStart.getUTCDay() - WOW_WEEKLY_RESET_DAY_UTC + 7) % 7;
+  weekStart.setUTCDate(weekStart.getUTCDate() - daysSinceResetDay);
+
+  if (weekStart.getTime() > timestampMs) {
+    weekStart.setUTCDate(weekStart.getUTCDate() - 7);
+  }
+
+  return Math.floor(weekStart.getTime() / 1000);
+}
+
+function getThisWeekBaselineSnapshot(coreSnapshots: CoreChartSnapshot[], latest: Snapshot) {
+  const weekStartAt = getCurrentWowWeekStartAt(latest.takenAt);
+  if (weekStartAt === null) {
+    return latest;
+  }
+
+  return (
+    [...coreSnapshots, latest]
+      .filter(
+        (snapshot) => snapshot.takenAt >= weekStartAt && snapshot.takenAt <= latest.takenAt,
+      )
+      .sort((left, right) => left.takenAt - right.takenAt)[0] ?? latest
+  );
+}
+
 function getRangeBaselineSnapshot(
   timeFrame: TimeFrame,
   coreSnapshots: CoreChartSnapshot[],
   latest: Snapshot | null,
 ) {
   if (timeFrame === CURRENT_SEASON_TIME_FRAME && latest) {
-    const cutoff = latest.takenAt - 7 * 86400;
-    return coreSnapshots.find((snapshot) => snapshot.takenAt >= cutoff) ?? latest;
+    return getThisWeekBaselineSnapshot(coreSnapshots, latest);
   }
 
   return coreSnapshots[0] ?? latest;
