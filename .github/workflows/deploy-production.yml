@@ -1,0 +1,99 @@
+name: Deploy Production
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - "apps/api/**"
+      - "apps/worker/**"
+      - "apps/web/**"
+      - "packages/api-client/**"
+      - "packages/api-schema/**"
+      - "packages/db/**"
+      - "packages/env/**"
+      - "packages/ui/**"
+      - "deploy/**"
+      - ".dockerignore"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+  workflow_dispatch:
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm run check-types
+
+  deploy:
+    needs: verify
+    if: github.event_name == 'workflow_dispatch' || vars.PRODUCTION_AUTO_DEPLOY == 'true'
+    runs-on: ubuntu-latest
+    environment: production
+
+    env:
+      SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+      SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
+      SSH_PORT: ${{ secrets.PRODUCTION_SSH_PORT || '22' }}
+      SSH_PRIVATE_KEY: ${{ secrets.PRODUCTION_SSH_PRIVATE_KEY }}
+      SSH_KNOWN_HOSTS: ${{ secrets.PRODUCTION_SSH_KNOWN_HOSTS }}
+      HEALTH_URL: ${{ vars.PRODUCTION_HEALTH_URL || 'https://wow.zirkumflex.io/readyz' }}
+
+    steps:
+      - name: Validate deployment secrets
+        run: |
+          missing=0
+          for name in SSH_HOST SSH_USER SSH_PRIVATE_KEY SSH_KNOWN_HOSTS; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Missing required production deployment secret: ${name}"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/production_deploy_key
+          chmod 600 ~/.ssh/production_deploy_key
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Deploy on VPS
+        run: |
+          ssh \
+            -i ~/.ssh/production_deploy_key \
+            -p "$SSH_PORT" \
+            -o IdentitiesOnly=yes \
+            "$SSH_USER@$SSH_HOST" \
+            'cd ~/wow-dashboard && bash deploy/update-server.sh'
+
+      - name: Check production health
+        run: curl -fsS "$HEALTH_URL"

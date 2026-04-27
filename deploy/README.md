@@ -92,6 +92,63 @@ PULL_BASE_IMAGES=0 bash deploy/update-server.sh
 SKIP_GIT_PULL=1 bash deploy/update-server.sh
 ```
 
+## CI Auto Deploy
+
+Production can be deployed automatically from GitHub Actions through
+`.github/workflows/deploy-production.yml`.
+
+The workflow runs on pushes to `master` that touch server, web, shared package, or deploy files. It:
+
+1. installs dependencies
+2. runs `pnpm run check-types`
+3. SSHes into the VPS
+4. runs `cd ~/wow-dashboard && bash deploy/update-server.sh`
+5. checks `https://wow.zirkumflex.io/readyz`
+
+Configure these GitHub repository secrets:
+
+```text
+PRODUCTION_SSH_HOST=<server-host-or-ip>
+PRODUCTION_SSH_USER=Tristan
+PRODUCTION_SSH_PORT=22
+PRODUCTION_SSH_PRIVATE_KEY=<private deploy key>
+PRODUCTION_SSH_KNOWN_HOSTS=<output from ssh-keyscan>
+```
+
+`PRODUCTION_SSH_PORT` is optional and defaults to `22`.
+
+To enable automatic deploys on pushes to `master`, set this GitHub repository variable:
+
+```text
+PRODUCTION_AUTO_DEPLOY=true
+```
+
+Without that variable, the workflow still exists and can be run manually with `workflow_dispatch`,
+but push-triggered deploys are skipped after verification.
+
+Generate a dedicated deploy key on your local machine:
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/wow-dashboard-production-deploy -C "wow-dashboard-production-deploy"
+```
+
+Install the public key on the VPS:
+
+```bash
+ssh-copy-id -i ~/.ssh/wow-dashboard-production-deploy.pub Tristan@<server-host>
+```
+
+Store the private key content as `PRODUCTION_SSH_PRIVATE_KEY`.
+
+Store the server host key as `PRODUCTION_SSH_KNOWN_HOSTS`:
+
+```bash
+ssh-keyscan -H <server-host>
+```
+
+For extra control, put the deploy job in a GitHub `production` environment and require manual
+approval before the SSH step.
+
 ## Health Checks
 
 ```bash
