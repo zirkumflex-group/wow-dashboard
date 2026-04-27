@@ -24,8 +24,18 @@ local minimapToggle = nil
 local playtimeSyncToggle = nil
 
 local LEFT_W, RIGHT_W, HEIGHT = 220, 560, 500
+local DASHBOARD_FRAME_STRATA = "DIALOG"
+local DASHBOARD_FRAME_LEVEL = 100
 local MainFrame = nil
 local dashboardTicker = nil
+
+local function RaiseDashboardFrame(frame)
+    if not frame then return end
+
+    frame:SetFrameStrata(DASHBOARD_FRAME_STRATA)
+    frame:SetFrameLevel(DASHBOARD_FRAME_LEVEL)
+    frame:Raise()
+end
 
 -- ============================================================
 -- 1-Second UI Ticker  (timer label + cooldown display)
@@ -423,8 +433,10 @@ function addon.EnsureDashboardFrame()
     MainFrame = CreateFrame("Frame", "WowDashboardFrame", UIParent)
     MainFrame:SetSize(LEFT_W + RIGHT_W, HEIGHT)
     MainFrame:SetPoint("CENTER")
+    RaiseDashboardFrame(MainFrame)
     MainFrame:SetMovable(true)
     MainFrame:EnableMouse(true)
+    MainFrame:SetToplevel(true)
     MainFrame:RegisterForDrag("LeftButton")
     MainFrame:SetScript("OnDragStart", MainFrame.StartMoving)
     MainFrame:SetScript("OnDragStop",  MainFrame.StopMovingOrSizing)
@@ -434,6 +446,7 @@ function addon.EnsureDashboardFrame()
     table.insert(UISpecialFrames, "WowDashboardFrame")
 
     MainFrame:SetScript("OnShow", function()
+        RaiseDashboardFrame(MainFrame)
         if WowDashboardDB then
             WowDashboardDB.panelOpen = true
         end
@@ -838,10 +851,17 @@ end
 function addon.SetDashboardShown(shown)
     if not shown and not MainFrame then return end
     local frame = addon.EnsureDashboardFrame()
+    if shown then
+        RaiseDashboardFrame(frame)
+    end
     frame:SetShown(shown)
 end
 
 function addon.ToggleDashboard()
     local frame = addon.EnsureDashboardFrame()
-    frame:SetShown(not frame:IsShown())
+    local shown = not frame:IsShown()
+    if shown then
+        RaiseDashboardFrame(frame)
+    end
+    frame:SetShown(shown)
 end
