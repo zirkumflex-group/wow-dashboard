@@ -418,6 +418,7 @@ function isUploadableSnapshot(snapshot: SnapshotData, sinceTs: number) {
 }
 
 const MYTHIC_PLUS_UPLOAD_LOOKBACK_SECONDS = 2 * 60 * 60;
+const MYTHIC_PLUS_MEMBER_UPLOAD_LOOKBACK_SECONDS = 48 * 60 * 60;
 const ADDON_UPLOAD_CHARACTERS_PER_BATCH = 20;
 const ADDON_UPLOAD_SNAPSHOTS_PER_CHARACTER = 100;
 const ADDON_UPLOAD_RUNS_PER_CHARACTER = 150;
@@ -451,7 +452,11 @@ function getMythicPlusRunLastMutationAt(run: MythicPlusRunData): number {
 
 function isUploadableMythicPlusRun(run: MythicPlusRunData, sinceTs: number) {
   const nowTs = Math.floor(Date.now() / 1000);
-  const effectiveSinceTs = Math.min(sinceTs, nowTs - MYTHIC_PLUS_UPLOAD_LOOKBACK_SECONDS);
+  const lookbackSeconds =
+    (run.members?.length ?? 0) > 0
+      ? MYTHIC_PLUS_MEMBER_UPLOAD_LOOKBACK_SECONDS
+      : MYTHIC_PLUS_UPLOAD_LOOKBACK_SECONDS;
+  const effectiveSinceTs = Math.min(sinceTs, nowTs - lookbackSeconds);
   const lastMutationAt = getMythicPlusRunLastMutationAt(run);
   return lastMutationAt > effectiveSinceTs;
 }

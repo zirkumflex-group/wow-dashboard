@@ -1720,6 +1720,123 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     assert.equal(storedRuns[0]?.members?.length, 5);
   });
 
+  it("enriches existing history-only mythic plus runs with late uploaded members", async () => {
+    const auth = await seedAuthenticatedUser();
+    const playerId = await seedPlayer(auth.userId, "Uploader#3737");
+
+    const historyCompletedAt = 1_777_300_000;
+    const liveCompletedAt = historyCompletedAt + 60 * 60;
+    const durationMs = 1_800_000;
+    const liveStartDate = liveCompletedAt - durationMs / 1000;
+
+    const baseCharacter = {
+      name: "Lateparty",
+      realm: "Blackhand",
+      region: "eu",
+      class: "Death Knight",
+      race: "Orc",
+      faction: "horde",
+      snapshots: [],
+    } as const;
+
+    const historyResponse = await app.request("http://localhost/api/addon/ingest", {
+      method: "POST",
+      headers: {
+        ...authHeaders(auth.token),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        characters: [
+          {
+            ...baseCharacter,
+            mythicPlusRuns: [
+              {
+                fingerprint: `run|17|558|17|${historyCompletedAt}`,
+                observedAt: historyCompletedAt + 3 * 60 * 60,
+                seasonID: 17,
+                mapChallengeModeID: 558,
+                mapName: "Magisters' Terrace",
+                level: 17,
+                status: "completed",
+                completed: true,
+                completedInTime: true,
+                durationMs,
+                runScore: 444,
+                completedAt: historyCompletedAt,
+                endedAt: historyCompletedAt,
+                thisWeek: true,
+              },
+            ],
+          },
+        ],
+      }),
+    });
+    assert.equal(historyResponse.status, 200);
+
+    const memberResponse = await app.request("http://localhost/api/addon/ingest", {
+      method: "POST",
+      headers: {
+        ...authHeaders(auth.token),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        characters: [
+          {
+            ...baseCharacter,
+            mythicPlusRuns: [
+              {
+                fingerprint: `attempt|17|558|17|${liveStartDate}`,
+                observedAt: liveStartDate,
+                seasonID: 17,
+                mapChallengeModeID: 558,
+                mapName: "Magisters' Terrace",
+                level: 17,
+                status: "completed",
+                completed: true,
+                completedInTime: true,
+                durationMs,
+                startDate: liveStartDate,
+                completedAt: liveCompletedAt,
+                endedAt: liveCompletedAt,
+                members: [
+                  {
+                    name: "Lateparty",
+                    realm: "Blackhand",
+                    classTag: "DEATHKNIGHT",
+                    role: "dps",
+                  },
+                  {
+                    name: "Helpfulmonk",
+                    realm: "Blackmoore",
+                    classTag: "MONK",
+                    role: "tank",
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      }),
+    });
+
+    assert.equal(memberResponse.status, 200);
+
+    const character = await db.query.characters.findFirst({
+      where: and(eq(characters.playerId, playerId), eq(characters.name, "Lateparty")),
+    });
+    assert.ok(character);
+    assert.equal(character.mythicPlusRunCount, 1);
+    assert.equal(character.mythicPlusRecentRunsPreview?.[0]?.runScore, 444);
+    assert.equal(character.mythicPlusRecentRunsPreview?.[0]?.members?.length, 2);
+
+    const storedRuns = await db.query.mythicPlusRuns.findMany({
+      where: eq(mythicPlusRuns.characterId, character.id),
+    });
+    assert.equal(storedRuns.length, 1);
+    assert.equal(storedRuns[0]?.runScore, 444);
+    assert.equal(storedRuns[0]?.members?.length, 2);
+  });
+
   it("rejects addon ingest requests before parsing bodies over the byte limit", async () => {
     const auth = await seedAuthenticatedUser();
     await seedPlayer(auth.userId, "Uploader#4444");
