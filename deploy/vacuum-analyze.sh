@@ -41,3 +41,5 @@ export SERVICE_ENV_FILE
 
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T postgres \
   psql -U wowdash -d wowdash -v ON_ERROR_STOP=1 -c "VACUUM (ANALYZE);"
+
+echo "VACUUM ANALYZE complete."

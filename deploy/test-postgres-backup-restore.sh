@@ -12,6 +12,7 @@ if [[ ! -f "$backup_file" ]]; then
   exit 1
 fi
 
+backup_file="$(realpath "$backup_file")"
 container="wow-dashboard-restore-test-$(date +%s)"
 
 cleanup() {
@@ -40,7 +41,7 @@ if [[ "$ready" != "1" ]]; then
   exit 1
 fi
 
-docker cp "$backup_file" "$container:/tmp/backup.dump"
+cat "$backup_file" | docker exec -i "$container" sh -c "cat > /tmp/backup.dump && chown postgres:postgres /tmp/backup.dump"
 docker exec "$container" pg_restore --no-owner --no-acl -U wowdash -d wowdash /tmp/backup.dump
 
 docker exec "$container" psql -U wowdash -d wowdash -v ON_ERROR_STOP=1 -c "
