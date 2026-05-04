@@ -106,6 +106,28 @@ The repository release workflow builds `app-tauri`, renames the NSIS installer t
 `wow-dashboard.exe`, uploads `wow-dashboard.exe`, `wow-dashboard.exe.sig`, and `latest.json`, and
 marks that app release as the latest GitHub release.
 
+## Electron Migration Bridge
+
+Old Electron clients update through `latest.yml`, not Tauri's `latest.json`. During the migration,
+the app release uploads both formats:
+
+- `latest.yml` points old Electron installs to `wow-dashboard-electron-bridge.exe`.
+- `latest.json` points Tauri installs to `wow-dashboard.exe`.
+
+The Electron bridge uses the existing desktop bearer token only to request a short-lived
+`/auth/login-code`, downloads the Tauri installer from the signed `latest.json` release metadata,
+verifies the extra SHA-256 value in that metadata, runs the Tauri NSIS installer, then opens
+`wow-dashboard://auth?code=...` so Tauri stores the new desktop session in the OS credential store.
+It does not copy Electron's encrypted token file.
+
+Tauri imports non-secret Electron settings on first run from `%APPDATA%\WoW Dashboard`:
+
+- selected `_retail_` path
+- close-to-tray
+- Windows autostart
+- launch minimized
+- last sync timestamp
+
 ## Known Gaps
 
 - The first Tauri app release must become the latest GitHub release before installed Tauri builds can

@@ -224,6 +224,24 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --force
 
+      - name: Create Electron bridge env file
+        shell: bash
+        run: |
+          SITE_URL="${{ secrets.VITE_SITE_URL }}"
+          SITE_URL="${SITE_URL%/}"
+          {
+            echo "VITE_SITE_URL=${SITE_URL}"
+            echo "VITE_API_URL=${SITE_URL}/api"
+          } > apps/app/.env
+
+      - name: Build Electron migration bridge
+        run: pnpm --filter app build
+
+      - name: Package Electron migration bridge
+        run: pnpm --filter app package
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Package app (Tauri)
         shell: pwsh
         env:
@@ -256,10 +274,22 @@ jobs:
           $installerOut = Join-Path $releaseDir "wow-dashboard.exe"
           $signatureOut = Join-Path $releaseDir "wow-dashboard.exe.sig"
           $latestOut = Join-Path $releaseDir "latest.json"
+          $electronBridgeOut = Join-Path $releaseDir "wow-dashboard-electron-bridge.exe"
+          $electronLatestOut = Join-Path $releaseDir "latest.yml"
 
           Copy-Item $installer.FullName $installerOut -Force
           Copy-Item $sourceSignature $signatureOut -Force
+          $electronInstaller = Get-ChildItem "apps/app/dist" -Filter "wow-dashboard.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $electronInstaller) {
+            throw "No Electron bridge installer found in apps/app/dist"
+          }
+          Copy-Item $electronInstaller.FullName $electronBridgeOut -Force
+          $electronLatest = Get-Content "apps/app/dist/latest.yml" -Raw
+          $electronLatest = $electronLatest -replace "wow-dashboard\\.exe", "wow-dashboard-electron-bridge.exe"
+          Set-Content -Path $electronLatestOut -Value $electronLatest -Encoding UTF8
+
           $signature = (Get-Content $signatureOut -Raw).Trim()
+          $sha256 = (Get-FileHash $installerOut -Algorithm SHA256).Hash.ToLowerInvariant()
           $downloadUrl = "https://github.com/${{ github.repository }}/releases/download/app-v$version/wow-dashboard.exe"
           $latest = [ordered]@{
             version = $version
@@ -269,6 +299,7 @@ jobs:
               "windows-x86_64" = [ordered]@{
                 signature = $signature
                 url = $downloadUrl
+                sha256 = $sha256
               }
             }
           }
@@ -277,6 +308,8 @@ jobs:
           "installer=$installerOut" >> $env:GITHUB_OUTPUT
           "signature=$signatureOut" >> $env:GITHUB_OUTPUT
           "latest=$latestOut" >> $env:GITHUB_OUTPUT
+          "electron_bridge=$electronBridgeOut" >> $env:GITHUB_OUTPUT
+          "electron_latest=$electronLatestOut" >> $env:GITHUB_OUTPUT
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
@@ -289,6 +322,8 @@ jobs:
             ${{ steps.tauri-assets.outputs.installer }}
             ${{ steps.tauri-assets.outputs.signature }}
             ${{ steps.tauri-assets.outputs.latest }}
+            ${{ steps.tauri-assets.outputs.electron_bridge }}
+            ${{ steps.tauri-assets.outputs.electron_latest }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

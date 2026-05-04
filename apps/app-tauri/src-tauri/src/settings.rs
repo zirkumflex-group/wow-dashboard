@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{
-    fs,
+    env, fs,
     path::PathBuf,
     sync::{Arc, Mutex},
 };
@@ -66,10 +66,13 @@ impl SettingsStore {
             .context("failed to resolve app data directory")?;
         fs::create_dir_all(&app_data).context("failed to create app data directory")?;
         let path = app_data.join("wow-dashboard-settings.json");
-        let settings = fs::read_to_string(&path)
+        let loaded_settings = fs::read_to_string(&path)
             .ok()
-            .and_then(|raw| serde_json::from_str::<StoredSettings>(&raw).ok())
-            .unwrap_or_default();
+            .and_then(|raw| serde_json::from_str::<StoredSettings>(&raw).ok());
+        let mut settings = loaded_settings.clone().unwrap_or_default();
+        if loaded_settings.is_none() {
+            import_legacy_electron_settings(&mut settings);
+        }
 
         Ok(Self {
             path,
@@ -98,6 +101,44 @@ impl SettingsStore {
         let raw = serde_json::to_string_pretty(settings)?;
         fs::write(&self.path, raw).context("failed to write settings")
     }
+}
+
+fn import_legacy_electron_settings(settings: &mut StoredSettings) {
+    let Some(legacy_path) = legacy_electron_settings_path() else {
+        return;
+    };
+    let Ok(raw) = fs::read_to_string(legacy_path) else {
+        return;
+    };
+    let Ok(legacy) = serde_json::from_str::<StoredSettings>(&raw) else {
+        return;
+    };
+
+    if settings.retail_path.is_none() {
+        settings.retail_path = legacy.retail_path;
+    }
+    if settings.last_synced_at <= 0 {
+        settings.last_synced_at = legacy.last_synced_at;
+    }
+    settings.close_behavior = legacy.close_behavior;
+    settings.autostart = legacy.autostart;
+    settings.launch_minimized = legacy.launch_minimized;
+}
+
+fn legacy_electron_settings_path() -> Option<PathBuf> {
+    legacy_electron_user_data_dir().map(|path| path.join("wow-dashboard-settings.json"))
+}
+
+#[cfg(target_os = "windows")]
+fn legacy_electron_user_data_dir() -> Option<PathBuf> {
+    env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .map(|path| path.join("WoW Dashboard"))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn legacy_electron_user_data_dir() -> Option<PathBuf> {
+    None
 }
 
 #[tauri::command]
