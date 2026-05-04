@@ -6,6 +6,7 @@ import type {
   AppInstallUpdateResult,
   AppUpdateState,
 } from "../shared/update";
+import type { AddonFileState, AddonSyncError, AddonSyncResult } from "../shared/sync";
 
 function subscribeToChannel<TArgs extends unknown[]>(
   channel: string,
@@ -46,7 +47,9 @@ contextBridge.exposeInMainWorld("electron", {
   wow: {
     getRetailPath: () => ipcRenderer.invoke("wow:getRetailPath") as Promise<string | null>,
     selectRetailFolder: () => ipcRenderer.invoke("wow:selectRetailFolder") as Promise<string | null>,
-    readAddonData: () => ipcRenderer.invoke("wow:readAddonData"),
+    getAddonFileState: (sinceTs: number) =>
+      ipcRenderer.invoke("wow:getAddonFileState", sinceTs) as Promise<AddonFileState | null>,
+    syncAddonData: () => ipcRenderer.invoke("wow:syncAddonData") as Promise<AddonSyncResult>,
     checkAddonInstalled: () => ipcRenderer.invoke("wow:checkAddonInstalled") as Promise<boolean>,
     getInstalledAddonVersion: () =>
       ipcRenderer.invoke("wow:getInstalledAddonVersion") as Promise<string | null>,
@@ -64,7 +67,10 @@ contextBridge.exposeInMainWorld("electron", {
       ipcRenderer.invoke("wow:triggerAddonUpdateCheck") as Promise<AddonUpdateCheckResult>,
     watchAddonFile: () => ipcRenderer.invoke("wow:watchAddonFile") as Promise<boolean>,
     unwatchAddonFile: () => ipcRenderer.invoke("wow:unwatchAddonFile") as Promise<void>,
-    onAddonFileChanged: (cb: () => void) => subscribeToChannel("wow:addonFileChanged", cb),
+    onAddonSyncResult: (cb: (result: AddonSyncResult) => void) =>
+      subscribeToChannel("wow:addonSyncResult", cb),
+    onAddonSyncError: (cb: (error: AddonSyncError) => void) =>
+      subscribeToChannel("wow:addonSyncError", cb),
     onAddonUpdateStaged: (cb: (version: string) => void) =>
       subscribeToChannel("wow:addonUpdateStaged", cb),
     onAddonUpdateApplied: (cb: (version: string) => void) =>

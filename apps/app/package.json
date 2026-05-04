@@ -13,17 +13,17 @@
     "package": "electron-builder --win"
   },
   "dependencies": {
-    "@tanstack/react-query": "^5.100.1",
-    "@wow-dashboard/api-client": "workspace:*",
     "electron-updater": "^6.8.3",
     "unzipper": "^0.12.3"
   },
   "devDependencies": {
+    "@tanstack/react-query": "^5.100.1",
     "@tailwindcss/vite": "^4.2.4",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
     "@types/unzipper": "^0.10.11",
     "@vitejs/plugin-react": "^5.2.0",
+    "@wow-dashboard/api-client": "workspace:*",
     "@wow-dashboard/config": "workspace:*",
     "@wow-dashboard/env": "workspace:*",
     "electron": "^41.3.0",
@@ -50,6 +50,16 @@
     "files": [
       "out/**/*",
       "package.json",
+      "!**/node_modules/@tanstack/**",
+      "!**/node_modules/@wow-dashboard/api-client/**",
+      "!**/node_modules/@wow-dashboard/api-schema/**",
+      "!**/node_modules/argparse/**",
+      "!**/node_modules/bluebird/js/browser/**",
+      "!**/node_modules/js-yaml/bin/**",
+      "!**/node_modules/js-yaml/dist/**",
+      "!**/node_modules/node-int64/test.js",
+      "!**/node_modules/semver/bin/**",
+      "!**/node_modules/zod/**",
       "!**/*.{md,txt,map}",
       "!**/node_modules/*/{CHANGELOG.md,README.md,readme.md,CHANGES,changelog}",
       "!**/node_modules/*/{test,__tests__,tests,powered-test,example,examples}",
@@ -77,6 +87,9 @@
       "oneClick": true,
       "perMachine": false,
       "createDesktopShortcut": true,
+      "installerLanguages": [
+        "en_US"
+      ],
       "artifactName": "wow-dashboard.exe"
     }
   }
