@@ -6,7 +6,7 @@ import type {
   AppInstallUpdateResult,
   AppUpdateState,
 } from "../shared/update";
-import type { AddonFileState, AddonSyncResult } from "../shared/sync";
+import type { AddonFileState, AddonSyncError, AddonSyncResult } from "../shared/sync";
 
 function subscribeToChannel<TArgs extends unknown[]>(
   channel: string,
@@ -67,7 +67,10 @@ contextBridge.exposeInMainWorld("electron", {
       ipcRenderer.invoke("wow:triggerAddonUpdateCheck") as Promise<AddonUpdateCheckResult>,
     watchAddonFile: () => ipcRenderer.invoke("wow:watchAddonFile") as Promise<boolean>,
     unwatchAddonFile: () => ipcRenderer.invoke("wow:unwatchAddonFile") as Promise<void>,
-    onAddonFileChanged: (cb: () => void) => subscribeToChannel("wow:addonFileChanged", cb),
+    onAddonSyncResult: (cb: (result: AddonSyncResult) => void) =>
+      subscribeToChannel("wow:addonSyncResult", cb),
+    onAddonSyncError: (cb: (error: AddonSyncError) => void) =>
+      subscribeToChannel("wow:addonSyncError", cb),
     onAddonUpdateStaged: (cb: (version: string) => void) =>
       subscribeToChannel("wow:addonUpdateStaged", cb),
     onAddonUpdateApplied: (cb: (version: string) => void) =>

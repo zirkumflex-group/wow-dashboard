@@ -30,3 +30,7 @@ export interface AddonSyncResult extends AddonFileState {
   lastSyncedAt: number;
   lastUploadResult: AddonIngestResponse | null;
 }
+
+export interface AddonSyncError {
+  message: string;
+}

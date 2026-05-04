@@ -2,7 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { env } from "@wow-dashboard/env/app";
 import type { DesktopAuthSessionState } from "../../shared/auth";
-import type { AddonFileStats, AddonSyncResult, PendingUploadCounts } from "../../shared/sync";
+import type {
+  AddonFileStats,
+  AddonSyncError,
+  AddonSyncResult,
+  PendingUploadCounts,
+} from "../../shared/sync";
 import type {
   AddonUpdateCheckResult,
   AddonUpdateState,
@@ -89,7 +94,8 @@ declare global {
         triggerAddonUpdateCheck: () => Promise<AddonUpdateCheckResult>;
         watchAddonFile: () => Promise<boolean>;
         unwatchAddonFile: () => Promise<void>;
-        onAddonFileChanged: (cb: () => void) => () => void;
+        onAddonSyncResult: (cb: (result: AddonSyncResult) => void) => () => void;
+        onAddonSyncError: (cb: (error: AddonSyncError) => void) => () => void;
         onAddonUpdateStaged: (cb: (version: string) => void) => () => void;
         onAddonUpdateApplied: (cb: (version: string) => void) => () => void;
         onAddonUpdateState: (cb: (state: AddonUpdateState) => void) => () => void;
@@ -360,9 +366,6 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
 
   const syncingRef = useRef(false);
   const lastSyncedAtRef = useRef(0);
-  // Always points to the latest doUpload closure so stale-closure effects stay current.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const doUploadRef = useRef<() => Promise<void>>(null as any);
   const applyAddonUpdateSnapshot = useCallback((state: AddonUpdateState) => {
     setAddonUpdateState(state);
     if (state.installedVersion) {
@@ -405,6 +408,38 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
       setAddonFileStats(null);
     }
   }, [applyAddonFileState, retailPath]);
+  const handleSyncError = useCallback(
+    async (message: string) => {
+      setUploadWarn(null);
+      if (message.includes("401")) {
+        await _clearToken();
+        queryClient.clear();
+        setUploadError("Session expired - please sign in again.");
+        return;
+      }
+
+      if (message.includes("RateLimited") || message.includes("Too many")) {
+        setUploadError("Too many requests - please wait a moment before trying again.");
+      } else {
+        setUploadError(`Upload failed: ${message}`);
+      }
+    },
+    [queryClient],
+  );
+  const applyAddonSyncResult = useCallback(
+    (result: AddonSyncResult) => {
+      applyAddonFileState(result);
+      setLastUploadResult(result.lastUploadResult);
+      setLastSyncedAt(result.lastSyncedAt);
+      lastSyncedAtRef.current = result.lastSyncedAt;
+      setUploadError(null);
+      setUploadWarn(result.status === "warning" ? result.message : null);
+      void queryClient.invalidateQueries({
+        queryKey: apiQueryKeys.myCharacters(),
+      });
+    },
+    [applyAddonFileState, queryClient],
+  );
 
   // Load persisted settings on mount
   useEffect(() => {
@@ -450,6 +485,14 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
           stagedVersion: null,
           error: null,
         }));
+      }),
+      window.electron.wow.onAddonSyncResult((result) => {
+        if (cancelled) return;
+        applyAddonSyncResult(result);
+      }),
+      window.electron.wow.onAddonSyncError((error) => {
+        if (cancelled) return;
+        void handleSyncError(error.message);
       }),
     ];
 
@@ -513,7 +556,7 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
       cancelled = true;
       cleanupFns.forEach((cleanup) => cleanup());
     };
-  }, [applyAddonUpdateSnapshot]);
+  }, [applyAddonSyncResult, applyAddonUpdateSnapshot, handleSyncError]);
 
   // Check addon and read file snapshot count whenever retailPath changes
   useEffect(() => {
@@ -522,7 +565,6 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
       setAddonVersion(null);
       setPendingUploadCounts(null);
       setAddonFileStats(null);
-      void window.electron.wow.unwatchAddonFile();
       setWatchingFile(false);
       return;
     }
@@ -559,7 +601,6 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
 
     return () => {
       cancelled = true;
-      void window.electron.wow.unwatchAddonFile();
       setWatchingFile(false);
     };
   }, [applyAddonUpdateSnapshot, refreshAddonFileState, retailPath]);
@@ -662,59 +703,15 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
     setUploadWarn(null);
     try {
       const result = await window.electron.wow.syncAddonData();
-      applyAddonFileState(result);
-      setLastUploadResult(result.lastUploadResult);
-      setLastSyncedAt(result.lastSyncedAt);
-      lastSyncedAtRef.current = result.lastSyncedAt;
-      if (result.status === "warning") {
-        setUploadWarn(result.message);
-      }
-      await queryClient.invalidateQueries({
-        queryKey: apiQueryKeys.myCharacters(),
-      });
+      applyAddonSyncResult(result);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      if (msg.includes("401")) {
-        await _clearToken();
-        queryClient.clear();
-        setUploadError("Session expired — please sign in again.");
-        return;
-      }
-      if (msg.includes("RateLimited") || msg.includes("Too many")) {
-        setUploadError("Too many requests — please wait a moment before trying again.");
-      } else {
-        setUploadError(`Upload failed: ${msg}`);
-      }
+      await handleSyncError(msg);
     } finally {
       syncingRef.current = false;
       setSyncing(false);
     }
   }
-
-  // Keep ref current so effects with empty deps always call the latest closure.
-  doUploadRef.current = doUpload;
-
-  // 15-minute fallback sync; primary sync is triggered by the file watcher.
-  useEffect(() => {
-    const id = setInterval(
-      () => {
-        void doUploadRef.current();
-      },
-      15 * 60 * 1000,
-    );
-    return () => clearInterval(id);
-  }, []);
-
-  // Register file-change listener once on mount.
-  useEffect(() => {
-    const unsubscribe = window.electron.wow.onAddonFileChanged(() => {
-      void doUploadRef.current();
-    });
-
-    return () => {
-      unsubscribe();
-    };
-  }, []);
 
   const retailPathValid = retailPath ? isValidRetailPath(retailPath) : true;
   const latestAddonVersion = addonUpdateState.latestVersion;
