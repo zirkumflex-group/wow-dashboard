@@ -6,6 +6,7 @@ on:
       - master
     paths:
       - "apps/app/**"
+      - "apps/app-tauri/**"
       - "apps/addon/**"
       - "packages/api-client/**"
       - "packages/api-schema/**"
@@ -55,6 +56,7 @@ jobs:
           filters: |
             app:
               - 'apps/app/**'
+              - 'apps/app-tauri/**'
               - 'packages/api-client/**'
               - 'packages/api-schema/**'
               - 'packages/config/**'
@@ -115,14 +117,38 @@ jobs:
           }
 
           if [ "$APP_CHANGED" = "true" ]; then
-            CURRENT=$(node -p "require('./apps/app/package.json').version")
-            APP_VERSION=$(bump_semver "$CURRENT" "apps/app/ packages/api-client/ packages/api-schema/ packages/config/ packages/env/ packages/ui/ package.json pnpm-lock.yaml pnpm-workspace.yaml" "app-v*")
-            # Update package.json version
+            CURRENT=$(node -p "require('./apps/app-tauri/package.json').version")
+            APP_VERSION=$(bump_semver "$CURRENT" "apps/app/ apps/app-tauri/ packages/api-client/ packages/api-schema/ packages/config/ packages/env/ packages/ui/ package.json pnpm-lock.yaml pnpm-workspace.yaml" "app-v*")
+            # Keep the legacy Electron metadata and new Tauri metadata aligned while both apps exist.
             node -e "
               const fs = require('fs');
-              const pkg = JSON.parse(fs.readFileSync('./apps/app/package.json', 'utf8'));
-              pkg.version = '${APP_VERSION}';
-              fs.writeFileSync('./apps/app/package.json', JSON.stringify(pkg, null, 2) + '\n');
+              const updateJson = (path, update) => {
+                if (!fs.existsSync(path)) return;
+                const data = JSON.parse(fs.readFileSync(path, 'utf8'));
+                update(data);
+                fs.writeFileSync(path, JSON.stringify(data, null, 2) + '\n');
+              };
+              updateJson('./apps/app/package.json', (pkg) => { pkg.version = '${APP_VERSION}'; });
+              updateJson('./apps/app-tauri/package.json', (pkg) => { pkg.version = '${APP_VERSION}'; });
+              updateJson('./apps/app-tauri/src-tauri/tauri.conf.json', (config) => {
+                config.version = '${APP_VERSION}';
+              });
+              const cargoTomlPath = './apps/app-tauri/src-tauri/Cargo.toml';
+              if (fs.existsSync(cargoTomlPath)) {
+                const raw = fs.readFileSync(cargoTomlPath, 'utf8');
+                fs.writeFileSync(cargoTomlPath, raw.replace(/^version = \".*\"$/m, 'version = \"${APP_VERSION}\"'));
+              }
+              const cargoLockPath = './apps/app-tauri/src-tauri/Cargo.lock';
+              if (fs.existsSync(cargoLockPath)) {
+                const raw = fs.readFileSync(cargoLockPath, 'utf8');
+                fs.writeFileSync(
+                  cargoLockPath,
+                  raw.replace(
+                    /(name = \"app-tauri\"\\nversion = \").*(\")/,
+                    (_match, prefix, suffix) => prefix + '${APP_VERSION}' + suffix,
+                  ),
+                );
+              }
             "
             echo "app_version=${APP_VERSION}" >> "$GITHUB_OUTPUT"
             echo "Bumped app to ${APP_VERSION}"
@@ -137,7 +163,14 @@ jobs:
           fi
 
           # Commit only if there are staged changes
-          git add apps/app/package.json apps/addon/wow-dashboard.toc 2>/dev/null || true
+          git add \
+            apps/app/package.json \
+            apps/app-tauri/package.json \
+            apps/app-tauri/src-tauri/Cargo.toml \
+            apps/app-tauri/src-tauri/Cargo.lock \
+            apps/app-tauri/src-tauri/tauri.conf.json \
+            apps/addon/wow-dashboard.toc \
+            2>/dev/null || true
           if ! git diff --staged --quiet; then
             git commit -m "chore: bump versions [skip ci]"
             git push origin HEAD:master
@@ -175,6 +208,11 @@ jobs:
           node-version: 24
           cache: pnpm
 
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
       - name: Clean install state
         shell: pwsh
         run: |
@@ -186,23 +224,59 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --force
 
-      - name: Create .env file
-        shell: bash
-        run: |
-          SITE_URL="${{ secrets.VITE_SITE_URL }}"
-          SITE_URL="${SITE_URL%/}"
-          {
-            echo "VITE_SITE_URL=${SITE_URL}"
-            echo "VITE_API_URL=${SITE_URL}/api"
-          } > apps/app/.env
-
-      - name: Build app (electron-vite)
-        run: pnpm --filter app build
-
-      - name: Package app (electron-builder)
-        run: pnpm --filter app package
+      - name: Package app (Tauri)
+        shell: pwsh
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SITE_URL: ${{ secrets.VITE_SITE_URL }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $siteUrl = $env:SITE_URL.TrimEnd("/")
+          $env:VITE_SITE_URL = $siteUrl
+          $env:VITE_API_URL = "$siteUrl/api"
+          pnpm --filter app-tauri package
+
+      - name: Prepare Tauri updater release assets
+        id: tauri-assets
+        shell: pwsh
+        run: |
+          $version = "${{ needs.bump-versions.outputs.app_version }}"
+          $bundleDir = "apps/app-tauri/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis"
+          $installer = Get-ChildItem $bundleDir -Filter "*.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $installer) {
+            throw "No Tauri NSIS installer found in $bundleDir"
+          }
+          $sourceSignature = "$($installer.FullName).sig"
+          if (-not (Test-Path $sourceSignature)) {
+            throw "No Tauri updater signature found at $sourceSignature"
+          }
+
+          $releaseDir = "apps/app-tauri/dist-release"
+          New-Item -ItemType Directory -Force $releaseDir | Out-Null
+          $installerOut = Join-Path $releaseDir "wow-dashboard.exe"
+          $signatureOut = Join-Path $releaseDir "wow-dashboard.exe.sig"
+          $latestOut = Join-Path $releaseDir "latest.json"
+
+          Copy-Item $installer.FullName $installerOut -Force
+          Copy-Item $sourceSignature $signatureOut -Force
+          $signature = (Get-Content $signatureOut -Raw).Trim()
+          $downloadUrl = "https://github.com/${{ github.repository }}/releases/download/app-v$version/wow-dashboard.exe"
+          $latest = [ordered]@{
+            version = $version
+            notes = "WoW Dashboard desktop uploader v$version"
+            pub_date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            platforms = [ordered]@{
+              "windows-x86_64" = [ordered]@{
+                signature = $signature
+                url = $downloadUrl
+              }
+            }
+          }
+          $latest | ConvertTo-Json -Depth 8 | Set-Content -Path $latestOut -Encoding UTF8
+
+          "installer=$installerOut" >> $env:GITHUB_OUTPUT
+          "signature=$signatureOut" >> $env:GITHUB_OUTPUT
+          "latest=$latestOut" >> $env:GITHUB_OUTPUT
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
@@ -212,8 +286,9 @@ jobs:
           prerelease: false
           make_latest: true
           files: |
-            apps/app/dist/wow-dashboard.exe
-            apps/app/dist/latest.yml
+            ${{ steps.tauri-assets.outputs.installer }}
+            ${{ steps.tauri-assets.outputs.signature }}
+            ${{ steps.tauri-assets.outputs.latest }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
