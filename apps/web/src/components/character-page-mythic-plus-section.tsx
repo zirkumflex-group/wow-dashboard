@@ -709,14 +709,14 @@ function HiddenPlayersControl({
         }`}
       >
         {hideAllNames ? <EyeOff size={11} /> : <Eye size={11} />}
-        Names
+        Visibility
         {hideAllNames ? (
           <span className="rounded bg-foreground/8 px-1 py-0.5 text-[10px] uppercase tracking-wider text-foreground/80">
-            Off
+            Names off
           </span>
         ) : hideServerNames ? (
           <span className="rounded bg-foreground/8 px-1 py-0.5 text-[10px] uppercase tracking-wider text-foreground/80">
-            Servers off
+            Realms off
           </span>
         ) : keys.length > 0 ? (
           <span className="rounded bg-foreground/8 px-1 py-0.5 text-[10px] uppercase tracking-wider text-foreground/80">
@@ -733,7 +733,7 @@ function HiddenPlayersControl({
           >
             <span className="flex items-center gap-2 text-foreground/90">
               {hideAllNames ? <Eye size={12} /> : <EyeOff size={12} />}
-              Hide all names
+              Hide names
             </span>
             <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
               {hideAllNames ? "On" : "Off"}
@@ -747,7 +747,7 @@ function HiddenPlayersControl({
           >
             <span className="flex items-center gap-2 text-foreground/90">
               {hideServerNames ? <Eye size={12} /> : <EyeOff size={12} />}
-              Hide server names
+              Hide realms
             </span>
             <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
               {hideServerNames ? "On" : "Off"}
