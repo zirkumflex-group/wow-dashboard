@@ -13,7 +13,7 @@ import {
 } from "electron";
 import { autoUpdater } from "electron-updater";
 import { env as appEnv } from "@wow-dashboard/env/app";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import * as fs from "fs";
 import * as path from "path";
 import { join, resolve, sep } from "path";
@@ -88,6 +88,14 @@ const API_URL = appEnv.VITE_API_URL;
 const RENDERER_DEV_URL = process.env["ELECTRON_RENDERER_URL"] ?? null;
 const RENDERER_FILE_PATH = join(__dirname, "../renderer/index.html");
 const RENDERER_DIR = resolve(__dirname, "../renderer");
+const TAURI_UPDATE_MANIFEST_URL =
+  "https://github.com/zirkumflex-group/wow-dashboard/releases/latest/download/latest.json";
+const TAURI_WINDOWS_PLATFORM = "windows-x86_64";
+const TAURI_INSTALLER_ASSET_NAME = "wow-dashboard.exe";
+const ELECTRON_TAURI_MIGRATION_BRIDGE =
+  app.isPackaged &&
+  process.platform === "win32" &&
+  process.env["WOW_DASHBOARD_DISABLE_TAURI_BRIDGE"] !== "1";
 
 function isHttpUrl(url: URL): boolean {
   return url.protocol === "https:" || url.protocol === "http:";
@@ -3110,6 +3118,14 @@ ipcMain.handle("auth:login", () => {
         if (mainWindow.isMinimized()) mainWindow.restore();
         mainWindow.focus();
       }
+      if (ELECTRON_TAURI_MIGRATION_BRIDGE) {
+        void getSettings()
+          .then((settings) => maybeStartTauriMigrationBridge(settings))
+          .catch((error: unknown) => {
+            const message = error instanceof Error ? error.message : String(error);
+            console.warn("[wow-dashboard] Tauri migration bridge login handoff failed:", message);
+          });
+      }
       resolve(true);
     };
 
@@ -3497,15 +3513,7 @@ function validateOfficialAddonReleaseUrl(url: string, tagName: string, assetName
     throw new Error("Invalid GitHub repository configuration");
   }
   const pathSegments = parsedUrl.pathname.split("/").map((segment) => decodeURIComponent(segment));
-  const expectedSegments = [
-    "",
-    repoOwner,
-    repoName,
-    "releases",
-    "download",
-    tagName,
-    assetName,
-  ];
+  const expectedSegments = ["", repoOwner, repoName, "releases", "download", tagName, assetName];
   if (
     parsedUrl.protocol !== "https:" ||
     parsedUrl.hostname !== "github.com" ||
@@ -4213,6 +4221,186 @@ async function triggerAppUpdateCheck(): Promise<void> {
   return appUpdateCheckInFlight;
 }
 
+interface TauriUpdatePlatform {
+  url: string;
+  signature: string;
+  sha256?: string;
+}
+
+interface TauriUpdateManifest {
+  version?: string;
+  platforms?: Record<string, TauriUpdatePlatform | undefined>;
+}
+
+interface TauriMigrationRelease {
+  version: string;
+  url: string;
+  sha256: string;
+}
+
+function isHexSha256(value: string): boolean {
+  return /^[a-f0-9]{64}$/i.test(value);
+}
+
+function validateTauriInstallerUrl(url: string, version: string): void {
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(url);
+  } catch {
+    throw new Error("Invalid Tauri installer URL");
+  }
+
+  const [repoOwner, repoName] = GITHUB_REPO.split("/");
+  const pathSegments = parsedUrl.pathname.split("/");
+  const expectedSegments = [
+    "",
+    repoOwner,
+    repoName,
+    "releases",
+    "download",
+    `app-v${version}`,
+    TAURI_INSTALLER_ASSET_NAME,
+  ];
+  if (
+    parsedUrl.protocol !== "https:" ||
+    parsedUrl.hostname !== "github.com" ||
+    pathSegments.length !== expectedSegments.length ||
+    pathSegments.some((segment, index) => segment !== expectedSegments[index])
+  ) {
+    throw new Error("Untrusted Tauri installer URL");
+  }
+}
+
+async function fetchTauriMigrationRelease(): Promise<TauriMigrationRelease> {
+  const response = await session.defaultSession.fetch(TAURI_UPDATE_MANIFEST_URL, {
+    headers: {
+      Accept: "application/json",
+    },
+  });
+  if (!response.ok) {
+    throw new Error(`Tauri update manifest request failed with status ${response.status}`);
+  }
+
+  const manifest = (await response.json()) as TauriUpdateManifest;
+  const version = typeof manifest.version === "string" ? manifest.version.trim() : "";
+  const platform = manifest.platforms?.[TAURI_WINDOWS_PLATFORM];
+  if (!version || !platform) {
+    throw new Error("Tauri update manifest does not contain a Windows x64 release");
+  }
+  const sha256 = typeof platform.sha256 === "string" ? platform.sha256.trim() : "";
+  if (!isHexSha256(sha256)) {
+    throw new Error("Tauri update manifest is missing a valid SHA-256 checksum");
+  }
+  validateTauriInstallerUrl(platform.url, version);
+  return {
+    version,
+    url: platform.url,
+    sha256: sha256.toLowerCase(),
+  };
+}
+
+async function createTauriMigrationLoginCode(token: string): Promise<string> {
+  const response = await session.defaultSession.fetch(getApiAuthUrl("/auth/login-code"), {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${token}`,
+      Origin: SITE_URL,
+    },
+  });
+  if (!response.ok) {
+    throw new Error(`Tauri migration login-code request failed with status ${response.status}`);
+  }
+
+  const body = (await response.json()) as { code?: unknown };
+  const code = typeof body.code === "string" ? body.code : "";
+  if (!code || code.length > 512 || /\s/.test(code)) {
+    throw new Error("Tauri migration login-code response was invalid");
+  }
+  return code;
+}
+
+function quotePowerShellString(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+async function writeAndStartTauriMigrationScript(
+  installerPath: string,
+  authUrl: string,
+): Promise<void> {
+  const scriptPath = join(path.dirname(installerPath), "install-wow-dashboard-tauri.ps1");
+  const script = `
+$ErrorActionPreference = "Stop"
+$scriptPath = ${quotePowerShellString(scriptPath)}
+$installerPath = ${quotePowerShellString(installerPath)}
+$authUrl = ${quotePowerShellString(authUrl)}
+$electronPid = ${process.pid}
+try {
+  Wait-Process -Id $electronPid -Timeout 30 -ErrorAction SilentlyContinue
+  Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait
+  Start-Sleep -Seconds 2
+  if ($authUrl.Length -gt 0) {
+    Start-Process -FilePath $authUrl
+  }
+} finally {
+  Remove-Item -LiteralPath $scriptPath -Force -ErrorAction SilentlyContinue
+}
+`;
+  await fs.promises.writeFile(scriptPath, script, "utf-8");
+  const child = spawn(
+    "powershell.exe",
+    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", scriptPath],
+    {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+    },
+  );
+  child.unref();
+}
+
+async function maybeStartTauriMigrationBridge(settings: Record<string, unknown>): Promise<boolean> {
+  if (!ELECTRON_TAURI_MIGRATION_BRIDGE || !storedSessionToken) {
+    return false;
+  }
+
+  const lastStartedAt =
+    typeof settings.tauriMigrationBridgeStartedAt === "number"
+      ? settings.tauriMigrationBridgeStartedAt
+      : 0;
+  if (Date.now() - lastStartedAt < 30 * 60 * 1000) {
+    return false;
+  }
+
+  try {
+    const release = await fetchTauriMigrationRelease();
+    const downloadDir = await fs.promises.mkdtemp(join(os.tmpdir(), "wow-dashboard-tauri-"));
+    const installerPath = join(downloadDir, TAURI_INSTALLER_ASSET_NAME);
+    await downloadFile(release.url, installerPath);
+    const actualHash = await computeFileSha256(installerPath);
+    if (actualHash.toLowerCase() !== release.sha256) {
+      throw new Error("Downloaded Tauri installer checksum did not match latest.json");
+    }
+
+    const code = await createTauriMigrationLoginCode(storedSessionToken);
+    const authUrl = `wow-dashboard://auth?code=${encodeURIComponent(code)}`;
+    settings.tauriMigrationBridgeStartedAt = Date.now();
+    settings.tauriMigrationTargetVersion = release.version;
+    delete settings.tauriMigrationBridgeError;
+    await saveSettings(settings);
+    await writeAndStartTauriMigrationScript(installerPath, authUrl);
+    prepareForQuit();
+    app.quit();
+    return true;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn("[wow-dashboard] Tauri migration bridge failed:", message);
+    settings.tauriMigrationBridgeError = message;
+    await saveSettings(settings).catch(() => {});
+    return false;
+  }
+}
+
 // Shell
 ipcMain.handle("app:openExternal", (_, url: string) => {
   let parsed: URL;
@@ -4321,6 +4509,9 @@ app.whenReady().then(async () => {
   // Load settings before creating the window so closeBehaviorCache is populated and
   // the synchronous close handler has the correct value from the very first close event.
   const settings = await getSettings();
+  if (await maybeStartTauriMigrationBridge(settings)) {
+    return;
+  }
   closeBehaviorCache = (settings.closeBehavior as "tray" | "exit") ?? "tray";
   launchMinimizedCache = (settings.launchMinimized as boolean) ?? true;
   if (process.platform === "win32") {
