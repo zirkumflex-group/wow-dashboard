@@ -8,10 +8,13 @@ use crate::models::{
 };
 use anyhow::{Result, anyhow};
 use std::{
+    cmp::Ordering,
     collections::{BTreeMap, HashMap},
     fs,
     path::Path,
 };
+
+const MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS: f64 = 4.0 * 60.0 * 60.0 * 1000.0;
 
 #[derive(Debug, Clone)]
 enum LuaValue {
@@ -89,7 +92,7 @@ impl<'a> Parser<'a> {
         self.expect_byte(b'{')?;
 
         let mut characters = Vec::new();
-        let mut pending_members = BTreeMap::<String, Vec<MythicPlusRunMemberData>>::new();
+        let mut pending_members = BTreeMap::<String, PendingMythicPlusMembers>::new();
 
         loop {
             self.skip();
@@ -833,12 +836,27 @@ fn normalize_mythic_plus_run(table: &LuaTable) -> Option<MythicPlusRunData> {
     })
 }
 
+#[derive(Debug, Clone)]
+struct PendingMythicPlusMembers {
+    captured_at: f64,
+    map_challenge_mode_id: Option<f64>,
+    level: Option<f64>,
+    duration_ms: Option<f64>,
+    completed_in_time: Option<bool>,
+    latest_known_run_fingerprint: Option<String>,
+    latest_known_run_sort_value: Option<f64>,
+    members: Vec<MythicPlusRunMemberData>,
+}
+
 fn normalize_pending_members(
     pending_table: LuaTable,
-) -> BTreeMap<String, Vec<MythicPlusRunMemberData>> {
+) -> BTreeMap<String, PendingMythicPlusMembers> {
     let mut pending = BTreeMap::new();
     for (key, value) in pending_table.fields {
         let LuaValue::Table(table) = value else {
+            continue;
+        };
+        let Some(captured_at) = number_field(&table, "capturedAt") else {
             continue;
         };
         let members = table_array_field(&table, "members")
@@ -846,7 +864,20 @@ fn normalize_pending_members(
             .filter_map(normalize_member)
             .collect::<Vec<_>>();
         if !members.is_empty() {
-            pending.insert(key, members);
+            pending.insert(
+                key,
+                PendingMythicPlusMembers {
+                    captured_at,
+                    map_challenge_mode_id: number_field(&table, "mapChallengeModeID")
+                        .or_else(|| number_field(&table, "map")),
+                    level: number_field(&table, "level"),
+                    duration_ms: number_field(&table, "durationMs"),
+                    completed_in_time: bool_field(&table, "completedInTime"),
+                    latest_known_run_fingerprint: string_field(&table, "latestKnownRunFingerprint"),
+                    latest_known_run_sort_value: number_field(&table, "latestKnownRunSortValue"),
+                    members,
+                },
+            );
         }
     }
     pending
@@ -854,17 +885,276 @@ fn normalize_pending_members(
 
 fn apply_pending_members(
     characters: &mut [CharacterData],
-    pending_members: &BTreeMap<String, Vec<MythicPlusRunMemberData>>,
+    pending_members: &BTreeMap<String, PendingMythicPlusMembers>,
 ) {
     for character in characters {
         let key = format!("{}-{}", character.name, character.realm);
-        let Some(members) = pending_members.get(&key) else {
+        let Some(pending) = pending_members.get(&key) else {
             continue;
         };
-        if let Some(run) = character.mythic_plus_runs.first_mut() {
-            run.members = merge_members(run.members.as_deref(), Some(members));
+        reconcile_pending_members(&mut character.mythic_plus_runs, pending);
+    }
+}
+
+fn reconcile_pending_members(
+    runs: &mut [MythicPlusRunData],
+    pending: &PendingMythicPlusMembers,
+) -> bool {
+    if pending.members.is_empty() {
+        return false;
+    }
+
+    let mut best_idx = None;
+    let mut best_diff = f64::INFINITY;
+    let mut best_members = None;
+    const MATCH_WINDOW_SECONDS: f64 = 5.0 * 60.0;
+
+    for (index, run) in runs.iter().enumerate() {
+        if !pending_run_identity_matches(run, pending) {
+            continue;
+        }
+        let Some(improved_members) = get_improved_members(run.members.as_deref(), &pending.members)
+        else {
+            continue;
+        };
+        let Some(run_completed_at) = run_completion_estimate(run) else {
+            continue;
+        };
+        let diff = (run_completed_at - pending.captured_at).abs();
+        if diff <= MATCH_WINDOW_SECONDS && diff < best_diff {
+            best_idx = Some(index);
+            best_diff = diff;
+            best_members = Some(improved_members);
         }
     }
+
+    if let (Some(index), Some(members)) = (best_idx, best_members) {
+        runs[index].members = Some(members);
+        return true;
+    }
+
+    let mut fallback_candidates = Vec::new();
+    for (index, run) in runs.iter().enumerate() {
+        if !pending_run_identity_matches(run, pending) {
+            continue;
+        }
+        let Some(merged_members) = get_improved_members(run.members.as_deref(), &pending.members)
+        else {
+            continue;
+        };
+        if !is_after_pending_capture(run, pending) {
+            continue;
+        }
+
+        fallback_candidates.push(PendingMemberCandidate {
+            index,
+            duration_diff: pending
+                .duration_ms
+                .zip(run.duration_ms)
+                .map(|(pending_duration, run_duration)| (run_duration - pending_duration).abs()),
+            completion_diff: run_completion_estimate(run)
+                .map(|completed_at| (completed_at - pending.captured_at).abs()),
+            outcome_matches: pending.completed_in_time.is_none()
+                || run.completed_in_time.is_none()
+                || pending.completed_in_time == run.completed_in_time,
+            merged_members,
+            this_week: run.this_week == Some(true),
+        });
+    }
+
+    if fallback_candidates.is_empty() {
+        return false;
+    }
+
+    let filtered_candidates = if pending.duration_ms.is_some() {
+        fallback_candidates
+            .iter()
+            .filter(|candidate| {
+                candidate
+                    .duration_diff
+                    .map_or(true, |diff| diff <= 2.0 * 60.0 * 1000.0)
+            })
+            .cloned()
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let mut ranked_candidates = if filtered_candidates.is_empty() {
+        fallback_candidates
+    } else {
+        filtered_candidates
+    };
+
+    ranked_candidates.sort_by(compare_pending_member_candidates);
+
+    let mut fallback_unique = ranked_candidates.len() == 1;
+    if !fallback_unique {
+        let best_candidate = &ranked_candidates[0];
+        let second_candidate = ranked_candidates.get(1);
+        let unique_by_completion = best_candidate.completion_diff.is_some_and(|best_diff| {
+            best_diff <= 3.0 * 60.0 * 60.0
+                && second_candidate
+                    .and_then(|candidate| candidate.completion_diff)
+                    .map_or(true, |second_diff| second_diff - best_diff > 15.0 * 60.0)
+        });
+        let unique_by_duration = best_candidate.duration_diff.is_some_and(|best_diff| {
+            best_diff <= 2.0 * 60.0 * 1000.0
+                && second_candidate
+                    .and_then(|candidate| candidate.duration_diff)
+                    .map_or(true, |second_diff| second_diff - best_diff > 60.0 * 1000.0)
+        });
+        let unique_by_week = best_candidate.this_week
+            && second_candidate.map_or(true, |candidate| !candidate.this_week);
+
+        fallback_unique = unique_by_completion || unique_by_duration || unique_by_week;
+    }
+
+    if fallback_unique {
+        let best_candidate = ranked_candidates.remove(0);
+        runs[best_candidate.index].members = Some(best_candidate.merged_members);
+        return true;
+    }
+
+    false
+}
+
+#[derive(Clone)]
+struct PendingMemberCandidate {
+    index: usize,
+    duration_diff: Option<f64>,
+    completion_diff: Option<f64>,
+    outcome_matches: bool,
+    merged_members: Vec<MythicPlusRunMemberData>,
+    this_week: bool,
+}
+
+fn compare_pending_member_candidates(
+    left: &PendingMemberCandidate,
+    right: &PendingMemberCandidate,
+) -> Ordering {
+    compare_optional_diff(left.completion_diff, right.completion_diff)
+        .then_with(|| compare_optional_diff(left.duration_diff, right.duration_diff))
+        .then_with(|| right.outcome_matches.cmp(&left.outcome_matches))
+        .then_with(|| right.this_week.cmp(&left.this_week))
+        .then_with(|| left.index.cmp(&right.index))
+}
+
+fn compare_optional_diff(left: Option<f64>, right: Option<f64>) -> Ordering {
+    match (left, right) {
+        (Some(left), Some(right)) => left.total_cmp(&right),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    }
+}
+
+fn pending_run_identity_matches(
+    run: &MythicPlusRunData,
+    pending: &PendingMythicPlusMembers,
+) -> bool {
+    if let Some(map) = pending.map_challenge_mode_id
+        && run.map_challenge_mode_id != Some(map)
+    {
+        return false;
+    }
+    if let Some(level) = pending.level
+        && run.level != Some(level)
+    {
+        return false;
+    }
+    true
+}
+
+fn is_after_pending_capture(run: &MythicPlusRunData, pending: &PendingMythicPlusMembers) -> bool {
+    if pending.latest_known_run_sort_value.is_none()
+        && pending.latest_known_run_fingerprint.is_none()
+    {
+        return true;
+    }
+    if let Some(latest_sort_value) = pending.latest_known_run_sort_value {
+        return run_sort_value(run) > latest_sort_value;
+    }
+    if let Some(latest_fingerprint) = &pending.latest_known_run_fingerprint {
+        return &run.fingerprint != latest_fingerprint;
+    }
+    false
+}
+
+fn run_completion_estimate(run: &MythicPlusRunData) -> Option<f64> {
+    run.ended_at
+        .or(run.abandoned_at)
+        .or(run.completed_at)
+        .or_else(|| {
+            run.start_date
+                .zip(sanitized_run_duration_ms(run))
+                .map(|(start_date, duration_ms)| start_date + (duration_ms / 1000.0 + 0.5).floor())
+        })
+}
+
+fn sanitized_run_duration_ms(run: &MythicPlusRunData) -> Option<f64> {
+    let duration_ms = run.duration_ms?;
+    if !duration_ms.is_finite() || duration_ms <= 0.0 {
+        return None;
+    }
+    if duration_ms <= MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS {
+        return Some(duration_ms.floor());
+    }
+
+    let run_end_at = run.completed_at.or(run.ended_at).or(run.abandoned_at)?;
+    let start_date = run.start_date?;
+    if run_end_at < start_date {
+        return None;
+    }
+    let derived_duration_ms = (run_end_at - start_date) * 1000.0;
+    if derived_duration_ms.is_finite()
+        && derived_duration_ms > 0.0
+        && derived_duration_ms <= MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS
+    {
+        return Some(derived_duration_ms.floor());
+    }
+
+    None
+}
+
+fn get_improved_members(
+    current_members: Option<&[MythicPlusRunMemberData]>,
+    candidate_members: &[MythicPlusRunMemberData],
+) -> Option<Vec<MythicPlusRunMemberData>> {
+    let merged_members = merge_members(current_members, Some(candidate_members))?;
+    let current_count = current_members.map_or(0, <[MythicPlusRunMemberData]>::len);
+    if merged_members.len() > current_count {
+        return Some(merged_members);
+    }
+
+    (member_completeness_score(&merged_members)
+        > current_members.map_or(0, member_completeness_score))
+    .then_some(merged_members)
+}
+
+fn member_completeness_score(members: &[MythicPlusRunMemberData]) -> usize {
+    members.iter().fold(0, |mut score, member| {
+        if !member.name.trim().is_empty() {
+            score += 1;
+        }
+        if member
+            .realm
+            .as_ref()
+            .is_some_and(|realm| !realm.trim().is_empty())
+        {
+            score += 1;
+        }
+        if member
+            .class_tag
+            .as_ref()
+            .is_some_and(|class_tag| !class_tag.trim().is_empty())
+        {
+            score += 2;
+        }
+        if member.role.is_some() {
+            score += 2;
+        }
+        score
+    })
 }
 
 fn normalize_member(table: &LuaTable) -> Option<MythicPlusRunMemberData> {
@@ -1173,6 +1463,60 @@ mod tests {
         let run = &characters[0].mythic_plus_runs[0];
         assert_eq!(run.status, Some(MythicPlusRunStatus::Completed));
         assert_eq!(run.members.as_ref().map(Vec::len), Some(1));
+    }
+
+    #[test]
+    fn reconciles_pending_mythic_plus_members_to_matching_run() {
+        let lua = r#"
+        WowDashboardDB = {
+          ["pendingMythicPlusMembers"] = {
+            ["Testy-Area 52"] = {
+              ["capturedAt"] = 1000,
+              ["mapChallengeModeID"] = 501,
+              ["level"] = 10,
+              ["durationMs"] = 120000,
+              ["completedInTime"] = true,
+              ["latestKnownRunFingerprint"] = "older-run",
+              ["latestKnownRunSortValue"] = 900,
+              ["members"] = {
+                [1] = { ["name"] = "Partyone", ["realm"] = "Area 52", ["role"] = "dps" },
+              },
+            },
+          },
+          ["characters"] = {
+            ["Testy-Area 52"] = {
+              ["name"] = "Testy",
+              ["realm"] = "Area 52",
+              ["region"] = "us",
+              ["mythicPlusRuns"] = {
+                [1] = { ["fingerprint"] = "newer-run", ["observedAt"] = 2000, ["seasonID"] = 15, ["mapChallengeModeID"] = 502, ["level"] = 12, ["status"] = "completed", ["completedAt"] = 2000, ["durationMs"] = 130000 },
+                [2] = { ["fingerprint"] = "target-run", ["observedAt"] = 1000, ["seasonID"] = 15, ["mapChallengeModeID"] = 501, ["level"] = 10, ["status"] = "completed", ["completedAt"] = 1000, ["durationMs"] = 120000, ["completedInTime"] = true },
+              },
+            },
+          },
+        }
+        "#;
+
+        let characters = parse_saved_variables(lua).unwrap();
+        let runs = &characters[0].mythic_plus_runs;
+        let newer_run = runs
+            .iter()
+            .find(|run| run.fingerprint == "newer-run")
+            .unwrap();
+        let target_run = runs
+            .iter()
+            .find(|run| run.fingerprint == "target-run")
+            .unwrap();
+
+        assert!(newer_run.members.is_none());
+        assert_eq!(
+            target_run
+                .members
+                .as_ref()
+                .and_then(|members| members.first())
+                .map(|member| member.name.as_str()),
+            Some("Partyone")
+        );
     }
 
     #[test]

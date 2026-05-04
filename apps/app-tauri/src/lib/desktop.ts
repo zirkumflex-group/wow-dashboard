@@ -37,7 +37,7 @@ export interface AppUpdateState {
 
 export interface AppInstallUpdateResult {
   ok: boolean;
-  status: "installing" | "notDownloaded" | "unsupported";
+  status: "installing" | "notDownloaded" | "unsupported" | "failed";
   message: string | null;
 }
 

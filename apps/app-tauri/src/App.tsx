@@ -55,6 +55,14 @@ async function clearAuth(): Promise<void> {
   notifyAuthListeners();
 }
 
+function formatErrorMessage(reason: unknown): string {
+  return reason instanceof Error ? reason.message : String(reason);
+}
+
+function isAuthErrorMessage(message: string | null | undefined): boolean {
+  return message?.includes("401") === true;
+}
+
 async function fetchAuthState(): Promise<void> {
   try {
     const session = await desktop.auth.getSession();
@@ -304,6 +312,9 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
       if (state.status === "success") {
         void queryClient.invalidateQueries({ queryKey: apiQueryKeys.myCharacters() });
       }
+      if (state.status === "error" && isAuthErrorMessage(state.message)) {
+        void clearAuth().then(() => queryClient.clear());
+      }
     }).then((cleanup) => cleanups.push(cleanup));
 
     void Promise.allSettled([
@@ -442,14 +453,27 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
   }
 
   async function handleSync() {
-    const state = await desktop.wow.syncNow();
-    setSyncState(state);
-    if (state.status === "success") {
-      await queryClient.invalidateQueries({ queryKey: apiQueryKeys.myCharacters() });
-    }
-    if (state.status === "error" && state.message?.includes("401")) {
-      await clearAuth();
-      queryClient.clear();
+    try {
+      const state = await desktop.wow.syncNow();
+      setSyncState(state);
+      if (state.status === "success") {
+        await queryClient.invalidateQueries({ queryKey: apiQueryKeys.myCharacters() });
+      }
+      if (state.status === "error" && isAuthErrorMessage(state.message)) {
+        await clearAuth();
+        queryClient.clear();
+      }
+    } catch (reason) {
+      const message = formatErrorMessage(reason);
+      setSyncState((state) => ({
+        ...state,
+        status: "error",
+        message,
+      }));
+      if (isAuthErrorMessage(message)) {
+        await clearAuth();
+        queryClient.clear();
+      }
     }
   }
 

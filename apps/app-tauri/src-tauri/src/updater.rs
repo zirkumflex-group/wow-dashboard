@@ -43,6 +43,7 @@ pub enum AppInstallUpdateStatus {
     Installing,
     NotDownloaded,
     Unsupported,
+    Failed,
 }
 
 #[derive(Clone)]
@@ -149,9 +150,30 @@ pub async fn app_install_update(
         snapshot.error = None;
     });
 
-    tauri::async_runtime::spawn(async move {
-        let _ = update.install(bytes);
-    });
+    if let Err(error) = update.install(&bytes) {
+        let message = error.to_string();
+        *state
+            .app_update
+            .pending_update
+            .lock()
+            .expect("pending update mutex poisoned") = Some(update);
+        *state
+            .app_update
+            .pending_update_bytes
+            .lock()
+            .expect("pending update bytes mutex poisoned") = Some(bytes);
+        emit_app_update_state(&app, &state, |snapshot| {
+            snapshot.status = AppUpdateStatus::Error;
+            snapshot.progress_percent = None;
+            snapshot.error = Some(message.clone());
+            snapshot.last_checked_at = Some(chrono::Utc::now().timestamp_millis());
+        });
+        return Ok(AppInstallUpdateResult {
+            ok: false,
+            status: AppInstallUpdateStatus::Failed,
+            message: Some(message),
+        });
+    }
 
     Ok(AppInstallUpdateResult {
         ok: true,
@@ -183,9 +205,23 @@ pub async fn trigger_app_update_check(
         snapshot.last_checked_at = Some(chrono::Utc::now().timestamp_millis());
     });
 
-    match app.updater()?.check().await {
+    let check_result = match app.updater() {
+        Ok(updater) => updater.check().await,
+        Err(error) => {
+            emit_app_update_state(app, state, |snapshot| {
+                snapshot.status = AppUpdateStatus::Error;
+                snapshot.progress_percent = None;
+                snapshot.error = Some(error.to_string());
+                snapshot.last_checked_at = Some(chrono::Utc::now().timestamp_millis());
+            });
+            return Ok(());
+        }
+    };
+
+    match check_result {
         Ok(Some(update)) => {
             let version = update.version.clone();
+            clear_pending_update(state);
             emit_app_update_state(app, state, |snapshot| {
                 snapshot.status = AppUpdateStatus::Available;
                 snapshot.available_version = Some(version.clone());
@@ -202,7 +238,7 @@ pub async fn trigger_app_update_check(
                 snapshot.status = AppUpdateStatus::Downloading;
                 snapshot.progress_percent = None;
             });
-            let bytes = update
+            let download_result = update
                 .download(
                     |chunk_size, content_length| {
                         let received = received_for_chunk
@@ -221,7 +257,21 @@ pub async fn trigger_app_update_check(
                     },
                     || {},
                 )
-                .await?;
+                .await;
+            let bytes = match download_result {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    clear_pending_update(state);
+                    emit_app_update_state(app, state, |snapshot| {
+                        snapshot.status = AppUpdateStatus::Error;
+                        snapshot.downloaded_version = None;
+                        snapshot.progress_percent = None;
+                        snapshot.error = Some(error.to_string());
+                        snapshot.last_checked_at = Some(chrono::Utc::now().timestamp_millis());
+                    });
+                    return Ok(());
+                }
+            };
 
             *state
                 .app_update
@@ -244,6 +294,7 @@ pub async fn trigger_app_update_check(
             let _ = app.emit("app-update-downloaded", version);
         }
         Ok(None) => {
+            clear_pending_update(state);
             emit_app_update_state(app, state, |snapshot| {
                 snapshot.status = AppUpdateStatus::UpToDate;
                 snapshot.available_version = None;
@@ -265,6 +316,19 @@ pub async fn trigger_app_update_check(
     }
 
     Ok(())
+}
+
+fn clear_pending_update(state: &crate::AppState) {
+    *state
+        .app_update
+        .pending_update
+        .lock()
+        .expect("pending update mutex poisoned") = None;
+    *state
+        .app_update
+        .pending_update_bytes
+        .lock()
+        .expect("pending update bytes mutex poisoned") = None;
 }
 
 fn emit_app_update_state(

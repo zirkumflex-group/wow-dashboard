@@ -203,7 +203,10 @@ async fn sync_now_inner(app: &AppHandle, state: &crate::AppState) -> Result<Sync
 
     let result = sync_now_guarded(app, state).await;
     state.sync.running.store(false, Ordering::SeqCst);
-    result
+    match result {
+        Ok(snapshot) => Ok(snapshot),
+        Err(error) => Ok(set_sync_error(app, state, error.to_string())),
+    }
 }
 
 async fn sync_now_guarded(app: &AppHandle, state: &crate::AppState) -> Result<SyncState> {
@@ -333,6 +336,16 @@ fn update_from_parse_result(
 
 fn emit_sync_state(app: &AppHandle, snapshot: &SyncState) {
     let _ = app.emit("sync-state", snapshot.clone());
+}
+
+fn set_sync_error(app: &AppHandle, state: &crate::AppState, message: String) -> SyncState {
+    let snapshot = state.sync.update(|sync| {
+        sync.status = SyncStatus::Error;
+        sync.message = Some(message);
+        sync.last_synced_at = state.settings.snapshot().last_synced_at;
+    });
+    emit_sync_state(app, &snapshot);
+    snapshot
 }
 
 async fn upload_addon_batch(
