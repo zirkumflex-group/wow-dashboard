@@ -29,6 +29,13 @@ import type {
   AppUpdateState,
 } from "../shared/update";
 import type { DesktopAuthSessionState } from "../shared/auth";
+import type {
+  AddonFileState,
+  AddonFileStats,
+  AddonIngestResponse,
+  AddonSyncResult,
+  PendingUploadCounts,
+} from "../shared/sync";
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -58,6 +65,12 @@ let appUpdateCheckTimer: ReturnType<typeof setInterval> | null = null;
 const DEFAULT_APP_UPDATE_CHECK_INTERVAL_MINUTES = 60;
 const DEFAULT_ADDON_UPDATE_CHECK_INTERVAL_MINUTES = 60;
 const DEFAULT_ADDON_UPDATE_APPLY_INTERVAL_MINUTES = 1;
+const MYTHIC_PLUS_UPLOAD_LOOKBACK_SECONDS = 2 * 60 * 60;
+const MYTHIC_PLUS_MEMBER_UPLOAD_LOOKBACK_SECONDS = 48 * 60 * 60;
+const ADDON_UPLOAD_CHARACTERS_PER_BATCH = 20;
+const ADDON_UPLOAD_SNAPSHOTS_PER_CHARACTER = 100;
+const ADDON_UPLOAD_RUNS_PER_CHARACTER = 150;
+const ADDON_UPLOAD_MAX_BATCH_BODY_BYTES = 768 * 1024;
 
 if (!app.isPackaged) {
   app.setName("WoW Dashboard Dev");
@@ -828,14 +841,6 @@ interface CharacterData {
   faction: Faction;
   snapshots: SnapshotData[];
   mythicPlusRuns: MythicPlusRunData[];
-}
-
-interface AddonFileStats {
-  totalBytes: number;
-  createdAt: number;
-  modifiedAt: number;
-  totalSnapshots: number;
-  totalMythicPlusRuns: number;
 }
 
 function getSnapshotCompletenessScore(snapshot: SnapshotData): number {
@@ -2969,6 +2974,278 @@ async function findAndParseAddonData(retailPath: string): Promise<{
   return { characters, accountsFound, fileStats };
 }
 
+function hasUploadableSnapshotSpec(spec: string) {
+  const normalized = spec.trim();
+  return normalized !== "" && normalized !== "Unknown";
+}
+
+function isUploadableSnapshot(snapshot: SnapshotData, sinceTs: number) {
+  return snapshot.takenAt > sinceTs && hasUploadableSnapshotSpec(snapshot.spec);
+}
+
+function normalizePositiveTimestampSeconds(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+  return value;
+}
+
+function getMythicPlusRunLastMutationAt(run: MythicPlusRunData): number {
+  const candidateTimestamps = [
+    run.startDate,
+    run.completedAt,
+    run.endedAt,
+    run.abandonedAt,
+    run.observedAt,
+  ];
+  let latestMutationAt = 0;
+  for (const candidate of candidateTimestamps) {
+    const normalized = normalizePositiveTimestampSeconds(candidate);
+    if (normalized !== null && normalized > latestMutationAt) {
+      latestMutationAt = normalized;
+    }
+  }
+  return latestMutationAt;
+}
+
+function isUploadableMythicPlusRun(run: MythicPlusRunData, sinceTs: number) {
+  const nowTs = Math.floor(Date.now() / 1000);
+  const lookbackSeconds =
+    (run.members?.length ?? 0) > 0
+      ? MYTHIC_PLUS_MEMBER_UPLOAD_LOOKBACK_SECONDS
+      : MYTHIC_PLUS_UPLOAD_LOOKBACK_SECONDS;
+  const effectiveSinceTs = Math.min(sinceTs, nowTs - lookbackSeconds);
+  const lastMutationAt = getMythicPlusRunLastMutationAt(run);
+  return lastMutationAt > effectiveSinceTs;
+}
+
+function getPendingUploadCounts(characters: CharacterData[], sinceTs: number): PendingUploadCounts {
+  const counts: PendingUploadCounts = { snapshots: 0, mythicPlusRuns: 0 };
+  for (const character of characters) {
+    for (const snapshot of character.snapshots) {
+      if (isUploadableSnapshot(snapshot, sinceTs)) {
+        counts.snapshots += 1;
+      }
+    }
+    for (const run of character.mythicPlusRuns) {
+      if (isUploadableMythicPlusRun(run, sinceTs)) {
+        counts.mythicPlusRuns += 1;
+      }
+    }
+  }
+  return counts;
+}
+
+function toAddonFileState(
+  addonData: Awaited<ReturnType<typeof findAndParseAddonData>>,
+  sinceTs: number,
+): AddonFileState {
+  return {
+    pendingUploadCounts: getPendingUploadCounts(addonData.characters, sinceTs),
+    fileStats: addonData.fileStats,
+    accountsFound: addonData.accountsFound,
+    trackedCharacters: addonData.characters.length,
+  };
+}
+
+function filterPendingCharacters(characters: CharacterData[], sinceTs: number): CharacterData[] {
+  const pendingCharacters: CharacterData[] = [];
+  for (const character of characters) {
+    const snapshots = character.snapshots.filter((snapshot) =>
+      isUploadableSnapshot(snapshot, sinceTs),
+    );
+    const mythicPlusRuns = character.mythicPlusRuns.filter((run) =>
+      isUploadableMythicPlusRun(run, sinceTs),
+    );
+    if (snapshots.length === 0 && mythicPlusRuns.length === 0) {
+      continue;
+    }
+    pendingCharacters.push({
+      ...character,
+      snapshots,
+      mythicPlusRuns,
+    });
+  }
+  return pendingCharacters;
+}
+
+function chunkCharacterForUpload(character: CharacterData): CharacterData[] {
+  const chunkCount = Math.max(
+    Math.ceil(character.snapshots.length / ADDON_UPLOAD_SNAPSHOTS_PER_CHARACTER),
+    Math.ceil(character.mythicPlusRuns.length / ADDON_UPLOAD_RUNS_PER_CHARACTER),
+    1,
+  );
+  const chunks: CharacterData[] = [];
+
+  for (let index = 0; index < chunkCount; index++) {
+    const snapshots = character.snapshots.slice(
+      index * ADDON_UPLOAD_SNAPSHOTS_PER_CHARACTER,
+      (index + 1) * ADDON_UPLOAD_SNAPSHOTS_PER_CHARACTER,
+    );
+    const mythicPlusRuns = character.mythicPlusRuns.slice(
+      index * ADDON_UPLOAD_RUNS_PER_CHARACTER,
+      (index + 1) * ADDON_UPLOAD_RUNS_PER_CHARACTER,
+    );
+    if (snapshots.length === 0 && mythicPlusRuns.length === 0) {
+      continue;
+    }
+
+    chunks.push({
+      ...character,
+      snapshots,
+      mythicPlusRuns,
+    });
+  }
+
+  return chunks;
+}
+
+function createAddonUploadBatches(characters: CharacterData[]): CharacterData[][] {
+  const batches: CharacterData[][] = [];
+  let currentBatch: CharacterData[] = [];
+  let currentBodyBytes = Buffer.byteLength('{"characters":[]}', "utf8");
+
+  for (const character of characters) {
+    for (const chunk of chunkCharacterForUpload(character)) {
+      const chunkBytes = Buffer.byteLength(JSON.stringify(chunk), "utf8");
+      const separatorBytes = currentBatch.length > 0 ? 1 : 0;
+      const candidateBytes = currentBodyBytes + separatorBytes + chunkBytes;
+      const exceedsCharacterLimit =
+        currentBatch.length > 0 &&
+        currentBatch.length + 1 > ADDON_UPLOAD_CHARACTERS_PER_BATCH;
+      const exceedsBodyLimit =
+        currentBatch.length > 0 && candidateBytes > ADDON_UPLOAD_MAX_BATCH_BODY_BYTES;
+
+      if (exceedsCharacterLimit || exceedsBodyLimit) {
+        batches.push(currentBatch);
+        currentBatch = [];
+        currentBodyBytes = Buffer.byteLength('{"characters":[]}', "utf8");
+      }
+
+      currentBatch.push(chunk);
+      currentBodyBytes += (currentBatch.length > 1 ? 1 : 0) + chunkBytes;
+    }
+  }
+
+  if (currentBatch.length > 0) {
+    batches.push(currentBatch);
+  }
+
+  return batches;
+}
+
+async function requestAuthenticatedJson<T>(
+  method: "POST",
+  pathname: string,
+  body?: unknown,
+): Promise<T> {
+  if (!storedSessionToken) {
+    throw new Error("No desktop session token available");
+  }
+
+  const headers: Array<[string, string]> = [["Accept", "application/json"]];
+  if (body !== undefined) {
+    headers.push(["Content-Type", "application/json"]);
+  }
+
+  const response = await session.defaultSession.fetch(getApiAuthUrl(pathname), {
+    method,
+    headers: buildApiProxyHeaders(headers),
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  });
+  const responseText = await response.text();
+  if (!response.ok) {
+    throw new Error(
+      `API request failed with status ${response.status} ${response.statusText}: ${responseText}`,
+    );
+  }
+  return (responseText ? JSON.parse(responseText) : {}) as T;
+}
+
+async function uploadAddonBatch(batch: CharacterData[]): Promise<AddonIngestResponse> {
+  return requestAuthenticatedJson<AddonIngestResponse>("POST", "/addon/ingest", {
+    characters: batch,
+  });
+}
+
+async function resyncCharacters(): Promise<void> {
+  await requestAuthenticatedJson<unknown>("POST", "/characters/resync");
+}
+
+async function syncAddonData(): Promise<AddonSyncResult> {
+  const { validatedRetailPath, reason } = await resolveRetailPathFromSettings();
+  if (!validatedRetailPath) {
+    await resyncCharacters();
+    const settings = await getSettings();
+    return {
+      status: "warning",
+      message:
+        reason === "invalid"
+          ? "Configured WoW folder must point to the _retail_ directory."
+          : "No WoW folder set — select the folder first",
+      pendingUploadCounts: { snapshots: 0, mythicPlusRuns: 0 },
+      fileStats: null,
+      accountsFound: [],
+      trackedCharacters: 0,
+      lastSyncedAt: (settings.lastSyncedAt as number | undefined) ?? 0,
+      lastUploadResult: null,
+    };
+  }
+
+  const settings = await getSettings();
+  const sinceTs = ((settings.lastSyncedAt as number | undefined) ?? 0) - 60;
+  const addonData = await findAndParseAddonData(validatedRetailPath);
+  const fileState = toAddonFileState(addonData, sinceTs);
+
+  if (addonData.characters.length === 0) {
+    await resyncCharacters();
+    return {
+      status: "warning",
+      message:
+        addonData.accountsFound.length === 0
+          ? "No wow-dashboard.lua found — run the addon in-game first"
+          : `Parsed ${addonData.accountsFound.length} account(s) but no characters found`,
+      ...fileState,
+      lastSyncedAt: (settings.lastSyncedAt as number | undefined) ?? 0,
+      lastUploadResult: null,
+    };
+  }
+
+  const pendingCharacters = filterPendingCharacters(addonData.characters, sinceTs);
+  const batches = createAddonUploadBatches(pendingCharacters);
+  let lastUploadResult: AddonIngestResponse = {
+    newChars: 0,
+    newSnapshots: 0,
+    newMythicPlusRuns: 0,
+  };
+  let lastSyncedAt = (settings.lastSyncedAt as number | undefined) ?? 0;
+
+  for (const batch of batches) {
+    const result = await uploadAddonBatch(batch);
+    lastUploadResult = {
+      newChars: lastUploadResult.newChars + result.newChars,
+      newSnapshots: lastUploadResult.newSnapshots + result.newSnapshots,
+      newMythicPlusRuns: lastUploadResult.newMythicPlusRuns + result.newMythicPlusRuns,
+    };
+  }
+
+  if (batches.length > 0) {
+    lastSyncedAt = Math.floor(Date.now() / 1000);
+    settings.lastSyncedAt = lastSyncedAt;
+    await saveSettings(settings);
+  }
+
+  await resyncCharacters();
+
+  return {
+    status: "success",
+    message: null,
+    ...toAddonFileState(addonData, lastSyncedAt - 60),
+    lastSyncedAt,
+    lastUploadResult,
+  };
+}
+
 // ─── Window ───────────────────────────────────────────────────────────────────
 
 function createWindow(): void {
@@ -3321,10 +3598,15 @@ ipcMain.handle("wow:selectRetailFolder", async () => {
   return folder;
 });
 
-ipcMain.handle("wow:readAddonData", async () => {
+ipcMain.handle("wow:getAddonFileState", async (_, sinceTs: number) => {
   const retailPath = await getValidatedRetailPathFromSettings();
   if (!retailPath) return null;
-  return findAndParseAddonData(retailPath);
+  const addonData = await findAndParseAddonData(retailPath);
+  return toAddonFileState(addonData, sinceTs);
+});
+
+ipcMain.handle("wow:syncAddonData", async () => {
+  return syncAddonData();
 });
 
 function stopAddonWatcher() {

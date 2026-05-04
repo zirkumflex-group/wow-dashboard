@@ -1,197 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ApiClientError } from "@wow-dashboard/api-client";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { env } from "@wow-dashboard/env/app";
 import type { DesktopAuthSessionState } from "../../shared/auth";
+import type { AddonFileStats, AddonSyncResult, PendingUploadCounts } from "../../shared/sync";
 import type {
   AddonUpdateCheckResult,
   AddonUpdateState,
   AppInstallUpdateResult,
   AppUpdateState,
 } from "../../shared/update";
-import { apiClient, apiQueryKeys, apiQueryOptions } from "./lib/api-client";
+import { apiQueryKeys, apiQueryOptions } from "./lib/api-client";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-interface SnapshotCurrencyInfo {
-  currencyID: number;
-  name?: string;
-  quantity: number;
-  iconFileID?: number;
-  maxQuantity?: number;
-  canEarnPerWeek?: boolean;
-  quantityEarnedThisWeek?: number;
-  maxWeeklyQuantity?: number;
-  totalEarned?: number;
-  discovered?: boolean;
-  quality?: number;
-  useTotalEarnedForMaxQty?: boolean;
-}
-
-type SnapshotCurrencyDetails = Record<string, SnapshotCurrencyInfo>;
-
-interface SnapshotEquipmentItem {
-  slot: string;
-  slotID: number;
-  itemID?: number;
-  itemName?: string;
-  itemLink?: string;
-  itemLevel?: number;
-  quality?: number;
-  iconFileID?: number;
-}
-
-type SnapshotEquipment = Record<string, SnapshotEquipmentItem>;
-
-interface SnapshotWeeklyRewardActivity {
-  type?: number;
-  index?: number;
-  id?: number;
-  level?: number;
-  threshold?: number;
-  progress?: number;
-  activityTierID?: number;
-  itemLevel?: number;
-  name?: string;
-}
-
-interface SnapshotWeeklyRewards {
-  canClaimRewards?: boolean;
-  isCurrentPeriod?: boolean;
-  activities: SnapshotWeeklyRewardActivity[];
-}
-
-interface SnapshotMajorFaction {
-  factionID: number;
-  name?: string;
-  expansionID?: number;
-  isUnlocked?: boolean;
-  renownLevel?: number;
-  renownReputationEarned?: number;
-  renownLevelThreshold?: number;
-  isWeeklyCapped?: boolean;
-}
-
-interface SnapshotMajorFactions {
-  factions: SnapshotMajorFaction[];
-}
-
-interface SnapshotClientInfo {
-  addonVersion?: string;
-  interfaceVersion?: number;
-  gameVersion?: string;
-  buildNumber?: string;
-  buildDate?: string;
-  tocVersion?: number;
-  expansion?: string;
-  locale?: string;
-}
-
-interface SnapshotData {
-  takenAt: number;
-  level: number;
-  spec: string;
-  role: "tank" | "healer" | "dps";
-  itemLevel: number;
-  gold: number;
-  playtimeSeconds: number;
-  playtimeThisLevelSeconds?: number;
-  mythicPlusScore: number;
-  seasonID?: number;
-  currencies: {
-    adventurerDawncrest: number;
-    veteranDawncrest: number;
-    championDawncrest: number;
-    heroDawncrest: number;
-    mythDawncrest: number;
-    radiantSparkDust: number;
-  };
-  currencyDetails?: SnapshotCurrencyDetails;
-  stats: {
-    stamina: number;
-    strength: number;
-    agility: number;
-    intellect: number;
-    critRating?: number;
-    critPercent: number;
-    hasteRating?: number;
-    hastePercent: number;
-    masteryRating?: number;
-    masteryPercent: number;
-    versatilityRating?: number;
-    versatilityPercent: number;
-    speedRating?: number;
-    speedPercent?: number;
-    leechRating?: number;
-    leechPercent?: number;
-    avoidanceRating?: number;
-    avoidancePercent?: number;
-  };
-  equipment?: SnapshotEquipment;
-  weeklyRewards?: SnapshotWeeklyRewards;
-  majorFactions?: SnapshotMajorFactions;
-  clientInfo?: SnapshotClientInfo;
-}
-
-interface MythicPlusRunData {
-  fingerprint: string;
-  attemptId?: string;
-  canonicalKey?: string;
-  observedAt: number;
-  seasonID?: number;
-  mapChallengeModeID?: number;
-  mapName?: string;
-  level?: number;
-  status?: "active" | "completed" | "abandoned";
-  completed?: boolean;
-  completedInTime?: boolean;
-  durationMs?: number;
-  runScore?: number;
-  startDate?: number;
-  completedAt?: number;
-  endedAt?: number;
-  abandonedAt?: number;
-  abandonReason?:
-    | "challenge_mode_reset"
-    | "left_instance"
-    | "leaver_timer"
-    | "history_incomplete"
-    | "stale_recovery"
-    | "unknown";
-  thisWeek?: boolean;
-  members?: {
-    name: string;
-    realm?: string;
-    classTag?: string;
-    role?: "tank" | "healer" | "dps";
-  }[];
-}
-
-interface CharacterData {
-  name: string;
-  realm: string;
-  region: "us" | "eu" | "kr" | "tw";
-  class: string;
-  race: string;
-  faction: "alliance" | "horde";
-  snapshots: SnapshotData[];
-  mythicPlusRuns: MythicPlusRunData[];
-}
-
-interface AddonFileStats {
-  totalBytes: number;
-  createdAt: number;
-  modifiedAt: number;
-  totalSnapshots: number;
-  totalMythicPlusRuns: number;
-}
-
-interface PendingUploadCounts {
-  snapshots: number;
-  mythicPlusRuns: number;
-}
 
 interface AppSettings {
   closeBehavior: "tray" | "exit";
@@ -248,11 +70,15 @@ declare global {
       wow: {
         getRetailPath: () => Promise<string | null>;
         selectRetailFolder: () => Promise<string | null>;
-        readAddonData: () => Promise<{
-          characters: CharacterData[];
-          accountsFound: string[];
+        getAddonFileState: (
+          sinceTs: number,
+        ) => Promise<{
+          pendingUploadCounts: PendingUploadCounts;
           fileStats: AddonFileStats | null;
+          accountsFound: string[];
+          trackedCharacters: number;
         } | null>;
+        syncAddonData: () => Promise<AddonSyncResult>;
         checkAddonInstalled: () => Promise<boolean>;
         getInstalledAddonVersion: () => Promise<string | null>;
         installAddon: () => Promise<{ version: string }>;
@@ -408,133 +234,6 @@ function formatLastSyncTime(lastSyncedAt: number) {
   return formatDateTime(lastSyncedAt * 1000);
 }
 
-function hasUploadableSnapshotSpec(spec: string) {
-  const normalized = spec.trim();
-  return normalized !== "" && normalized !== "Unknown";
-}
-
-function isUploadableSnapshot(snapshot: SnapshotData, sinceTs: number) {
-  return snapshot.takenAt > sinceTs && hasUploadableSnapshotSpec(snapshot.spec);
-}
-
-const MYTHIC_PLUS_UPLOAD_LOOKBACK_SECONDS = 2 * 60 * 60;
-const MYTHIC_PLUS_MEMBER_UPLOAD_LOOKBACK_SECONDS = 48 * 60 * 60;
-const ADDON_UPLOAD_CHARACTERS_PER_BATCH = 20;
-const ADDON_UPLOAD_SNAPSHOTS_PER_CHARACTER = 100;
-const ADDON_UPLOAD_RUNS_PER_CHARACTER = 150;
-const ADDON_UPLOAD_MAX_BATCH_BODY_BYTES = 768 * 1024;
-const uploadBodyEncoder = new TextEncoder();
-
-function normalizePositiveTimestampSeconds(value: unknown): number | null {
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
-    return null;
-  }
-  return value;
-}
-
-function getMythicPlusRunLastMutationAt(run: MythicPlusRunData): number {
-  const candidateTimestamps = [
-    run.startDate,
-    run.completedAt,
-    run.endedAt,
-    run.abandonedAt,
-    run.observedAt,
-  ];
-  let latestMutationAt = 0;
-  for (const candidate of candidateTimestamps) {
-    const normalized = normalizePositiveTimestampSeconds(candidate);
-    if (normalized !== null && normalized > latestMutationAt) {
-      latestMutationAt = normalized;
-    }
-  }
-  return latestMutationAt;
-}
-
-function isUploadableMythicPlusRun(run: MythicPlusRunData, sinceTs: number) {
-  const nowTs = Math.floor(Date.now() / 1000);
-  const lookbackSeconds =
-    (run.members?.length ?? 0) > 0
-      ? MYTHIC_PLUS_MEMBER_UPLOAD_LOOKBACK_SECONDS
-      : MYTHIC_PLUS_UPLOAD_LOOKBACK_SECONDS;
-  const effectiveSinceTs = Math.min(sinceTs, nowTs - lookbackSeconds);
-  const lastMutationAt = getMythicPlusRunLastMutationAt(run);
-  return lastMutationAt > effectiveSinceTs;
-}
-
-function getPendingUploadCounts(chars: CharacterData[], sinceTs: number): PendingUploadCounts {
-  return chars.reduce(
-    (totals, char) => ({
-      snapshots:
-        totals.snapshots +
-        char.snapshots.filter((snapshot) => isUploadableSnapshot(snapshot, sinceTs)).length,
-      mythicPlusRuns:
-        totals.mythicPlusRuns +
-        char.mythicPlusRuns.filter((run) => isUploadableMythicPlusRun(run, sinceTs)).length,
-    }),
-    { snapshots: 0, mythicPlusRuns: 0 },
-  );
-}
-
-function chunkCharacterForUpload(character: CharacterData): CharacterData[] {
-  const chunkCount = Math.max(
-    Math.ceil(character.snapshots.length / ADDON_UPLOAD_SNAPSHOTS_PER_CHARACTER),
-    Math.ceil(character.mythicPlusRuns.length / ADDON_UPLOAD_RUNS_PER_CHARACTER),
-    1,
-  );
-  const chunks: CharacterData[] = [];
-
-  for (let index = 0; index < chunkCount; index++) {
-    const snapshots = character.snapshots.slice(
-      index * ADDON_UPLOAD_SNAPSHOTS_PER_CHARACTER,
-      (index + 1) * ADDON_UPLOAD_SNAPSHOTS_PER_CHARACTER,
-    );
-    const mythicPlusRuns = character.mythicPlusRuns.slice(
-      index * ADDON_UPLOAD_RUNS_PER_CHARACTER,
-      (index + 1) * ADDON_UPLOAD_RUNS_PER_CHARACTER,
-    );
-    if (snapshots.length === 0 && mythicPlusRuns.length === 0) {
-      continue;
-    }
-
-    chunks.push({
-      ...character,
-      snapshots,
-      mythicPlusRuns,
-    });
-  }
-
-  return chunks;
-}
-
-function createAddonUploadBatches(characters: CharacterData[]): CharacterData[][] {
-  const chunks = characters.flatMap((character) => chunkCharacterForUpload(character));
-  const batches: CharacterData[][] = [];
-  let currentBatch: CharacterData[] = [];
-
-  for (const chunk of chunks) {
-    const candidateBatch = [...currentBatch, chunk];
-    const exceedsCharacterLimit = candidateBatch.length > ADDON_UPLOAD_CHARACTERS_PER_BATCH;
-    const exceedsBodyLimit =
-      currentBatch.length > 0 &&
-      uploadBodyEncoder.encode(JSON.stringify({ characters: candidateBatch })).byteLength >
-        ADDON_UPLOAD_MAX_BATCH_BODY_BYTES;
-
-    if (exceedsCharacterLimit || exceedsBodyLimit) {
-      batches.push(currentBatch);
-      currentBatch = [chunk];
-      continue;
-    }
-
-    currentBatch = candidateBatch;
-  }
-
-  if (currentBatch.length > 0) {
-    batches.push(currentBatch);
-  }
-
-  return batches;
-}
-
 // ---------------------------------------------------------------------------
 // Components
 // ---------------------------------------------------------------------------
@@ -628,17 +327,6 @@ function SwitchRow({ checked, onChange, label }: Toggle) {
 
 function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
   const queryClient = useQueryClient();
-  const uploadAddon = useMutation({
-    mutationFn: (input: { characters: CharacterData[] }) =>
-      apiClient.ingestAddonData({
-        characters: input.characters as Parameters<
-          typeof apiClient.ingestAddonData
-        >[0]["characters"],
-      }),
-  });
-  const resync = useMutation({
-    mutationFn: () => apiClient.resyncCharacters(),
-  });
   const characters = useQuery(apiQueryOptions.myCharacters()).data;
 
   const [syncing, setSyncing] = useState(false);
@@ -687,13 +375,13 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
       setAddonVersion(null);
     }
   }, []);
-  const applyAddonFileState = useCallback(
-    (chars: CharacterData[], fileStats: AddonFileStats | null, sinceTs: number) => {
-      setPendingUploadCounts(getPendingUploadCounts(chars, sinceTs));
-      setAddonFileStats(fileStats);
-    },
-    [],
-  );
+  const applyAddonFileState = useCallback((state: {
+    pendingUploadCounts: PendingUploadCounts;
+    fileStats: AddonFileStats | null;
+  }) => {
+    setPendingUploadCounts(state.pendingUploadCounts);
+    setAddonFileStats(state.fileStats);
+  }, []);
   const refreshAddonFileState = useCallback(async () => {
     if (!retailPath) {
       setPendingUploadCounts(null);
@@ -702,16 +390,16 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
     }
 
     try {
-      const addonData = await window.electron.wow.readAddonData();
-      if (!addonData) {
+      const addonFileState = await window.electron.wow.getAddonFileState(
+        lastSyncedAtRef.current - 60,
+      );
+      if (!addonFileState) {
         setPendingUploadCounts(null);
         setAddonFileStats(null);
         return;
       }
 
-      const { characters: chars, fileStats } = addonData;
-      const sinceTs = lastSyncedAtRef.current - 60;
-      applyAddonFileState(chars, fileStats, sinceTs);
+      applyAddonFileState(addonFileState);
     } catch {
       setPendingUploadCounts({ snapshots: 0, mythicPlusRuns: 0 });
       setAddonFileStats(null);
@@ -973,77 +661,25 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
     setUploadError(null);
     setUploadWarn(null);
     try {
-      if (retailPath) {
-        const addonData = await window.electron.wow.readAddonData();
-        if (!addonData) return;
-        const { characters: addonChars, accountsFound, fileStats } = addonData;
-        const preUploadSinceTs = lastSyncedAtRef.current - 60;
-        applyAddonFileState(addonChars, fileStats, preUploadSinceTs);
-
-        if (addonChars.length === 0) {
-          setUploadWarn(
-            accountsFound.length === 0
-              ? "No wow-dashboard.lua found — run the addon in-game first"
-              : `Parsed ${accountsFound.length} account(s) but no characters found`,
-          );
-        } else {
-          // Only send records newer than the last successful sync (60s buffer for clock skew).
-          const sinceTs = preUploadSinceTs;
-          const pendingChars = addonChars
-            .map((c) => ({
-              ...c,
-              snapshots: c.snapshots.filter((snapshot) => isUploadableSnapshot(snapshot, sinceTs)),
-              mythicPlusRuns: c.mythicPlusRuns.filter((run) =>
-                isUploadableMythicPlusRun(run, sinceTs),
-              ),
-            }))
-            .filter((c) => c.snapshots.length > 0 || c.mythicPlusRuns.length > 0);
-
-          if (pendingChars.length > 0) {
-            const aggregateResult = {
-              newChars: 0,
-              newSnapshots: 0,
-              newMythicPlusRuns: 0,
-            };
-            for (const batch of createAddonUploadBatches(pendingChars)) {
-              const result = await uploadAddon.mutateAsync({
-                characters: batch,
-              });
-              aggregateResult.newChars += result.newChars;
-              aggregateResult.newSnapshots += result.newSnapshots;
-              aggregateResult.newMythicPlusRuns += result.newMythicPlusRuns;
-            }
-            setLastUploadResult({
-              newChars: aggregateResult.newChars,
-              newSnapshots: aggregateResult.newSnapshots,
-              newMythicPlusRuns: aggregateResult.newMythicPlusRuns,
-            });
-            const now = Math.floor(Date.now() / 1000);
-            setLastSyncedAt(now);
-            lastSyncedAtRef.current = now;
-            await window.electron.settings.setLastSyncedAt(now);
-            applyAddonFileState(addonChars, fileStats, now - 60);
-          } else {
-            setLastUploadResult({ newChars: 0, newSnapshots: 0, newMythicPlusRuns: 0 });
-          }
-        }
-      } else {
-        setUploadWarn("No WoW folder set — select the folder first");
+      const result = await window.electron.wow.syncAddonData();
+      applyAddonFileState(result);
+      setLastUploadResult(result.lastUploadResult);
+      setLastSyncedAt(result.lastSyncedAt);
+      lastSyncedAtRef.current = result.lastSyncedAt;
+      if (result.status === "warning") {
+        setUploadWarn(result.message);
       }
-
-      // Resync from Battle.net
-      await resync.mutateAsync();
       await queryClient.invalidateQueries({
         queryKey: apiQueryKeys.myCharacters(),
       });
     } catch (e) {
-      if (e instanceof ApiClientError && e.status === 401) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes("401")) {
         await _clearToken();
         queryClient.clear();
         setUploadError("Session expired — please sign in again.");
         return;
       }
-      const msg = e instanceof Error ? e.message : String(e);
       if (msg.includes("RateLimited") || msg.includes("Too many")) {
         setUploadError("Too many requests — please wait a moment before trying again.");
       } else {
