@@ -54,6 +54,7 @@ const LEGACY_DST_SHIFT_SECONDS = 60 * 60;
 const LEGACY_DST_SHIFT_TOLERANCE_SECONDS = 2 * 60;
 const MAX_COMPAT_DURATION_DRIFT_MS = 1000;
 const LEGACY_DISPLAY_DUPLICATE_RUN_TOLERANCE_SECONDS = 2 * 60;
+const ACTIVE_COMPLETION_START_TOLERANCE_SECONDS = 2 * 60;
 
 function normalizeMapName(mapName: string) {
   return mapName.trim().toLowerCase();
@@ -256,6 +257,16 @@ function getRunDerivedStartTimestamp(run: MythicPlusRunDocument): number | null 
   return null;
 }
 
+function getRunDurationDerivedStartTimestamp(run: MythicPlusRunDocument): number | null {
+  const durationSeconds = getRunDurationSeconds(run);
+  const endAt = run.completedAt ?? run.endedAt ?? run.abandonedAt;
+  if (durationSeconds === null || endAt === undefined) {
+    return null;
+  }
+
+  return endAt - durationSeconds;
+}
+
 function getRunDerivedEndTimestamp(run: MythicPlusRunDocument): number | null {
   if (run.completedAt !== undefined) return run.completedAt;
   if (run.endedAt !== undefined) return run.endedAt;
@@ -330,6 +341,7 @@ function getRunCompatibilityTimestampAliases(run: MythicPlusRunDocument): number
   pushCandidate(run.abandonedAt);
   pushCandidate(derivedStart);
   pushCandidate(derivedEnd);
+  pushCandidate(getRunDurationDerivedStartTimestamp(run));
 
   const likelyPlayedAt = getLikelyPlayedAtTimestamp(run);
   pushCandidate(likelyPlayedAt);
@@ -886,13 +898,81 @@ function hasCompatibleCompletedDisplayIdentity(
   return areLegacyDisplayDuplicatePartiesCompatible(a, b);
 }
 
+function getActiveRunStartTimestamp(run: MythicPlusRunDocument): number | null {
+  return normalizeLifecycleTimestamp(run.startDate) ?? normalizeLifecycleTimestamp(run.observedAt);
+}
+
+function hasCompatibleActiveCompletionIdentity(
+  a: MythicPlusRunDocument,
+  b: MythicPlusRunDocument,
+): boolean {
+  const activeRun = isActiveRun(a) ? a : isActiveRun(b) ? b : null;
+  const completedRun = isCompletedRun(a) ? a : isCompletedRun(b) ? b : null;
+  if (!activeRun || !completedRun) {
+    return false;
+  }
+
+  if (!areRunCoreIdentityFieldsCompatible(activeRun, completedRun)) {
+    return false;
+  }
+
+  const activeStart = getActiveRunStartTimestamp(activeRun);
+  const completedStartEstimate = getRunDurationDerivedStartTimestamp(completedRun);
+  if (activeStart === null || completedStartEstimate === null) {
+    return false;
+  }
+
+  if (Math.abs(activeStart - completedStartEstimate) > ACTIVE_COMPLETION_START_TOLERANCE_SECONDS) {
+    return false;
+  }
+
+  return areLegacyDisplayDuplicatePartiesCompatible(activeRun, completedRun);
+}
+
+export function pickMythicPlusActiveCompletionStartDate(
+  a: MythicPlusRunDocument,
+  b: MythicPlusRunDocument,
+): number | undefined {
+  if (!hasCompatibleActiveCompletionIdentity(a, b)) {
+    return undefined;
+  }
+
+  const activeRun = isActiveRun(a) ? a : b;
+  return getActiveRunStartTimestamp(activeRun) ?? undefined;
+}
+
+export function pickMythicPlusActiveCompletionAttemptId(
+  a: MythicPlusRunDocument,
+  b: MythicPlusRunDocument,
+): string | undefined {
+  if (!hasCompatibleActiveCompletionIdentity(a, b)) {
+    return undefined;
+  }
+
+  const activeRun = isActiveRun(a) ? a : b;
+  return getMythicPlusRunAttemptId(activeRun) ?? undefined;
+}
+
+export function pickMythicPlusActiveCompletionCanonicalKey(
+  a: MythicPlusRunDocument,
+  b: MythicPlusRunDocument,
+): string | undefined {
+  if (!hasCompatibleActiveCompletionIdentity(a, b)) {
+    return undefined;
+  }
+
+  const activeRun = isActiveRun(a) ? a : b;
+  return getMythicPlusRunCanonicalKey(activeRun) ?? undefined;
+}
+
 function canMergeMythicPlusRunsAcrossCanonicalMismatch(
   existingRun: MythicPlusRunDocument,
   candidateRun: MythicPlusRunDocument,
 ): boolean {
   return (
     hasCompatibleLegacyDstShift(existingRun, candidateRun) ||
-    hasCompatibleCompletedDisplayIdentity(existingRun, candidateRun)
+    hasCompatibleCompletedDisplayIdentity(existingRun, candidateRun) ||
+    hasCompatibleActiveCompletionIdentity(existingRun, candidateRun)
   );
 }
 
@@ -905,11 +985,15 @@ export function canUseMythicPlusRunCompatibilityAliasMatch(
   if (existingAttemptId !== null && candidateAttemptId !== null) {
     return (
       existingAttemptId === candidateAttemptId ||
-      hasCompatibleCompletedDisplayIdentity(existingRun, candidateRun)
+      hasCompatibleCompletedDisplayIdentity(existingRun, candidateRun) ||
+      hasCompatibleActiveCompletionIdentity(existingRun, candidateRun)
     );
   }
 
-  if (hasCompatibleCompletedDisplayIdentity(existingRun, candidateRun)) {
+  if (
+    hasCompatibleCompletedDisplayIdentity(existingRun, candidateRun) ||
+    hasCompatibleActiveCompletionIdentity(existingRun, candidateRun)
+  ) {
     return true;
   }
 
@@ -1642,6 +1726,18 @@ export function dedupeMythicPlusRuns(runs: MythicPlusRunDocument[]) {
     const candidatePreferred = shouldReplaceMythicPlusRun(currentRun, candidateRun);
     const preferredRun = candidatePreferred ? candidateRun : currentRun;
     const fallbackRun = candidatePreferred ? currentRun : candidateRun;
+    const activeCompletionAttemptId = pickMythicPlusActiveCompletionAttemptId(
+      preferredRun,
+      fallbackRun,
+    );
+    const activeCompletionCanonicalKey = pickMythicPlusActiveCompletionCanonicalKey(
+      preferredRun,
+      fallbackRun,
+    );
+    const activeCompletionStartDate = pickMythicPlusActiveCompletionStartDate(
+      preferredRun,
+      fallbackRun,
+    );
 
     const preferredObservedAt = preferredRun.observedAt ?? 0;
     const fallbackObservedAt = fallbackRun.observedAt ?? 0;
@@ -1656,6 +1752,7 @@ export function dedupeMythicPlusRuns(runs: MythicPlusRunDocument[]) {
       ...fallbackRun,
       ...preferredRun,
       fingerprint:
+        activeCompletionCanonicalKey ??
         buildCanonicalMythicPlusRunFingerprint(preferredRun) ??
         buildCanonicalMythicPlusRunFingerprint(fallbackRun) ??
         preferredRun.fingerprint,
@@ -1663,14 +1760,18 @@ export function dedupeMythicPlusRuns(runs: MythicPlusRunDocument[]) {
         mergedObservedAt > 0
           ? mergedObservedAt
           : (pickDefinedValue(preferredRun.observedAt, fallbackRun.observedAt) ?? 0),
-      attemptId: pickDefinedValue(
-        getMythicPlusRunAttemptId(preferredRun) ?? undefined,
-        getMythicPlusRunAttemptId(fallbackRun) ?? undefined,
-      ),
-      canonicalKey: pickDefinedValue(
-        getMythicPlusRunCanonicalKey(preferredRun) ?? undefined,
-        getMythicPlusRunCanonicalKey(fallbackRun) ?? undefined,
-      ),
+      attemptId:
+        activeCompletionAttemptId ??
+        pickDefinedValue(
+          getMythicPlusRunAttemptId(preferredRun) ?? undefined,
+          getMythicPlusRunAttemptId(fallbackRun) ?? undefined,
+        ),
+      canonicalKey:
+        activeCompletionCanonicalKey ??
+        pickDefinedValue(
+          getMythicPlusRunCanonicalKey(preferredRun) ?? undefined,
+          getMythicPlusRunCanonicalKey(fallbackRun) ?? undefined,
+        ),
       seasonID: pickMergedMythicPlusSeasonID(preferredRun, fallbackRun),
       mapChallengeModeID: pickDefinedValue(
         preferredRun.mapChallengeModeID,
@@ -1683,7 +1784,9 @@ export function dedupeMythicPlusRuns(runs: MythicPlusRunDocument[]) {
       completedInTime: pickDefinedValue(preferredRun.completedInTime, fallbackRun.completedInTime),
       durationMs: pickDefinedValue(preferredRun.durationMs, fallbackRun.durationMs),
       runScore: pickDefinedValue(preferredRun.runScore, fallbackRun.runScore),
-      startDate: mergeLifecycleTimestamp(preferredRun.startDate, fallbackRun.startDate),
+      startDate:
+        activeCompletionStartDate ??
+        mergeLifecycleTimestamp(preferredRun.startDate, fallbackRun.startDate),
       completedAt: mergeLifecycleTimestamp(preferredRun.completedAt, fallbackRun.completedAt),
       endedAt: mergeLifecycleTimestamp(preferredRun.endedAt, fallbackRun.endedAt),
       abandonedAt: mergeLifecycleTimestamp(preferredRun.abandonedAt, fallbackRun.abandonedAt),

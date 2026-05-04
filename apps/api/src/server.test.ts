@@ -379,9 +379,7 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
 
     assert.ok(desktopSession);
     assert.equal(desktopSession.userAgent, "wow-dashboard-desktop");
-    assert.ok(
-      desktopSession.expiresAt.getTime() > Date.now() + 9 * 365 * 24 * 60 * 60 * 1000,
-    );
+    assert.ok(desktopSession.expiresAt.getTime() > Date.now() + 9 * 365 * 24 * 60 * 60 * 1000);
   });
 
   it("extends existing short-lived desktop sessions on authenticated requests", async () => {
@@ -404,9 +402,7 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
       .where(eq(authSessions.token, auth.token));
 
     assert.ok(desktopSession);
-    assert.ok(
-      desktopSession.expiresAt.getTime() > Date.now() + 9 * 365 * 24 * 60 * 60 * 1000,
-    );
+    assert.ok(desktopSession.expiresAt.getTime() > Date.now() + 9 * 365 * 24 * 60 * 60 * 1000);
   });
 
   it("allows desktop null-origin preflights only for bearer-authenticated API requests", async () => {
@@ -1718,6 +1714,105 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     assert.equal(storedRuns[0]?.seasonId, 17);
     assert.equal(storedRuns[0]?.runScore, 430);
     assert.equal(storedRuns[0]?.members?.length, 5);
+  });
+
+  it("merges live active attempts with completed history rows when history start drifts", async () => {
+    const auth = await seedAuthenticatedUser();
+    const playerId = await seedPlayer(auth.userId, "Uploader#3637");
+
+    const activeStart = 1_777_915_317;
+    const historyStart = 1_777_915_876;
+    const completedAt = 1_777_916_605;
+    const durationMs = 1_313_171;
+
+    const response = await app.request("http://localhost/api/addon/ingest", {
+      method: "POST",
+      headers: {
+        ...authHeaders(auth.token),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        characters: [
+          {
+            name: "Francisfekir",
+            realm: "Blackhand",
+            region: "eu",
+            class: "Death Knight",
+            race: "Orc",
+            faction: "horde",
+            snapshots: [],
+            mythicPlusRuns: [
+              {
+                fingerprint: `aid|attempt|17|402|10|${activeStart}`,
+                attemptId: `attempt|17|402|10|${activeStart}`,
+                observedAt: activeStart,
+                seasonID: 17,
+                mapChallengeModeID: 402,
+                mapName: "Algeth'ar Academy",
+                level: 10,
+                status: "active",
+                completed: false,
+                startDate: activeStart,
+                members: [
+                  {
+                    name: "Francisfekir",
+                    realm: "Blackhand",
+                    classTag: "DEATHKNIGHT",
+                    role: "dps",
+                  },
+                ],
+              },
+              {
+                fingerprint: `aid|attempt|17|402|10|${historyStart}`,
+                attemptId: `attempt|17|402|10|${historyStart}`,
+                observedAt: activeStart,
+                seasonID: 17,
+                mapChallengeModeID: 402,
+                mapName: "Algeth'ar Academy",
+                level: 10,
+                status: "completed",
+                completed: true,
+                completedInTime: true,
+                durationMs,
+                runScore: 331,
+                startDate: historyStart,
+                completedAt,
+                endedAt: completedAt,
+                thisWeek: true,
+              },
+            ],
+          },
+        ],
+      }),
+    });
+
+    assert.equal(response.status, 200);
+    const payload = (await response.json()) as {
+      newMythicPlusRuns: number;
+      collapsedMythicPlusRuns: number;
+    };
+    assert.equal(payload.newMythicPlusRuns, 1);
+    assert.equal(payload.collapsedMythicPlusRuns, 0);
+
+    const character = await db.query.characters.findFirst({
+      where: and(eq(characters.playerId, playerId), eq(characters.name, "Francisfekir")),
+    });
+    assert.ok(character);
+    assert.equal(character.mythicPlusRunCount, 1);
+    assert.equal(character.mythicPlusRecentRunsPreview?.[0]?.status, "completed");
+    assert.equal(
+      character.mythicPlusRecentRunsPreview?.[0]?.attemptId,
+      `attempt|17|402|10|${activeStart}`,
+    );
+
+    const storedRuns = await db.query.mythicPlusRuns.findMany({
+      where: eq(mythicPlusRuns.characterId, character.id),
+    });
+    assert.equal(storedRuns.length, 1);
+    assert.equal(storedRuns[0]?.status, "completed");
+    assert.equal(storedRuns[0]?.attemptId, `attempt|17|402|10|${activeStart}`);
+    assert.equal(Math.floor((storedRuns[0]?.startDate?.getTime() ?? 0) / 1000), activeStart);
+    assert.equal(storedRuns[0]?.runScore, 331);
   });
 
   it("enriches existing history-only mythic plus runs with late uploaded members", async () => {
