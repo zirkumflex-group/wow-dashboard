@@ -378,7 +378,15 @@ function getRecentRunRowKey(run: MythicPlusRun) {
   return `${identityKey}|${getRunPlayedAt(run) ?? 0}`;
 }
 
-function formatRunMemberName(member: MythicPlusRunMember, characterRealm: string) {
+function formatRunMemberName(
+  member: MythicPlusRunMember,
+  characterRealm: string,
+  hideServerNames: boolean,
+) {
+  if (hideServerNames) {
+    return member.name;
+  }
+
   if (!member.realm || member.realm.trim().toLowerCase() === characterRealm.trim().toLowerCase()) {
     return member.name;
   }
@@ -440,6 +448,7 @@ function getDisplayedRunMembers(members: MythicPlusRunMember[] | undefined) {
 
 const HIDDEN_PLAYERS_KEY = "wow-hidden-run-players";
 const HIDE_ALL_PLAYER_NAMES_KEY = "wow-hide-all-run-player-names";
+const HIDE_RUN_SERVER_NAMES_KEY = "wow-hide-run-server-names";
 
 function getMemberKey(member: MythicPlusRunMember, characterRealm: string): string {
   const realm = member.realm?.trim() || characterRealm.trim();
@@ -494,9 +503,30 @@ function writeHideAllPlayerNames(enabled: boolean) {
   }
 }
 
+function readHideRunServerNames(): boolean {
+  try {
+    return localStorage.getItem(HIDE_RUN_SERVER_NAMES_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeHideRunServerNames(enabled: boolean) {
+  try {
+    if (enabled) {
+      localStorage.setItem(HIDE_RUN_SERVER_NAMES_KEY, "1");
+      return;
+    }
+    localStorage.removeItem(HIDE_RUN_SERVER_NAMES_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
 function useHiddenPlayers() {
   const [hidden, setHidden] = useState<Set<string>>(() => readHiddenPlayers());
   const [hideAllNames, setHideAllNames] = useState<boolean>(() => readHideAllPlayerNames());
+  const [hideServerNames, setHideServerNames] = useState<boolean>(() => readHideRunServerNames());
 
   const hide = useCallback((key: string) => {
     setHidden((prev) => {
@@ -530,7 +560,24 @@ function useHiddenPlayers() {
     });
   }, []);
 
-  return { hidden, hide, unhide, unhideAll, hideAllNames, toggleHideAllNames };
+  const toggleHideServerNames = useCallback(() => {
+    setHideServerNames((prev) => {
+      const next = !prev;
+      writeHideRunServerNames(next);
+      return next;
+    });
+  }, []);
+
+  return {
+    hidden,
+    hide,
+    unhide,
+    unhideAll,
+    hideAllNames,
+    hideServerNames,
+    toggleHideAllNames,
+    toggleHideServerNames,
+  };
 }
 
 function RecentRunPlayedAt({ run }: { run: MythicPlusRun }) {
@@ -558,6 +605,7 @@ function RecentRunPartyMembers({
   characterRegion,
   hiddenKeys,
   hideAllNames,
+  hideServerNames,
   onHide,
 }: {
   run: MythicPlusRun;
@@ -565,6 +613,7 @@ function RecentRunPartyMembers({
   characterRegion: string;
   hiddenKeys: Set<string>;
   hideAllNames: boolean;
+  hideServerNames: boolean;
   onHide: (key: string) => void;
 }) {
   const allMembers = getDisplayedRunMembers(run.members);
@@ -606,7 +655,7 @@ function RecentRunPartyMembers({
               className={`inline-flex shrink-0 whitespace-nowrap font-medium decoration-current/40 underline-offset-2 hover:underline ${classColor(member.classTag ?? "")}`}
               title={`View ${member.name} on Raider.IO`}
             >
-              {formatRunMemberName(member, characterRealm)}
+              {formatRunMemberName(member, characterRealm, hideServerNames)}
             </a>
             <button
               type="button"
@@ -630,19 +679,23 @@ function RecentRunPartyMembers({
 function HiddenPlayersControl({
   hiddenKeys,
   hideAllNames,
+  hideServerNames,
   onToggleHideAllNames,
+  onToggleHideServerNames,
   onUnhide,
   onUnhideAll,
 }: {
   hiddenKeys: Set<string>;
   hideAllNames: boolean;
+  hideServerNames: boolean;
   onToggleHideAllNames: () => void;
+  onToggleHideServerNames: () => void;
   onUnhide: (key: string) => void;
   onUnhideAll: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const keys = [...hiddenKeys].sort((a, b) => a.localeCompare(b));
-  const isActive = hideAllNames || keys.length > 0;
+  const isActive = hideAllNames || hideServerNames || keys.length > 0;
 
   return (
     <div className="relative">
@@ -660,6 +713,10 @@ function HiddenPlayersControl({
         {hideAllNames ? (
           <span className="rounded bg-foreground/8 px-1 py-0.5 text-[10px] uppercase tracking-wider text-foreground/80">
             Off
+          </span>
+        ) : hideServerNames ? (
+          <span className="rounded bg-foreground/8 px-1 py-0.5 text-[10px] uppercase tracking-wider text-foreground/80">
+            Servers off
           </span>
         ) : keys.length > 0 ? (
           <span className="rounded bg-foreground/8 px-1 py-0.5 text-[10px] uppercase tracking-wider text-foreground/80">
@@ -680,6 +737,20 @@ function HiddenPlayersControl({
             </span>
             <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
               {hideAllNames ? "On" : "Off"}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={onToggleHideServerNames}
+            className="mt-1.5 flex w-full items-center justify-between gap-3 rounded-md border border-border/60 bg-muted/20 px-2 py-2 text-left text-xs transition-colors hover:bg-muted/35"
+          >
+            <span className="flex items-center gap-2 text-foreground/90">
+              {hideServerNames ? <Eye size={12} /> : <EyeOff size={12} />}
+              Hide server names
+            </span>
+            <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+              {hideServerNames ? "On" : "Off"}
             </span>
           </button>
 
@@ -1021,7 +1092,9 @@ export function MythicPlusSection({
     unhide: unhidePlayer,
     unhideAll: unhideAllPlayers,
     hideAllNames,
+    hideServerNames,
     toggleHideAllNames,
+    toggleHideServerNames,
   } = useHiddenPlayers();
   const [summaryCardHeight, setSummaryCardHeight] = useState<number | null>(null);
   const summaryCardRef = useRef<HTMLDivElement | null>(null);
@@ -1160,7 +1233,9 @@ export function MythicPlusSection({
               <HiddenPlayersControl
                 hiddenKeys={hiddenPlayerKeys}
                 hideAllNames={hideAllNames}
+                hideServerNames={hideServerNames}
                 onToggleHideAllNames={toggleHideAllNames}
+                onToggleHideServerNames={toggleHideServerNames}
                 onUnhide={unhidePlayer}
                 onUnhideAll={unhideAllPlayers}
               />
@@ -1206,6 +1281,7 @@ export function MythicPlusSection({
                           characterRegion={characterRegion}
                           hiddenKeys={hiddenPlayerKeys}
                           hideAllNames={hideAllNames}
+                          hideServerNames={hideServerNames}
                           onHide={hidePlayer}
                         />
                       </td>
