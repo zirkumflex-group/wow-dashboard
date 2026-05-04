@@ -76,7 +76,7 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import { createCharacterRouteSlug } from "@wow-dashboard/api-schema";
+import { createCharacterRouteSlug, type CharacterPageResponse } from "@wow-dashboard/api-schema";
 import {
   CartesianGrid,
   Line,
@@ -99,6 +99,7 @@ import {
   type TradeSlotKey,
 } from "../lib/trade-slots";
 import { apiClient, apiQueryKeys, apiQueryOptions } from "@/lib/api-client";
+import { authClient } from "@/lib/auth-client";
 
 type TimeFrame = "7d" | "14d" | "30d" | "90d" | "all" | "tww-s3" | "mn-s1";
 type LayoutMode = "overview" | "focus" | "timeline";
@@ -173,11 +174,7 @@ function stripDefaultCharacterPageSearch(
   if (layoutMode !== DEFAULT_LAYOUT_MODE) {
     nextSearch.layoutMode = layoutMode;
   }
-  if (
-    layoutMode === "focus" &&
-    search.focusMetric &&
-    search.focusMetric !== DEFAULT_FOCUS_METRIC
-  ) {
+  if (layoutMode === "focus" && search.focusMetric && search.focusMetric !== DEFAULT_FOCUS_METRIC) {
     nextSearch.focusMetric = search.focusMetric;
   }
   return nextSearch as CharacterPageSearchInput;
@@ -221,6 +218,26 @@ function getCharacterMythicPlusAllRunsQueryOptions(characterId: string) {
   return {
     ...apiQueryOptions.characterMythicPlus(characterId, { includeAllRuns: true }),
     staleTime: CHARACTER_PAGE_STALE_TIME_MS,
+  };
+}
+
+function withCharacterPageBoosterStatus(
+  currentPage: CharacterPageResponse | null | undefined,
+  isBooster: boolean,
+) {
+  if (!currentPage || currentPage.header.character.isBooster === isBooster) {
+    return currentPage;
+  }
+
+  return {
+    ...currentPage,
+    header: {
+      ...currentPage.header,
+      character: {
+        ...currentPage.header.character,
+        isBooster,
+      },
+    },
   };
 }
 
@@ -1157,9 +1174,7 @@ function getThisWeekBaselineSnapshot(coreSnapshots: CoreChartSnapshot[], latest:
 
   return (
     [...coreSnapshots, latest]
-      .filter(
-        (snapshot) => snapshot.takenAt >= weekStartAt && snapshot.takenAt <= latest.takenAt,
-      )
+      .filter((snapshot) => snapshot.takenAt >= weekStartAt && snapshot.takenAt <= latest.takenAt)
       .sort((left, right) => left.takenAt - right.takenAt)[0] ?? latest
   );
 }
@@ -2222,9 +2237,7 @@ function getCurrencyProgress(
   }
 
   const maxQuantity =
-    detail?.maxQuantity && detail.maxQuantity > 0
-      ? detail.maxQuantity
-      : fallbackMaxQuantity;
+    detail?.maxQuantity && detail.maxQuantity > 0 ? detail.maxQuantity : fallbackMaxQuantity;
   if (maxQuantity && maxQuantity > 0) {
     const capProgressQuantity = getCurrencyCapProgressQuantity(quantity, detail);
     labels.push(`${capProgressQuantity.toLocaleString()}/${maxQuantity.toLocaleString()} cap`);
@@ -3462,6 +3475,11 @@ function RouteComponent() {
   });
   const characterPage = characterPageQuery.data;
   const pageHeader = characterPage?.header;
+  const sessionState = authClient.useSession();
+  const myCharactersQuery = useQuery({
+    ...apiQueryOptions.myCharacters(),
+    enabled: sessionState.data !== null && sessionState.data !== undefined,
+  });
   const mythicPlusAllRuns = useQuery({
     ...getCharacterMythicPlusAllRunsQueryOptions(characterId),
     enabled: shouldLoadFullMythicPlusRuns,
@@ -3624,8 +3642,7 @@ function RouteComponent() {
     return {
       ...baseMythicPlusData,
       runs: usableMythicPlusAllRuns?.runs ?? baseMythicPlusData.runs,
-      totalRunCount:
-        usableMythicPlusAllRuns?.totalRunCount ?? baseMythicPlusData.totalRunCount,
+      totalRunCount: usableMythicPlusAllRuns?.totalRunCount ?? baseMythicPlusData.totalRunCount,
       isPreview: usableMythicPlusAllRuns?.isPreview ?? baseMythicPlusData.isPreview,
     };
   }, [baseMythicPlusData, mythicPlusAllRuns]);
@@ -3652,12 +3669,30 @@ function RouteComponent() {
     });
   }, [characterPage?.header.owner?.playerId, queryClient]);
 
+  const setCachedCharacterPageBoosterStatus = useCallback(
+    (cacheCharacterId: string, isBooster: boolean) => {
+      queryClient.setQueriesData<CharacterPageResponse | null>(
+        { queryKey: ["api", "characters", cacheCharacterId, "page"] },
+        (currentPage) => withCharacterPageBoosterStatus(currentPage, isBooster),
+      );
+    },
+    [queryClient],
+  );
+
   const setCharacterBoosterStatus = useMutation({
-    mutationFn: (isBooster: boolean) =>
-      apiClient.updateCharacterBoosterStatus(characterId, {
-        isBooster,
+    mutationFn: (input: { targetCharacterId: string; isBooster: boolean }) =>
+      apiClient.updateCharacterBoosterStatus(input.targetCharacterId, {
+        isBooster: input.isBooster,
       }),
-    onSuccess: async () => {
+    onSuccess: async (result, input) => {
+      setCachedCharacterPageBoosterStatus(characterId, result.isBooster);
+      if (input.targetCharacterId !== characterId) {
+        setCachedCharacterPageBoosterStatus(input.targetCharacterId, result.isBooster);
+      }
+      if (result.characterId !== characterId && result.characterId !== input.targetCharacterId) {
+        setCachedCharacterPageBoosterStatus(result.characterId, result.isBooster);
+      }
+
       await Promise.all([
         invalidateCharacterPageQueries(),
         invalidateBoosterExportQueries(),
@@ -3667,9 +3702,9 @@ function RouteComponent() {
   });
 
   const setCharacterNonTradeableSlots = useMutation({
-    mutationFn: (draftSlots: TradeSlotKey[]) =>
-      apiClient.updateCharacterNonTradeableSlots(characterId, {
-        nonTradeableSlots: draftSlots,
+    mutationFn: (input: { targetCharacterId: string; draftSlots: TradeSlotKey[] }) =>
+      apiClient.updateCharacterNonTradeableSlots(input.targetCharacterId, {
+        nonTradeableSlots: input.draftSlots,
       }),
     onSuccess: async () => {
       await Promise.all([
@@ -3717,6 +3752,9 @@ function RouteComponent() {
   const resolvedCharacterId = character._id;
   const isPinnedToQuickAccess = pinnedCharacterIdSet.has(resolvedCharacterId);
   const isBoosterCharacter = character.isBooster === true;
+  const canEditCharacter =
+    myCharactersQuery.data?.some((ownedCharacter) => ownedCharacter._id === resolvedCharacterId) ??
+    false;
   const nonTradeableSlots = (character.nonTradeableSlots ?? []) as TradeSlotKey[];
   const isLoadingAllMythicPlusRuns =
     shouldLoadFullMythicPlusRuns && mythicPlusAllRuns === undefined;
@@ -3744,7 +3782,10 @@ function RouteComponent() {
 
     setIsUpdatingBooster(true);
     try {
-      await setCharacterBoosterStatus.mutateAsync(!isBoosterCharacter);
+      await setCharacterBoosterStatus.mutateAsync({
+        targetCharacterId: resolvedCharacterId,
+        isBooster: !isBoosterCharacter,
+      });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not update booster flag.");
     } finally {
@@ -3763,7 +3804,10 @@ function RouteComponent() {
 
     setIsSavingTradeSlots(true);
     try {
-      await setCharacterNonTradeableSlots.mutateAsync(nonTradeableSlotsDraft);
+      await setCharacterNonTradeableSlots.mutateAsync({
+        targetCharacterId: resolvedCharacterId,
+        draftSlots: nonTradeableSlotsDraft,
+      });
       toast.success(
         nonTradeableSlotsDraft.length === 0
           ? "All slots marked tradeable."
@@ -3879,100 +3923,106 @@ function RouteComponent() {
                   <Copy data-icon="inline-start" aria-hidden="true" />
                   Copy Link
                 </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={handleBoosterToggle}
-                  disabled={isUpdatingBooster}
-                  className={
-                    isBoosterCharacter
-                      ? "border-emerald-400/40 bg-emerald-400/10 text-emerald-300 hover:bg-emerald-400/15 hover:text-emerald-200"
-                      : "border-border/60 bg-card text-muted-foreground hover:text-foreground"
-                  }
-                >
-                  <Zap
-                    data-icon="inline-start"
-                    aria-hidden="true"
-                    className={isBoosterCharacter ? "text-emerald-300" : ""}
-                  />
-                  {isBoosterCharacter ? "Booster" : "Set Booster"}
-                </Button>
-                <Sheet>
-                  <SheetTrigger asChild>
+                {canEditCharacter && (
+                  <>
                     <Button
                       type="button"
                       size="sm"
                       variant="outline"
-                      className="border-border/60 bg-card text-muted-foreground hover:text-foreground"
+                      onClick={handleBoosterToggle}
+                      disabled={isUpdatingBooster}
+                      className={
+                        isBoosterCharacter
+                          ? "border-emerald-400/40 bg-emerald-400/10 text-emerald-300 hover:bg-emerald-400/15 hover:text-emerald-200"
+                          : "border-border/60 bg-card text-muted-foreground hover:text-foreground"
+                      }
                     >
-                      Trade Locks
-                      {nonTradeableSlots.length > 0
-                        ? ` ${getTradeSlotEditorCount(nonTradeableSlots)}`
-                        : ""}
+                      <Zap
+                        data-icon="inline-start"
+                        aria-hidden="true"
+                        className={isBoosterCharacter ? "text-emerald-300" : ""}
+                      />
+                      {isBoosterCharacter ? "Booster" : "Set Booster"}
                     </Button>
-                  </SheetTrigger>
-                  <SheetContent className="w-full sm:max-w-lg">
-                    <SheetHeader>
-                      <SheetTitle>Non-Tradeable Slots</SheetTitle>
-                      <SheetDescription>
-                        Mark the slots this character cannot trade. This is stored globally per
-                        character and shown in Copy Helper.
-                      </SheetDescription>
-                    </SheetHeader>
-                    <div className="mt-6 flex flex-col gap-5">
-                      <div className="grid gap-3 sm:grid-cols-2">
-                        {TRADE_SLOT_EDITOR_OPTIONS.map((slot) => (
-                          <label
-                            key={slot.key}
-                            className="flex cursor-pointer items-start gap-3 rounded-lg border border-border/60 bg-card/50 p-3"
-                          >
-                            <Checkbox
-                              checked={slot.slotKeys.every((slotKey) =>
-                                nonTradeableSlotsDraft.includes(slotKey),
-                              )}
-                              onCheckedChange={() => toggleNonTradeableSlot(slot.slotKeys)}
-                            />
-                            <div>
-                              <p className="text-sm font-medium text-foreground">{slot.label}</p>
-                              <p className="text-xs text-muted-foreground">
-                                Drop in this slot stays bound.
-                              </p>
-                            </div>
-                          </label>
-                        ))}
-                      </div>
-                      {nonTradeableSlotsDraft.length === 0 ? (
-                        <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-200">
-                          No locked slots. This character is marked as able to trade all tracked
-                          slots.
-                        </div>
-                      ) : (
-                        <div className="rounded-xl border border-orange-500/30 bg-orange-500/10 p-3 text-sm text-orange-200">
-                          Locked slots:{" "}
-                          {getTradeSlotExportLabels(nonTradeableSlotsDraft).join(", ")}
-                        </div>
-                      )}
-                      <div className="flex flex-wrap gap-2">
+                    <Sheet>
+                      <SheetTrigger asChild>
                         <Button
                           type="button"
+                          size="sm"
                           variant="outline"
-                          onClick={() => setNonTradeableSlotsDraft([])}
-                          disabled={nonTradeableSlotsDraft.length === 0}
+                          className="border-border/60 bg-card text-muted-foreground hover:text-foreground"
                         >
-                          Clear All
+                          Trade Locks
+                          {nonTradeableSlots.length > 0
+                            ? ` ${getTradeSlotEditorCount(nonTradeableSlots)}`
+                            : ""}
                         </Button>
-                        <Button
-                          type="button"
-                          onClick={handleTradeSlotSave}
-                          disabled={!hasTradeSlotChanges || isSavingTradeSlots}
-                        >
-                          {isSavingTradeSlots ? "Saving…" : "Save Slots"}
-                        </Button>
-                      </div>
-                    </div>
-                  </SheetContent>
-                </Sheet>
+                      </SheetTrigger>
+                      <SheetContent className="w-full sm:max-w-lg">
+                        <SheetHeader>
+                          <SheetTitle>Non-Tradeable Slots</SheetTitle>
+                          <SheetDescription>
+                            Mark the slots this character cannot trade. This is stored globally per
+                            character and shown in Copy Helper.
+                          </SheetDescription>
+                        </SheetHeader>
+                        <div className="mt-6 flex flex-col gap-5">
+                          <div className="grid gap-3 sm:grid-cols-2">
+                            {TRADE_SLOT_EDITOR_OPTIONS.map((slot) => (
+                              <label
+                                key={slot.key}
+                                className="flex cursor-pointer items-start gap-3 rounded-lg border border-border/60 bg-card/50 p-3"
+                              >
+                                <Checkbox
+                                  checked={slot.slotKeys.every((slotKey) =>
+                                    nonTradeableSlotsDraft.includes(slotKey),
+                                  )}
+                                  onCheckedChange={() => toggleNonTradeableSlot(slot.slotKeys)}
+                                />
+                                <div>
+                                  <p className="text-sm font-medium text-foreground">
+                                    {slot.label}
+                                  </p>
+                                  <p className="text-xs text-muted-foreground">
+                                    Drop in this slot stays bound.
+                                  </p>
+                                </div>
+                              </label>
+                            ))}
+                          </div>
+                          {nonTradeableSlotsDraft.length === 0 ? (
+                            <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-200">
+                              No locked slots. This character is marked as able to trade all tracked
+                              slots.
+                            </div>
+                          ) : (
+                            <div className="rounded-xl border border-orange-500/30 bg-orange-500/10 p-3 text-sm text-orange-200">
+                              Locked slots:{" "}
+                              {getTradeSlotExportLabels(nonTradeableSlotsDraft).join(", ")}
+                            </div>
+                          )}
+                          <div className="flex flex-wrap gap-2">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              onClick={() => setNonTradeableSlotsDraft([])}
+                              disabled={nonTradeableSlotsDraft.length === 0}
+                            >
+                              Clear All
+                            </Button>
+                            <Button
+                              type="button"
+                              onClick={handleTradeSlotSave}
+                              disabled={!hasTradeSlotChanges || isSavingTradeSlots}
+                            >
+                              {isSavingTradeSlots ? "Saving…" : "Save Slots"}
+                            </Button>
+                          </div>
+                        </div>
+                      </SheetContent>
+                    </Sheet>
+                  </>
+                )}
                 <LayoutSwitcher value={layoutMode} onChange={handleLayoutChange} />
                 <Badge
                   variant="outline"
