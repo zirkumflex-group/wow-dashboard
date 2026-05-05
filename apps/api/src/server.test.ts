@@ -34,7 +34,7 @@ import {
   type SnapshotSpec,
   user as authUsers,
 } from "@wow-dashboard/db";
-import { addonIngestLimits } from "@wow-dashboard/api-schema";
+import { addonIngestLimits, createCharacterRouteSlug } from "@wow-dashboard/api-schema";
 
 const [{ app }, { databaseConnection, db }, { closeQueue }, { closeRedis, ensureRedis }] =
   await Promise.all([
@@ -1308,6 +1308,14 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
         db.update(characters).set({ isBooster: true }).where(eq(characters.id, characterId)),
       ),
     );
+    const unlistedCharacterSlug = createCharacterRouteSlug({
+      name: "Unlistedalt",
+      realm: "Tarren Mill",
+    });
+    const privateCharacterSlug = createCharacterRouteSlug({
+      name: "Privatebank",
+      realm: "Tarren Mill",
+    });
 
     const scoreboardResponse = await app.request("http://localhost/api/characters/scoreboard");
     assert.equal(scoreboardResponse.status, 200);
@@ -1365,7 +1373,7 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     );
 
     const unlistedPageResponse = await app.request(
-      `http://localhost/api/characters/${unlistedCharacterId}/page?timeFrame=all&includeStats=false`,
+      `http://localhost/api/characters/${unlistedCharacterSlug}/page?timeFrame=all&includeStats=false`,
     );
     assert.equal(unlistedPageResponse.status, 200);
     const unlistedPagePayload = (await unlistedPageResponse.json()) as {
@@ -1375,13 +1383,13 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     assert.equal(unlistedPagePayload.header.character.visibility, "unlisted");
 
     const privatePublicPageResponse = await app.request(
-      `http://localhost/api/characters/${privateCharacterId}/page?timeFrame=all&includeStats=false`,
+      `http://localhost/api/characters/${privateCharacterSlug}/page?timeFrame=all&includeStats=false`,
     );
     assert.equal(privatePublicPageResponse.status, 200);
     assert.equal(await privatePublicPageResponse.json(), null);
 
     const privateOwnerPageResponse = await app.request(
-      `http://localhost/api/characters/${privateCharacterId}/page?timeFrame=all&includeStats=false`,
+      `http://localhost/api/characters/${privateCharacterSlug}/page?timeFrame=all&includeStats=false`,
       {
         headers: authHeaders(auth.token),
       },

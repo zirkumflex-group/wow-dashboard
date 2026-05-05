@@ -289,13 +289,7 @@ export function createCharacterRouteSlug(character: CharacterRouteSlugParts) {
   )}`;
 }
 
-export function createCharacterRouteId(
-  character: CharacterRouteSlugParts & { _id?: string; visibility?: CharacterVisibility },
-) {
-  if (character.visibility !== undefined && character.visibility !== "public" && character._id) {
-    return character._id;
-  }
-
+export function createCharacterRouteId(character: CharacterRouteSlugParts) {
   return createCharacterRouteSlug(character);
 }
 
