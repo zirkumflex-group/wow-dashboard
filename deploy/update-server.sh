@@ -11,6 +11,7 @@ BUILD_RETRIES="${BUILD_RETRIES:-3}"
 RETRY_DELAY_SECONDS="${RETRY_DELAY_SECONDS:-10}"
 SKIP_GIT_PULL="${SKIP_GIT_PULL:-0}"
 FORCE_FULL_DEPLOY="${FORCE_FULL_DEPLOY:-0}"
+FORCE_CLEAN_BUILD="${FORCE_CLEAN_BUILD:-0}"
 
 all_build_services=(migrate api worker web)
 all_up_services=(migrate api worker web caddy)
@@ -57,7 +58,7 @@ pull_base_image() {
   return 1
 }
 
-has_package_changes() {
+has_full_deploy_metadata_changes() {
   local base_rev="$1"
   local head_rev="$2"
   local changed_file
@@ -67,10 +68,7 @@ has_package_changes() {
       package.json | pnpm-lock.yaml | pnpm-workspace.yaml | .dockerignore)
         return 0
         ;;
-      apps/*/package.json | packages/*/package.json)
-        return 0
-        ;;
-      deploy/Dockerfile.* | deploy/docker-compose.prod.yml)
+      deploy/Dockerfile.* | deploy/docker-compose.prod.yml | deploy/update-server.sh)
         return 0
         ;;
     esac
@@ -103,6 +101,7 @@ select_deploy_services() {
   local needs_full=0
   local needs_backend=0
   local needs_web=0
+  local needs_caddy=0
 
   if [[ "$force_full" == "1" ]]; then
     build_services=("${all_build_services[@]}")
@@ -116,8 +115,11 @@ select_deploy_services() {
       package.json | pnpm-lock.yaml | pnpm-workspace.yaml | .dockerignore)
         needs_full=1
         ;;
-      deploy/*)
+      deploy/Dockerfile.* | deploy/docker-compose.prod.yml | deploy/update-server.sh)
         needs_full=1
+        ;;
+      deploy/Caddyfile)
+        needs_caddy=1
         ;;
       apps/api/* | apps/worker/* | packages/db/*)
         needs_backend=1
@@ -152,7 +154,16 @@ select_deploy_services() {
     up_services+=(web)
   fi
 
+  if [[ "$needs_caddy" == "1" ]]; then
+    up_services+=(caddy)
+  fi
+
   if [[ "${#build_services[@]}" == "0" ]]; then
+    if [[ "${#up_services[@]}" != "0" ]]; then
+      echo "Recreating changed services only: ${up_services[*]}"
+      return
+    fi
+
     build_services=("${all_build_services[@]}")
     up_services=("${all_up_services[@]}")
     echo "No deploy-specific file changes detected; running a full deploy."
@@ -265,17 +276,15 @@ if [[ -n "$last_successful_rev" ]]; then
   if git cat-file -e "$last_successful_rev^{commit}" 2>/dev/null; then
     diff_base="$last_successful_rev"
   else
-    force_clean_build=1
     should_pull_base_images=1
+    force_full_deploy=1
   fi
 else
-  force_clean_build=1
   should_pull_base_images=1
   force_full_deploy=1
 fi
 
-if [[ "$diff_base" != "$after_rev" ]] && has_package_changes "$diff_base" "$after_rev"; then
-  force_clean_build=1
+if [[ "$diff_base" != "$after_rev" ]] && has_full_deploy_metadata_changes "$diff_base" "$after_rev"; then
   force_full_deploy=1
 fi
 
@@ -311,16 +320,28 @@ case "$FORCE_FULL_DEPLOY" in
     ;;
 esac
 
+case "$FORCE_CLEAN_BUILD" in
+  1 | true | yes)
+    force_clean_build=1
+    ;;
+  0 | false | no)
+    ;;
+  *)
+    echo "Invalid FORCE_CLEAN_BUILD value: $FORCE_CLEAN_BUILD. Use 1 or 0." >&2
+    exit 1
+    ;;
+esac
+
 compose=(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE")
 build_args=()
 
 select_deploy_services "$diff_base" "$after_rev" "$force_full_deploy"
 
 if [[ "$force_clean_build" == "1" ]]; then
-  echo "Package or deploy metadata changed since the last successful deploy; building without Docker layer cache."
+  echo "FORCE_CLEAN_BUILD=$FORCE_CLEAN_BUILD; building without Docker layer cache."
   build_args+=(--no-cache)
 else
-  echo "No package metadata changes detected; building with Docker layer cache."
+  echo "Building with Docker layer cache; changed dependency metadata will invalidate only affected layers."
 fi
 
 if [[ "$should_pull_base_images" == "1" ]]; then
@@ -333,9 +354,13 @@ else
   echo "No Dockerfile/base-image changes detected; using locally cached base images when available."
 fi
 
-if ! retry_command "$BUILD_RETRIES" "$RETRY_DELAY_SECONDS" "${compose[@]}" build "${build_args[@]}" "${build_services[@]}"; then
-  echo "Docker image build failed. Services were not recreated." >&2
-  exit 1
+if (( ${#build_services[@]} > 0 )); then
+  if ! retry_command "$BUILD_RETRIES" "$RETRY_DELAY_SECONDS" "${compose[@]}" build "${build_args[@]}" "${build_services[@]}"; then
+    echo "Docker image build failed. Services were not recreated." >&2
+    exit 1
+  fi
+else
+  echo "No Docker image builds required."
 fi
 
 "${compose[@]}" up -d --force-recreate --remove-orphans "${up_services[@]}"

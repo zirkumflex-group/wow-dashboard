@@ -75,13 +75,14 @@ bash deploy/update-server.sh
 The script:
 
 - pulls the current branch with `--ff-only`
-- builds `migrate`, `api`, `worker`, and `web`
-- runs Drizzle migrations through the one-shot `migrate` service
-- recreates `api`, `worker`, `web`, and `caddy`
+- builds only the production services affected by the changed files
+- runs Drizzle migrations through the one-shot `migrate` service for backend deploys
+- recreates affected services
 - prints service status
 
-If package or deploy metadata changed since the last successful deploy, it rebuilds without Docker
-layer cache so stale install layers are not reused.
+Docker layer cache stays enabled by default. Package and lockfile changes naturally invalidate the
+affected dependency layers; use `FORCE_CLEAN_BUILD=1` only when you intentionally need a no-cache
+rebuild.
 
 Useful overrides:
 
@@ -90,6 +91,8 @@ ENV_FILE=deploy/.env.production bash deploy/update-server.sh
 PULL_BASE_IMAGES=1 bash deploy/update-server.sh
 PULL_BASE_IMAGES=0 bash deploy/update-server.sh
 SKIP_GIT_PULL=1 bash deploy/update-server.sh
+FORCE_FULL_DEPLOY=1 bash deploy/update-server.sh
+FORCE_CLEAN_BUILD=1 bash deploy/update-server.sh
 ```
 
 ## CI Auto Deploy
@@ -97,7 +100,8 @@ SKIP_GIT_PULL=1 bash deploy/update-server.sh
 Production can be deployed automatically from GitHub Actions through
 `.github/workflows/deploy-production.yml`.
 
-The workflow runs on pushes to `master` that touch server, web, shared package, or deploy files. It:
+The workflow runs on pushes to `master` that touch server, web, production shared package, or
+production deploy files. It:
 
 1. installs dependencies
 2. runs `pnpm run check-types`
