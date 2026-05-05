@@ -44,6 +44,8 @@ const [{ app }, { databaseConnection, db }, { closeQueue }, { closeRedis, ensure
     import("./lib/redis"),
   ]);
 
+const originalFetch = globalThis.fetch.bind(globalThis);
+
 function loadRootEnv() {
   const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
   const nodeEnv = process.env.NODE_ENV ?? "test";
@@ -145,6 +147,82 @@ async function seedBattleNetAccount(input: { userId: string; accessToken?: strin
     createdAt: new Date("2026-04-21T12:00:00.000Z"),
     updatedAt: new Date("2026-04-21T12:00:00.000Z"),
   });
+}
+
+type MockBattleNetProfileCharacter = {
+  name: string;
+  realm: string;
+  className: string;
+  race: string;
+  faction: "alliance" | "horde";
+  region?: "us" | "eu" | "kr" | "tw";
+  level?: number;
+};
+
+function toRealmSlug(realm: string) {
+  return realm
+    .trim()
+    .toLocaleLowerCase("en-US")
+    .replace(/['\u2019]/g, "")
+    .replace(/\s+/g, "-");
+}
+
+function mockBattleNetProfile(characters: MockBattleNetProfileCharacter[]) {
+  const charactersByRegion = new Map<string, MockBattleNetProfileCharacter[]>();
+  for (const character of characters) {
+    const region = character.region ?? "eu";
+    charactersByRegion.set(region, [...(charactersByRegion.get(region) ?? []), character]);
+  }
+
+  globalThis.fetch = async (input, init) => {
+    const requestUrl =
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+
+    if (requestUrl.includes(".api.blizzard.com/profile/user/wow")) {
+      const region = new URL(requestUrl).hostname.split(".")[0] ?? "eu";
+      const regionCharacters = charactersByRegion.get(region) ?? [];
+
+      return Response.json({
+        wow_accounts: [
+          {
+            characters: regionCharacters.map((character) => ({
+              name: character.name,
+              realm: {
+                name: character.realm,
+                slug: toRealmSlug(character.realm),
+              },
+              playable_class: {
+                name: character.className,
+              },
+              playable_race: {
+                name: character.race,
+              },
+              faction: {
+                type: character.faction.toUpperCase(),
+              },
+              level: character.level ?? 80,
+            })),
+          },
+        ],
+      });
+    }
+
+    return originalFetch(input, init);
+  };
+}
+
+async function seedAddonIngestOwner(
+  auth: { userId: string },
+  characters: MockBattleNetProfileCharacter[],
+  battleTag = "Uploader#3333",
+) {
+  const playerId = await seedPlayer(auth.userId, battleTag);
+  await seedBattleNetAccount({
+    userId: auth.userId,
+    accessToken: "test-battlenet-access-token",
+  });
+  mockBattleNetProfile(characters);
+  return playerId;
 }
 
 async function seedPlayer(userId: string, battleTag = "Tester#1234") {
@@ -305,6 +383,7 @@ function authHeaders(token: string): HeadersInit {
 
 describe("Phase 5 API routes", { concurrency: false }, () => {
   beforeEach(async () => {
+    globalThis.fetch = originalFetch;
     await resetQueueSchema();
     await truncateTables();
     const redis = await ensureRedis();
@@ -312,6 +391,7 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
   });
 
   after(async () => {
+    globalThis.fetch = originalFetch;
     await resetQueueSchema();
     await truncateTables();
     await closeRedis();
@@ -1730,7 +1810,19 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
 
   it("ingests addon snapshots and mythic plus runs", async () => {
     const auth = await seedAuthenticatedUser();
-    const playerId = await seedPlayer(auth.userId, "Uploader#3333");
+    const playerId = await seedAddonIngestOwner(
+      auth,
+      [
+        {
+          name: "Syncadin",
+          realm: "Tarren Mill",
+          className: "Paladin",
+          race: "Human",
+          faction: "alliance",
+        },
+      ],
+      "Uploader#3333",
+    );
     const takenAt = 1_776_772_800;
     const startDate = 1_776_771_000;
 
@@ -1865,7 +1957,19 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
 
   it("collapses matching live attempt and history mythic plus runs", async () => {
     const auth = await seedAuthenticatedUser();
-    const playerId = await seedPlayer(auth.userId, "Uploader#3636");
+    const playerId = await seedAddonIngestOwner(
+      auth,
+      [
+        {
+          name: "Francisfekir",
+          realm: "Blackhand",
+          className: "Death Knight",
+          race: "Orc",
+          faction: "horde",
+        },
+      ],
+      "Uploader#3636",
+    );
 
     const response = await app.request("http://localhost/api/addon/ingest", {
       method: "POST",
@@ -1967,7 +2071,19 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
 
   it("merges live active attempts with completed history rows when history start drifts", async () => {
     const auth = await seedAuthenticatedUser();
-    const playerId = await seedPlayer(auth.userId, "Uploader#3637");
+    const playerId = await seedAddonIngestOwner(
+      auth,
+      [
+        {
+          name: "Francisfekir",
+          realm: "Blackhand",
+          className: "Death Knight",
+          race: "Orc",
+          faction: "horde",
+        },
+      ],
+      "Uploader#3637",
+    );
 
     const activeStart = 1_777_915_317;
     const historyStart = 1_777_915_876;
@@ -2066,7 +2182,19 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
 
   it("enriches existing history-only mythic plus runs with late uploaded members", async () => {
     const auth = await seedAuthenticatedUser();
-    const playerId = await seedPlayer(auth.userId, "Uploader#3737");
+    const playerId = await seedAddonIngestOwner(
+      auth,
+      [
+        {
+          name: "Lateparty",
+          realm: "Blackhand",
+          className: "Death Knight",
+          race: "Orc",
+          faction: "horde",
+        },
+      ],
+      "Uploader#3737",
+    );
 
     const historyCompletedAt = 1_777_300_000;
     const liveCompletedAt = historyCompletedAt + 60 * 60;
@@ -2200,9 +2328,143 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     assert.equal(payload.error, "Request body is too large");
   });
 
+  it("rejects malformed addon numeric fields", async () => {
+    const auth = await seedAuthenticatedUser();
+    await seedAddonIngestOwner(
+      auth,
+      [
+        {
+          name: "Badmath",
+          realm: "Blackhand",
+          className: "Death Knight",
+          race: "Orc",
+          faction: "horde",
+        },
+      ],
+      "Uploader#5555",
+    );
+
+    const response = await app.request("http://localhost/api/addon/ingest", {
+      method: "POST",
+      headers: {
+        ...authHeaders(auth.token),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        characters: [
+          {
+            name: "Badmath",
+            realm: "Blackhand",
+            region: "eu",
+            class: "Death Knight",
+            race: "Orc",
+            faction: "horde",
+            snapshots: [
+              {
+                takenAt: 1_776_772_800,
+                level: 80,
+                spec: "Unholy",
+                role: "dps",
+                itemLevel: 724.6,
+                gold: -1,
+                playtimeSeconds: 8200,
+                mythicPlusScore: 2988.4,
+                currencies: {
+                  adventurerDawncrest: 1,
+                  veteranDawncrest: 2,
+                  championDawncrest: 3,
+                  heroDawncrest: 4,
+                  mythDawncrest: 5,
+                  radiantSparkDust: 6,
+                },
+                stats: {
+                  stamina: 10,
+                  strength: 11,
+                  agility: 12,
+                  intellect: 13,
+                  critPercent: 14,
+                  hastePercent: 15,
+                  masteryPercent: 16,
+                  versatilityPercent: 17,
+                },
+              },
+            ],
+            mythicPlusRuns: [],
+          },
+        ],
+      }),
+    });
+
+    assert.equal(response.status, 400);
+
+    const storedCharacters = await db.query.characters.findMany();
+    assert.equal(storedCharacters.length, 0);
+  });
+
+  it("rejects addon uploads for characters outside the user's Battle.net account", async () => {
+    const auth = await seedAuthenticatedUser();
+    const playerId = await seedAddonIngestOwner(
+      auth,
+      [
+        {
+          name: "Ownadin",
+          realm: "Tarren Mill",
+          className: "Paladin",
+          race: "Human",
+          faction: "alliance",
+        },
+      ],
+      "Uploader#6666",
+    );
+
+    const response = await app.request("http://localhost/api/addon/ingest", {
+      method: "POST",
+      headers: {
+        ...authHeaders(auth.token),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        characters: [
+          {
+            name: "Otheradin",
+            realm: "Tarren Mill",
+            region: "eu",
+            class: "Paladin",
+            race: "Human",
+            faction: "alliance",
+            snapshots: [],
+            mythicPlusRuns: [],
+          },
+        ],
+      }),
+    });
+
+    assert.equal(response.status, 403);
+    const payload = (await response.json()) as { error: string };
+    assert.match(payload.error, /Otheradin-Tarren Mill/);
+
+    const storedCharacters = await db.query.characters.findMany({
+      where: eq(characters.playerId, playerId),
+    });
+    assert.equal(storedCharacters.length, 0);
+  });
+
   it("matches addon characters by normalized realm and name", async () => {
     const auth = await seedAuthenticatedUser();
     const playerId = await seedPlayer(auth.userId, "CaseSync#7777");
+    await seedBattleNetAccount({
+      userId: auth.userId,
+      accessToken: "test-battlenet-access-token",
+    });
+    mockBattleNetProfile([
+      {
+        name: "Syncadin",
+        realm: "Tarren Mill",
+        className: "Paladin",
+        race: "Human",
+        faction: "alliance",
+      },
+    ]);
     await seedCharacter({
       playerId,
       name: "syncadin",
@@ -2249,6 +2511,19 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
   it("merges more complete snapshot fields into an existing snapshot with the same natural key", async () => {
     const auth = await seedAuthenticatedUser();
     const playerId = await seedPlayer(auth.userId, "Syncer#7777");
+    await seedBattleNetAccount({
+      userId: auth.userId,
+      accessToken: "test-battlenet-access-token",
+    });
+    mockBattleNetProfile([
+      {
+        name: "Syncadin",
+        realm: "Tarren Mill",
+        className: "Paladin",
+        race: "Human",
+        faction: "alliance",
+      },
+    ]);
     const characterId = await seedCharacter({
       playerId,
       name: "Syncadin",

@@ -879,7 +879,7 @@ app.post("/api/addon/ingest", async (c) => {
     if (error instanceof AddonIngestServiceError) {
       return c.json(
         { error: error.message },
-        { status: error.status as 400 | 401 | 404 | 409 | 429 },
+        { status: error.status as 400 | 401 | 403 | 404 | 409 | 429 | 503 },
       );
     }
 

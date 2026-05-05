@@ -66,62 +66,78 @@ export const characterDetailMetricSchema = z.enum(characterDetailMetricValues);
 export const mythicPlusRunStatusSchema = z.enum(mythicPlusRunStatusValues);
 export const mythicPlusAbandonReasonSchema = z.enum(mythicPlusAbandonReasonValues);
 
-const shortAddonStringSchema = z.string().max(64);
-const mediumAddonStringSchema = z.string().max(128);
-const longAddonStringSchema = z.string().max(512);
+const shortAddonStringSchema = z.string().trim().min(1).max(64);
+const mediumAddonStringSchema = z.string().trim().min(1).max(128);
+const longAddonStringSchema = z.string().trim().min(1).max(512);
+const shortAddonRecordKeySchema = z.string().min(1).max(64);
+const unixSecondsSchema = z.number().finite().int().min(0).max(4_102_444_800);
+const nonNegativeIntegerSchema = z.number().finite().int().min(0);
+const nonNegativeNumberSchema = z.number().finite().min(0);
+const addonIdSchema = nonNegativeIntegerSchema.max(1_000_000_000);
+const addonQuantitySchema = nonNegativeIntegerSchema.max(1_000_000_000);
+const characterLevelSchema = z.number().finite().int().min(1).max(100);
+const itemLevelSchema = nonNegativeNumberSchema.max(2_000);
+const goldSchema = nonNegativeNumberSchema.max(1_000_000_000_000);
+const playtimeSecondsSchema = nonNegativeIntegerSchema.max(2_000_000_000);
+const mythicPlusScoreSchema = nonNegativeNumberSchema.max(10_000);
+const keystoneLevelSchema = nonNegativeIntegerSchema.max(100);
+const percentageSchema = nonNegativeNumberSchema.max(10_000);
+const statRatingSchema = nonNegativeNumberSchema.max(10_000_000);
+const seasonIdSchema = nonNegativeIntegerSchema.min(1).max(1_000);
+const durationMsSchema = nonNegativeIntegerSchema.max(24 * 60 * 60 * 1000);
 
 export const currenciesSchema = z.object({
-  adventurerDawncrest: z.number(),
-  veteranDawncrest: z.number(),
-  championDawncrest: z.number(),
-  heroDawncrest: z.number(),
-  mythDawncrest: z.number(),
-  radiantSparkDust: z.number(),
+  adventurerDawncrest: addonQuantitySchema,
+  veteranDawncrest: addonQuantitySchema,
+  championDawncrest: addonQuantitySchema,
+  heroDawncrest: addonQuantitySchema,
+  mythDawncrest: addonQuantitySchema,
+  radiantSparkDust: addonQuantitySchema,
 });
 
 export const snapshotCurrencyInfoSchema = z.object({
-  currencyID: z.number(),
+  currencyID: addonIdSchema,
   name: mediumAddonStringSchema.optional(),
-  quantity: z.number(),
-  iconFileID: z.number().optional(),
-  maxQuantity: z.number().optional(),
+  quantity: addonQuantitySchema,
+  iconFileID: addonIdSchema.optional(),
+  maxQuantity: addonQuantitySchema.optional(),
   canEarnPerWeek: z.boolean().optional(),
-  quantityEarnedThisWeek: z.number().optional(),
-  maxWeeklyQuantity: z.number().optional(),
-  totalEarned: z.number().optional(),
+  quantityEarnedThisWeek: addonQuantitySchema.optional(),
+  maxWeeklyQuantity: addonQuantitySchema.optional(),
+  totalEarned: addonQuantitySchema.optional(),
   discovered: z.boolean().optional(),
-  quality: z.number().optional(),
+  quality: nonNegativeIntegerSchema.max(10).optional(),
   useTotalEarnedForMaxQty: z.boolean().optional(),
 });
 
 export const snapshotCurrencyDetailsSchema = z
-  .record(shortAddonStringSchema, snapshotCurrencyInfoSchema)
+  .record(shortAddonRecordKeySchema, snapshotCurrencyInfoSchema)
   .refine((value) => Object.keys(value).length <= addonIngestLimits.maxSnapshotCurrencyDetails);
 
 export const snapshotEquipmentItemSchema = z.object({
   slot: shortAddonStringSchema,
-  slotID: z.number(),
-  itemID: z.number().optional(),
+  slotID: nonNegativeIntegerSchema.max(100),
+  itemID: addonIdSchema.optional(),
   itemName: mediumAddonStringSchema.optional(),
   itemLink: longAddonStringSchema.optional(),
-  itemLevel: z.number().optional(),
-  quality: z.number().optional(),
-  iconFileID: z.number().optional(),
+  itemLevel: itemLevelSchema.optional(),
+  quality: nonNegativeIntegerSchema.max(10).optional(),
+  iconFileID: addonIdSchema.optional(),
 });
 
 export const snapshotEquipmentSchema = z
-  .record(shortAddonStringSchema, snapshotEquipmentItemSchema)
+  .record(shortAddonRecordKeySchema, snapshotEquipmentItemSchema)
   .refine((value) => Object.keys(value).length <= addonIngestLimits.maxSnapshotEquipmentSlots);
 
 export const snapshotWeeklyRewardActivitySchema = z.object({
-  type: z.number().optional(),
-  index: z.number().optional(),
-  id: z.number().optional(),
-  level: z.number().optional(),
-  threshold: z.number().optional(),
-  progress: z.number().optional(),
-  activityTierID: z.number().optional(),
-  itemLevel: z.number().optional(),
+  type: nonNegativeIntegerSchema.max(100).optional(),
+  index: nonNegativeIntegerSchema.max(100).optional(),
+  id: addonIdSchema.optional(),
+  level: keystoneLevelSchema.optional(),
+  threshold: addonQuantitySchema.optional(),
+  progress: addonQuantitySchema.optional(),
+  activityTierID: addonIdSchema.optional(),
+  itemLevel: itemLevelSchema.optional(),
   name: mediumAddonStringSchema.optional(),
 });
 
@@ -134,13 +150,13 @@ export const snapshotWeeklyRewardsSchema = z.object({
 });
 
 export const snapshotMajorFactionSchema = z.object({
-  factionID: z.number(),
+  factionID: addonIdSchema,
   name: mediumAddonStringSchema.optional(),
-  expansionID: z.number().optional(),
+  expansionID: nonNegativeIntegerSchema.max(100).optional(),
   isUnlocked: z.boolean().optional(),
-  renownLevel: z.number().optional(),
-  renownReputationEarned: z.number().optional(),
-  renownLevelThreshold: z.number().optional(),
+  renownLevel: nonNegativeIntegerSchema.max(1000).optional(),
+  renownReputationEarned: addonQuantitySchema.optional(),
+  renownLevelThreshold: addonQuantitySchema.optional(),
   isWeeklyCapped: z.boolean().optional(),
 });
 
@@ -150,53 +166,53 @@ export const snapshotMajorFactionsSchema = z.object({
 
 export const snapshotClientInfoSchema = z.object({
   addonVersion: shortAddonStringSchema.optional(),
-  interfaceVersion: z.number().optional(),
+  interfaceVersion: addonIdSchema.optional(),
   gameVersion: shortAddonStringSchema.optional(),
   buildNumber: shortAddonStringSchema.optional(),
   buildDate: shortAddonStringSchema.optional(),
-  tocVersion: z.number().optional(),
+  tocVersion: addonIdSchema.optional(),
   expansion: shortAddonStringSchema.optional(),
-  locale: z.string().max(16).optional(),
+  locale: z.string().trim().min(1).max(16).optional(),
 });
 
 export const statsSchema = z.object({
-  stamina: z.number(),
-  strength: z.number(),
-  agility: z.number(),
-  intellect: z.number(),
-  critRating: z.number().optional(),
-  critPercent: z.number(),
-  hasteRating: z.number().optional(),
-  hastePercent: z.number(),
-  masteryRating: z.number().optional(),
-  masteryPercent: z.number(),
-  versatilityRating: z.number().optional(),
-  versatilityPercent: z.number(),
-  speedRating: z.number().optional(),
-  speedPercent: z.number().optional(),
-  leechRating: z.number().optional(),
-  leechPercent: z.number().optional(),
-  avoidanceRating: z.number().optional(),
-  avoidancePercent: z.number().optional(),
+  stamina: statRatingSchema,
+  strength: statRatingSchema,
+  agility: statRatingSchema,
+  intellect: statRatingSchema,
+  critRating: statRatingSchema.optional(),
+  critPercent: percentageSchema,
+  hasteRating: statRatingSchema.optional(),
+  hastePercent: percentageSchema,
+  masteryRating: statRatingSchema.optional(),
+  masteryPercent: percentageSchema,
+  versatilityRating: statRatingSchema.optional(),
+  versatilityPercent: percentageSchema,
+  speedRating: statRatingSchema.optional(),
+  speedPercent: percentageSchema.optional(),
+  leechRating: statRatingSchema.optional(),
+  leechPercent: percentageSchema.optional(),
+  avoidanceRating: statRatingSchema.optional(),
+  avoidancePercent: percentageSchema.optional(),
 });
 
 export const ownedKeystoneSchema = z.object({
-  level: z.number(),
-  mapChallengeModeID: z.number().optional(),
+  level: keystoneLevelSchema,
+  mapChallengeModeID: addonIdSchema.optional(),
   mapName: mediumAddonStringSchema.optional(),
 });
 
 export const addonSnapshotSchema = z.object({
-  takenAt: z.number(),
-  level: z.number(),
+  takenAt: unixSecondsSchema,
+  level: characterLevelSchema,
   spec: shortAddonStringSchema,
   role: snapshotRoleSchema,
-  itemLevel: z.number(),
-  gold: z.number(),
-  playtimeSeconds: z.number(),
-  playtimeThisLevelSeconds: z.number().optional(),
-  mythicPlusScore: z.number(),
-  seasonID: z.number().optional(),
+  itemLevel: itemLevelSchema,
+  gold: goldSchema,
+  playtimeSeconds: playtimeSecondsSchema,
+  playtimeThisLevelSeconds: playtimeSecondsSchema.optional(),
+  mythicPlusScore: mythicPlusScoreSchema,
+  seasonID: seasonIdSchema.optional(),
   ownedKeystone: ownedKeystoneSchema.optional(),
   currencies: currenciesSchema,
   currencyDetails: snapshotCurrencyDetailsSchema.optional(),
@@ -218,20 +234,20 @@ export const addonMythicPlusRunSchema = z.object({
   fingerprint: longAddonStringSchema,
   attemptId: mediumAddonStringSchema.optional(),
   canonicalKey: longAddonStringSchema.optional(),
-  observedAt: z.number(),
-  seasonID: z.number().optional(),
-  mapChallengeModeID: z.number().optional(),
+  observedAt: unixSecondsSchema,
+  seasonID: seasonIdSchema.optional(),
+  mapChallengeModeID: addonIdSchema.optional(),
   mapName: mediumAddonStringSchema.optional(),
-  level: z.number().optional(),
+  level: keystoneLevelSchema.optional(),
   status: mythicPlusRunStatusSchema.optional(),
   completed: z.boolean().optional(),
   completedInTime: z.boolean().optional(),
-  durationMs: z.number().optional(),
-  runScore: z.number().optional(),
-  startDate: z.number().optional(),
-  completedAt: z.number().optional(),
-  endedAt: z.number().optional(),
-  abandonedAt: z.number().optional(),
+  durationMs: durationMsSchema.optional(),
+  runScore: mythicPlusScoreSchema.optional(),
+  startDate: unixSecondsSchema.optional(),
+  completedAt: unixSecondsSchema.optional(),
+  endedAt: unixSecondsSchema.optional(),
+  abandonedAt: unixSecondsSchema.optional(),
   abandonReason: mythicPlusAbandonReasonSchema.optional(),
   thisWeek: z.boolean().optional(),
   members: z

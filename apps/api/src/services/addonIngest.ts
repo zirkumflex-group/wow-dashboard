@@ -7,6 +7,8 @@ import {
   players,
   snapshotSpecs,
   snapshots,
+  type CharacterFaction,
+  type CharacterRegion,
   type Currencies,
   type LatestSnapshotDetails,
   type LatestSnapshotSummary,
@@ -43,6 +45,7 @@ import {
   shouldReplaceMythicPlusRun,
   type MythicPlusRunDocument,
 } from "./mythicPlus";
+import { resolveBattleNetAccessTokenForUser } from "./battleNetTokens";
 
 type DbExecutor = Pick<typeof db, "delete" | "insert" | "query" | "update">;
 type SnapshotRow = typeof snapshots.$inferSelect;
@@ -101,6 +104,38 @@ type ExistingRunLookups = {
   byId: Map<string, MythicPlusRunDocument>;
 };
 
+type BattleNetProfileCharacter = {
+  name?: unknown;
+  realm?: {
+    name?: unknown;
+    slug?: unknown;
+  };
+  playable_class?: {
+    name?: unknown;
+  };
+  playable_race?: {
+    name?: unknown;
+  };
+  faction?: {
+    type?: unknown;
+  };
+};
+
+type BattleNetWowProfileResponse = {
+  wow_accounts?: Array<{
+    characters?: BattleNetProfileCharacter[];
+  }>;
+};
+
+type VerifiedBattleNetCharacter = {
+  name: string;
+  realm: string;
+  region: CharacterRegion;
+  class: string;
+  race: string;
+  faction: CharacterFaction;
+};
+
 const MAX_FUTURE_MS = 5 * 60 * 1000;
 const MAX_PAST_MS = 30 * 24 * 60 * 60 * 1000;
 const LEGACY_DST_SHIFT_SECONDS = 60 * 60;
@@ -114,6 +149,159 @@ export class AddonIngestServiceError extends Error {
   ) {
     super(message);
     this.name = "AddonIngestServiceError";
+  }
+}
+
+function readNonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
+}
+
+function normalizeCharacterLookupPart(value: string) {
+  return value.trim().normalize("NFKC").toLocaleLowerCase("en-US");
+}
+
+function buildCharacterOwnershipKey(region: CharacterRegion, realm: string, name: string) {
+  return [region, normalizeCharacterLookupPart(realm), normalizeCharacterLookupPart(name)].join(
+    ":",
+  );
+}
+
+function normalizeBattleNetFaction(value: unknown): CharacterFaction | null {
+  const normalized = readNonEmptyString(value)?.toLocaleLowerCase("en-US");
+  return normalized === "alliance" || normalized === "horde" ? normalized : null;
+}
+
+function readBattleNetProfileCharacter(
+  region: CharacterRegion,
+  character: BattleNetProfileCharacter,
+): VerifiedBattleNetCharacter | null {
+  const name = readNonEmptyString(character.name);
+  const realm =
+    readNonEmptyString(character.realm?.name) ?? readNonEmptyString(character.realm?.slug);
+  const className = readNonEmptyString(character.playable_class?.name);
+  const race = readNonEmptyString(character.playable_race?.name);
+  const faction = normalizeBattleNetFaction(character.faction?.type);
+
+  if (!name || !realm || !className || !race || !faction) {
+    return null;
+  }
+
+  return {
+    name,
+    realm,
+    region,
+    class: className,
+    race,
+    faction,
+  };
+}
+
+async function fetchBattleNetProfileCharacters(
+  region: CharacterRegion,
+  accessToken: string,
+): Promise<VerifiedBattleNetCharacter[]> {
+  const url = `https://${region}.api.blizzard.com/profile/user/wow?namespace=profile-${region}&locale=en_US`;
+  let response: Response;
+
+  try {
+    response = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+  } catch {
+    throw new AddonIngestServiceError(
+      "Battle.net character verification is temporarily unavailable. Try again shortly.",
+      503,
+    );
+  }
+
+  if (response.status === 404) {
+    return [];
+  }
+
+  if (response.status === 401 || response.status === 403) {
+    throw new AddonIngestServiceError(
+      "Battle.net character verification failed. Reconnect Battle.net and try again.",
+      403,
+    );
+  }
+
+  if (!response.ok) {
+    throw new AddonIngestServiceError(
+      "Battle.net character verification is temporarily unavailable. Try again shortly.",
+      503,
+    );
+  }
+
+  let body: BattleNetWowProfileResponse;
+  try {
+    body = (await response.json()) as BattleNetWowProfileResponse;
+  } catch {
+    throw new AddonIngestServiceError(
+      "Battle.net character verification returned invalid data. Try again shortly.",
+      503,
+    );
+  }
+
+  return (body.wow_accounts ?? [])
+    .flatMap((account) => account.characters ?? [])
+    .map((character) => readBattleNetProfileCharacter(region, character))
+    .filter((character): character is VerifiedBattleNetCharacter => character !== null);
+}
+
+async function verifyAddonCharacterOwnership(
+  userId: string,
+  inputCharacters: AddonCharacterInput[],
+) {
+  const verifiedCharacters = new Map<string, VerifiedBattleNetCharacter>();
+  if (inputCharacters.length === 0) {
+    return verifiedCharacters;
+  }
+
+  const tokenResult = await resolveBattleNetAccessTokenForUser(userId);
+  if (!tokenResult.ok) {
+    throw new AddonIngestServiceError(
+      "Battle.net character verification is required before addon uploads. Reconnect Battle.net and try again.",
+      403,
+    );
+  }
+
+  const regions = [...new Set(inputCharacters.map((character) => character.region))];
+  const regionResults = await Promise.all(
+    regions.map((region) => fetchBattleNetProfileCharacters(region, tokenResult.accessToken)),
+  );
+
+  for (const character of regionResults.flat()) {
+    verifiedCharacters.set(
+      buildCharacterOwnershipKey(character.region, character.realm, character.name),
+      character,
+    );
+  }
+
+  for (const character of inputCharacters) {
+    const key = buildCharacterOwnershipKey(character.region, character.realm, character.name);
+    if (!verifiedCharacters.has(key)) {
+      throw new AddonIngestServiceError(
+        `Character ${character.name}-${character.realm} is not available on your Battle.net account.`,
+        403,
+      );
+    }
+  }
+
+  return verifiedCharacters;
+}
+
+function assertTimestampNotInFuture(label: string, value: number | undefined, now: number) {
+  if (value === undefined) {
+    return;
+  }
+
+  if (value * 1000 > now + MAX_FUTURE_MS) {
+    throw new AddonIngestServiceError(
+      `${label} timestamp is in the future (${value}s, now=${Math.floor(now / 1000)}s)`,
+      400,
+    );
   }
 }
 
@@ -911,6 +1099,8 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
     );
   }
 
+  const verifiedCharacters = await verifyAddonCharacterOwnership(userId, inputCharacters);
+
   const result = await db.transaction(async (tx) => {
     const now = Date.now();
     let newChars = 0;
@@ -919,12 +1109,22 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
     let collapsedMythicPlusRuns = 0;
 
     for (const charData of inputCharacters) {
+      const verifiedCharacter = verifiedCharacters.get(
+        buildCharacterOwnershipKey(charData.region, charData.realm, charData.name),
+      );
+      if (!verifiedCharacter) {
+        throw new AddonIngestServiceError(
+          `Character ${charData.name}-${charData.realm} is not available on your Battle.net account.`,
+          403,
+        );
+      }
+
       const existingCharacter = await tx.query.characters.findFirst({
         where: and(
           eq(characters.playerId, player.id),
-          eq(characters.region, charData.region),
-          sql`${characters.normalizedRealm} = lower(${charData.realm})`,
-          sql`${characters.normalizedName} = lower(${charData.name})`,
+          eq(characters.region, verifiedCharacter.region),
+          sql`${characters.normalizedRealm} = lower(${verifiedCharacter.realm})`,
+          sql`${characters.normalizedName} = lower(${verifiedCharacter.name})`,
         ),
       });
 
@@ -936,12 +1136,12 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
           .insert(characters)
           .values({
             playerId: player.id,
-            name: charData.name,
-            realm: charData.realm,
-            region: charData.region,
-            class: charData.class,
-            race: charData.race,
-            faction: charData.faction,
+            name: verifiedCharacter.name,
+            realm: verifiedCharacter.realm,
+            region: verifiedCharacter.region,
+            class: verifiedCharacter.class,
+            race: verifiedCharacter.race,
+            faction: verifiedCharacter.faction,
             legacyConvexId: null,
           })
           .onConflictDoUpdate({
@@ -952,11 +1152,11 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
               characters.normalizedName,
             ],
             set: {
-              name: charData.name,
-              realm: charData.realm,
-              class: charData.class,
-              race: charData.race,
-              faction: charData.faction,
+              name: verifiedCharacter.name,
+              realm: verifiedCharacter.realm,
+              class: verifiedCharacter.class,
+              race: verifiedCharacter.race,
+              faction: verifiedCharacter.faction,
             },
           })
           .returning();
@@ -968,12 +1168,12 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
         await tx
           .update(characters)
           .set({
-            name: charData.name,
-            realm: charData.realm,
-            region: charData.region,
-            class: charData.class,
-            race: charData.race,
-            faction: charData.faction,
+            name: verifiedCharacter.name,
+            realm: verifiedCharacter.realm,
+            region: verifiedCharacter.region,
+            class: verifiedCharacter.class,
+            race: verifiedCharacter.race,
+            faction: verifiedCharacter.faction,
           })
           .where(eq(characters.id, existingCharacter.id));
       }
@@ -1024,7 +1224,10 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
       for (const snapshotInput of charData.snapshots) {
         const normalizedSpec = normalizeSnapshotSpec(snapshotInput.spec);
         if (!normalizedSpec) {
-          continue;
+          throw new AddonIngestServiceError(
+            `Unsupported snapshot spec: ${snapshotInput.spec}`,
+            400,
+          );
         }
 
         const takenAtMs = snapshotInput.takenAt * 1000;
@@ -1037,6 +1240,15 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
         if (takenAtMs < now - MAX_PAST_MS) {
           throw new AddonIngestServiceError(
             `Snapshot timestamp is older than 30 days (takenAt=${snapshotInput.takenAt}s, now=${Math.floor(now / 1000)}s)`,
+            400,
+          );
+        }
+        if (
+          snapshotInput.playtimeThisLevelSeconds !== undefined &&
+          snapshotInput.playtimeThisLevelSeconds > snapshotInput.playtimeSeconds
+        ) {
+          throw new AddonIngestServiceError(
+            "Snapshot playtime for the current level cannot exceed total playtime.",
             400,
           );
         }
@@ -1230,12 +1442,18 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
       }
 
       const incomingRunsDeduped = dedupeMythicPlusRuns(
-        (charData.mythicPlusRuns ?? []).map((incomingRun) =>
-          mergeMythicPlusRunData(undefined, {
+        (charData.mythicPlusRuns ?? []).map((incomingRun) => {
+          assertTimestampNotInFuture("Mythic+ observedAt", incomingRun.observedAt, now);
+          assertTimestampNotInFuture("Mythic+ startDate", incomingRun.startDate, now);
+          assertTimestampNotInFuture("Mythic+ completedAt", incomingRun.completedAt, now);
+          assertTimestampNotInFuture("Mythic+ endedAt", incomingRun.endedAt, now);
+          assertTimestampNotInFuture("Mythic+ abandonedAt", incomingRun.abandonedAt, now);
+
+          return mergeMythicPlusRunData(undefined, {
             ...incomingRun,
             fingerprint: incomingRun.fingerprint,
-          }),
-        ),
+          });
+        }),
       );
 
       for (const run of incomingRunsDeduped) {
