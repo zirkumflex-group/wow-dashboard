@@ -863,6 +863,11 @@ app.post("/api/addon/ingest", async (c) => {
     return c.json({ error: "Unauthorized" }, 401);
   }
 
+  const contentType = c.req.header("content-type")?.toLocaleLowerCase("en-US") ?? "";
+  if (contentType.split(";")[0]?.trim() !== "application/json") {
+    return c.json({ error: "Unsupported media type" }, 415);
+  }
+
   const bodyResult = await readJsonBodyWithByteLimit(c, addonIngestLimits.maxBodyBytes);
   if (!bodyResult.ok) {
     return c.json({ error: bodyResult.error }, bodyResult.status);
@@ -883,12 +888,8 @@ app.post("/api/addon/ingest", async (c) => {
       );
     }
 
-    return c.json(
-      {
-        error: error instanceof Error ? error.message : String(error),
-      },
-      500,
-    );
+    console.error("[api] addon ingest failed", error);
+    return c.json({ error: "Internal server error" }, 500);
   }
 });
 

@@ -412,35 +412,75 @@ function mergeSnapshotFields(
         ? incomingSnapshot.playtimeSeconds
         : existingSnapshot.playtimeSeconds,
     playtimeThisLevelSeconds:
-      incomingSnapshot.playtimeThisLevelSeconds ?? existingSnapshot.playtimeThisLevelSeconds,
-    seasonID: incomingSnapshot.seasonID ?? existingSnapshot.seasonID,
-    ownedKeystone: incomingSnapshot.ownedKeystone ?? existingSnapshot.ownedKeystone,
+      existingSnapshot.playtimeThisLevelSeconds ?? incomingSnapshot.playtimeThisLevelSeconds,
+    seasonID: existingSnapshot.seasonID ?? incomingSnapshot.seasonID,
+    ownedKeystone: existingSnapshot.ownedKeystone ?? incomingSnapshot.ownedKeystone,
     stats: {
       ...incomingSnapshot.stats,
-      critRating: incomingSnapshot.stats.critRating ?? existingSnapshot.stats.critRating,
-      hasteRating: incomingSnapshot.stats.hasteRating ?? existingSnapshot.stats.hasteRating,
-      masteryRating: incomingSnapshot.stats.masteryRating ?? existingSnapshot.stats.masteryRating,
+      critRating: existingSnapshot.stats.critRating ?? incomingSnapshot.stats.critRating,
+      hasteRating: existingSnapshot.stats.hasteRating ?? incomingSnapshot.stats.hasteRating,
+      masteryRating: existingSnapshot.stats.masteryRating ?? incomingSnapshot.stats.masteryRating,
       versatilityRating:
-        incomingSnapshot.stats.versatilityRating ?? existingSnapshot.stats.versatilityRating,
-      speedRating: incomingSnapshot.stats.speedRating ?? existingSnapshot.stats.speedRating,
-      leechRating: incomingSnapshot.stats.leechRating ?? existingSnapshot.stats.leechRating,
+        existingSnapshot.stats.versatilityRating ?? incomingSnapshot.stats.versatilityRating,
+      speedRating: existingSnapshot.stats.speedRating ?? incomingSnapshot.stats.speedRating,
+      leechRating: existingSnapshot.stats.leechRating ?? incomingSnapshot.stats.leechRating,
       avoidanceRating:
-        incomingSnapshot.stats.avoidanceRating ?? existingSnapshot.stats.avoidanceRating,
-      speedPercent: incomingSnapshot.stats.speedPercent ?? existingSnapshot.stats.speedPercent,
-      leechPercent: incomingSnapshot.stats.leechPercent ?? existingSnapshot.stats.leechPercent,
+        existingSnapshot.stats.avoidanceRating ?? incomingSnapshot.stats.avoidanceRating,
+      speedPercent: existingSnapshot.stats.speedPercent ?? incomingSnapshot.stats.speedPercent,
+      leechPercent: existingSnapshot.stats.leechPercent ?? incomingSnapshot.stats.leechPercent,
       avoidancePercent:
-        incomingSnapshot.stats.avoidancePercent ?? existingSnapshot.stats.avoidancePercent,
+        existingSnapshot.stats.avoidancePercent ?? incomingSnapshot.stats.avoidancePercent,
     },
-    currencyDetails: incomingSnapshot.currencyDetails ?? existingSnapshot.currencyDetails,
-    equipment: incomingSnapshot.equipment ?? existingSnapshot.equipment,
-    weeklyRewards: incomingSnapshot.weeklyRewards ?? existingSnapshot.weeklyRewards,
-    majorFactions: incomingSnapshot.majorFactions ?? existingSnapshot.majorFactions,
-    clientInfo: incomingSnapshot.clientInfo ?? existingSnapshot.clientInfo,
+    currencyDetails: existingSnapshot.currencyDetails ?? incomingSnapshot.currencyDetails,
+    equipment: existingSnapshot.equipment ?? incomingSnapshot.equipment,
+    weeklyRewards: existingSnapshot.weeklyRewards ?? incomingSnapshot.weeklyRewards,
+    majorFactions: existingSnapshot.majorFactions ?? incomingSnapshot.majorFactions,
+    clientInfo: existingSnapshot.clientInfo ?? incomingSnapshot.clientInfo,
   };
 }
 
 function snapshotFieldsEqual(a: SnapshotFields, b: SnapshotFields) {
   return JSON.stringify(toSnapshotFields(a)) === JSON.stringify(toSnapshotFields(b));
+}
+
+function toSnapshotMaterialFields(snapshot: SnapshotFields) {
+  return {
+    level: snapshot.level,
+    spec: snapshot.spec,
+    role: snapshot.role,
+    itemLevel: snapshot.itemLevel,
+    gold: snapshot.gold,
+    playtimeSeconds: snapshot.playtimeSeconds,
+    mythicPlusScore: snapshot.mythicPlusScore,
+    currencies: {
+      adventurerDawncrest: snapshot.currencies.adventurerDawncrest,
+      veteranDawncrest: snapshot.currencies.veteranDawncrest,
+      championDawncrest: snapshot.currencies.championDawncrest,
+      heroDawncrest: snapshot.currencies.heroDawncrest,
+      mythDawncrest: snapshot.currencies.mythDawncrest,
+      radiantSparkDust: snapshot.currencies.radiantSparkDust,
+    },
+    stats: {
+      stamina: snapshot.stats.stamina,
+      strength: snapshot.stats.strength,
+      agility: snapshot.stats.agility,
+      intellect: snapshot.stats.intellect,
+      critPercent: snapshot.stats.critPercent,
+      hastePercent: snapshot.stats.hastePercent,
+      masteryPercent: snapshot.stats.masteryPercent,
+      versatilityPercent: snapshot.stats.versatilityPercent,
+    },
+  };
+}
+
+function snapshotHasMaterialConflict(
+  existingSnapshot: SnapshotFields,
+  incomingSnapshot: SnapshotFields,
+) {
+  return (
+    JSON.stringify(toSnapshotMaterialFields(existingSnapshot)) !==
+    JSON.stringify(toSnapshotMaterialFields(incomingSnapshot))
+  );
 }
 
 function toCharacterLatestSnapshot(snapshot: SnapshotFields): LatestSnapshotSummary {
@@ -1324,6 +1364,13 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
 
         if (existingSnapshotRow) {
           const existingSnapshotFields = snapshotRowToFields(existingSnapshotRow);
+          if (snapshotHasMaterialConflict(existingSnapshotFields, nextSnapshot)) {
+            throw new AddonIngestServiceError(
+              "Conflicting snapshot payload for existing timestamp.",
+              409,
+            );
+          }
+
           const mergedSnapshot = mergeSnapshotFields(existingSnapshotFields, nextSnapshot);
 
           if (!snapshotFieldsEqual(existingSnapshotFields, mergedSnapshot)) {

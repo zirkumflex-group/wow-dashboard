@@ -20,7 +20,7 @@ interface BattleNetWowProfileResponse {
   wow_accounts?: BattleNetWowAccount[];
 }
 
-const battleNetRegions = ["eu"] as const;
+const battleNetRegions = ["us", "eu", "kr", "tw"] as const;
 type BattleNetRegion = (typeof battleNetRegions)[number];
 
 async function fetchCharactersForRegion(

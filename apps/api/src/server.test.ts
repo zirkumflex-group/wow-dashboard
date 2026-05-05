@@ -2401,6 +2401,58 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     assert.equal(storedCharacters.length, 0);
   });
 
+  it("rejects incoherent Mythic+ addon fields", async () => {
+    const auth = await seedAuthenticatedUser();
+    await seedAddonIngestOwner(
+      auth,
+      [
+        {
+          name: "Badkey",
+          realm: "Blackhand",
+          className: "Death Knight",
+          race: "Orc",
+          faction: "horde",
+        },
+      ],
+      "Uploader#5556",
+    );
+
+    const response = await app.request("http://localhost/api/addon/ingest", {
+      method: "POST",
+      headers: {
+        ...authHeaders(auth.token),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        characters: [
+          {
+            name: "Badkey",
+            realm: "Blackhand",
+            region: "eu",
+            class: "Death Knight",
+            race: "Orc",
+            faction: "horde",
+            snapshots: [],
+            mythicPlusRuns: [
+              {
+                fingerprint: "badkey-run",
+                observedAt: 1_776_772_900,
+                status: "completed",
+                completed: true,
+                startDate: 1_776_772_800,
+                completedAt: 1_776_772_700,
+              },
+            ],
+          },
+        ],
+      }),
+    });
+
+    assert.equal(response.status, 400);
+    const payload = (await response.json()) as { error: string };
+    assert.match(payload.error, /completedAt/);
+  });
+
   it("rejects addon uploads for characters outside the user's Battle.net account", async () => {
     const auth = await seedAuthenticatedUser();
     const playerId = await seedAddonIngestOwner(
@@ -2661,6 +2713,107 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     assert.equal(storedSnapshots[0]?.stats.leechPercent, 19);
     assert.equal(storedSnapshots[0]?.stats.avoidancePercent, 20);
     assert.equal(storedSnapshots[0]?.legacyConvexId, "legacy-snapshot-merge-test");
+  });
+
+  it("rejects conflicting snapshot replays for an existing timestamp", async () => {
+    const auth = await seedAuthenticatedUser();
+    await seedAddonIngestOwner(
+      auth,
+      [
+        {
+          name: "Syncadin",
+          realm: "Tarren Mill",
+          className: "Paladin",
+          race: "Human",
+          faction: "alliance",
+        },
+      ],
+      "Uploader#8888",
+    );
+    const takenAt = 1_776_772_800;
+
+    const payload = {
+      characters: [
+        {
+          name: "Syncadin",
+          realm: "Tarren Mill",
+          region: "eu",
+          class: "Paladin",
+          race: "Human",
+          faction: "alliance",
+          snapshots: [
+            {
+              takenAt,
+              level: 80,
+              spec: "Holy",
+              role: "healer",
+              itemLevel: 724.6,
+              gold: 2100,
+              playtimeSeconds: 8200,
+              mythicPlusScore: 2988.4,
+              currencies: {
+                adventurerDawncrest: 1,
+                veteranDawncrest: 2,
+                championDawncrest: 3,
+                heroDawncrest: 4,
+                mythDawncrest: 5,
+                radiantSparkDust: 6,
+              },
+              stats: {
+                stamina: 10,
+                strength: 11,
+                agility: 12,
+                intellect: 13,
+                critPercent: 14,
+                hastePercent: 15,
+                masteryPercent: 16,
+                versatilityPercent: 17,
+              },
+            },
+          ],
+          mythicPlusRuns: [],
+        },
+      ],
+    };
+
+    const firstResponse = await app.request("http://localhost/api/addon/ingest", {
+      method: "POST",
+      headers: {
+        ...authHeaders(auth.token),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+    assert.equal(firstResponse.status, 200);
+
+    const conflictResponse = await app.request("http://localhost/api/addon/ingest", {
+      method: "POST",
+      headers: {
+        ...authHeaders(auth.token),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        characters: [
+          {
+            ...payload.characters[0]!,
+            snapshots: [
+              {
+                ...payload.characters[0]!.snapshots[0]!,
+                gold: 9999,
+              },
+            ],
+          },
+        ],
+      }),
+    });
+
+    assert.equal(conflictResponse.status, 409);
+    const conflictPayload = (await conflictResponse.json()) as { error: string };
+    assert.equal(conflictPayload.error, "Conflicting snapshot payload for existing timestamp.");
+
+    const storedSnapshots = await db.query.snapshots.findMany();
+    assert.equal(storedSnapshots.length, 1);
+    assert.equal(storedSnapshots[0]?.gold, 2100);
   });
 
   it("returns a clear error when addon ingest runs before the player profile exists", async () => {

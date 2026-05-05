@@ -48,7 +48,7 @@ export const addonIngestLimits = {
   maxCharacters: 80,
   maxSnapshotsPerCharacter: 400,
   maxMythicPlusRunsPerCharacter: 750,
-  maxMythicPlusRunMembers: 10,
+  maxMythicPlusRunMembers: 5,
   maxSnapshotCurrencyDetails: 50,
   maxSnapshotEquipmentSlots: 32,
   maxSnapshotWeeklyRewardActivities: 25,
@@ -76,15 +76,15 @@ const nonNegativeNumberSchema = z.number().finite().min(0);
 const addonIdSchema = nonNegativeIntegerSchema.max(1_000_000_000);
 const addonQuantitySchema = nonNegativeIntegerSchema.max(1_000_000_000);
 const characterLevelSchema = z.number().finite().int().min(1).max(100);
-const itemLevelSchema = nonNegativeNumberSchema.max(2_000);
-const goldSchema = nonNegativeNumberSchema.max(1_000_000_000_000);
+const itemLevelSchema = nonNegativeNumberSchema.max(1_000);
+const goldSchema = nonNegativeNumberSchema.max(100_000_000_000);
 const playtimeSecondsSchema = nonNegativeIntegerSchema.max(2_000_000_000);
-const mythicPlusScoreSchema = nonNegativeNumberSchema.max(10_000);
-const keystoneLevelSchema = nonNegativeIntegerSchema.max(100);
+const mythicPlusScoreSchema = nonNegativeNumberSchema.max(5_000);
+const keystoneLevelSchema = nonNegativeIntegerSchema.max(50);
 const percentageSchema = nonNegativeNumberSchema.max(10_000);
 const statRatingSchema = nonNegativeNumberSchema.max(10_000_000);
 const seasonIdSchema = nonNegativeIntegerSchema.min(1).max(1_000);
-const durationMsSchema = nonNegativeIntegerSchema.max(24 * 60 * 60 * 1000);
+const durationMsSchema = nonNegativeIntegerSchema.max(4 * 60 * 60 * 1000);
 
 export const currenciesSchema = z.object({
   adventurerDawncrest: addonQuantitySchema,
@@ -230,31 +230,63 @@ export const addonMythicPlusRunMemberSchema = z.object({
   role: snapshotRoleSchema.optional(),
 });
 
-export const addonMythicPlusRunSchema = z.object({
-  fingerprint: longAddonStringSchema,
-  attemptId: mediumAddonStringSchema.optional(),
-  canonicalKey: longAddonStringSchema.optional(),
-  observedAt: unixSecondsSchema,
-  seasonID: seasonIdSchema.optional(),
-  mapChallengeModeID: addonIdSchema.optional(),
-  mapName: mediumAddonStringSchema.optional(),
-  level: keystoneLevelSchema.optional(),
-  status: mythicPlusRunStatusSchema.optional(),
-  completed: z.boolean().optional(),
-  completedInTime: z.boolean().optional(),
-  durationMs: durationMsSchema.optional(),
-  runScore: mythicPlusScoreSchema.optional(),
-  startDate: unixSecondsSchema.optional(),
-  completedAt: unixSecondsSchema.optional(),
-  endedAt: unixSecondsSchema.optional(),
-  abandonedAt: unixSecondsSchema.optional(),
-  abandonReason: mythicPlusAbandonReasonSchema.optional(),
-  thisWeek: z.boolean().optional(),
-  members: z
-    .array(addonMythicPlusRunMemberSchema)
-    .max(addonIngestLimits.maxMythicPlusRunMembers)
-    .optional(),
-});
+export const addonMythicPlusRunSchema = z
+  .object({
+    fingerprint: longAddonStringSchema,
+    attemptId: mediumAddonStringSchema.optional(),
+    canonicalKey: longAddonStringSchema.optional(),
+    observedAt: unixSecondsSchema,
+    seasonID: seasonIdSchema.optional(),
+    mapChallengeModeID: addonIdSchema.optional(),
+    mapName: mediumAddonStringSchema.optional(),
+    level: keystoneLevelSchema.optional(),
+    status: mythicPlusRunStatusSchema.optional(),
+    completed: z.boolean().optional(),
+    completedInTime: z.boolean().optional(),
+    durationMs: durationMsSchema.optional(),
+    runScore: mythicPlusScoreSchema.optional(),
+    startDate: unixSecondsSchema.optional(),
+    completedAt: unixSecondsSchema.optional(),
+    endedAt: unixSecondsSchema.optional(),
+    abandonedAt: unixSecondsSchema.optional(),
+    abandonReason: mythicPlusAbandonReasonSchema.optional(),
+    thisWeek: z.boolean().optional(),
+    members: z
+      .array(addonMythicPlusRunMemberSchema)
+      .max(addonIngestLimits.maxMythicPlusRunMembers)
+      .optional(),
+  })
+  .superRefine((run, ctx) => {
+    const addIssue = (path: string, message: string) => {
+      ctx.addIssue({
+        code: "custom",
+        path: [path],
+        message,
+      });
+    };
+
+    if (run.startDate !== undefined) {
+      if (run.completedAt !== undefined && run.completedAt < run.startDate) {
+        addIssue("completedAt", "completedAt cannot be before startDate");
+      }
+      if (run.endedAt !== undefined && run.endedAt < run.startDate) {
+        addIssue("endedAt", "endedAt cannot be before startDate");
+      }
+      if (run.abandonedAt !== undefined && run.abandonedAt < run.startDate) {
+        addIssue("abandonedAt", "abandonedAt cannot be before startDate");
+      }
+    }
+
+    if (run.status === "active" && run.completed === true) {
+      addIssue("completed", "active runs cannot be marked completed");
+    }
+    if (run.status === "completed" && run.completed === false) {
+      addIssue("completed", "completed runs cannot be marked incomplete");
+    }
+    if (run.status === "abandoned" && run.completed === true) {
+      addIssue("completed", "abandoned runs cannot be marked completed");
+    }
+  });
 
 export const addonCharacterSchema = z.object({
   name: shortAddonStringSchema,
