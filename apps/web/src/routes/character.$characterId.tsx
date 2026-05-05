@@ -3987,173 +3987,6 @@ function RouteComponent() {
                 <span>
                   {character.realm}-{character.region.toUpperCase()}
                 </span>
-              </div>
-              <div className="max-w-3xl">
-                <CharacterLinks
-                  region={character.region}
-                  realm={character.realm}
-                  name={character.name}
-                />
-              </div>
-            </div>
-            <div className="flex w-full max-w-md flex-col gap-3 self-start xl:items-end">
-              <div className="flex flex-wrap items-center gap-2 xl:justify-end">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={() => togglePinnedCharacter(resolvedCharacterId)}
-                  className={
-                    isPinnedToQuickAccess
-                      ? "border-yellow-400/40 bg-yellow-400/10 text-yellow-300 hover:bg-yellow-400/15 hover:text-yellow-200"
-                      : "border-border/60 bg-card text-muted-foreground hover:text-foreground"
-                  }
-                >
-                  <Star
-                    data-icon="inline-start"
-                    aria-hidden="true"
-                    className={isPinnedToQuickAccess ? "fill-current text-yellow-400" : ""}
-                  />
-                  {isPinnedToQuickAccess ? "Pinned" : "Pin"}
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={handleCopyCharacterLink}
-                  disabled={character.visibility === "private"}
-                  className="border-border/60 bg-card text-muted-foreground hover:text-foreground"
-                >
-                  <Copy data-icon="inline-start" aria-hidden="true" />
-                  {character.visibility === "private" ? "Private" : "Copy Link"}
-                </Button>
-                {canEditCharacter && (
-                  <>
-                    <ToggleGroup
-                      type="single"
-                      value={character.visibility}
-                      onValueChange={(value) => {
-                        if (value) {
-                          void handleVisibilityChange(value as CharacterVisibility);
-                        }
-                      }}
-                      variant="outline"
-                      size="sm"
-                      aria-label="Character visibility"
-                      className="rounded-md border border-border/60 bg-card p-0.5"
-                    >
-                      {VISIBILITY_OPTIONS.map(({ value, label, Icon }) => (
-                        <ToggleGroupItem
-                          key={value}
-                          value={value}
-                          aria-label={label}
-                          disabled={isUpdatingVisibility}
-                          className="h-8 px-2 text-xs data-[state=on]:bg-muted"
-                        >
-                          <Icon aria-hidden="true" className="h-3.5 w-3.5" />
-                          <span className="hidden sm:inline">{label}</span>
-                        </ToggleGroupItem>
-                      ))}
-                    </ToggleGroup>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      onClick={handleBoosterToggle}
-                      disabled={isUpdatingBooster}
-                      className={
-                        isBoosterCharacter
-                          ? "border-emerald-400/40 bg-emerald-400/10 text-emerald-300 hover:bg-emerald-400/15 hover:text-emerald-200"
-                          : "border-border/60 bg-card text-muted-foreground hover:text-foreground"
-                      }
-                    >
-                      <Zap
-                        data-icon="inline-start"
-                        aria-hidden="true"
-                        className={isBoosterCharacter ? "text-emerald-300" : ""}
-                      />
-                      {isBoosterCharacter ? "Booster" : "Set Booster"}
-                    </Button>
-                    <Sheet>
-                      <SheetTrigger asChild>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          className="border-border/60 bg-card text-muted-foreground hover:text-foreground"
-                        >
-                          Trade Locks
-                          {nonTradeableSlots.length > 0
-                            ? ` ${getTradeSlotEditorCount(nonTradeableSlots)}`
-                            : ""}
-                        </Button>
-                      </SheetTrigger>
-                      <SheetContent className="w-full sm:max-w-lg">
-                        <SheetHeader>
-                          <SheetTitle>Non-Tradeable Slots</SheetTitle>
-                          <SheetDescription>
-                            Mark the slots this character cannot trade. This is stored globally per
-                            character and shown in Copy Helper.
-                          </SheetDescription>
-                        </SheetHeader>
-                        <div className="mt-6 flex flex-col gap-5">
-                          <div className="grid gap-3 sm:grid-cols-2">
-                            {TRADE_SLOT_EDITOR_OPTIONS.map((slot) => (
-                              <label
-                                key={slot.key}
-                                className="flex cursor-pointer items-start gap-3 rounded-lg border border-border/60 bg-card/50 p-3"
-                              >
-                                <Checkbox
-                                  checked={slot.slotKeys.every((slotKey) =>
-                                    nonTradeableSlotsDraft.includes(slotKey),
-                                  )}
-                                  onCheckedChange={() => toggleNonTradeableSlot(slot.slotKeys)}
-                                />
-                                <div>
-                                  <p className="text-sm font-medium text-foreground">
-                                    {slot.label}
-                                  </p>
-                                  <p className="text-xs text-muted-foreground">
-                                    Drop in this slot stays bound.
-                                  </p>
-                                </div>
-                              </label>
-                            ))}
-                          </div>
-                          {nonTradeableSlotsDraft.length === 0 ? (
-                            <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-200">
-                              No locked slots. This character is marked as able to trade all tracked
-                              slots.
-                            </div>
-                          ) : (
-                            <div className="rounded-xl border border-orange-500/30 bg-orange-500/10 p-3 text-sm text-orange-200">
-                              Locked slots:{" "}
-                              {getTradeSlotExportLabels(nonTradeableSlotsDraft).join(", ")}
-                            </div>
-                          )}
-                          <div className="flex flex-wrap gap-2">
-                            <Button
-                              type="button"
-                              variant="outline"
-                              onClick={() => setNonTradeableSlotsDraft([])}
-                              disabled={nonTradeableSlotsDraft.length === 0}
-                            >
-                              Clear All
-                            </Button>
-                            <Button
-                              type="button"
-                              onClick={handleTradeSlotSave}
-                              disabled={!hasTradeSlotChanges || isSavingTradeSlots}
-                            >
-                              {isSavingTradeSlots ? "Saving…" : "Save Slots"}
-                            </Button>
-                          </div>
-                        </div>
-                      </SheetContent>
-                    </Sheet>
-                  </>
-                )}
-                <LayoutSwitcher value={layoutMode} onChange={handleLayoutChange} />
                 <Badge
                   variant="outline"
                   className={
@@ -4164,6 +3997,183 @@ function RouteComponent() {
                 >
                   {character.faction}
                 </Badge>
+              </div>
+              <div className="max-w-3xl">
+                <CharacterLinks
+                  region={character.region}
+                  realm={character.realm}
+                  name={character.name}
+                />
+              </div>
+            </div>
+            <div className="flex w-full max-w-lg flex-col gap-2 self-start xl:items-end">
+              <div className="flex w-full flex-wrap items-center justify-between gap-2">
+                <LayoutSwitcher value={layoutMode} onChange={handleLayoutChange} />
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => togglePinnedCharacter(resolvedCharacterId)}
+                    className={
+                      isPinnedToQuickAccess
+                        ? "border-yellow-400/40 bg-yellow-400/10 text-yellow-300 hover:bg-yellow-400/15 hover:text-yellow-200"
+                        : "border-border/60 bg-card text-muted-foreground hover:text-foreground"
+                    }
+                  >
+                    <Star
+                      data-icon="inline-start"
+                      aria-hidden="true"
+                      className={isPinnedToQuickAccess ? "fill-current text-yellow-400" : ""}
+                    />
+                    {isPinnedToQuickAccess ? "Pinned" : "Pin"}
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={handleCopyCharacterLink}
+                    disabled={character.visibility === "private"}
+                    className="border-border/60 bg-card text-muted-foreground hover:text-foreground"
+                  >
+                    <Copy data-icon="inline-start" aria-hidden="true" />
+                    {character.visibility === "private" ? "Private" : "Copy Link"}
+                  </Button>
+                </div>
+                {canEditCharacter && (
+                  <div className="flex w-full flex-col gap-2 rounded-md border border-border/60 bg-background/60 p-2">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                      <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                        Visibility
+                      </span>
+                      <ToggleGroup
+                        type="single"
+                        value={character.visibility}
+                        onValueChange={(value) => {
+                          if (value) {
+                            void handleVisibilityChange(value as CharacterVisibility);
+                          }
+                        }}
+                        variant="outline"
+                        size="sm"
+                        aria-label="Character visibility"
+                        className="w-full justify-start rounded-md border border-border/60 bg-card p-0.5 sm:w-auto"
+                      >
+                        {VISIBILITY_OPTIONS.map(({ value, label, Icon }) => (
+                          <ToggleGroupItem
+                            key={value}
+                            value={value}
+                            aria-label={label}
+                            disabled={isUpdatingVisibility}
+                            className="h-8 flex-1 px-2 text-xs data-[state=on]:bg-muted sm:flex-none"
+                          >
+                            <Icon aria-hidden="true" />
+                            <span>{label}</span>
+                          </ToggleGroupItem>
+                        ))}
+                      </ToggleGroup>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={handleBoosterToggle}
+                        disabled={isUpdatingBooster}
+                        className={
+                          isBoosterCharacter
+                            ? "border-emerald-400/40 bg-emerald-400/10 text-emerald-300 hover:bg-emerald-400/15 hover:text-emerald-200"
+                            : "border-border/60 bg-card text-muted-foreground hover:text-foreground"
+                        }
+                      >
+                        <Zap
+                          data-icon="inline-start"
+                          aria-hidden="true"
+                          className={isBoosterCharacter ? "text-emerald-300" : ""}
+                        />
+                        {isBoosterCharacter ? "Booster" : "Set Booster"}
+                      </Button>
+                      <Sheet>
+                        <SheetTrigger asChild>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="border-border/60 bg-card text-muted-foreground hover:text-foreground"
+                          >
+                            <Lock data-icon="inline-start" aria-hidden="true" />
+                            Trade Locks
+                            {nonTradeableSlots.length > 0
+                              ? ` ${getTradeSlotEditorCount(nonTradeableSlots)}`
+                              : ""}
+                          </Button>
+                        </SheetTrigger>
+                        <SheetContent className="w-full sm:max-w-lg">
+                          <SheetHeader>
+                            <SheetTitle>Non-Tradeable Slots</SheetTitle>
+                            <SheetDescription>
+                              Mark the slots this character cannot trade. This is stored globally
+                              per character and shown in Copy Helper.
+                            </SheetDescription>
+                          </SheetHeader>
+                          <div className="mt-6 flex flex-col gap-5">
+                            <div className="grid gap-3 sm:grid-cols-2">
+                              {TRADE_SLOT_EDITOR_OPTIONS.map((slot) => (
+                                <label
+                                  key={slot.key}
+                                  className="flex cursor-pointer items-start gap-3 rounded-lg border border-border/60 bg-card/50 p-3"
+                                >
+                                  <Checkbox
+                                    checked={slot.slotKeys.every((slotKey) =>
+                                      nonTradeableSlotsDraft.includes(slotKey),
+                                    )}
+                                    onCheckedChange={() => toggleNonTradeableSlot(slot.slotKeys)}
+                                  />
+                                  <div>
+                                    <p className="text-sm font-medium text-foreground">
+                                      {slot.label}
+                                    </p>
+                                    <p className="text-xs text-muted-foreground">
+                                      Drop in this slot stays bound.
+                                    </p>
+                                  </div>
+                                </label>
+                              ))}
+                            </div>
+                            {nonTradeableSlotsDraft.length === 0 ? (
+                              <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-200">
+                                No locked slots. This character is marked as able to trade all
+                                tracked slots.
+                              </div>
+                            ) : (
+                              <div className="rounded-xl border border-orange-500/30 bg-orange-500/10 p-3 text-sm text-orange-200">
+                                Locked slots:{" "}
+                                {getTradeSlotExportLabels(nonTradeableSlotsDraft).join(", ")}
+                              </div>
+                            )}
+                            <div className="flex flex-wrap gap-2">
+                              <Button
+                                type="button"
+                                variant="outline"
+                                onClick={() => setNonTradeableSlotsDraft([])}
+                                disabled={nonTradeableSlotsDraft.length === 0}
+                              >
+                                Clear All
+                              </Button>
+                              <Button
+                                type="button"
+                                onClick={handleTradeSlotSave}
+                                disabled={!hasTradeSlotChanges || isSavingTradeSlots}
+                              >
+                                {isSavingTradeSlots ? "Saving…" : "Save Slots"}
+                              </Button>
+                            </div>
+                          </div>
+                        </SheetContent>
+                      </Sheet>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>
