@@ -1016,8 +1016,8 @@ function Dashboard({
             </button>
           </div>
           <p className="text-xs text-gray-500">
-            Manual sync uploads addon snapshots and Mythic+ runs, then refreshes Battle.net
-            character data.
+            Sync runs automatically when the addon file changes and periodically in the background.
+            Use Sync Now to retry immediately.
           </p>
           <p className="text-xs text-gray-500">
             Last successful sync: {formatLastSyncTime(lastSyncedAt)}

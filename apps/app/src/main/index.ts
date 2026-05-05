@@ -50,7 +50,7 @@ let pendingWindowReveal = false;
 let closeBehaviorCache: "tray" | "exit" = "tray";
 let launchMinimizedCache = true;
 let addonWatcher: ReturnType<typeof fs.watch> | null = null;
-let addonWatchDebounce: ReturnType<typeof setTimeout> | null = null;
+let addonSyncDebounce: ReturnType<typeof setTimeout> | null = null;
 let storedSessionToken: string | null = null;
 let pendingLoginResolve: ((token: string) => void) | null = null;
 let pendingLoginReject: ((err: Error) => void) | null = null;
@@ -64,11 +64,14 @@ let addonUpdateApplyTimer: ReturnType<typeof setInterval> | null = null;
 let appUpdateCheckTimer: ReturnType<typeof setInterval> | null = null;
 let addonSyncTimer: ReturnType<typeof setInterval> | null = null;
 let addonSyncInFlight: Promise<AddonSyncResult> | null = null;
+let addonSyncRerunAfterInFlight = false;
 
 const DEFAULT_APP_UPDATE_CHECK_INTERVAL_MINUTES = 60;
 const DEFAULT_ADDON_UPDATE_CHECK_INTERVAL_MINUTES = 60;
 const DEFAULT_ADDON_UPDATE_APPLY_INTERVAL_MINUTES = 1;
 const DEFAULT_ADDON_SYNC_INTERVAL_MINUTES = 15;
+const ADDON_FILE_SYNC_DEBOUNCE_MS = 5_000;
+const ADDON_STARTUP_SYNC_DELAY_MS = 3_000;
 const MYTHIC_PLUS_UPLOAD_LOOKBACK_SECONDS = 2 * 60 * 60;
 const MYTHIC_PLUS_MEMBER_UPLOAD_LOOKBACK_SECONDS = 48 * 60 * 60;
 const ADDON_UPLOAD_CHARACTERS_PER_BATCH = 20;
@@ -388,6 +391,10 @@ function clearBackgroundTimers(): void {
   if (addonSyncTimer) {
     clearInterval(addonSyncTimer);
     addonSyncTimer = null;
+  }
+  if (addonSyncDebounce) {
+    clearTimeout(addonSyncDebounce);
+    addonSyncDebounce = null;
   }
 }
 
@@ -3345,8 +3352,13 @@ function broadcastAddonSyncError(error: unknown): void {
   broadcastToRenderers("wow:addonSyncError", payload);
 }
 
-function triggerAddonSync(options: { broadcast?: boolean } = {}): Promise<AddonSyncResult> {
+function triggerAddonSync(
+  options: { broadcast?: boolean; rerunAfterCurrent?: boolean } = {},
+): Promise<AddonSyncResult> {
   if (addonSyncInFlight) {
+    if (options.rerunAfterCurrent) {
+      addonSyncRerunAfterInFlight = true;
+    }
     return addonSyncInFlight;
   }
 
@@ -3365,6 +3377,10 @@ function triggerAddonSync(options: { broadcast?: boolean } = {}): Promise<AddonS
     })
     .finally(() => {
       addonSyncInFlight = null;
+      if (addonSyncRerunAfterInFlight) {
+        addonSyncRerunAfterInFlight = false;
+        scheduleBackgroundAddonSync("queued addon change", 1_000);
+      }
     });
 
   return addonSyncInFlight;
@@ -3372,9 +3388,19 @@ function triggerAddonSync(options: { broadcast?: boolean } = {}): Promise<AddonS
 
 function triggerBackgroundAddonSync(reason: string): void {
   if (!storedSessionToken) return;
-  void triggerAddonSync({ broadcast: true }).catch((error) => {
+  void triggerAddonSync({ broadcast: true, rerunAfterCurrent: true }).catch((error) => {
     console.warn(`[wow-dashboard] Background addon sync failed after ${reason}:`, error);
   });
+}
+
+function scheduleBackgroundAddonSync(reason: string, delayMs = ADDON_FILE_SYNC_DEBOUNCE_MS): void {
+  if (addonSyncDebounce) {
+    clearTimeout(addonSyncDebounce);
+  }
+  addonSyncDebounce = setTimeout(() => {
+    addonSyncDebounce = null;
+    triggerBackgroundAddonSync(reason);
+  }, delayMs);
 }
 
 function createWindow(): void {
@@ -3510,6 +3536,7 @@ ipcMain.handle("auth:login", () => {
       pendingLoginReject = null;
       if (token) {
         persistDesktopSessionToken(token);
+        scheduleBackgroundAddonSync("Battle.net login", 1_000);
       }
       if (mainWindow) {
         if (mainWindow.isMinimized()) mainWindow.restore();
@@ -3723,6 +3750,7 @@ ipcMain.handle("wow:selectRetailFolder", async () => {
   void startAddonWatcher().catch((error) => {
     console.warn("[wow-dashboard] Failed to restart addon watcher after folder selection:", error);
   });
+  scheduleBackgroundAddonSync("WoW folder selection", 1_000);
   void stageLatestAddonUpdate().catch((error) => {
     console.warn("[wow-dashboard] Failed to stage addon update after folder selection:", error);
   });
@@ -3741,10 +3769,6 @@ ipcMain.handle("wow:syncAddonData", async () => {
 });
 
 function stopAddonWatcher() {
-  if (addonWatchDebounce) {
-    clearTimeout(addonWatchDebounce);
-    addonWatchDebounce = null;
-  }
   if (addonWatcher) {
     addonWatcher.close();
     addonWatcher = null;
@@ -3760,10 +3784,7 @@ async function startAddonWatcher(): Promise<boolean> {
     await fs.promises.access(watchPath, fs.constants.F_OK);
     addonWatcher = fs.watch(watchPath, { recursive: true }, (_event, filename) => {
       if (!filename?.endsWith("wow-dashboard.lua")) return;
-      if (addonWatchDebounce) clearTimeout(addonWatchDebounce);
-      addonWatchDebounce = setTimeout(() => {
-        triggerBackgroundAddonSync("SavedVariables change");
-      }, 2000);
+      scheduleBackgroundAddonSync("SavedVariables change");
     });
     return true;
   } catch (e) {
@@ -4786,6 +4807,7 @@ app.whenReady().then(async () => {
   void startAddonWatcher().catch((error) => {
     console.warn("[wow-dashboard] Failed to start addon watcher:", error);
   });
+  scheduleBackgroundAddonSync("startup catch-up", ADDON_STARTUP_SYNC_DELAY_MS);
 
   void stageLatestAddonUpdate().catch((error) => {
     console.warn("[wow-dashboard] Failed to stage addon update:", error);
