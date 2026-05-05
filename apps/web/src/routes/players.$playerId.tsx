@@ -12,7 +12,7 @@ import {
 } from "@wow-dashboard/ui/components/table";
 import { ArrowLeft } from "lucide-react";
 import { useEffect } from "react";
-import { createCharacterRouteSlug } from "@wow-dashboard/api-schema";
+import { createCharacterRouteId } from "@wow-dashboard/api-schema";
 import { apiQueryOptions } from "@/lib/api-client";
 import { getClassTextColor } from "../lib/class-colors";
 import { getMythicPlusDungeonMeta } from "../lib/mythic-plus-static";
@@ -71,22 +71,13 @@ function getKeystoneDisplay(
     dungeon:
       dungeonMeta?.shortName ??
       ownedKeystone.mapName ??
-      (ownedKeystone.mapChallengeModeID !== undefined &&
-      ownedKeystone.mapChallengeModeID !== null
+      (ownedKeystone.mapChallengeModeID !== undefined && ownedKeystone.mapChallengeModeID !== null
         ? `Dungeon ${ownedKeystone.mapChallengeModeID}`
         : "Unknown"),
   };
 }
 
-function StatCard({
-  label,
-  value,
-  helper,
-}: {
-  label: string;
-  value: string;
-  helper?: string;
-}) {
+function StatCard({ label, value, helper }: { label: string; value: string; helper?: string }) {
   return (
     <Card className="border-border/60 bg-card">
       <CardContent className="p-4">
@@ -184,7 +175,10 @@ function RouteComponent() {
             data.summary.averageItemLevel === null ? "-" : data.summary.averageItemLevel.toFixed(1)
           }
         />
-        <StatCard label="Total Playtime" value={formatPlaytime(data.summary.totalPlaytimeSeconds)} />
+        <StatCard
+          label="Total Playtime"
+          value={formatPlaytime(data.summary.totalPlaytimeSeconds)}
+        />
         <StatCard label="Total Gold" value={formatGold(data.summary.totalGold)} />
         <StatCard
           label="Best Key"
@@ -195,9 +189,7 @@ function RouteComponent() {
 
       <Card className="border-border/70 bg-card">
         <CardHeader className="pb-3">
-          <CardTitle className="text-base">
-            Characters ({data.characters.length})
-          </CardTitle>
+          <CardTitle className="text-base">Characters ({data.characters.length})</CardTitle>
         </CardHeader>
         <CardContent className="p-0">
           <Table>
@@ -224,7 +216,7 @@ function RouteComponent() {
                       <div className="space-y-0.5">
                         <Link
                           to="/character/$characterId"
-                          params={{ characterId: createCharacterRouteSlug(character) }}
+                          params={{ characterId: createCharacterRouteId(character) }}
                           className={`font-semibold hover:underline ${classColor(character.class)}`}
                         >
                           {character.name}
@@ -241,7 +233,9 @@ function RouteComponent() {
                           <p className="text-sm">
                             {snapshot.spec} - Lvl {snapshot.level}
                           </p>
-                          <p className="text-xs text-muted-foreground capitalize">{snapshot.role}</p>
+                          <p className="text-xs text-muted-foreground capitalize">
+                            {snapshot.role}
+                          </p>
                         </div>
                       ) : (
                         <span className="text-xs text-muted-foreground">No snapshot</span>
@@ -256,7 +250,9 @@ function RouteComponent() {
                     <TableCell className="hidden text-right lg:table-cell">
                       <div className="flex flex-col items-end leading-tight">
                         <span className="font-semibold tabular-nums">{keystone.key}</span>
-                        <span className="text-[11px] text-muted-foreground">{keystone.dungeon}</span>
+                        <span className="text-[11px] text-muted-foreground">
+                          {keystone.dungeon}
+                        </span>
                       </div>
                     </TableCell>
                     <TableCell className="hidden text-right tabular-nums xl:table-cell">

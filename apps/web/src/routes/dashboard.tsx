@@ -10,7 +10,7 @@ import { Skeleton } from "@wow-dashboard/ui/components/skeleton";
 import { HeartPulse, RefreshCw, Shield, Star, Swords } from "lucide-react";
 import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { createCharacterRouteSlug } from "@wow-dashboard/api-schema";
+import { createCharacterRouteId } from "@wow-dashboard/api-schema";
 import { apiClient, apiQueryOptions } from "@/lib/api-client";
 import { PlaytimeBreakdown } from "../components/playtime-breakdown";
 import { getClassBgColor, getClassTextColor } from "../lib/class-colors";
@@ -117,6 +117,7 @@ type Character = {
   class: string;
   race: string;
   faction: "alliance" | "horde";
+  visibility: "public" | "unlisted" | "private";
   snapshot: {
     level: number;
     spec: string;
@@ -160,7 +161,7 @@ function CharacterCard({
   return (
     <Link
       to="/character/$characterId"
-      params={{ characterId: createCharacterRouteSlug(char) }}
+      params={{ characterId: createCharacterRouteId(char) }}
       className="block"
     >
       <Card

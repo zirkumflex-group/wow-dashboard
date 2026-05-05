@@ -53,10 +53,12 @@ import {
   ExternalLink,
   Flame,
   Gem,
+  Globe2,
   History,
   LayoutGrid,
   LayoutList,
   Lock,
+  Link2,
   Maximize2,
   Star,
   Sword,
@@ -69,6 +71,7 @@ import {
   lazy,
   memo,
   startTransition,
+  type ComponentType,
   useCallback,
   useEffect,
   useId,
@@ -76,7 +79,11 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import { createCharacterRouteSlug, type CharacterPageResponse } from "@wow-dashboard/api-schema";
+import {
+  createCharacterRouteId,
+  type CharacterPageResponse,
+  type CharacterVisibility,
+} from "@wow-dashboard/api-schema";
 import {
   CartesianGrid,
   Line,
@@ -119,6 +126,15 @@ const DEFAULT_LAYOUT_MODE: LayoutMode = "overview";
 const DEFAULT_FOCUS_METRIC: FocusMetric = "ilvl";
 const CHARACTER_PAGE_STALE_TIME_MS = 30 * 1000;
 const CHARACTER_PAGE_REFETCH_INTERVAL_MS = 30 * 1000;
+const VISIBILITY_OPTIONS = [
+  { value: "public", label: "Public", Icon: Globe2 },
+  { value: "unlisted", label: "Unlisted", Icon: Link2 },
+  { value: "private", label: "Private", Icon: Lock },
+] as const satisfies readonly {
+  value: CharacterVisibility;
+  label: string;
+  Icon: ComponentType<{ className?: string }>;
+}[];
 const WOW_WEEKLY_RESET_DAY_UTC = 3;
 const WOW_WEEKLY_RESET_HOUR_UTC = 4;
 
@@ -236,6 +252,26 @@ function withCharacterPageBoosterStatus(
       character: {
         ...currentPage.header.character,
         isBooster,
+      },
+    },
+  };
+}
+
+function withCharacterPageVisibility(
+  currentPage: CharacterPageResponse | null | undefined,
+  visibility: CharacterVisibility,
+) {
+  if (!currentPage || currentPage.header.character.visibility === visibility) {
+    return currentPage;
+  }
+
+  return {
+    ...currentPage,
+    header: {
+      ...currentPage.header,
+      character: {
+        ...currentPage.header.character,
+        visibility,
       },
     },
   };
@@ -3467,6 +3503,7 @@ function RouteComponent() {
   const { pinnedCharacterIdSet, togglePinnedCharacter } = usePinnedCharacters();
   const [nonTradeableSlotsDraft, setNonTradeableSlotsDraft] = useState<TradeSlotKey[]>([]);
   const [isUpdatingBooster, setIsUpdatingBooster] = useState(false);
+  const [isUpdatingVisibility, setIsUpdatingVisibility] = useState(false);
   const [isSavingTradeSlots, setIsSavingTradeSlots] = useState(false);
   const [shouldLoadFullMythicPlusRuns, setShouldLoadFullMythicPlusRuns] = useState(false);
   const characterPageQuery = useQuery({
@@ -3518,7 +3555,7 @@ function RouteComponent() {
   }, [characterPage]);
 
   const canonicalCharacterRouteSlug = characterPage
-    ? createCharacterRouteSlug(characterPage.header.character)
+    ? createCharacterRouteId(characterPage.header.character)
     : null;
 
   useEffect(() => {
@@ -3679,6 +3716,16 @@ function RouteComponent() {
     [queryClient],
   );
 
+  const setCachedCharacterPageVisibility = useCallback(
+    (cacheCharacterId: string, visibility: CharacterVisibility) => {
+      queryClient.setQueriesData<CharacterPageResponse | null>(
+        { queryKey: ["api", "characters", cacheCharacterId, "page"] },
+        (currentPage) => withCharacterPageVisibility(currentPage, visibility),
+      );
+    },
+    [queryClient],
+  );
+
   const setCharacterBoosterStatus = useMutation({
     mutationFn: (input: { targetCharacterId: string; isBooster: boolean }) =>
       apiClient.updateCharacterBoosterStatus(input.targetCharacterId, {
@@ -3711,6 +3758,34 @@ function RouteComponent() {
         invalidateCharacterPageQueries(),
         invalidateBoosterExportQueries(),
         invalidateOwnerQueries(),
+      ]);
+    },
+  });
+
+  const setCharacterVisibility = useMutation({
+    mutationFn: (input: { targetCharacterId: string; visibility: CharacterVisibility }) =>
+      apiClient.updateCharacterVisibility(input.targetCharacterId, {
+        visibility: input.visibility,
+      }),
+    onSuccess: async (result, input) => {
+      setCachedCharacterPageVisibility(characterId, result.visibility);
+      if (input.targetCharacterId !== characterId) {
+        setCachedCharacterPageVisibility(input.targetCharacterId, result.visibility);
+      }
+      if (result.characterId !== characterId && result.characterId !== input.targetCharacterId) {
+        setCachedCharacterPageVisibility(result.characterId, result.visibility);
+      }
+
+      await Promise.all([
+        invalidateCharacterPageQueries(),
+        invalidateBoosterExportQueries(),
+        invalidateOwnerQueries(),
+        queryClient.invalidateQueries({ queryKey: apiQueryKeys.myCharacters() }),
+        queryClient.invalidateQueries({ queryKey: apiQueryKeys.scoreboardCharacters() }),
+        queryClient.invalidateQueries({ queryKey: apiQueryKeys.playerScoreboard() }),
+        queryClient.invalidateQueries({
+          queryKey: apiQueryKeys.charactersLatest({ characterId: [] }),
+        }),
       ]);
     },
   });
@@ -3820,9 +3895,33 @@ function RouteComponent() {
     }
   }
 
+  async function handleVisibilityChange(nextVisibility: CharacterVisibility) {
+    if (isUpdatingVisibility || nextVisibility === character.visibility) {
+      return;
+    }
+
+    setIsUpdatingVisibility(true);
+    try {
+      await setCharacterVisibility.mutateAsync({
+        targetCharacterId: resolvedCharacterId,
+        visibility: nextVisibility,
+      });
+      toast.success(`Character visibility set to ${nextVisibility}.`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not update visibility.");
+    } finally {
+      setIsUpdatingVisibility(false);
+    }
+  }
+
   async function handleCopyCharacterLink() {
     if (typeof window === "undefined" || !navigator.clipboard) {
       toast.error("Could not copy character link.");
+      return;
+    }
+
+    if (character.visibility === "private") {
+      toast.error("Private characters can only be opened by you.");
       return;
     }
 
@@ -3838,7 +3937,11 @@ function RouteComponent() {
         canonicalSearchString ? `?${canonicalSearchString}` : ""
       }`;
       await navigator.clipboard.writeText(canonicalUrl);
-      toast.success("Character link copied.");
+      toast.success(
+        character.visibility === "unlisted"
+          ? "Unlisted character link copied."
+          : "Character link copied.",
+      );
     } catch {
       toast.error("Could not copy character link.");
     }
@@ -3918,13 +4021,40 @@ function RouteComponent() {
                   size="sm"
                   variant="outline"
                   onClick={handleCopyCharacterLink}
+                  disabled={character.visibility === "private"}
                   className="border-border/60 bg-card text-muted-foreground hover:text-foreground"
                 >
                   <Copy data-icon="inline-start" aria-hidden="true" />
-                  Copy Link
+                  {character.visibility === "private" ? "Private" : "Copy Link"}
                 </Button>
                 {canEditCharacter && (
                   <>
+                    <ToggleGroup
+                      type="single"
+                      value={character.visibility}
+                      onValueChange={(value) => {
+                        if (value) {
+                          void handleVisibilityChange(value as CharacterVisibility);
+                        }
+                      }}
+                      variant="outline"
+                      size="sm"
+                      aria-label="Character visibility"
+                      className="rounded-md border border-border/60 bg-card p-0.5"
+                    >
+                      {VISIBILITY_OPTIONS.map(({ value, label, Icon }) => (
+                        <ToggleGroupItem
+                          key={value}
+                          value={value}
+                          aria-label={label}
+                          disabled={isUpdatingVisibility}
+                          className="h-8 px-2 text-xs data-[state=on]:bg-muted"
+                        >
+                          <Icon aria-hidden="true" className="h-3.5 w-3.5" />
+                          <span className="hidden sm:inline">{label}</span>
+                        </ToggleGroupItem>
+                      ))}
+                    </ToggleGroup>
                     <Button
                       type="button"
                       size="sm"

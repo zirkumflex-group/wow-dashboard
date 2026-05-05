@@ -3,6 +3,7 @@ import {
   addonMythicPlusRunMemberSchema,
   characterFactionSchema,
   characterRegionSchema,
+  characterVisibilitySchema,
   currenciesSchema,
   mythicPlusAbandonReasonSchema,
   mythicPlusRunStatusSchema,
@@ -168,6 +169,7 @@ export const serializedCharacterSchema = z.object({
   class: z.string(),
   race: z.string(),
   faction: characterFactionSchema,
+  visibility: characterVisibilitySchema,
   isBooster: z.boolean().nullable(),
   nonTradeableSlots: z.array(nonTradeableSlotSchema).nullable(),
   latestSnapshot: latestSnapshotSummarySchema.nullable(),
@@ -200,6 +202,7 @@ export const scoreboardCharacterEntrySchema = z.object({
   class: z.string(),
   race: z.string(),
   faction: characterFactionSchema,
+  visibility: characterVisibilitySchema,
   mythicPlusScore: z.number(),
   itemLevel: z.number(),
   gold: z.number(),
@@ -260,6 +263,7 @@ export const characterHeaderCharacterSchema = z.object({
   class: z.string(),
   race: z.string(),
   faction: characterFactionSchema,
+  visibility: characterVisibilitySchema,
   isBooster: z.boolean().nullable(),
   nonTradeableSlots: z.array(nonTradeableSlotSchema).nullable(),
 });
@@ -347,6 +351,7 @@ export const characterBoosterExportEntrySchema = z.object({
   region: characterRegionSchema,
   class: z.string(),
   faction: characterFactionSchema,
+  visibility: characterVisibilitySchema,
   isBooster: z.boolean(),
   nonTradeableSlots: z.array(nonTradeableSlotSchema),
   ownerBattleTag: z.string().nullable(),
@@ -376,6 +381,11 @@ export const updateCharacterBoosterResponseSchema = z.object({
 export const updateCharacterSlotsResponseSchema = z.object({
   characterId: z.string().uuid(),
   nonTradeableSlots: z.array(nonTradeableSlotSchema),
+});
+
+export const updateCharacterVisibilityResponseSchema = z.object({
+  characterId: z.string().uuid(),
+  visibility: characterVisibilitySchema,
 });
 
 export const updatePlayerDiscordResponseSchema = z.object({
@@ -433,5 +443,8 @@ export type CharacterBoosterExportEntry = z.infer<typeof characterBoosterExportE
 export type ResyncCharactersResponse = z.infer<typeof resyncCharactersResponseSchema>;
 export type UpdateCharacterBoosterResponse = z.infer<typeof updateCharacterBoosterResponseSchema>;
 export type UpdateCharacterSlotsResponse = z.infer<typeof updateCharacterSlotsResponseSchema>;
+export type UpdateCharacterVisibilityResponse = z.infer<
+  typeof updateCharacterVisibilityResponseSchema
+>;
 export type UpdatePlayerDiscordResponse = z.infer<typeof updatePlayerDiscordResponseSchema>;
 export type AddonIngestResponse = z.infer<typeof addonIngestResponseSchema>;

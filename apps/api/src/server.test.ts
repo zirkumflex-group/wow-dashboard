@@ -169,6 +169,7 @@ async function seedCharacter(input: {
   className: string;
   race: string;
   faction: "alliance" | "horde";
+  visibility?: "public" | "unlisted" | "private";
 }) {
   const characterId = randomUUID();
 
@@ -181,6 +182,7 @@ async function seedCharacter(input: {
     class: input.className,
     race: input.race,
     faction: input.faction,
+    visibility: input.visibility ?? "public",
     isBooster: null,
     nonTradeableSlots: null,
     latestSnapshot: null,
@@ -1235,6 +1237,245 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     assert.equal(payload[0]?.bestKeystoneMapChallengeModeID, 375);
     assert.equal(payload[0]?.bestKeystoneMapName, "Mists of Tirna Scithe");
     assert.equal(payload[0]?.latestSnapshotAt, 1_776_772_800);
+  });
+
+  it("applies character visibility to public lists and direct reads", async () => {
+    const auth = await seedAuthenticatedUser();
+    const playerId = await seedPlayer(auth.userId, "Visible#1000");
+    const publicCharacterId = await seedCharacter({
+      playerId,
+      name: "Publicmain",
+      realm: "Tarren Mill",
+      className: "Paladin",
+      race: "Human",
+      faction: "alliance",
+      visibility: "public",
+    });
+    const unlistedCharacterId = await seedCharacter({
+      playerId,
+      name: "Unlistedalt",
+      realm: "Tarren Mill",
+      className: "Priest",
+      race: "Human",
+      faction: "alliance",
+      visibility: "unlisted",
+    });
+    const privateCharacterId = await seedCharacter({
+      playerId,
+      name: "Privatebank",
+      realm: "Tarren Mill",
+      className: "Mage",
+      race: "Human",
+      faction: "alliance",
+      visibility: "private",
+    });
+
+    await seedSnapshot({
+      characterId: publicCharacterId,
+      takenAt: "2026-04-21T12:00:00.000Z",
+      level: 80,
+      spec: "Retribution",
+      role: "dps",
+      itemLevel: 730,
+      gold: 3000,
+      playtimeSeconds: 10_000,
+      mythicPlusScore: 3300,
+    });
+    await seedSnapshot({
+      characterId: unlistedCharacterId,
+      takenAt: "2026-04-21T12:00:00.000Z",
+      level: 80,
+      spec: "Shadow",
+      role: "dps",
+      itemLevel: 720,
+      gold: 2000,
+      playtimeSeconds: 8_000,
+      mythicPlusScore: 3200,
+    });
+    await seedSnapshot({
+      characterId: privateCharacterId,
+      takenAt: "2026-04-21T12:00:00.000Z",
+      level: 80,
+      spec: "Fire",
+      role: "dps",
+      itemLevel: 710,
+      gold: 1000,
+      playtimeSeconds: 6_000,
+      mythicPlusScore: 3100,
+    });
+    await Promise.all(
+      [publicCharacterId, unlistedCharacterId, privateCharacterId].map((characterId) =>
+        db.update(characters).set({ isBooster: true }).where(eq(characters.id, characterId)),
+      ),
+    );
+
+    const scoreboardResponse = await app.request("http://localhost/api/characters/scoreboard");
+    assert.equal(scoreboardResponse.status, 200);
+    const scoreboardPayload = (await scoreboardResponse.json()) as Array<{
+      characterId: string;
+      visibility: string;
+    }>;
+    assert.deepEqual(
+      scoreboardPayload.map((entry) => entry.characterId),
+      [publicCharacterId],
+    );
+    assert.equal(scoreboardPayload[0]?.visibility, "public");
+
+    const publicPlayerResponse = await app.request(
+      `http://localhost/api/players/${playerId}/characters`,
+    );
+    assert.equal(publicPlayerResponse.status, 200);
+    const publicPlayerPayload = (await publicPlayerResponse.json()) as {
+      characters: Array<{ _id: string; visibility: string }>;
+    };
+    assert.deepEqual(
+      publicPlayerPayload.characters.map((character) => character._id),
+      [publicCharacterId],
+    );
+
+    const boosterExportResponse = await app.request(
+      "http://localhost/api/characters/boosters/export",
+      {
+        headers: authHeaders(auth.token),
+      },
+    );
+    assert.equal(boosterExportResponse.status, 200);
+    const boosterExportPayload = (await boosterExportResponse.json()) as Array<{
+      _id: string;
+      visibility: string;
+    }>;
+    assert.deepEqual(
+      boosterExportPayload.map((character) => character._id),
+      [publicCharacterId],
+    );
+
+    const ownerPlayerResponse = await app.request(
+      `http://localhost/api/players/${playerId}/characters`,
+      {
+        headers: authHeaders(auth.token),
+      },
+    );
+    assert.equal(ownerPlayerResponse.status, 200);
+    const ownerPlayerPayload = (await ownerPlayerResponse.json()) as {
+      characters: Array<{ _id: string; visibility: string }>;
+    };
+    assert.deepEqual(
+      ownerPlayerPayload.characters.map((character) => character._id),
+      [publicCharacterId, unlistedCharacterId, privateCharacterId],
+    );
+
+    const unlistedPageResponse = await app.request(
+      `http://localhost/api/characters/${unlistedCharacterId}/page?timeFrame=all&includeStats=false`,
+    );
+    assert.equal(unlistedPageResponse.status, 200);
+    const unlistedPagePayload = (await unlistedPageResponse.json()) as {
+      header: { character: { _id: string; visibility: string } };
+    };
+    assert.equal(unlistedPagePayload.header.character._id, unlistedCharacterId);
+    assert.equal(unlistedPagePayload.header.character.visibility, "unlisted");
+
+    const privatePublicPageResponse = await app.request(
+      `http://localhost/api/characters/${privateCharacterId}/page?timeFrame=all&includeStats=false`,
+    );
+    assert.equal(privatePublicPageResponse.status, 200);
+    assert.equal(await privatePublicPageResponse.json(), null);
+
+    const privateOwnerPageResponse = await app.request(
+      `http://localhost/api/characters/${privateCharacterId}/page?timeFrame=all&includeStats=false`,
+      {
+        headers: authHeaders(auth.token),
+      },
+    );
+    assert.equal(privateOwnerPageResponse.status, 200);
+    assert.equal(privateOwnerPageResponse.headers.get("Cache-Control"), "private, max-age=0");
+    const privateOwnerPagePayload = (await privateOwnerPageResponse.json()) as {
+      header: { character: { _id: string; visibility: string } };
+    };
+    assert.equal(privateOwnerPagePayload.header.character._id, privateCharacterId);
+    assert.equal(privateOwnerPagePayload.header.character.visibility, "private");
+
+    const latestResponse = await app.request(
+      `http://localhost/api/characters/latest?characterId=${publicCharacterId}&characterId=${unlistedCharacterId}&characterId=${privateCharacterId}`,
+    );
+    assert.equal(latestResponse.status, 200);
+    const latestPayload = (await latestResponse.json()) as Array<{
+      _id: string;
+      visibility: string;
+    }>;
+    assert.deepEqual(
+      latestPayload.map((character) => character._id),
+      [publicCharacterId, unlistedCharacterId],
+    );
+
+    const ownerLatestResponse = await app.request(
+      `http://localhost/api/characters/latest?characterId=${publicCharacterId}&characterId=${unlistedCharacterId}&characterId=${privateCharacterId}`,
+      {
+        headers: authHeaders(auth.token),
+      },
+    );
+    assert.equal(ownerLatestResponse.status, 200);
+    const ownerLatestPayload = (await ownerLatestResponse.json()) as Array<{
+      _id: string;
+      visibility: string;
+    }>;
+    assert.deepEqual(
+      ownerLatestPayload.map((character) => character._id),
+      [publicCharacterId, unlistedCharacterId, privateCharacterId],
+    );
+  });
+
+  it("updates character visibility only for the owner", async () => {
+    const ownerAuth = await seedAuthenticatedUser();
+    const ownerPlayerId = await seedPlayer(ownerAuth.userId);
+    const ownerCharacterId = await seedCharacter({
+      playerId: ownerPlayerId,
+      name: "Visibility",
+      realm: "Tarren Mill",
+      className: "Paladin",
+      race: "Human",
+      faction: "alliance",
+    });
+    const attackerAuth = await seedAuthenticatedUser();
+
+    const ownerResponse = await app.request(
+      `http://localhost/api/characters/${ownerCharacterId}/visibility`,
+      {
+        method: "PATCH",
+        headers: {
+          ...authHeaders(ownerAuth.token),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          visibility: "unlisted",
+        }),
+      },
+    );
+
+    assert.equal(ownerResponse.status, 200);
+    assert.deepEqual(await ownerResponse.json(), {
+      characterId: ownerCharacterId,
+      visibility: "unlisted",
+    });
+
+    const attackerResponse = await app.request(
+      `http://localhost/api/characters/${ownerCharacterId}/visibility`,
+      {
+        method: "PATCH",
+        headers: {
+          ...authHeaders(attackerAuth.token),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          visibility: "private",
+        }),
+      },
+    );
+
+    assert.equal(attackerResponse.status, 404);
+    const character = await db.query.characters.findFirst({
+      where: eq(characters.id, ownerCharacterId),
+    });
+    assert.equal(character?.visibility, "unlisted");
   });
 
   it("queues a resync request and returns cooldown info when rate-limited", async () => {

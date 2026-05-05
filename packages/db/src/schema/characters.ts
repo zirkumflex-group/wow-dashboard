@@ -16,9 +16,11 @@ import { sqlTextArray, sqlTextEnum } from "./sql";
 import {
   characterFactions,
   characterRegions,
+  characterVisibilities,
   nonTradeableSlots,
   type CharacterFaction,
   type CharacterRegion,
+  type CharacterVisibility,
   type LatestSnapshotDetails,
   type LatestSnapshotSummary,
   type MythicPlusRecentRunPreview,
@@ -42,6 +44,7 @@ export const characters = pgTable(
     class: text("class").notNull(),
     race: text("race").notNull(),
     faction: text("faction").$type<CharacterFaction>().notNull(),
+    visibility: text("visibility").$type<CharacterVisibility>().notNull().default("public"),
     isBooster: boolean("is_booster"),
     nonTradeableSlots: text("non_tradeable_slots").array().$type<NonTradeableSlot[]>(),
     latestSnapshot: jsonb("latest_snapshot").$type<LatestSnapshotSummary>(),
@@ -65,6 +68,7 @@ export const characters = pgTable(
     byPlayerIdx: index("characters_player_id_idx").on(table.playerId),
     byPlayerAndRealmIdx: index("characters_player_id_realm_idx").on(table.playerId, table.realm),
     byBoosterIdx: index("characters_is_booster_idx").on(table.isBooster),
+    byVisibilityIdx: index("characters_visibility_idx").on(table.visibility),
     regionCheck: check(
       "characters_region_check",
       sql`${table.region} in (${sqlTextEnum(characterRegions)})`,
@@ -72,6 +76,10 @@ export const characters = pgTable(
     factionCheck: check(
       "characters_faction_check",
       sql`${table.faction} in (${sqlTextEnum(characterFactions)})`,
+    ),
+    visibilityCheck: check(
+      "characters_visibility_check",
+      sql`${table.visibility} in (${sqlTextEnum(characterVisibilities)})`,
     ),
     nonTradeableSlotsCheck: check(
       "characters_non_tradeable_slots_check",

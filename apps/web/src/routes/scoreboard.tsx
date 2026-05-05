@@ -16,7 +16,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@wow-dashboard/ui/components/tabs";
 import { ArrowDown, ArrowUp, ArrowUpDown, Trophy, Users } from "lucide-react";
 import { useEffect, useState } from "react";
-import { createCharacterRouteSlug } from "@wow-dashboard/api-schema";
+import { createCharacterRouteId } from "@wow-dashboard/api-schema";
 import { apiQueryOptions } from "@/lib/api-client";
 import { getClassTextColor } from "../lib/class-colors";
 import { getMythicPlusDungeonMeta, getRaiderIoScoreColor } from "../lib/mythic-plus-static";
@@ -334,7 +334,7 @@ function CharactersTab() {
                         <div className="space-y-0.5">
                           <Link
                             to="/character/$characterId"
-                            params={{ characterId: createCharacterRouteSlug(entry) }}
+                            params={{ characterId: createCharacterRouteId(entry) }}
                             className={`font-semibold hover:underline ${classColor(entry.class)}`}
                           >
                             {entry.name}

@@ -14,6 +14,7 @@ import {
   playerRouteParamsSchema,
   updateCharacterBoosterBodySchema,
   updateCharacterSlotsBodySchema,
+  updateCharacterVisibilityBodySchema,
   updatePlayerDiscordBodySchema,
 } from "@wow-dashboard/api-schema";
 import { players } from "@wow-dashboard/db";
@@ -38,6 +39,7 @@ import {
   requestCharacterResync,
   updateCharacterBoosterStatus,
   updateCharacterNonTradeableSlots,
+  updateCharacterVisibility,
 } from "./services/characters";
 import { updatePlayerDiscordUserId } from "./services/players";
 
@@ -451,6 +453,15 @@ function applyPublicCacheHeaders(c: Context<AppBindings>, maxAgeSeconds = 30) {
   c.header("Cache-Control", `public, max-age=${maxAgeSeconds}, stale-while-revalidate=120`);
 }
 
+function applyPublicOrPrivateReadCacheHeaders(c: Context<AppBindings>, maxAgeSeconds = 30) {
+  if (c.get("user")) {
+    c.header("Cache-Control", "private, max-age=0");
+    return;
+  }
+
+  applyPublicCacheHeaders(c, maxAgeSeconds);
+}
+
 async function readJsonBodyWithByteLimit(c: Context<AppBindings>, maxBytes: number) {
   const contentLengthHeader = c.req.header("content-length");
   if (contentLengthHeader) {
@@ -679,8 +690,10 @@ app.get("/api/characters/latest", async (c) => {
     return c.json({ error: formatValidationError(parsedQuery.error.issues) }, 400);
   }
 
-  applyPublicCacheHeaders(c);
-  return c.json(await readCharactersWithLatestSnapshot(parsedQuery.data.characterId));
+  applyPublicOrPrivateReadCacheHeaders(c);
+  return c.json(
+    await readCharactersWithLatestSnapshot(parsedQuery.data.characterId, c.get("user")?.id ?? null),
+  );
 });
 
 app.get("/api/characters", async (c) => {
@@ -712,12 +725,13 @@ app.get("/api/characters/:id/page", async (c) => {
     return c.json({ error: formatValidationError(parsedQuery.error.issues) }, 400);
   }
 
-  applyPublicCacheHeaders(c);
+  applyPublicOrPrivateReadCacheHeaders(c);
   return c.json(
     await readCharacterPage(
       parsedParams.data.id,
       parsedQuery.data.timeFrame,
       parsedQuery.data.includeStats === true,
+      c.get("user")?.id ?? null,
     ),
   );
 });
@@ -740,12 +754,13 @@ app.get("/api/characters/:id/detail-timeline", async (c) => {
     return c.json({ error: formatValidationError(parsedQuery.error.issues) }, 400);
   }
 
-  applyPublicCacheHeaders(c);
+  applyPublicOrPrivateReadCacheHeaders(c);
   return c.json(
     await readCharacterDetailTimeline(
       parsedParams.data.id,
       parsedQuery.data.timeFrame,
       parsedQuery.data.metric,
+      c.get("user")?.id ?? null,
     ),
   );
 });
@@ -767,9 +782,13 @@ app.get("/api/characters/:id/snapshot-timeline", async (c) => {
     return c.json({ error: formatValidationError(parsedQuery.error.issues) }, 400);
   }
 
-  applyPublicCacheHeaders(c);
+  applyPublicOrPrivateReadCacheHeaders(c);
   return c.json(
-    await readCharacterSnapshotTimeline(parsedParams.data.id, parsedQuery.data.timeFrame),
+    await readCharacterSnapshotTimeline(
+      parsedParams.data.id,
+      parsedQuery.data.timeFrame,
+      c.get("user")?.id ?? null,
+    ),
   );
 });
 
@@ -790,9 +809,13 @@ app.get("/api/characters/:id/mythic-plus", async (c) => {
     return c.json({ error: formatValidationError(parsedQuery.error.issues) }, 400);
   }
 
-  applyPublicCacheHeaders(c);
+  applyPublicOrPrivateReadCacheHeaders(c);
   return c.json(
-    await readCharacterMythicPlus(parsedParams.data.id, parsedQuery.data.includeAllRuns === true),
+    await readCharacterMythicPlus(
+      parsedParams.data.id,
+      parsedQuery.data.includeAllRuns === true,
+      c.get("user")?.id ?? null,
+    ),
   );
 });
 
@@ -878,8 +901,8 @@ app.get("/api/players/:id/characters", async (c) => {
     return c.json({ error: formatValidationError(parsedParams.error.issues) }, 400);
   }
 
-  applyPublicCacheHeaders(c);
-  return c.json(await readPlayerCharacters(parsedParams.data.id));
+  applyPublicOrPrivateReadCacheHeaders(c);
+  return c.json(await readPlayerCharacters(parsedParams.data.id, c.get("user")?.id ?? null));
 });
 
 app.patch("/api/players/:id/discord", async (c) => {
@@ -996,6 +1019,44 @@ app.patch("/api/characters/:id/slots", async (c) => {
     parsedParams.data.id,
     user.id,
     parsedBody.data.nonTradeableSlots,
+  );
+
+  if (!result) {
+    return c.json({ error: "Character not found." }, 404);
+  }
+
+  return c.json(result);
+});
+
+app.patch("/api/characters/:id/visibility", async (c) => {
+  const session = c.get("session");
+  const user = c.get("user");
+
+  if (!session || !user) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const parsedParams = characterRouteParamsSchema.safeParse(c.req.param());
+  if (!parsedParams.success) {
+    return c.json({ error: formatValidationError(parsedParams.error.issues) }, 400);
+  }
+
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "Invalid request body" }, 400);
+  }
+
+  const parsedBody = updateCharacterVisibilityBodySchema.safeParse(body);
+  if (!parsedBody.success) {
+    return c.json({ error: formatValidationError(parsedBody.error.issues) }, 400);
+  }
+
+  const result = await updateCharacterVisibility(
+    parsedParams.data.id,
+    user.id,
+    parsedBody.data.visibility,
   );
 
   if (!result) {

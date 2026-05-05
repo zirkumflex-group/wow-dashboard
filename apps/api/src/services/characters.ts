@@ -19,6 +19,7 @@ import {
   snapshots,
   type CharacterFaction,
   type CharacterRegion,
+  type CharacterVisibility,
   type LatestSnapshotDetails,
   type LatestSnapshotSummary,
   type MythicPlusRecentRunPreview,
@@ -45,6 +46,7 @@ type SnapshotRecord = typeof snapshots.$inferSelect;
 
 const mythicPlusAllRunsResponseLimit = 250;
 const scoreboardResponseLimit = 500;
+const directlyReadableVisibilities: CharacterVisibility[] = ["public", "unlisted"];
 
 type SerializedCharacter = {
   _id: string;
@@ -55,6 +57,7 @@ type SerializedCharacter = {
   class: string;
   race: string;
   faction: CharacterFaction;
+  visibility: CharacterVisibility;
   isBooster: boolean | null;
   nonTradeableSlots: NonTradeableSlot[] | null;
   latestSnapshot: LatestSnapshotSummary | null;
@@ -89,6 +92,7 @@ type ScoreboardCharacterEntry = {
   class: string;
   race: string;
   faction: CharacterFaction;
+  visibility: CharacterVisibility;
   mythicPlusScore: number;
   itemLevel: number;
   gold: number;
@@ -147,6 +151,7 @@ type CharacterBoosterExportEntry = {
   region: CharacterRegion;
   class: string;
   faction: CharacterFaction;
+  visibility: CharacterVisibility;
   isBooster: boolean;
   nonTradeableSlots: NonTradeableSlot[];
   ownerBattleTag: string | null;
@@ -442,6 +447,7 @@ function projectCharacterHeaderCharacter(character: CharacterRecord) {
     class: character.class,
     race: character.race,
     faction: character.faction,
+    visibility: character.visibility,
     isBooster: character.isBooster ?? null,
     nonTradeableSlots: character.nonTradeableSlots ?? null,
   };
@@ -491,6 +497,7 @@ function serializeCharacter(character: CharacterRecord): SerializedCharacter {
     class: character.class,
     race: character.race,
     faction: character.faction,
+    visibility: character.visibility,
     isBooster: character.isBooster ?? null,
     nonTradeableSlots: character.nonTradeableSlots ?? null,
     latestSnapshot: character.latestSnapshot
@@ -528,20 +535,49 @@ async function readLatestSnapshotSummaryForCharacter(
   return snapshot ? serializeSnapshotRow(snapshot) : null;
 }
 
-async function readCharactersForIds(characterIds: string[]): Promise<CharacterRecord[]> {
+function buildDirectlyReadableCharacterWhere(viewerUserId: string | null): SQL {
+  const publicOrUnlistedWhere = inArray(characters.visibility, directlyReadableVisibilities);
+  if (!viewerUserId) {
+    return publicOrUnlistedWhere;
+  }
+
+  return or(publicOrUnlistedWhere, eq(players.userId, viewerUserId)) ?? publicOrUnlistedWhere;
+}
+
+async function readCharactersForIds(
+  characterIds: string[],
+  viewerUserId: string | null,
+): Promise<CharacterRecord[]> {
   if (characterIds.length === 0) {
     return [];
   }
 
-  return await db.select().from(characters).where(inArray(characters.id, characterIds));
+  const rows = await db
+    .select({
+      character: characters,
+    })
+    .from(characters)
+    .innerJoin(players, eq(players.id, characters.playerId))
+    .where(
+      and(inArray(characters.id, characterIds), buildDirectlyReadableCharacterWhere(viewerUserId)),
+    );
+
+  return rows.map((row) => row.character);
 }
 
-async function readCharactersForPlayerId(playerId: string): Promise<CharacterRecord[]> {
-  return await db.select().from(characters).where(eq(characters.playerId, playerId));
+async function readCharactersForPlayerId(
+  playerId: string,
+  options: { listedOnly?: boolean } = {},
+): Promise<CharacterRecord[]> {
+  const whereClause = options.listedOnly
+    ? and(eq(characters.playerId, playerId), eq(characters.visibility, "public"))
+    : eq(characters.playerId, playerId);
+
+  return await db.select().from(characters).where(whereClause);
 }
 
-async function readAllCharacters(): Promise<CharacterRecord[]> {
-  return await db.select().from(characters);
+async function readAllListedCharacters(): Promise<CharacterRecord[]> {
+  return await db.select().from(characters).where(eq(characters.visibility, "public"));
 }
 
 async function attachLatestSnapshots(
@@ -563,8 +599,8 @@ async function readPlayerIdForUser(userId: string): Promise<string | null> {
   return player?.id ?? null;
 }
 
-async function readCharacterById(characterId: string) {
-  return await readCharacterByRouteId(characterId);
+async function readCharacterById(characterId: string, viewerUserId: string | null) {
+  return await readCharacterByRouteId(characterId, viewerUserId);
 }
 
 function normalizeCharacterRouteNameForDb(value: string) {
@@ -588,13 +624,21 @@ function selectMatchingCharacterRouteSlug(
   );
 }
 
-async function readCharacterByRouteId(routeId: string): Promise<CharacterRecord | null> {
+async function readCharacterByRouteId(
+  routeId: string,
+  viewerUserId: string | null,
+): Promise<CharacterRecord | null> {
   if (isCharacterUuid(routeId)) {
-    return (
-      (await db.query.characters.findFirst({
-        where: eq(characters.id, routeId),
-      })) ?? null
-    );
+    const [readableCharacter] = await db
+      .select({
+        character: characters,
+      })
+      .from(characters)
+      .innerJoin(players, eq(players.id, characters.playerId))
+      .where(and(eq(characters.id, routeId), buildDirectlyReadableCharacterWhere(viewerUserId)))
+      .limit(1);
+
+    return readableCharacter?.character ?? null;
   }
 
   const slug = parseCharacterRouteSlug(routeId);
@@ -605,11 +649,20 @@ async function readCharacterByRouteId(routeId: string): Promise<CharacterRecord 
   const candidateCharacters = await db
     .select()
     .from(characters)
-    .where(eq(characters.normalizedName, normalizeCharacterRouteNameForDb(slug.name)))
+    .innerJoin(players, eq(players.id, characters.playerId))
+    .where(
+      and(
+        eq(characters.normalizedName, normalizeCharacterRouteNameForDb(slug.name)),
+        buildDirectlyReadableCharacterWhere(viewerUserId),
+      ),
+    )
     .orderBy(desc(characters.snapshotCount), desc(characters.firstSnapshotAt))
     .limit(100);
 
-  return selectMatchingCharacterRouteSlug(routeId, candidateCharacters);
+  return selectMatchingCharacterRouteSlug(
+    routeId,
+    candidateCharacters.map((row) => row.characters),
+  );
 }
 
 async function readOwnedCharacterByRouteId(
@@ -1066,8 +1119,9 @@ export async function readCharacterPage(
   characterId: string,
   timeFrame: SnapshotTimeFrame,
   includeStats: boolean,
+  viewerUserId: string | null,
 ): Promise<CharacterPageResponse | null> {
-  const character = await readCharacterById(characterId);
+  const character = await readCharacterById(characterId, viewerUserId);
   if (!character) {
     return null;
   }
@@ -1121,8 +1175,9 @@ export async function readCharacterDetailTimeline(
   characterId: string,
   timeFrame: SnapshotTimeFrame,
   metric: CharacterDetailMetric,
+  viewerUserId: string | null,
 ): Promise<CharacterDetailTimelineResponse | null> {
-  const character = await readCharacterById(characterId);
+  const character = await readCharacterById(characterId, viewerUserId);
   if (!character) {
     return null;
   }
@@ -1151,8 +1206,9 @@ export async function readCharacterDetailTimeline(
 export async function readCharacterSnapshotTimeline(
   characterId: string,
   timeFrame: SnapshotTimeFrame,
+  viewerUserId: string | null,
 ): Promise<CharacterSnapshotTimelineResponse | null> {
-  const character = await readCharacterById(characterId);
+  const character = await readCharacterById(characterId, viewerUserId);
   if (!character) {
     return null;
   }
@@ -1174,8 +1230,9 @@ export async function readCharacterSnapshotTimeline(
 export async function readCharacterMythicPlus(
   characterId: string,
   includeAllRuns: boolean,
+  viewerUserId: string | null,
 ): Promise<CharacterMythicPlusResponse | null> {
-  const character = await readCharacterById(characterId);
+  const character = await readCharacterById(characterId, viewerUserId);
   if (!character) {
     return null;
   }
@@ -1185,13 +1242,14 @@ export async function readCharacterMythicPlus(
 
 export async function readCharactersWithLatestSnapshot(
   characterIds: string[],
+  viewerUserId: string | null,
 ): Promise<SerializedPinnedCharacter[]> {
   const uniqueCharacterIds = [...new Set(characterIds)];
   if (uniqueCharacterIds.length === 0) {
     return [];
   }
 
-  const rows = await readCharactersForIds(uniqueCharacterIds);
+  const rows = await readCharactersForIds(uniqueCharacterIds, viewerUserId);
   const rowsById = new Map(rows.map((character) => [character.id, character]));
 
   return await Promise.all(
@@ -1220,6 +1278,7 @@ export async function readCharactersWithLatestSnapshot(
 
 export async function readPlayerCharacters(
   playerId: string,
+  viewerUserId: string | null,
 ): Promise<PlayerCharactersResponse | null> {
   const player = await db.query.players.findFirst({
     where: eq(players.id, playerId),
@@ -1229,9 +1288,15 @@ export async function readPlayerCharacters(
     return null;
   }
 
-  const charactersWithSnapshots = await attachLatestSnapshots(
-    await readCharactersForPlayerId(playerId),
-  );
+  const canReadAllCharacters = viewerUserId !== null && player.userId === viewerUserId;
+  const characterRows = await readCharactersForPlayerId(playerId, {
+    listedOnly: !canReadAllCharacters,
+  });
+  if (!canReadAllCharacters && characterRows.length === 0) {
+    return null;
+  }
+
+  const charactersWithSnapshots = await attachLatestSnapshots(characterRows);
 
   const snappedCharacters = charactersWithSnapshots.filter(
     (
@@ -1331,7 +1396,7 @@ export async function readMyCharactersWithSnapshot(
 }
 
 export async function readScoreboardCharacters(): Promise<ScoreboardCharacterEntry[]> {
-  const charactersWithSnapshots = await attachLatestSnapshots(await readAllCharacters());
+  const charactersWithSnapshots = await attachLatestSnapshots(await readAllListedCharacters());
 
   return charactersWithSnapshots
     .flatMap((character) => {
@@ -1350,6 +1415,7 @@ export async function readScoreboardCharacters(): Promise<ScoreboardCharacterEnt
           class: character.class,
           race: character.race,
           faction: character.faction,
+          visibility: character.visibility,
           mythicPlusScore: snapshot.mythicPlusScore,
           itemLevel: snapshot.itemLevel,
           gold: snapshot.gold,
@@ -1375,7 +1441,7 @@ export async function readScoreboardCharacters(): Promise<ScoreboardCharacterEnt
 }
 
 export async function readPlayerScoreboard(): Promise<PlayerScoreboardEntry[]> {
-  const charactersWithSnapshots = await attachLatestSnapshots(await readAllCharacters());
+  const charactersWithSnapshots = await attachLatestSnapshots(await readAllListedCharacters());
   const snappedCharacters = charactersWithSnapshots.filter(
     (character): character is SerializedDashboardCharacter & { snapshot: LatestSnapshotSummary } =>
       character.snapshot !== null,
@@ -1569,9 +1635,40 @@ export async function updateCharacterNonTradeableSlots(
   };
 }
 
+export async function updateCharacterVisibility(
+  characterId: string,
+  userId: string,
+  visibility: CharacterVisibility,
+): Promise<{ characterId: string; visibility: CharacterVisibility } | null> {
+  const ownedCharacterId = await readOwnedCharacterId(characterId, userId);
+  if (!ownedCharacterId) {
+    return null;
+  }
+
+  await db
+    .update(characters)
+    .set({
+      visibility,
+    })
+    .where(eq(characters.id, ownedCharacterId));
+
+  await insertAuditEvent("character.visibility.updated", {
+    userId,
+    metadata: {
+      characterId: ownedCharacterId,
+      visibility,
+    },
+  });
+
+  return {
+    characterId: ownedCharacterId,
+    visibility,
+  };
+}
+
 export async function readBoosterCharactersForExport(): Promise<CharacterBoosterExportEntry[]> {
   const boosterCharacters = await db.query.characters.findMany({
-    where: eq(characters.isBooster, true),
+    where: and(eq(characters.isBooster, true), eq(characters.visibility, "public")),
   });
 
   const charactersWithSnapshots = await attachLatestSnapshots(boosterCharacters);
@@ -1594,6 +1691,7 @@ export async function readBoosterCharactersForExport(): Promise<CharacterBooster
         region: character.region,
         class: character.class,
         faction: character.faction,
+        visibility: character.visibility,
         isBooster: character.isBooster ?? false,
         nonTradeableSlots: character.nonTradeableSlots ?? [],
         ownerBattleTag: owner?.battleTag ?? null,

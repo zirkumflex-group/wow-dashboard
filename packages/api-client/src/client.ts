@@ -29,6 +29,8 @@ import {
   updateCharacterBoosterResponseSchema,
   updateCharacterSlotsBodySchema,
   updateCharacterSlotsResponseSchema,
+  updateCharacterVisibilityBodySchema,
+  updateCharacterVisibilityResponseSchema,
   updatePlayerDiscordBodySchema,
   updatePlayerDiscordResponseSchema,
   type AddonIngestBody,
@@ -57,6 +59,8 @@ import {
   type UpdateCharacterBoosterResponse,
   type UpdateCharacterSlotsBody,
   type UpdateCharacterSlotsResponse,
+  type UpdateCharacterVisibilityBody,
+  type UpdateCharacterVisibilityResponse,
   type UpdatePlayerDiscordBody,
   type UpdatePlayerDiscordResponse,
 } from "@wow-dashboard/api-schema";
@@ -458,6 +462,21 @@ export function createApiClient(config: ApiClientConfig) {
         input,
         inputSchema: updateCharacterSlotsBodySchema,
         outputSchema: updateCharacterSlotsResponseSchema,
+      });
+    },
+
+    updateCharacterVisibility(
+      characterId: string,
+      input: UpdateCharacterVisibilityBody,
+    ): Promise<UpdateCharacterVisibilityResponse> {
+      const { id } = characterRouteParamsSchema.parse({ id: characterId });
+      const pathId = encodePathSegment(id);
+      return requestJson({
+        method: "PATCH",
+        path: `/characters/${pathId}/visibility`,
+        input,
+        inputSchema: updateCharacterVisibilityBodySchema,
+        outputSchema: updateCharacterVisibilityResponseSchema,
       });
     },
 

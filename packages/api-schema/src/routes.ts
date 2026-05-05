@@ -21,6 +21,7 @@ export const nonTradeableSlotValues = [
 
 export const characterRegionValues = ["us", "eu", "kr", "tw"] as const;
 export const characterFactionValues = ["alliance", "horde"] as const;
+export const characterVisibilityValues = ["public", "unlisted", "private"] as const;
 export const snapshotRoleValues = ["tank", "healer", "dps"] as const;
 export const snapshotTimeFrameValues = [
   "7d",
@@ -58,6 +59,7 @@ export const addonIngestLimits = {
 export const nonTradeableSlotSchema = z.enum(nonTradeableSlotValues);
 export const characterRegionSchema = z.enum(characterRegionValues);
 export const characterFactionSchema = z.enum(characterFactionValues);
+export const characterVisibilitySchema = z.enum(characterVisibilityValues);
 export const snapshotRoleSchema = z.enum(snapshotRoleValues);
 export const snapshotTimeFrameSchema = z.enum(snapshotTimeFrameValues);
 export const characterDetailMetricSchema = z.enum(characterDetailMetricValues);
@@ -265,8 +267,7 @@ export type CharacterRouteSlugParts = {
   realm: string;
 };
 
-const characterRouteUuidPattern =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const characterRouteUuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function formatCharacterRouteSlugPart(value: string) {
   return value
@@ -286,6 +287,16 @@ export function createCharacterRouteSlug(character: CharacterRouteSlugParts) {
   return `${formatCharacterRouteSlugPart(character.name)}-${formatCharacterRouteSlugPart(
     character.realm,
   )}`;
+}
+
+export function createCharacterRouteId(
+  character: CharacterRouteSlugParts & { _id?: string; visibility?: CharacterVisibility },
+) {
+  if (character.visibility !== undefined && character.visibility !== "public" && character._id) {
+    return character._id;
+  }
+
+  return createCharacterRouteSlug(character);
 }
 
 export function parseCharacterRouteSlug(value: string): CharacterRouteSlugParts | null {
@@ -353,6 +364,10 @@ export const updateCharacterSlotsBodySchema = z.object({
   nonTradeableSlots: z.array(nonTradeableSlotSchema),
 });
 
+export const updateCharacterVisibilityBodySchema = z.object({
+  visibility: characterVisibilitySchema,
+});
+
 export const addonIngestBodySchema = z.object({
   characters: z.array(addonCharacterSchema).max(addonIngestLimits.maxCharacters),
 });
@@ -367,6 +382,8 @@ export type CharacterMythicPlusQuery = z.infer<typeof characterMythicPlusQuerySc
 export type UpdatePlayerDiscordBody = z.infer<typeof updatePlayerDiscordBodySchema>;
 export type UpdateCharacterBoosterBody = z.infer<typeof updateCharacterBoosterBodySchema>;
 export type UpdateCharacterSlotsBody = z.infer<typeof updateCharacterSlotsBodySchema>;
+export type UpdateCharacterVisibilityBody = z.infer<typeof updateCharacterVisibilityBodySchema>;
+export type CharacterVisibility = z.infer<typeof characterVisibilitySchema>;
 export type AddonIngestBody = z.infer<typeof addonIngestBodySchema>;
 export type AddonCharacterInput = z.infer<typeof addonCharacterSchema>;
 export type AddonSnapshotInput = z.infer<typeof addonSnapshotSchema>;

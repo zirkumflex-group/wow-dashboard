@@ -24,10 +24,20 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@wow-dashboard/ui/components/dropdown-menu";
-import { ArrowDown, ArrowUp, ChevronUp, Copy, LayoutDashboard, Scale, Settings, Star, Trophy } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowUp,
+  ChevronUp,
+  Copy,
+  LayoutDashboard,
+  Scale,
+  Settings,
+  Star,
+  Trophy,
+} from "lucide-react";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { useMemo } from "react";
-import { createCharacterRouteSlug } from "@wow-dashboard/api-schema";
+import { createCharacterRouteId } from "@wow-dashboard/api-schema";
 
 import { apiQueryOptions } from "@/lib/api-client";
 import { authClient } from "@/lib/auth-client";
@@ -136,8 +146,7 @@ export function AppSidebar() {
     });
   }, [characters, pinnedCharacterIds]);
   const showQuickAccess =
-    pinnedCharacterIds.length > 0 &&
-    (isQuickAccessLoading || quickAccessCharacters.length > 0);
+    pinnedCharacterIds.length > 0 && (isQuickAccessLoading || quickAccessCharacters.length > 0);
 
   return (
     <Sidebar collapsible="icon">
@@ -197,64 +206,68 @@ export function AppSidebar() {
               ) : (
                 <SidebarMenu>
                   {quickAccessCharacters.map((character, index) => {
-                    const characterRouteSlug = createCharacterRouteSlug(character);
+                    const characterRouteId = createCharacterRouteId(character);
                     const isActive =
-                      activeCharacterRouteSegment === characterRouteSlug ||
+                      activeCharacterRouteSegment === characterRouteId ||
                       activeCharacterRouteSegment === character._id;
 
                     return (
-                    <SidebarMenuItem key={character._id}>
-                      <SidebarMenuButton
-                        asChild
-                        isActive={isActive}
-                        tooltip={`${character.name} — ${character.realm}`}
-                        className="h-9 border border-sidebar-border/50 bg-sidebar-accent/20 pr-14 hover:bg-sidebar-accent/35 data-[active=true]:border-sidebar-border data-[active=true]:bg-sidebar-accent/55"
-                      >
-                        <Link
-                          to="/character/$characterId"
-                          params={{ characterId: characterRouteSlug }}
+                      <SidebarMenuItem key={character._id}>
+                        <SidebarMenuButton
+                          asChild
+                          isActive={isActive}
+                          tooltip={`${character.name} — ${character.realm}`}
+                          className="h-9 border border-sidebar-border/50 bg-sidebar-accent/20 pr-14 hover:bg-sidebar-accent/35 data-[active=true]:border-sidebar-border data-[active=true]:bg-sidebar-accent/55"
                         >
-                          <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-sm border border-sidebar-border/70 bg-sidebar text-[10px] font-semibold uppercase">
-                            {character.name[0] ?? "?"}
-                          </div>
-                          <div className="grid min-w-0 flex-1 text-left leading-tight">
-                            <span className={`truncate font-medium ${getClassTextColor(character.class)}`}>
-                              {character.name}
-                            </span>
-                            <span className="truncate text-[11px] text-sidebar-foreground/60">
-                              {character.realm}
-                              {character.snapshot ? ` · ${character.snapshot.itemLevel.toFixed(1)} iLvl` : ""}
-                            </span>
-                          </div>
-                        </Link>
-                      </SidebarMenuButton>
-                      <SidebarMenuAction
-                        showOnHover
-                        className="right-7"
-                        onClick={(event) => {
-                          event.preventDefault();
-                          event.stopPropagation();
-                          movePinnedCharacter(String(character._id), "up");
-                        }}
-                        disabled={index === 0}
-                        aria-label={`Move ${character.name} up`}
-                      >
-                        <ArrowUp />
-                      </SidebarMenuAction>
-                      <SidebarMenuAction
-                        showOnHover
-                        className="right-1"
-                        onClick={(event) => {
-                          event.preventDefault();
-                          event.stopPropagation();
-                          movePinnedCharacter(String(character._id), "down");
-                        }}
-                        disabled={index === quickAccessCharacters.length - 1}
-                        aria-label={`Move ${character.name} down`}
-                      >
-                        <ArrowDown />
-                      </SidebarMenuAction>
-                    </SidebarMenuItem>
+                          <Link
+                            to="/character/$characterId"
+                            params={{ characterId: characterRouteId }}
+                          >
+                            <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-sm border border-sidebar-border/70 bg-sidebar text-[10px] font-semibold uppercase">
+                              {character.name[0] ?? "?"}
+                            </div>
+                            <div className="grid min-w-0 flex-1 text-left leading-tight">
+                              <span
+                                className={`truncate font-medium ${getClassTextColor(character.class)}`}
+                              >
+                                {character.name}
+                              </span>
+                              <span className="truncate text-[11px] text-sidebar-foreground/60">
+                                {character.realm}
+                                {character.snapshot
+                                  ? ` · ${character.snapshot.itemLevel.toFixed(1)} iLvl`
+                                  : ""}
+                              </span>
+                            </div>
+                          </Link>
+                        </SidebarMenuButton>
+                        <SidebarMenuAction
+                          showOnHover
+                          className="right-7"
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            movePinnedCharacter(String(character._id), "up");
+                          }}
+                          disabled={index === 0}
+                          aria-label={`Move ${character.name} up`}
+                        >
+                          <ArrowUp />
+                        </SidebarMenuAction>
+                        <SidebarMenuAction
+                          showOnHover
+                          className="right-1"
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            movePinnedCharacter(String(character._id), "down");
+                          }}
+                          disabled={index === quickAccessCharacters.length - 1}
+                          aria-label={`Move ${character.name} down`}
+                        >
+                          <ArrowDown />
+                        </SidebarMenuAction>
+                      </SidebarMenuItem>
                     );
                   })}
                 </SidebarMenu>
@@ -269,11 +282,7 @@ export function AppSidebar() {
             <SidebarMenu>
               {bottomNavItems.map((item) => (
                 <SidebarMenuItem key={item.to}>
-                  <SidebarMenuButton
-                    asChild
-                    isActive={pathname === item.to}
-                    tooltip={item.label}
-                  >
+                  <SidebarMenuButton asChild isActive={pathname === item.to} tooltip={item.label}>
                     <Link to={item.to}>
                       <item.icon />
                       <span>{item.label}</span>
@@ -286,11 +295,7 @@ export function AppSidebar() {
         </SidebarGroup>
       </SidebarContent>
 
-      <SidebarFooter>
-        {session.data ? (
-          <NavUser />
-        ) : null}
-      </SidebarFooter>
+      <SidebarFooter>{session.data ? <NavUser /> : null}</SidebarFooter>
 
       <SidebarRail />
     </Sidebar>

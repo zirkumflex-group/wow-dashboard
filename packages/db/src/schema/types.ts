@@ -4,6 +4,9 @@ export type CharacterRegion = (typeof characterRegions)[number];
 export const characterFactions = ["alliance", "horde"] as const;
 export type CharacterFaction = (typeof characterFactions)[number];
 
+export const characterVisibilities = ["public", "unlisted", "private"] as const;
+export type CharacterVisibility = (typeof characterVisibilities)[number];
+
 export const snapshotRoles = ["tank", "healer", "dps"] as const;
 export type SnapshotRole = (typeof snapshotRoles)[number];
 
