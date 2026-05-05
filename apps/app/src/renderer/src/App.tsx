@@ -240,6 +240,14 @@ function formatLastSyncTime(lastSyncedAt: number) {
   return formatDateTime(lastSyncedAt * 1000);
 }
 
+function isBattleNetReconnectRequired(message: string): boolean {
+  return (
+    message.includes("Battle.net character verification is required") ||
+    message.includes("Reconnect Battle.net") ||
+    message.includes("is not available on your Battle.net account")
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Components
 // ---------------------------------------------------------------------------
@@ -331,7 +339,13 @@ function SwitchRow({ checked, onChange, label }: Toggle) {
   );
 }
 
-function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
+function Dashboard({
+  onLogout,
+  onReconnectBattleNet,
+}: {
+  onLogout: () => Promise<void>;
+  onReconnectBattleNet: () => Promise<void>;
+}) {
   const queryClient = useQueryClient();
   const characters = useQuery(apiQueryOptions.myCharacters()).data;
 
@@ -363,6 +377,7 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
   } | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadWarn, setUploadWarn] = useState<string | null>(null);
+  const [uploadNeedsBattleNetReconnect, setUploadNeedsBattleNetReconnect] = useState(false);
 
   const syncingRef = useRef(false);
   const lastSyncedAtRef = useRef(0);
@@ -412,15 +427,23 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
     async (message: string) => {
       setUploadWarn(null);
       if (message.includes("401")) {
+        setUploadNeedsBattleNetReconnect(false);
         await _clearToken();
         queryClient.clear();
         setUploadError("Session expired - please sign in again.");
         return;
       }
 
-      if (message.includes("RateLimited") || message.includes("Too many")) {
+      if (isBattleNetReconnectRequired(message)) {
+        setUploadNeedsBattleNetReconnect(true);
+        setUploadError(
+          "Battle.net verification needs to be refreshed before addon data can upload.",
+        );
+      } else if (message.includes("RateLimited") || message.includes("Too many")) {
+        setUploadNeedsBattleNetReconnect(false);
         setUploadError("Too many requests - please wait a moment before trying again.");
       } else {
+        setUploadNeedsBattleNetReconnect(false);
         setUploadError(`Upload failed: ${message}`);
       }
     },
@@ -434,6 +457,7 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
       lastSyncedAtRef.current = result.lastSyncedAt;
       setUploadError(null);
       setUploadWarn(result.status === "warning" ? result.message : null);
+      setUploadNeedsBattleNetReconnect(false);
       void queryClient.invalidateQueries({
         queryKey: apiQueryKeys.myCharacters(),
       });
@@ -688,6 +712,7 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
       setLastUploadResult(null);
       setUploadError(null);
       setUploadWarn(null);
+      setUploadNeedsBattleNetReconnect(false);
       setAddonActionError(null);
       setPendingUploadCounts(null);
       const installed = await window.electron.wow.checkAddonInstalled();
@@ -701,12 +726,33 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
     setSyncing(true);
     setUploadError(null);
     setUploadWarn(null);
+    setUploadNeedsBattleNetReconnect(false);
     try {
       const result = await window.electron.wow.syncAddonData();
       applyAddonSyncResult(result);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       await handleSyncError(msg);
+    } finally {
+      syncingRef.current = false;
+      setSyncing(false);
+    }
+  }
+
+  async function handleReconnectBattleNet() {
+    if (syncingRef.current) return;
+    syncingRef.current = true;
+    setSyncing(true);
+    setUploadError(null);
+    setUploadWarn(null);
+    setUploadNeedsBattleNetReconnect(false);
+    try {
+      await onReconnectBattleNet();
+      const result = await window.electron.wow.syncAddonData();
+      applyAddonSyncResult(result);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await handleSyncError(message);
     } finally {
       syncingRef.current = false;
       setSyncing(false);
@@ -979,8 +1025,17 @@ function Dashboard({ onLogout }: { onLogout: () => Promise<void> }) {
 
           {/* Status area */}
           {uploadError ? (
-            <div className="rounded border border-red-700 bg-red-950 px-3 py-2 text-sm text-red-400">
-              {uploadError}
+            <div className="space-y-3 rounded border border-red-700 bg-red-950 px-3 py-2 text-sm text-red-400">
+              <p>{uploadError}</p>
+              {uploadNeedsBattleNetReconnect && (
+                <button
+                  onClick={handleReconnectBattleNet}
+                  disabled={syncing}
+                  className="rounded bg-red-400 px-3 py-1.5 text-sm font-medium text-red-950 hover:bg-red-300 disabled:opacity-50"
+                >
+                  {syncing ? "Reconnecting..." : "Reconnect Battle.net"}
+                </button>
+              )}
             </div>
           ) : uploadWarn ? (
             <div className="rounded border border-yellow-700 bg-yellow-950 px-3 py-2 text-sm text-yellow-400">
@@ -1110,7 +1165,7 @@ export default function App() {
       {authState.isLoading ? (
         <LoadingScreen />
       ) : authState.isAuthenticated ? (
-        <Dashboard onLogout={handleLogout} />
+        <Dashboard onLogout={handleLogout} onReconnectBattleNet={handleLogin} />
       ) : (
         <LoginScreen onLogin={handleLogin} />
       )}

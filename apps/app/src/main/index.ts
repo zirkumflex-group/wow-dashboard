@@ -75,6 +75,7 @@ const ADDON_UPLOAD_CHARACTERS_PER_BATCH = 20;
 const ADDON_UPLOAD_SNAPSHOTS_PER_CHARACTER = 100;
 const ADDON_UPLOAD_RUNS_PER_CHARACTER = 150;
 const ADDON_UPLOAD_MAX_BATCH_BODY_BYTES = 768 * 1024;
+const MAX_MYTHIC_PLUS_RUN_MEMBERS = 5;
 
 if (!app.isPackaged) {
   app.setName("WoW Dashboard Dev");
@@ -1354,6 +1355,9 @@ function normalizeMythicPlusRunMembers(value: unknown): MythicPlusRunMemberData[
 
     seenMembers.add(memberKey);
     members.push(member);
+    if (members.length >= MAX_MYTHIC_PLUS_RUN_MEMBERS) {
+      break;
+    }
   }
 
   return members.length > 0 ? members : undefined;
@@ -1437,6 +1441,9 @@ function mergeMythicPlusRunMembers(
     for (const member of members ?? []) {
       const mergedIndex = findMergeableRunMemberIndex(mergedMembers, member);
       if (mergedIndex === undefined) {
+        if (mergedMembers.length >= MAX_MYTHIC_PLUS_RUN_MEMBERS) {
+          continue;
+        }
         mergedMembers.push(member);
         continue;
       }
