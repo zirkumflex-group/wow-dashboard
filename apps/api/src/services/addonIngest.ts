@@ -119,6 +119,7 @@ type BattleNetProfileCharacter = {
   faction?: {
     type?: unknown;
   };
+  level?: unknown;
 };
 
 type BattleNetWowProfileResponse = {
@@ -130,10 +131,12 @@ type BattleNetWowProfileResponse = {
 type VerifiedBattleNetCharacter = {
   name: string;
   realm: string;
+  realmSlug: string | null;
   region: CharacterRegion;
   class: string;
   race: string;
   faction: CharacterFaction;
+  level: number | null;
 };
 
 const MAX_FUTURE_MS = 5 * 60 * 1000;
@@ -171,16 +174,26 @@ function normalizeBattleNetFaction(value: unknown): CharacterFaction | null {
   return normalized === "alliance" || normalized === "horde" ? normalized : null;
 }
 
+function readBattleNetCharacterLevel(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return null;
+  }
+
+  const level = Math.floor(value);
+  return level >= 1 && level <= 100 ? level : null;
+}
+
 function readBattleNetProfileCharacter(
   region: CharacterRegion,
   character: BattleNetProfileCharacter,
 ): VerifiedBattleNetCharacter | null {
   const name = readNonEmptyString(character.name);
-  const realm =
-    readNonEmptyString(character.realm?.name) ?? readNonEmptyString(character.realm?.slug);
+  const realmSlug = readNonEmptyString(character.realm?.slug);
+  const realm = readNonEmptyString(character.realm?.name) ?? realmSlug;
   const className = readNonEmptyString(character.playable_class?.name);
   const race = readNonEmptyString(character.playable_race?.name);
   const faction = normalizeBattleNetFaction(character.faction?.type);
+  const level = readBattleNetCharacterLevel(character.level);
 
   if (!name || !realm || !className || !race || !faction) {
     return null;
@@ -189,10 +202,12 @@ function readBattleNetProfileCharacter(
   return {
     name,
     realm,
+    realmSlug,
     region,
     class: className,
     race,
     faction,
+    level,
   };
 }
 
@@ -398,6 +413,26 @@ function snapshotFieldsToInsert(characterId: string, snapshot: SnapshotFields) {
     majorFactions: snapshot.majorFactions ?? null,
     clientInfo: snapshot.clientInfo ?? null,
     legacyConvexId: null,
+  };
+}
+
+function battleNetVerificationFields(
+  verifiedCharacter: VerifiedBattleNetCharacter,
+  verifiedAt: Date,
+) {
+  return {
+    name: verifiedCharacter.name,
+    realm: verifiedCharacter.realm,
+    region: verifiedCharacter.region,
+    class: verifiedCharacter.class,
+    race: verifiedCharacter.race,
+    faction: verifiedCharacter.faction,
+    battleNetVerificationStatus: "verified" as const,
+    battleNetVerifiedAt: verifiedAt,
+    battleNetLastCheckedAt: verifiedAt,
+    battleNetRealmSlug: verifiedCharacter.realmSlug,
+    battleNetLevel: verifiedCharacter.level,
+    battleNetVerificationError: null,
   };
 }
 
@@ -1170,18 +1205,15 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
 
       let characterId = existingCharacter?.id ?? null;
       let currentCharacterRow = existingCharacter ?? null;
+      const verifiedAt = new Date(now);
+      const verifiedCharacterPatch = battleNetVerificationFields(verifiedCharacter, verifiedAt);
 
       if (!existingCharacter) {
         const [insertedCharacter] = await tx
           .insert(characters)
           .values({
             playerId: player.id,
-            name: verifiedCharacter.name,
-            realm: verifiedCharacter.realm,
-            region: verifiedCharacter.region,
-            class: verifiedCharacter.class,
-            race: verifiedCharacter.race,
-            faction: verifiedCharacter.faction,
+            ...verifiedCharacterPatch,
             legacyConvexId: null,
           })
           .onConflictDoUpdate({
@@ -1191,13 +1223,7 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
               characters.normalizedRealm,
               characters.normalizedName,
             ],
-            set: {
-              name: verifiedCharacter.name,
-              realm: verifiedCharacter.realm,
-              class: verifiedCharacter.class,
-              race: verifiedCharacter.race,
-              faction: verifiedCharacter.faction,
-            },
+            set: verifiedCharacterPatch,
           })
           .returning();
 
@@ -1207,14 +1233,7 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
       } else {
         await tx
           .update(characters)
-          .set({
-            name: verifiedCharacter.name,
-            realm: verifiedCharacter.realm,
-            region: verifiedCharacter.region,
-            class: verifiedCharacter.class,
-            race: verifiedCharacter.race,
-            faction: verifiedCharacter.faction,
-          })
+          .set(verifiedCharacterPatch)
           .where(eq(characters.id, existingCharacter.id));
       }
 

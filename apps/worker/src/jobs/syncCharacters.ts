@@ -23,6 +23,35 @@ interface BattleNetWowProfileResponse {
 const battleNetRegions = ["us", "eu", "kr", "tw"] as const;
 type BattleNetRegion = (typeof battleNetRegions)[number];
 
+function battleNetVerificationFields(
+  character: {
+    name: string;
+    realm: string;
+    realmSlug: string | null;
+    class: string;
+    race: string;
+    faction: "alliance" | "horde";
+    level: number | null;
+  },
+  region: BattleNetRegion,
+  verifiedAt: Date,
+) {
+  return {
+    name: character.name,
+    realm: character.realm,
+    region,
+    class: character.class,
+    race: character.race,
+    faction: character.faction,
+    battleNetVerificationStatus: "verified" as const,
+    battleNetVerifiedAt: verifiedAt,
+    battleNetLastCheckedAt: verifiedAt,
+    battleNetRealmSlug: character.realmSlug,
+    battleNetLevel: character.level,
+    battleNetVerificationError: null,
+  };
+}
+
 async function fetchCharactersForRegion(
   accessToken: string,
   region: BattleNetRegion,
@@ -90,14 +119,22 @@ export async function syncCharacters(payload: SyncCharactersJobPayload) {
       .map((character) => ({
         name: character.name,
         realm: character.realm.name,
+        realmSlug: character.realm.slug || null,
         class: character.playable_class.name,
         race: character.playable_race.name,
         faction: character.faction.type.toLowerCase() as "alliance" | "horde",
+        level: character.level,
       }));
 
     scanned += filteredCharacters.length;
 
     for (const character of filteredCharacters) {
+      const verifiedAt = new Date();
+      const verifiedCharacterPatch = battleNetVerificationFields(
+        character,
+        result.region,
+        verifiedAt,
+      );
       const existingCharacter = await db.query.characters.findFirst({
         where: and(
           eq(characters.playerId, player.id),
@@ -112,12 +149,7 @@ export async function syncCharacters(payload: SyncCharactersJobPayload) {
           .insert(characters)
           .values({
             playerId: player.id,
-            name: character.name,
-            realm: character.realm,
-            region: result.region,
-            class: character.class,
-            race: character.race,
-            faction: character.faction,
+            ...verifiedCharacterPatch,
           })
           .onConflictDoUpdate({
             target: [
@@ -126,13 +158,7 @@ export async function syncCharacters(payload: SyncCharactersJobPayload) {
               characters.normalizedRealm,
               characters.normalizedName,
             ],
-            set: {
-              name: character.name,
-              realm: character.realm,
-              class: character.class,
-              race: character.race,
-              faction: character.faction,
-            },
+            set: verifiedCharacterPatch,
           });
         inserted += 1;
         continue;
@@ -140,13 +166,7 @@ export async function syncCharacters(payload: SyncCharactersJobPayload) {
 
       await db
         .update(characters)
-        .set({
-          name: character.name,
-          realm: character.realm,
-          class: character.class,
-          race: character.race,
-          faction: character.faction,
-        })
+        .set(verifiedCharacterPatch)
         .where(eq(characters.id, existingCharacter.id));
       updated += 1;
     }

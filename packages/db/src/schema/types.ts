@@ -7,6 +7,14 @@ export type CharacterFaction = (typeof characterFactions)[number];
 export const characterVisibilities = ["public", "unlisted", "private"] as const;
 export type CharacterVisibility = (typeof characterVisibilities)[number];
 
+export const battleNetVerificationStatuses = [
+  "unverified",
+  "verified",
+  "not_found",
+  "error",
+] as const;
+export type BattleNetVerificationStatus = (typeof battleNetVerificationStatuses)[number];
+
 export const snapshotRoles = ["tank", "healer", "dps"] as const;
 export type SnapshotRole = (typeof snapshotRoles)[number];
 

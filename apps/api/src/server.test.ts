@@ -1931,6 +1931,11 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     });
     assert.ok(character);
     assert.equal(character.region, "eu");
+    assert.equal(character.battleNetVerificationStatus, "verified");
+    assert.equal(character.battleNetRealmSlug, "tarren-mill");
+    assert.equal(character.battleNetLevel, 80);
+    assert.ok(character.battleNetVerifiedAt);
+    assert.ok(character.battleNetLastCheckedAt);
     assert.equal(character.snapshotCount, 1);
     assert.equal(character.mythicPlusRunCount, 1);
     assert.equal(character.firstSnapshotAt?.toISOString(), "2026-04-21T12:00:00.000Z");
