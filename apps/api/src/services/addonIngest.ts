@@ -1,5 +1,10 @@
 import { and, eq, sql } from "drizzle-orm";
-import { mythicPlusPreviewRunLimit, type AddonCharacterInput } from "@wow-dashboard/api-schema";
+import {
+  mythicPlusPreviewRunLimit,
+  type AddonCharacterInput,
+  type AddonMythicPlusRunInput,
+  type AddonSnapshotInput,
+} from "@wow-dashboard/api-schema";
 import {
   characterDailySnapshots,
   characters,
@@ -7,6 +12,7 @@ import {
   players,
   snapshotSpecs,
   snapshots,
+  type AddonSignatureState,
   type CharacterFaction,
   type CharacterRegion,
   type Currencies,
@@ -52,6 +58,15 @@ type SnapshotRow = typeof snapshots.$inferSelect;
 type CharacterDailySnapshotRow = typeof characterDailySnapshots.$inferSelect;
 type MythicPlusRunRow = typeof mythicPlusRuns.$inferSelect;
 
+type AddonSignatureFields = {
+  addonSignatureState: AddonSignatureState;
+  addonSignatureInstallId?: string;
+  addonSignatureAlgorithm?: string;
+  addonSignaturePayloadHash?: string;
+  addonSignature?: string;
+  addonSignatureSignedAt?: number;
+};
+
 type SnapshotFields = {
   takenAt: number;
   level: number;
@@ -71,9 +86,10 @@ type SnapshotFields = {
   weeklyRewards?: SnapshotWeeklyRewards;
   majorFactions?: SnapshotMajorFactions;
   clientInfo?: SnapshotClientInfo;
-};
+} & AddonSignatureFields;
 
-type MythicPlusRunInputDocument = MythicPlusRunDocument;
+type MythicPlusRunInputDocument = MythicPlusRunDocument & AddonSignatureFields;
+type StoredMythicPlusRunDocument = MythicPlusRunDocument & AddonSignatureFields;
 type MythicPlusRunPatch = {
   fingerprint?: string;
   attemptId?: string;
@@ -95,13 +111,13 @@ type MythicPlusRunPatch = {
   abandonReason?: MythicPlusRunDocument["abandonReason"];
   thisWeek?: boolean;
   members?: MythicPlusRunDocument["members"];
-};
+} & Partial<AddonSignatureFields>;
 
 type ExistingRunLookups = {
-  byAttemptId: Map<string, MythicPlusRunDocument>;
-  byCanonicalKey: Map<string, MythicPlusRunDocument>;
-  byCompatibilityAlias: Map<string, MythicPlusRunDocument>;
-  byId: Map<string, MythicPlusRunDocument>;
+  byAttemptId: Map<string, StoredMythicPlusRunDocument>;
+  byCanonicalKey: Map<string, StoredMythicPlusRunDocument>;
+  byCompatibilityAlias: Map<string, StoredMythicPlusRunDocument>;
+  byId: Map<string, StoredMythicPlusRunDocument>;
 };
 
 type BattleNetProfileCharacter = {
@@ -343,6 +359,142 @@ function fromUnixSeconds(value: number): Date {
   return new Date(value * 1000);
 }
 
+const ADDON_SIGNATURE_ALGORITHM = "wd-djb2-32-v1";
+const ADDON_SIGNATURE_SEPARATOR = "\x1f";
+
+function dashboardHash(value: string) {
+  let hash = 5381;
+  for (const byte of Buffer.from(value, "utf8")) {
+    hash = (hash * 33 + byte) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+}
+
+function canonicalText(value: unknown) {
+  if (value === null || value === undefined) {
+    return "";
+  }
+
+  return String(value).replaceAll("\\", "\\\\").replaceAll("|", "\\p").replaceAll("=", "\\e");
+}
+
+function canonicalNumber(value: unknown) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "";
+  }
+  if (Number.isInteger(value)) {
+    return String(value);
+  }
+  return value.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+function canonicalBoolean(value: unknown) {
+  if (value === true) return "true";
+  if (value === false) return "false";
+  return "";
+}
+
+function buildAddonCanonicalPayload(
+  fields: Array<[key: string, value: unknown, kind?: "number" | "boolean"]>,
+) {
+  return fields
+    .map(([key, value, kind]) => {
+      const canonicalValue =
+        kind === "number"
+          ? canonicalNumber(value)
+          : kind === "boolean"
+            ? canonicalBoolean(value)
+            : canonicalText(value);
+      return `${canonicalText(key)}=${canonicalValue}`;
+    })
+    .join("|");
+}
+
+function verifyAddonSignature(
+  signatureInput: AddonSnapshotInput["addonSignature"] | AddonMythicPlusRunInput["addonSignature"],
+  canonicalPayload: string,
+): AddonSignatureFields {
+  if (!signatureInput) {
+    return { addonSignatureState: "unsigned" };
+  }
+
+  const payloadHash = dashboardHash(canonicalPayload);
+  const signature = dashboardHash(
+    `${signatureInput.secret}${ADDON_SIGNATURE_SEPARATOR}${canonicalPayload}`,
+  );
+  const addonSignatureState =
+    signatureInput.algorithm === ADDON_SIGNATURE_ALGORITHM &&
+    signatureInput.payloadHash === payloadHash &&
+    signatureInput.signature === signature
+      ? "valid"
+      : "invalid";
+
+  return {
+    addonSignatureState,
+    addonSignatureInstallId: signatureInput.installId,
+    addonSignatureAlgorithm: signatureInput.algorithm,
+    addonSignaturePayloadHash: signatureInput.payloadHash,
+    addonSignature: signatureInput.signature,
+    ...(signatureInput.signedAt !== undefined
+      ? { addonSignatureSignedAt: signatureInput.signedAt }
+      : {}),
+  };
+}
+
+function verifySnapshotAddonSignature(
+  charData: AddonCharacterInput,
+  snapshotInput: AddonSnapshotInput,
+): AddonSignatureFields {
+  const payload = buildAddonCanonicalPayload([
+    ["kind", "snapshot"],
+    ["region", charData.region],
+    ["name", charData.name],
+    ["realm", charData.realm],
+    ["takenAt", snapshotInput.takenAt, "number"],
+    ["level", snapshotInput.level, "number"],
+    ["spec", snapshotInput.spec],
+    ["role", snapshotInput.role],
+    ["itemLevel", snapshotInput.itemLevel, "number"],
+    ["gold", snapshotInput.gold, "number"],
+    ["playtimeSeconds", snapshotInput.playtimeSeconds, "number"],
+    ["playtimeThisLevelSeconds", snapshotInput.playtimeThisLevelSeconds, "number"],
+    ["mythicPlusScore", snapshotInput.mythicPlusScore, "number"],
+    ["seasonID", snapshotInput.seasonID, "number"],
+  ]);
+  return verifyAddonSignature(snapshotInput.addonSignature, payload);
+}
+
+function verifyMythicPlusAddonSignature(
+  charData: AddonCharacterInput,
+  runInput: AddonMythicPlusRunInput,
+): AddonSignatureFields {
+  const payload = buildAddonCanonicalPayload([
+    ["kind", "mythicPlusRun"],
+    ["region", charData.region],
+    ["name", charData.name],
+    ["realm", charData.realm],
+    ["fingerprint", runInput.fingerprint],
+    ["attemptId", runInput.attemptId],
+    ["observedAt", runInput.observedAt, "number"],
+    ["seasonID", runInput.seasonID, "number"],
+    ["mapChallengeModeID", runInput.mapChallengeModeID, "number"],
+    ["mapName", runInput.mapName],
+    ["level", runInput.level, "number"],
+    ["status", runInput.status],
+    ["completed", runInput.completed, "boolean"],
+    ["completedInTime", runInput.completedInTime, "boolean"],
+    ["durationMs", runInput.durationMs, "number"],
+    ["runScore", runInput.runScore, "number"],
+    ["startDate", runInput.startDate, "number"],
+    ["completedAt", runInput.completedAt, "number"],
+    ["endedAt", runInput.endedAt, "number"],
+    ["abandonedAt", runInput.abandonedAt, "number"],
+    ["abandonReason", runInput.abandonReason],
+    ["thisWeek", runInput.thisWeek, "boolean"],
+  ]);
+  return verifyAddonSignature(runInput.addonSignature, payload);
+}
+
 function toSnapshotFields(snapshot: SnapshotFields): SnapshotFields {
   return {
     takenAt: snapshot.takenAt,
@@ -363,6 +515,12 @@ function toSnapshotFields(snapshot: SnapshotFields): SnapshotFields {
     weeklyRewards: snapshot.weeklyRewards,
     majorFactions: snapshot.majorFactions,
     clientInfo: snapshot.clientInfo,
+    addonSignatureState: snapshot.addonSignatureState,
+    addonSignatureInstallId: snapshot.addonSignatureInstallId,
+    addonSignatureAlgorithm: snapshot.addonSignatureAlgorithm,
+    addonSignaturePayloadHash: snapshot.addonSignaturePayloadHash,
+    addonSignature: snapshot.addonSignature,
+    addonSignatureSignedAt: snapshot.addonSignatureSignedAt,
   };
 }
 
@@ -388,6 +546,20 @@ function snapshotRowToFields(snapshot: SnapshotRow): SnapshotFields {
     ...(snapshot.weeklyRewards ? { weeklyRewards: snapshot.weeklyRewards } : {}),
     ...(snapshot.majorFactions ? { majorFactions: snapshot.majorFactions } : {}),
     ...(snapshot.clientInfo ? { clientInfo: snapshot.clientInfo } : {}),
+    addonSignatureState: snapshot.addonSignatureState,
+    ...(snapshot.addonSignatureInstallId
+      ? { addonSignatureInstallId: snapshot.addonSignatureInstallId }
+      : {}),
+    ...(snapshot.addonSignatureAlgorithm
+      ? { addonSignatureAlgorithm: snapshot.addonSignatureAlgorithm }
+      : {}),
+    ...(snapshot.addonSignaturePayloadHash
+      ? { addonSignaturePayloadHash: snapshot.addonSignaturePayloadHash }
+      : {}),
+    ...(snapshot.addonSignature ? { addonSignature: snapshot.addonSignature } : {}),
+    ...(snapshot.addonSignatureSignedAt
+      ? { addonSignatureSignedAt: toUnixSeconds(snapshot.addonSignatureSignedAt)! }
+      : {}),
   };
 }
 
@@ -412,6 +584,15 @@ function snapshotFieldsToInsert(characterId: string, snapshot: SnapshotFields) {
     weeklyRewards: snapshot.weeklyRewards ?? null,
     majorFactions: snapshot.majorFactions ?? null,
     clientInfo: snapshot.clientInfo ?? null,
+    addonSignatureState: snapshot.addonSignatureState,
+    addonSignatureInstallId: snapshot.addonSignatureInstallId ?? null,
+    addonSignatureAlgorithm: snapshot.addonSignatureAlgorithm ?? null,
+    addonSignaturePayloadHash: snapshot.addonSignaturePayloadHash ?? null,
+    addonSignature: snapshot.addonSignature ?? null,
+    addonSignatureSignedAt:
+      snapshot.addonSignatureSignedAt !== undefined
+        ? fromUnixSeconds(snapshot.addonSignatureSignedAt)
+        : null,
     legacyConvexId: null,
   };
 }
@@ -436,12 +617,30 @@ function battleNetVerificationFields(
   };
 }
 
+function getAddonSignatureStateRank(state: AddonSignatureState) {
+  if (state === "valid") return 2;
+  if (state === "invalid") return 1;
+  return 0;
+}
+
+function mergeAddonSignatureFields(
+  existing: AddonSignatureFields,
+  incoming: AddonSignatureFields,
+): AddonSignatureFields {
+  return getAddonSignatureStateRank(incoming.addonSignatureState) >
+    getAddonSignatureStateRank(existing.addonSignatureState)
+    ? incoming
+    : existing;
+}
+
 function mergeSnapshotFields(
   existingSnapshot: SnapshotFields,
   incomingSnapshot: SnapshotFields,
 ): SnapshotFields {
+  const addonSignatureFields = mergeAddonSignatureFields(existingSnapshot, incomingSnapshot);
   return {
     ...incomingSnapshot,
+    ...addonSignatureFields,
     playtimeSeconds:
       incomingSnapshot.playtimeSeconds > 0
         ? incomingSnapshot.playtimeSeconds
@@ -802,6 +1001,7 @@ function mergeMythicPlusRunData(
     abandonReason: pickDefinedValue(preferredRun.abandonReason, fallbackRun.abandonReason),
     thisWeek: pickDefinedValue(preferredRun.thisWeek, fallbackRun.thisWeek),
     members: mergeMythicPlusRunMembers(currentRun.members, candidateRun.members),
+    ...mergeAddonSignatureFields(preferredRun, fallbackRun),
   };
 
   const canonicalFingerprint = buildCanonicalMythicPlusRunFingerprint(merged);
@@ -827,7 +1027,7 @@ function mergeMythicPlusRunData(
 }
 
 function buildMythicPlusRunPatch(
-  existingRun: MythicPlusRunDocument,
+  existingRun: StoredMythicPlusRunDocument,
   mergedRun: MythicPlusRunInputDocument,
 ): MythicPlusRunPatch {
   const patch: MythicPlusRunPatch = {};
@@ -894,13 +1094,47 @@ function buildMythicPlusRunPatch(
   if (JSON.stringify(existingRun.members ?? []) !== JSON.stringify(mergedRun.members ?? [])) {
     patch.members = mergedRun.members;
   }
+  const signatureFields = mergeAddonSignatureFields(existingRun, mergedRun);
+  if (signatureFields.addonSignatureState !== existingRun.addonSignatureState) {
+    patch.addonSignatureState = signatureFields.addonSignatureState;
+  }
+  if (
+    signatureFields.addonSignatureInstallId !== undefined &&
+    signatureFields.addonSignatureInstallId !== existingRun.addonSignatureInstallId
+  ) {
+    patch.addonSignatureInstallId = signatureFields.addonSignatureInstallId;
+  }
+  if (
+    signatureFields.addonSignatureAlgorithm !== undefined &&
+    signatureFields.addonSignatureAlgorithm !== existingRun.addonSignatureAlgorithm
+  ) {
+    patch.addonSignatureAlgorithm = signatureFields.addonSignatureAlgorithm;
+  }
+  if (
+    signatureFields.addonSignaturePayloadHash !== undefined &&
+    signatureFields.addonSignaturePayloadHash !== existingRun.addonSignaturePayloadHash
+  ) {
+    patch.addonSignaturePayloadHash = signatureFields.addonSignaturePayloadHash;
+  }
+  if (
+    signatureFields.addonSignature !== undefined &&
+    signatureFields.addonSignature !== existingRun.addonSignature
+  ) {
+    patch.addonSignature = signatureFields.addonSignature;
+  }
+  if (
+    signatureFields.addonSignatureSignedAt !== undefined &&
+    signatureFields.addonSignatureSignedAt !== existingRun.addonSignatureSignedAt
+  ) {
+    patch.addonSignatureSignedAt = signatureFields.addonSignatureSignedAt;
+  }
   return patch;
 }
 
 function setPreferredRunLookup(
-  map: Map<string, MythicPlusRunDocument>,
+  map: Map<string, StoredMythicPlusRunDocument>,
   key: string | undefined | null,
-  run: MythicPlusRunDocument,
+  run: StoredMythicPlusRunDocument,
 ) {
   if (!key) {
     return;
@@ -914,7 +1148,7 @@ function setPreferredRunLookup(
 
 function registerRunLookups(
   lookups: ExistingRunLookups,
-  run: MythicPlusRunDocument,
+  run: StoredMythicPlusRunDocument,
   aliases: Array<string | undefined | null> = [],
 ) {
   if (typeof run._id === "string" && run._id.trim() !== "") {
@@ -977,7 +1211,7 @@ function findMatchingExistingRunByIdentity(
     return candidate;
   }
 
-  let fallbackMatch: MythicPlusRunDocument | undefined;
+  let fallbackMatch: StoredMythicPlusRunDocument | undefined;
   for (const candidate of lookups.byId.values()) {
     if (!canUseMythicPlusRunCompatibilityAliasMatch(candidate, run)) {
       continue;
@@ -990,7 +1224,7 @@ function findMatchingExistingRunByIdentity(
   return fallbackMatch;
 }
 
-function mythicPlusRunRowToDocument(run: MythicPlusRunRow): MythicPlusRunDocument {
+function mythicPlusRunRowToDocument(run: MythicPlusRunRow): StoredMythicPlusRunDocument {
   return {
     _id: run.id,
     fingerprint: run.fingerprint,
@@ -1013,6 +1247,20 @@ function mythicPlusRunRowToDocument(run: MythicPlusRunRow): MythicPlusRunDocumen
     ...(run.abandonReason ? { abandonReason: run.abandonReason } : {}),
     ...(run.thisWeek !== null ? { thisWeek: run.thisWeek } : {}),
     ...(run.members ? { members: run.members } : {}),
+    addonSignatureState: run.addonSignatureState,
+    ...(run.addonSignatureInstallId
+      ? { addonSignatureInstallId: run.addonSignatureInstallId }
+      : {}),
+    ...(run.addonSignatureAlgorithm
+      ? { addonSignatureAlgorithm: run.addonSignatureAlgorithm }
+      : {}),
+    ...(run.addonSignaturePayloadHash
+      ? { addonSignaturePayloadHash: run.addonSignaturePayloadHash }
+      : {}),
+    ...(run.addonSignature ? { addonSignature: run.addonSignature } : {}),
+    ...(run.addonSignatureSignedAt
+      ? { addonSignatureSignedAt: toUnixSeconds(run.addonSignatureSignedAt)! }
+      : {}),
   };
 }
 
@@ -1039,6 +1287,13 @@ function mythicPlusRunDocumentToInsert(characterId: string, run: MythicPlusRunIn
     abandonReason: run.abandonReason ?? null,
     thisWeek: run.thisWeek ?? null,
     members: run.members,
+    addonSignatureState: run.addonSignatureState,
+    addonSignatureInstallId: run.addonSignatureInstallId ?? null,
+    addonSignatureAlgorithm: run.addonSignatureAlgorithm ?? null,
+    addonSignaturePayloadHash: run.addonSignaturePayloadHash ?? null,
+    addonSignature: run.addonSignature ?? null,
+    addonSignatureSignedAt:
+      run.addonSignatureSignedAt !== undefined ? fromUnixSeconds(run.addonSignatureSignedAt) : null,
     legacyConvexId: null,
   };
 }
@@ -1067,6 +1322,22 @@ function mythicPlusRunPatchToDbPatch(patch: MythicPlusRunPatch) {
     ...(patch.abandonReason !== undefined ? { abandonReason: patch.abandonReason } : {}),
     ...(patch.thisWeek !== undefined ? { thisWeek: patch.thisWeek } : {}),
     ...(patch.members !== undefined ? { members: patch.members } : {}),
+    ...(patch.addonSignatureState !== undefined
+      ? { addonSignatureState: patch.addonSignatureState }
+      : {}),
+    ...(patch.addonSignatureInstallId !== undefined
+      ? { addonSignatureInstallId: patch.addonSignatureInstallId }
+      : {}),
+    ...(patch.addonSignatureAlgorithm !== undefined
+      ? { addonSignatureAlgorithm: patch.addonSignatureAlgorithm }
+      : {}),
+    ...(patch.addonSignaturePayloadHash !== undefined
+      ? { addonSignaturePayloadHash: patch.addonSignaturePayloadHash }
+      : {}),
+    ...(patch.addonSignature !== undefined ? { addonSignature: patch.addonSignature } : {}),
+    ...(patch.addonSignatureSignedAt !== undefined
+      ? { addonSignatureSignedAt: fromUnixSeconds(patch.addonSignatureSignedAt) }
+      : {}),
   };
 }
 
@@ -1080,7 +1351,7 @@ async function collapseDuplicateMythicPlusRunsForCharacter(tx: DbExecutor, chara
   }
 
   const clusters: Array<{
-    representative: MythicPlusRunDocument;
+    representative: StoredMythicPlusRunDocument;
     mergedRun: MythicPlusRunInputDocument;
     runIds: string[];
   }> = [];
@@ -1335,6 +1606,7 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
           ...(snapshotInput.weeklyRewards ? { weeklyRewards: snapshotInput.weeklyRewards } : {}),
           ...(snapshotInput.majorFactions ? { majorFactions: snapshotInput.majorFactions } : {}),
           ...(snapshotInput.clientInfo ? { clientInfo: snapshotInput.clientInfo } : {}),
+          ...verifySnapshotAddonSignature(charData, snapshotInput),
         };
 
         const takenAt = fromUnixSeconds(snapshotInput.takenAt);
@@ -1498,10 +1770,10 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
       );
 
       const existingRunLookups: ExistingRunLookups = {
-        byAttemptId: new Map<string, MythicPlusRunDocument>(),
-        byCanonicalKey: new Map<string, MythicPlusRunDocument>(),
-        byCompatibilityAlias: new Map<string, MythicPlusRunDocument>(),
-        byId: new Map<string, MythicPlusRunDocument>(),
+        byAttemptId: new Map<string, StoredMythicPlusRunDocument>(),
+        byCanonicalKey: new Map<string, StoredMythicPlusRunDocument>(),
+        byCompatibilityAlias: new Map<string, StoredMythicPlusRunDocument>(),
+        byId: new Map<string, StoredMythicPlusRunDocument>(),
       };
       for (const existingRun of currentCharacterRuns.values()) {
         registerRunLookups(existingRunLookups, existingRun);
@@ -1515,12 +1787,14 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
           assertTimestampNotInFuture("Mythic+ endedAt", incomingRun.endedAt, now);
           assertTimestampNotInFuture("Mythic+ abandonedAt", incomingRun.abandonedAt, now);
 
+          const { addonSignature: _addonSignature, ...incomingRunFields } = incomingRun;
           return mergeMythicPlusRunData(undefined, {
-            ...incomingRun,
+            ...incomingRunFields,
             fingerprint: incomingRun.fingerprint,
+            ...verifyMythicPlusAddonSignature(charData, incomingRun),
           });
         }),
-      );
+      ) as MythicPlusRunInputDocument[];
 
       for (const run of incomingRunsDeduped) {
         const nextFingerprint =

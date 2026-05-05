@@ -14,8 +14,10 @@ import {
 import { characters } from "./characters";
 import { sqlTextEnum } from "./sql";
 import {
+  addonSignatureStates,
   snapshotRoles,
   snapshotSpecs,
+  type AddonSignatureState,
   type Currencies,
   type OwnedKeystone,
   type SnapshotClientInfo,
@@ -54,6 +56,18 @@ export const snapshots = pgTable(
     weeklyRewards: jsonb("weekly_rewards").$type<SnapshotWeeklyRewards>(),
     majorFactions: jsonb("major_factions").$type<SnapshotMajorFactions>(),
     clientInfo: jsonb("client_info").$type<SnapshotClientInfo>(),
+    addonSignatureState: text("addon_signature_state")
+      .$type<AddonSignatureState>()
+      .notNull()
+      .default("unsigned"),
+    addonSignatureInstallId: text("addon_signature_install_id"),
+    addonSignatureAlgorithm: text("addon_signature_algorithm"),
+    addonSignaturePayloadHash: text("addon_signature_payload_hash"),
+    addonSignature: text("addon_signature"),
+    addonSignatureSignedAt: timestamp("addon_signature_signed_at", {
+      mode: "date",
+      withTimezone: true,
+    }),
   },
   (table) => ({
     legacyConvexIdIdx: uniqueIndex("snapshots_legacy_convex_id_uidx").on(table.legacyConvexId),
@@ -73,5 +87,9 @@ export const snapshots = pgTable(
     ),
     specCheck: check("snapshots_spec_check", sql`${table.spec} in (${sqlTextEnum(snapshotSpecs)})`),
     roleCheck: check("snapshots_role_check", sql`${table.role} in (${sqlTextEnum(snapshotRoles)})`),
+    addonSignatureStateCheck: check(
+      "snapshots_addon_signature_state_check",
+      sql`${table.addonSignatureState} in (${sqlTextEnum(addonSignatureStates)})`,
+    ),
   }),
 );

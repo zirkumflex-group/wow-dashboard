@@ -196,6 +196,11 @@ addon.uiHelpers = {
 --   panelOpen      boolean
 --   settings       table
 --     syncPlaytimeOnLogin boolean
+--   signing        table    -- local tamper-evidence only; not an auth secret
+--     algorithm    string   -- "wd-djb2-32-v1"
+--     installId    string
+--     secret       string
+--     createdAt    number
 --   minimap        table
 --     minimapPos   number
 --     hide         boolean
@@ -225,6 +230,12 @@ addon.uiHelpers = {
 --       abandonedAt         number?
 --       abandonReason       string?
 --       thisWeek            boolean?
+--       addonSignature     table?
+--         algorithm        string
+--         installId        string
+--         payloadHash      string
+--         signature        string
+--         signedAt         number
 --       members            array?
 --         name             string
 --         realm            string?
@@ -277,6 +288,12 @@ addon.uiHelpers = {
 --       weeklyRewards     table?
 --       majorFactions     table?
 --       clientInfo        table?
+--       addonSignature    table?
+--         algorithm       string
+--         installId       string
+--         payloadHash     string
+--         signature       string
+--         signedAt        number
 --   pendingMythicPlusMembers table -- keyed by "Name-Realm"
 --     capturedAt    number
 --     members       array
@@ -318,7 +335,9 @@ addon.uiHelpers = {
 --     events                    array
 -- ============================================================
 
-local DB_VERSION            = 2
+local DB_VERSION            = 3
+local ADDON_SIGNATURE_ALGORITHM = "wd-djb2-32-v1"
+local ADDON_SIGNATURE_SEPARATOR = "\31"
 local SNAPSHOT_INTERVAL     = 15 * 60  -- seconds
 local DEFAULT_MINIMAP_POS   = 225
 local MINIMAP_BUTTON_RADIUS = 5
@@ -417,6 +436,201 @@ addon.GetRegion = GetRegion
 
 local function PrintAddonMessage(message)
     print("|cff00ccff[WoW Dashboard]|r " .. message)
+end
+
+local function Hex32(value)
+    local n = math.floor(tonumber(value) or 0) % 4294967296
+    local hex = "0123456789abcdef"
+    local chars = {}
+    for index = 8, 1, -1 do
+        local digit = n % 16
+        chars[index] = string.sub(hex, digit + 1, digit + 1)
+        n = math.floor(n / 16)
+    end
+    return table.concat(chars)
+end
+
+local function DashboardHash(value)
+    local input = tostring(value or "")
+    local hash = 5381
+    for index = 1, #input do
+        hash = ((hash * 33) + string.byte(input, index)) % 4294967296
+    end
+    return Hex32(hash)
+end
+
+local function GenerateSigningToken(prefix)
+    local entropy = table.concat({
+        tostring(prefix or "wd"),
+        tostring(time and time() or 0),
+        tostring(GetTime and GetTime() or 0),
+        tostring(UnitGUID and UnitGUID("player") or ""),
+        tostring({}),
+        tostring(math.random(1, 1000000000)),
+    }, "|")
+
+    return DashboardHash(entropy)
+        .. DashboardHash(entropy .. "|1")
+        .. DashboardHash(entropy .. "|2")
+        .. DashboardHash(entropy .. "|3")
+end
+
+local function EnsureAddonSigning()
+    if not WowDashboardDB then
+        return nil
+    end
+
+    local signing = WowDashboardDB.signing
+    if type(signing) ~= "table" then
+        signing = {}
+        WowDashboardDB.signing = signing
+    end
+
+    if signing.algorithm ~= ADDON_SIGNATURE_ALGORITHM then
+        signing.algorithm = ADDON_SIGNATURE_ALGORITHM
+    end
+    if type(signing.installId) ~= "string" or signing.installId == "" then
+        signing.installId = GenerateSigningToken("install")
+    end
+    if type(signing.secret) ~= "string" or signing.secret == "" then
+        signing.secret = GenerateSigningToken("secret")
+    end
+    if tonumber(signing.createdAt) == nil then
+        signing.createdAt = time()
+    end
+
+    return signing
+end
+
+local function CanonicalText(value)
+    if value == nil then
+        return ""
+    end
+
+    local text = tostring(value)
+    text = string.gsub(text, "\\", "\\\\")
+    text = string.gsub(text, "|", "\\p")
+    text = string.gsub(text, "=", "\\e")
+    return text
+end
+
+local function CanonicalNumber(value)
+    local n = tonumber(value)
+    if n == nil or n ~= n or n == math.huge or n == -math.huge then
+        return ""
+    end
+
+    if math.floor(n) == n then
+        return tostring(math.floor(n))
+    end
+
+    local formatted = string.format("%.4f", n)
+    formatted = string.gsub(formatted, "0+$", "")
+    formatted = string.gsub(formatted, "%.$", "")
+    return formatted
+end
+
+local function CanonicalBool(value)
+    if value == true then
+        return "true"
+    end
+    if value == false then
+        return "false"
+    end
+    return ""
+end
+
+local function BuildCanonicalPayload(fields)
+    local parts = {}
+    for _, field in ipairs(fields) do
+        local kind = field[3]
+        local value = field[2]
+        if kind == "number" then
+            value = CanonicalNumber(value)
+        elseif kind == "boolean" then
+            value = CanonicalBool(value)
+        else
+            value = CanonicalText(value)
+        end
+        parts[#parts + 1] = CanonicalText(field[1]) .. "=" .. value
+    end
+
+    return table.concat(parts, "|")
+end
+
+local function SignCanonicalPayload(record, canonicalPayload)
+    if type(record) ~= "table" then
+        return
+    end
+
+    local signing = EnsureAddonSigning()
+    if type(signing) ~= "table" then
+        return
+    end
+
+    record.addonSignature = {
+        algorithm = ADDON_SIGNATURE_ALGORITHM,
+        installId = signing.installId,
+        payloadHash = DashboardHash(canonicalPayload),
+        signature = DashboardHash(tostring(signing.secret) .. ADDON_SIGNATURE_SEPARATOR .. canonicalPayload),
+        signedAt = time(),
+    }
+end
+
+local function SignSnapshotPayload(entry, snapshot)
+    if type(entry) ~= "table" or type(snapshot) ~= "table" then
+        return
+    end
+
+    local payload = BuildCanonicalPayload({
+        { "kind", "snapshot" },
+        { "region", entry.region },
+        { "name", entry.name },
+        { "realm", entry.realm },
+        { "takenAt", snapshot.takenAt, "number" },
+        { "level", snapshot.level, "number" },
+        { "spec", snapshot.spec },
+        { "role", snapshot.role },
+        { "itemLevel", snapshot.itemLevel, "number" },
+        { "gold", snapshot.gold, "number" },
+        { "playtimeSeconds", snapshot.playtimeSeconds, "number" },
+        { "playtimeThisLevelSeconds", snapshot.playtimeThisLevelSeconds, "number" },
+        { "mythicPlusScore", snapshot.mythicPlusScore, "number" },
+        { "seasonID", snapshot.seasonID, "number" },
+    })
+    SignCanonicalPayload(snapshot, payload)
+end
+
+local function SignMythicPlusRunPayload(entry, run)
+    if type(entry) ~= "table" or type(run) ~= "table" then
+        return
+    end
+
+    local payload = BuildCanonicalPayload({
+        { "kind", "mythicPlusRun" },
+        { "region", entry.region },
+        { "name", entry.name },
+        { "realm", entry.realm },
+        { "fingerprint", run.fingerprint },
+        { "attemptId", run.attemptId },
+        { "observedAt", run.observedAt, "number" },
+        { "seasonID", run.seasonID, "number" },
+        { "mapChallengeModeID", run.mapChallengeModeID, "number" },
+        { "mapName", run.mapName },
+        { "level", run.level, "number" },
+        { "status", run.status },
+        { "completed", run.completed, "boolean" },
+        { "completedInTime", run.completedInTime, "boolean" },
+        { "durationMs", run.durationMs, "number" },
+        { "runScore", run.runScore, "number" },
+        { "startDate", run.startDate, "number" },
+        { "completedAt", run.completedAt, "number" },
+        { "endedAt", run.endedAt, "number" },
+        { "abandonedAt", run.abandonedAt, "number" },
+        { "abandonReason", run.abandonReason },
+        { "thisWeek", run.thisWeek, "boolean" },
+    })
+    SignCanonicalPayload(run, payload)
 end
 
 function addon.EnsureAddonSettings()
@@ -825,6 +1039,7 @@ local function NormalizeAndDeduplicateRuns(entry)
         if dedupKey then
             normalizedKeys[dedupKey] = true
         end
+        SignMythicPlusRunPayload(entry, run)
     end
 
     entry.mythicPlusRuns = normalizedRuns
@@ -3806,6 +4021,7 @@ local function CommitSnapshot(totalSeconds, thisLevelSeconds)
 
     local db = WowDashboardDB
     local entry = EnsureCharacterEntry(p.key, p.name, p.realm, p.charInfo)
+    SignSnapshotPayload(entry, p.snap)
 
     table.insert(entry.snapshots, p.snap)
 
@@ -3937,13 +4153,21 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
                 settings = {
                     syncPlaytimeOnLogin = true,
                 },
+                signing = {
+                    algorithm = ADDON_SIGNATURE_ALGORITHM,
+                    installId = GenerateSigningToken("install"),
+                    secret = GenerateSigningToken("secret"),
+                    createdAt = time(),
+                },
                 minimap = {
                     minimapPos = DEFAULT_MINIMAP_POS,
                     hide = false,
                 },
             }
         end
-        if not WowDashboardDB.version    then WowDashboardDB.version    = DB_VERSION end
+        if not WowDashboardDB.version or WowDashboardDB.version < DB_VERSION then
+            WowDashboardDB.version = DB_VERSION
+        end
         if not WowDashboardDB.characters then WowDashboardDB.characters = {} end
         if type(WowDashboardDB.activeMythicPlusMembers) ~= "table" then
             WowDashboardDB.activeMythicPlusMembers = {}
@@ -3952,6 +4176,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
             WowDashboardDB.pendingMythicPlusMembers = {}
         end
         if WowDashboardDB.panelOpen == nil then WowDashboardDB.panelOpen = false end
+        EnsureAddonSigning()
         addon.EnsureAddonSettings()
         if addon.EnsureMinimapSettings then
             addon.EnsureMinimapSettings()

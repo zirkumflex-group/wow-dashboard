@@ -15,8 +15,10 @@ import {
 import { characters } from "./characters";
 import { sqlTextEnum } from "./sql";
 import {
+  addonSignatureStates,
   mythicPlusAbandonReasons,
   mythicPlusRunStatuses,
+  type AddonSignatureState,
   type MythicPlusAbandonReason,
   type MythicPlusRunMember,
   type MythicPlusRunStatus,
@@ -50,6 +52,18 @@ export const mythicPlusRuns = pgTable(
     abandonReason: text("abandon_reason").$type<MythicPlusAbandonReason>(),
     thisWeek: boolean("this_week"),
     members: jsonb("members").$type<MythicPlusRunMember[]>(),
+    addonSignatureState: text("addon_signature_state")
+      .$type<AddonSignatureState>()
+      .notNull()
+      .default("unsigned"),
+    addonSignatureInstallId: text("addon_signature_install_id"),
+    addonSignatureAlgorithm: text("addon_signature_algorithm"),
+    addonSignaturePayloadHash: text("addon_signature_payload_hash"),
+    addonSignature: text("addon_signature"),
+    addonSignatureSignedAt: timestamp("addon_signature_signed_at", {
+      mode: "date",
+      withTimezone: true,
+    }),
   },
   (table) => ({
     legacyConvexIdIdx: uniqueIndex("mythic_plus_runs_legacy_convex_id_uidx").on(
@@ -63,9 +77,7 @@ export const mythicPlusRuns = pgTable(
     byCharacterAndAttemptIdIdx: uniqueIndex("mythic_plus_runs_character_id_attempt_id_uidx")
       .on(table.characterId, table.attemptId)
       .where(sql`${table.attemptId} is not null`),
-    byCharacterAndCanonicalKeyIdx: uniqueIndex(
-      "mythic_plus_runs_character_id_canonical_key_uidx",
-    )
+    byCharacterAndCanonicalKeyIdx: uniqueIndex("mythic_plus_runs_character_id_canonical_key_uidx")
       .on(table.characterId, table.canonicalKey)
       .where(sql`${table.canonicalKey} is not null`),
     byCharacterAndFingerprintIdx: uniqueIndex("mythic_plus_runs_character_id_fingerprint_uidx").on(
@@ -79,6 +91,10 @@ export const mythicPlusRuns = pgTable(
     abandonReasonCheck: check(
       "mythic_plus_runs_abandon_reason_check",
       sql`${table.abandonReason} is null or ${table.abandonReason} in (${sqlTextEnum(mythicPlusAbandonReasons)})`,
+    ),
+    addonSignatureStateCheck: check(
+      "mythic_plus_runs_addon_signature_state_check",
+      sql`${table.addonSignatureState} in (${sqlTextEnum(addonSignatureStates)})`,
     ),
   }),
 );

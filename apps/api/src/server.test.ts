@@ -46,6 +46,122 @@ const [{ app }, { databaseConnection, db }, { closeQueue }, { closeRedis, ensure
 
 const originalFetch = globalThis.fetch.bind(globalThis);
 
+const TEST_ADDON_SIGNING = {
+  algorithm: "wd-djb2-32-v1" as const,
+  installId: "test-install-1",
+  secret: "test-signing-secret-123",
+};
+
+function dashboardHash(value: string) {
+  let hash = 5381;
+  for (const byte of Buffer.from(value, "utf8")) {
+    hash = (hash * 33 + byte) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+}
+
+function canonicalText(value: unknown) {
+  if (value === null || value === undefined) return "";
+  return String(value).replaceAll("\\", "\\\\").replaceAll("|", "\\p").replaceAll("=", "\\e");
+}
+
+function canonicalNumber(value: unknown) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "";
+  if (Number.isInteger(value)) return String(value);
+  return value.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+function canonicalBoolean(value: unknown) {
+  if (value === true) return "true";
+  if (value === false) return "false";
+  return "";
+}
+
+function buildAddonCanonicalPayload(
+  fields: Array<[key: string, value: unknown, kind?: "number" | "boolean"]>,
+) {
+  return fields
+    .map(([key, value, kind]) => {
+      const canonicalValue =
+        kind === "number"
+          ? canonicalNumber(value)
+          : kind === "boolean"
+            ? canonicalBoolean(value)
+            : canonicalText(value);
+      return `${canonicalText(key)}=${canonicalValue}`;
+    })
+    .join("|");
+}
+
+function signAddonPayload(canonicalPayload: string, signedAt: number) {
+  return {
+    algorithm: TEST_ADDON_SIGNING.algorithm,
+    installId: TEST_ADDON_SIGNING.installId,
+    secret: TEST_ADDON_SIGNING.secret,
+    payloadHash: dashboardHash(canonicalPayload),
+    signature: dashboardHash(`${TEST_ADDON_SIGNING.secret}\x1f${canonicalPayload}`),
+    signedAt,
+  };
+}
+
+function signSnapshotPayload(
+  character: { region: string; name: string; realm: string },
+  snapshot: Record<string, unknown>,
+) {
+  return signAddonPayload(
+    buildAddonCanonicalPayload([
+      ["kind", "snapshot"],
+      ["region", character.region],
+      ["name", character.name],
+      ["realm", character.realm],
+      ["takenAt", snapshot.takenAt, "number"],
+      ["level", snapshot.level, "number"],
+      ["spec", snapshot.spec],
+      ["role", snapshot.role],
+      ["itemLevel", snapshot.itemLevel, "number"],
+      ["gold", snapshot.gold, "number"],
+      ["playtimeSeconds", snapshot.playtimeSeconds, "number"],
+      ["playtimeThisLevelSeconds", snapshot.playtimeThisLevelSeconds, "number"],
+      ["mythicPlusScore", snapshot.mythicPlusScore, "number"],
+      ["seasonID", snapshot.seasonID, "number"],
+    ]),
+    Number(snapshot.takenAt),
+  );
+}
+
+function signMythicPlusRunPayload(
+  character: { region: string; name: string; realm: string },
+  run: Record<string, unknown>,
+) {
+  return signAddonPayload(
+    buildAddonCanonicalPayload([
+      ["kind", "mythicPlusRun"],
+      ["region", character.region],
+      ["name", character.name],
+      ["realm", character.realm],
+      ["fingerprint", run.fingerprint],
+      ["attemptId", run.attemptId],
+      ["observedAt", run.observedAt, "number"],
+      ["seasonID", run.seasonID, "number"],
+      ["mapChallengeModeID", run.mapChallengeModeID, "number"],
+      ["mapName", run.mapName],
+      ["level", run.level, "number"],
+      ["status", run.status],
+      ["completed", run.completed, "boolean"],
+      ["completedInTime", run.completedInTime, "boolean"],
+      ["durationMs", run.durationMs, "number"],
+      ["runScore", run.runScore, "number"],
+      ["startDate", run.startDate, "number"],
+      ["completedAt", run.completedAt, "number"],
+      ["endedAt", run.endedAt, "number"],
+      ["abandonedAt", run.abandonedAt, "number"],
+      ["abandonReason", run.abandonReason],
+      ["thisWeek", run.thisWeek, "boolean"],
+    ]),
+    Number(run.observedAt),
+  );
+}
+
 function loadRootEnv() {
   const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
   const nodeEnv = process.env.NODE_ENV ?? "test";
@@ -1825,6 +1941,75 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     );
     const takenAt = 1_776_772_800;
     const startDate = 1_776_771_000;
+    const addonCharacter = {
+      name: "Syncadin",
+      realm: "Tarren Mill",
+      region: "eu",
+      class: "Paladin",
+      race: "Human",
+      faction: "alliance",
+    };
+    const snapshotPayload = {
+      takenAt,
+      level: 80,
+      spec: "Holy",
+      role: "healer",
+      itemLevel: 724.6,
+      gold: 2100,
+      playtimeSeconds: 8200,
+      playtimeThisLevelSeconds: 1200,
+      mythicPlusScore: 2988.4,
+      ownedKeystone: {
+        level: 15,
+        mapChallengeModeID: 375,
+        mapName: "Mists of Tirna Scithe",
+      },
+      currencies: {
+        adventurerDawncrest: 1,
+        veteranDawncrest: 2,
+        championDawncrest: 3,
+        heroDawncrest: 4,
+        mythDawncrest: 5,
+        radiantSparkDust: 6,
+      },
+      stats: {
+        stamina: 10,
+        strength: 11,
+        agility: 12,
+        intellect: 13,
+        critPercent: 14,
+        hastePercent: 15,
+        masteryPercent: 16,
+        versatilityPercent: 17,
+        speedPercent: 18,
+        leechPercent: 19,
+        avoidancePercent: 20,
+      },
+    };
+    const runPayload = {
+      fingerprint: "attempt|13|375|15|1776771000",
+      observedAt: takenAt,
+      seasonID: 13,
+      mapChallengeModeID: 375,
+      mapName: "Mists of Tirna Scithe",
+      level: 15,
+      completed: true,
+      completedInTime: true,
+      durationMs: 1_800_000,
+      runScore: 210.5,
+      startDate,
+      completedAt: takenAt,
+      endedAt: takenAt,
+      thisWeek: true,
+      members: [
+        {
+          name: "Syncadin",
+          realm: "Tarren Mill",
+          classTag: "PALADIN",
+          role: "healer",
+        },
+      ],
+    };
 
     const response = await app.request("http://localhost/api/addon/ingest", {
       method: "POST",
@@ -1835,75 +2020,17 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
       body: JSON.stringify({
         characters: [
           {
-            name: "Syncadin",
-            realm: "Tarren Mill",
-            region: "eu",
-            class: "Paladin",
-            race: "Human",
-            faction: "alliance",
+            ...addonCharacter,
             snapshots: [
               {
-                takenAt,
-                level: 80,
-                spec: "Holy",
-                role: "healer",
-                itemLevel: 724.6,
-                gold: 2100,
-                playtimeSeconds: 8200,
-                playtimeThisLevelSeconds: 1200,
-                mythicPlusScore: 2988.4,
-                ownedKeystone: {
-                  level: 15,
-                  mapChallengeModeID: 375,
-                  mapName: "Mists of Tirna Scithe",
-                },
-                currencies: {
-                  adventurerDawncrest: 1,
-                  veteranDawncrest: 2,
-                  championDawncrest: 3,
-                  heroDawncrest: 4,
-                  mythDawncrest: 5,
-                  radiantSparkDust: 6,
-                },
-                stats: {
-                  stamina: 10,
-                  strength: 11,
-                  agility: 12,
-                  intellect: 13,
-                  critPercent: 14,
-                  hastePercent: 15,
-                  masteryPercent: 16,
-                  versatilityPercent: 17,
-                  speedPercent: 18,
-                  leechPercent: 19,
-                  avoidancePercent: 20,
-                },
+                ...snapshotPayload,
+                addonSignature: signSnapshotPayload(addonCharacter, snapshotPayload),
               },
             ],
             mythicPlusRuns: [
               {
-                fingerprint: "attempt|13|375|15|1776771000",
-                observedAt: takenAt,
-                seasonID: 13,
-                mapChallengeModeID: 375,
-                mapName: "Mists of Tirna Scithe",
-                level: 15,
-                completed: true,
-                completedInTime: true,
-                durationMs: 1_800_000,
-                runScore: 210.5,
-                startDate,
-                completedAt: takenAt,
-                endedAt: takenAt,
-                thisWeek: true,
-                members: [
-                  {
-                    name: "Syncadin",
-                    realm: "Tarren Mill",
-                    classTag: "PALADIN",
-                    role: "healer",
-                  },
-                ],
+                ...runPayload,
+                addonSignature: signMythicPlusRunPayload(addonCharacter, runPayload),
               },
             ],
           },
@@ -1958,6 +2085,102 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     assert.equal(storedSnapshots.length, 1);
     assert.equal(storedDailySnapshots.length, 1);
     assert.equal(storedRuns.length, 1);
+    assert.equal(storedSnapshots[0]?.addonSignatureState, "valid");
+    assert.equal(storedSnapshots[0]?.addonSignatureInstallId, TEST_ADDON_SIGNING.installId);
+    assert.equal(storedRuns[0]?.addonSignatureState, "valid");
+    assert.equal(storedRuns[0]?.addonSignatureInstallId, TEST_ADDON_SIGNING.installId);
+  });
+
+  it("marks addon signatures invalid when signed snapshot values are edited", async () => {
+    const auth = await seedAuthenticatedUser();
+    const playerId = await seedAddonIngestOwner(
+      auth,
+      [
+        {
+          name: "Editadin",
+          realm: "Tarren Mill",
+          className: "Paladin",
+          race: "Human",
+          faction: "alliance",
+        },
+      ],
+      "Uploader#3334",
+    );
+    const addonCharacter = {
+      name: "Editadin",
+      realm: "Tarren Mill",
+      region: "eu",
+      class: "Paladin",
+      race: "Human",
+      faction: "alliance",
+    };
+    const signedSnapshot = {
+      takenAt: 1_776_772_800,
+      level: 80,
+      spec: "Holy",
+      role: "healer",
+      itemLevel: 724.6,
+      gold: 2100,
+      playtimeSeconds: 8200,
+      playtimeThisLevelSeconds: 1200,
+      mythicPlusScore: 2988.4,
+      currencies: {
+        adventurerDawncrest: 1,
+        veteranDawncrest: 2,
+        championDawncrest: 3,
+        heroDawncrest: 4,
+        mythDawncrest: 5,
+        radiantSparkDust: 6,
+      },
+      stats: {
+        stamina: 10,
+        strength: 11,
+        agility: 12,
+        intellect: 13,
+        critPercent: 14,
+        hastePercent: 15,
+        masteryPercent: 16,
+        versatilityPercent: 17,
+      },
+    };
+
+    const response = await app.request("http://localhost/api/addon/ingest", {
+      method: "POST",
+      headers: {
+        ...authHeaders(auth.token),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        characters: [
+          {
+            ...addonCharacter,
+            snapshots: [
+              {
+                ...signedSnapshot,
+                gold: 9999,
+                addonSignature: signSnapshotPayload(addonCharacter, signedSnapshot),
+              },
+            ],
+            mythicPlusRuns: [],
+          },
+        ],
+      }),
+    });
+
+    assert.equal(response.status, 200);
+
+    const character = await db.query.characters.findFirst({
+      where: and(eq(characters.playerId, playerId), eq(characters.name, "Editadin")),
+    });
+    assert.ok(character);
+
+    const storedSnapshots = await db.query.snapshots.findMany({
+      where: eq(snapshots.characterId, character.id),
+    });
+    assert.equal(storedSnapshots.length, 1);
+    assert.equal(storedSnapshots[0]?.gold, 9999);
+    assert.equal(storedSnapshots[0]?.addonSignatureState, "invalid");
+    assert.equal(storedSnapshots[0]?.addonSignatureInstallId, TEST_ADDON_SIGNING.installId);
   });
 
   it("collapses matching live attempt and history mythic plus runs", async () => {

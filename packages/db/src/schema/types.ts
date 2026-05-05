@@ -18,6 +18,9 @@ export type BattleNetVerificationStatus = (typeof battleNetVerificationStatuses)
 export const snapshotRoles = ["tank", "healer", "dps"] as const;
 export type SnapshotRole = (typeof snapshotRoles)[number];
 
+export const addonSignatureStates = ["unsigned", "valid", "invalid"] as const;
+export type AddonSignatureState = (typeof addonSignatureStates)[number];
+
 export const snapshotSpecs = [
   "Blood",
   "Frost",

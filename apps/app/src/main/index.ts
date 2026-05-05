@@ -701,6 +701,21 @@ interface MythicPlusRunMemberData {
   role?: Role;
 }
 
+interface AddonSignatureData {
+  algorithm: string;
+  installId: string;
+  secret: string;
+  payloadHash: string;
+  signature: string;
+  signedAt?: number;
+}
+
+interface AddonSigningData {
+  algorithm: string;
+  installId: string;
+  secret: string;
+}
+
 interface MythicPlusRunData {
   fingerprint: string;
   attemptId?: string;
@@ -728,6 +743,7 @@ interface MythicPlusRunData {
     | "unknown";
   thisWeek?: boolean;
   members?: MythicPlusRunMemberData[];
+  addonSignature?: AddonSignatureData;
 }
 
 interface SnapshotCurrencyInfo {
@@ -853,6 +869,7 @@ interface SnapshotData {
   weeklyRewards?: SnapshotWeeklyRewards;
   majorFactions?: SnapshotMajorFactions;
   clientInfo?: SnapshotClientInfo;
+  addonSignature?: AddonSignatureData;
 }
 
 interface CharacterData {
@@ -911,6 +928,7 @@ function mergeSnapshotData(current: SnapshotData, candidate: SnapshotData): Snap
     weeklyRewards: preferred.weeklyRewards ?? fallback.weeklyRewards,
     majorFactions: preferred.majorFactions ?? fallback.majorFactions,
     clientInfo: preferred.clientInfo ?? fallback.clientInfo,
+    addonSignature: preferred.addonSignature ?? fallback.addonSignature,
     stats: {
       ...preferred.stats,
       critRating: preferred.stats.critRating ?? fallback.stats.critRating,
@@ -941,6 +959,39 @@ function toOptionalBoolean(value: unknown): boolean | undefined {
 
 function toOptionalString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
+}
+
+function normalizeAddonSigning(value: unknown): AddonSigningData | undefined {
+  if (!isRecord(value)) return undefined;
+
+  const algorithm = toOptionalString(value.algorithm);
+  const installId = toOptionalString(value.installId);
+  const secret = toOptionalString(value.secret);
+  if (!algorithm || !installId || !secret) return undefined;
+
+  return { algorithm, installId, secret };
+}
+
+function normalizeAddonSignature(
+  value: unknown,
+  signing: AddonSigningData | undefined,
+): AddonSignatureData | undefined {
+  if (!isRecord(value) || !signing) return undefined;
+
+  const algorithm = toOptionalString(value.algorithm) ?? signing.algorithm;
+  const installId = toOptionalString(value.installId) ?? signing.installId;
+  const payloadHash = toOptionalString(value.payloadHash);
+  const signature = toOptionalString(value.signature);
+  if (!algorithm || !installId || !payloadHash || !signature) return undefined;
+
+  return {
+    algorithm,
+    installId,
+    secret: signing.secret,
+    payloadHash,
+    signature,
+    signedAt: toOptionalNumber(value.signedAt),
+  };
 }
 
 function normalizeCurrencyDetails(value: unknown): SnapshotCurrencyDetails | undefined {
@@ -2332,6 +2383,7 @@ function mergeMythicPlusRunData(
     abandonReason: preferredRun.abandonReason ?? fallbackRun.abandonReason,
     thisWeek: preferredRun.thisWeek ?? fallbackRun.thisWeek,
     members: mergeMythicPlusRunMembers(currentRun.members, candidateRun.members),
+    addonSignature: preferredRun.addonSignature ?? fallbackRun.addonSignature,
   };
 
   const mergedStatus = getMythicPlusRunStatus(mergedRun);
@@ -2355,7 +2407,10 @@ function mergeMythicPlusRunData(
   return mergedRun;
 }
 
-function normalizeStoredMythicPlusRun(runRaw: LuaTable): MythicPlusRunData {
+function normalizeStoredMythicPlusRun(
+  runRaw: LuaTable,
+  signing?: AddonSigningData,
+): MythicPlusRunData {
   const legacyRaw = isRecord(runRaw.raw) ? runRaw.raw : null;
   const startDate =
     toOptionalMythicPlusTimestamp(runRaw.startDate) ??
@@ -2503,6 +2558,7 @@ function normalizeStoredMythicPlusRun(runRaw: LuaTable): MythicPlusRunData {
               legacyRaw.roster,
           )
         : undefined),
+    addonSignature: normalizeAddonSignature(runRaw.addonSignature, signing),
   };
 
   run.durationMs = getSanitizedRunDurationMs({
@@ -2796,6 +2852,7 @@ function upsertMythicPlusRunByIdentity(
 
 function extractCharacters(db: Record<string, unknown>): CharacterData[] {
   const characters = (db.characters ?? {}) as Record<string, unknown>;
+  const signing = normalizeAddonSigning(db.signing);
   const pendingMembersStore = isRecord(db.pendingMythicPlusMembers)
     ? db.pendingMythicPlusMembers
     : {};
@@ -2875,6 +2932,7 @@ function extractCharacters(db: Record<string, unknown>): CharacterData[] {
         weeklyRewards: normalizeWeeklyRewards(snap.weeklyRewards),
         majorFactions: normalizeMajorFactions(snap.majorFactions),
         clientInfo: normalizeClientInfo(snap.clientInfo),
+        addonSignature: normalizeAddonSignature(snap.addonSignature, signing),
       });
     }
 
@@ -2882,7 +2940,7 @@ function extractCharacters(db: Record<string, unknown>): CharacterData[] {
     const mythicPlusRunLookups = createMythicPlusRunLookups();
     for (const runRaw of (char.mythicPlusRuns as unknown[]) ?? []) {
       if (!isRecord(runRaw)) continue;
-      const run = normalizeStoredMythicPlusRun(runRaw);
+      const run = normalizeStoredMythicPlusRun(runRaw, signing);
       upsertMythicPlusRunByIdentity(mythicPlusRuns, mythicPlusRunLookups, run);
     }
     sortMythicPlusRunsInPlace(mythicPlusRuns);
@@ -3134,8 +3192,7 @@ function createAddonUploadBatches(characters: CharacterData[]): CharacterData[][
       const separatorBytes = currentBatch.length > 0 ? 1 : 0;
       const candidateBytes = currentBodyBytes + separatorBytes + chunkBytes;
       const exceedsCharacterLimit =
-        currentBatch.length > 0 &&
-        currentBatch.length + 1 > ADDON_UPLOAD_CHARACTERS_PER_BATCH;
+        currentBatch.length > 0 && currentBatch.length + 1 > ADDON_UPLOAD_CHARACTERS_PER_BATCH;
       const exceedsBodyLimit =
         currentBatch.length > 0 && candidateBytes > ADDON_UPLOAD_MAX_BATCH_BODY_BYTES;
 
@@ -3850,15 +3907,7 @@ function validateOfficialAddonReleaseUrl(url: string, tagName: string, assetName
     throw new Error("Invalid GitHub repository configuration");
   }
   const pathSegments = parsedUrl.pathname.split("/").map((segment) => decodeURIComponent(segment));
-  const expectedSegments = [
-    "",
-    repoOwner,
-    repoName,
-    "releases",
-    "download",
-    tagName,
-    assetName,
-  ];
+  const expectedSegments = ["", repoOwner, repoName, "releases", "download", tagName, assetName];
   if (
     parsedUrl.protocol !== "https:" ||
     parsedUrl.hostname !== "github.com" ||

@@ -202,6 +202,15 @@ export const ownedKeystoneSchema = z.object({
   mapName: mediumAddonStringSchema.optional(),
 });
 
+export const addonSignatureSchema = z.object({
+  algorithm: z.literal("wd-djb2-32-v1"),
+  installId: z.string().trim().min(8).max(64),
+  secret: z.string().trim().min(16).max(128),
+  payloadHash: z.string().trim().min(1).max(64),
+  signature: z.string().trim().min(1).max(64),
+  signedAt: unixSecondsSchema.optional(),
+});
+
 export const addonSnapshotSchema = z.object({
   takenAt: unixSecondsSchema,
   level: characterLevelSchema,
@@ -221,6 +230,7 @@ export const addonSnapshotSchema = z.object({
   weeklyRewards: snapshotWeeklyRewardsSchema.optional(),
   majorFactions: snapshotMajorFactionsSchema.optional(),
   clientInfo: snapshotClientInfoSchema.optional(),
+  addonSignature: addonSignatureSchema.optional(),
 });
 
 export const addonMythicPlusRunMemberSchema = z.object({
@@ -255,6 +265,7 @@ export const addonMythicPlusRunSchema = z
       .array(addonMythicPlusRunMemberSchema)
       .max(addonIngestLimits.maxMythicPlusRunMembers)
       .optional(),
+    addonSignature: addonSignatureSchema.optional(),
   })
   .superRefine((run, ctx) => {
     const addIssue = (path: string, message: string) => {
