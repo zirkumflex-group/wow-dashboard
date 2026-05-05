@@ -1,154 +1,87 @@
-# wow-dashboard
+# WoW Dashboard
 
-WoW Dashboard is a self-hosted WoW character dashboard with:
+WoW Dashboard is a public World of Warcraft character dashboard for tracking characters, addon
+snapshots, Mythic+ activity, and Battle.net character data.
 
-- `apps/web` for the browser UI
-- `apps/app` for the Electron desktop client
-- `apps/addon` for snapshot generation inside WoW
-- `apps/api` + `apps/worker` for the self-hosted backend
-- Postgres + Redis for persistence, jobs, and rate limiting
+The project includes a Windows desktop app, an in-game WoW addon, and the public web dashboard at
+[wow.zirkumflex.io](https://wow.zirkumflex.io).
 
-The legacy Convex runtime has been removed from the active workspace. The remaining Convex-related code is the historical importer plus `legacy_convex_id` mapping retained for backfills.
+## Features
 
-## Current Status
+- Battle.net sign-in for player ownership and character sync
+- Desktop app that reads the WoW addon SavedVariables file and uploads new activity
+- In-game addon that records character snapshots and Mythic+ runs
+- Public character pages, player rosters, and scoreboards
+- Per-character visibility controls:
+  - `Public`: visible in lists and shareable by normal character link
+  - `Unlisted`: hidden from public lists but accessible by direct link
+  - `Private`: visible only to the character owner
+- Automatic desktop app and addon update checks
 
-- Production stack is running at `https://wow.zirkumflex.io`
-- Battle.net auth works on production
-- Postgres-backed API, worker, web, and desktop flows are the active path
-- Historical Convex exports can still be replayed through the importer when needed
+## Install
 
-## Repository Layout
+WoW Dashboard is currently distributed as a Windows app.
+
+1. Open the [GitHub Releases page](https://github.com/zirkumflex-group/wow-dashboard/releases).
+2. Find the latest `App v...` release.
+3. Download `wow-dashboard.exe`.
+4. Run `wow-dashboard.exe` and complete the installer.
+5. Launch **WoW Dashboard**.
+6. Sign in with Battle.net.
+7. Select your World of Warcraft `_retail_` folder.
+8. Click **Install Addon** in the desktop app.
+9. Start or reload World of Warcraft and make sure **WoW Dashboard** is enabled in the addon list.
+10. Play normally and enjoy.
+
+The `_retail_` folder is usually inside your World of Warcraft install, for example:
 
 ```text
-wow-dashboard/
-|-- apps/
-|   |-- api/      # Hono API + Better Auth + import tooling
-|   |-- app/      # Electron desktop app
-|   |-- web/      # TanStack Start web app
-|   |-- worker/   # pg-boss worker
-|   `-- addon/    # WoW addon
-|-- packages/
-|   |-- api-client/
-|   |-- api-schema/
-|   |-- db/
-|   |-- env/
-|   `-- ui/
-`-- deploy/
-    |-- docker-compose.dev.yml
-    |-- docker-compose.prod.yml
-    |-- Dockerfile.api   # shared api/worker/migrate build
-    |-- Dockerfile.web
-    `-- Caddyfile
+C:\Program Files (x86)\World of Warcraft\_retail_
 ```
 
-## Local Development
+## Using The Addon
 
-Prerequisite: Docker Desktop or Docker Engine must be installed and running. The local dev stack uses Docker for Postgres and Redis.
+The addon stores local snapshots in WoW's SavedVariables file. The desktop app watches that file and
+uploads new snapshots and Mythic+ runs to your account.
 
-Install dependencies:
+Useful in-game commands:
 
-```bash
-pnpm install
+```text
+/wowdashboard
+/wd
 ```
 
-Create local env from the repo root:
+If no data appears after installing the addon, log into a character, wait for the addon to save a
+snapshot, then return to the desktop app and click **Sync Now**.
 
-```bash
-cp .env.example .env.local
-```
+## Web Dashboard
 
-Start the full local stack:
+Open [wow.zirkumflex.io](https://wow.zirkumflex.io) to view synced characters, player rosters, and
+scoreboards.
 
-```bash
-pnpm run dev
-```
+Characters are public by default. Character owners can change visibility from the character page:
 
-That one command will:
+- `Public` characters appear in public lists and scoreboards.
+- `Unlisted` characters do not appear in public lists, but direct links work.
+- `Private` characters are only visible while signed in as the owner.
 
-- start local Postgres + Redis
-- wait for both containers to become healthy
-- apply Drizzle migrations
-- run `apps/api`, `apps/worker`, `apps/web`, and `apps/app`
-- stop the local Postgres + Redis containers it started when you press `Ctrl+C`
+## Updates
 
-If you want the manual step-by-step flow instead, use:
+The desktop app checks GitHub releases for new app versions. When an update is downloaded, install it
+from the update prompt or close/reopen the app when prompted.
 
-```bash
-docker compose -f deploy/docker-compose.dev.yml up -d postgres redis
-pnpm -F @wow-dashboard/db migrate
-pnpm run dev:services
-```
+The desktop app also checks for addon releases and can install or update the WoW addon after your
+`_retail_` folder is selected.
 
-To stop only the local dev containers manually:
+## Troubleshooting
 
-```bash
-pnpm run dev:stop
-```
+- **The app says the WoW folder is invalid:** choose the folder that ends with `_retail_`.
+- **The addon is not detected:** install it from the desktop app, then restart WoW or run `/reload`.
+- **No snapshots are pending:** log into a character with the addon enabled, then wait for a snapshot
+  or save one from the addon UI.
+- **Sync fails after login:** sign out and sign in again with Battle.net, then retry **Sync Now**.
 
-If `localhost:3000` or `localhost:3001` is already occupied, `pnpm run dev` will exit early with a clear error so you do not accidentally point the web or desktop client at the wrong service. If you intentionally use a different API port, override `PORT`, `API_URL`, `BETTER_AUTH_URL`, and `VITE_API_URL` together.
+## Project Links
 
-If a local Postgres or Redis service already uses the default infrastructure ports, override `POSTGRES_PORT` or `REDIS_PORT` in `.env.local`. Keep `DATABASE_URL` and `REDIS_URL` pointed at the same host ports.
-
-Optional browser-only dev:
-
-```bash
-pnpm run dev:web
-```
-
-Note: The Electron dev/start scripts clear `ELECTRON_RUN_AS_NODE` automatically, because that environment variable forces Electron into plain Node mode and crashes the desktop app on startup.
-
-Useful local URLs:
-
-- Web: `http://localhost:3001`
-- API: `http://localhost:3000`
-- Auth probe: `http://localhost:3000/dev/auth`
-
-## Electron Against Production
-
-For a production desktop smoke test, run the Electron app with production env overrides:
-
-```bash
-SITE_URL=https://wow.zirkumflex.io \
-API_URL=https://wow.zirkumflex.io/api \
-BETTER_AUTH_URL=https://wow.zirkumflex.io \
-VITE_SITE_URL=https://wow.zirkumflex.io \
-VITE_API_URL=https://wow.zirkumflex.io/api \
-pnpm -F app dev
-```
-
-## VPS / Production Deploy
-
-Use the deploy guide in [deploy/README.md](deploy/README.md).
-
-The current production-shaped stack is:
-
-- `caddy`
-- `web`
-- `api`
-- `worker`
-- `postgres`
-- `redis`
-
-Bring it up on the VPS with:
-
-```bash
-cd ~/wow-dashboard
-bash deploy/update-server.sh
-```
-
-## Historical Convex Import
-
-The one-shot importer is bundled into the API image for historical backfills. Copy the export ZIP into the `api` container first, then run:
-
-```bash
-docker compose --env-file deploy/.env.production -f deploy/docker-compose.prod.yml exec -T api \
-  node apps/api/dist/importConvexExport.cjs \
-  /tmp/<convex-export>.zip \
-  --apply
-```
-
-## Checks
-
-- Lint + format: `pnpm check`
-- Typecheck: `pnpm check-types`
-- API typecheck only: `pnpm -F @wow-dashboard/api check-types`
+- Public dashboard: [wow.zirkumflex.io](https://wow.zirkumflex.io)
+- Releases: [github.com/zirkumflex-group/wow-dashboard/releases](https://github.com/zirkumflex-group/wow-dashboard/releases)
