@@ -12,7 +12,7 @@ FROM base AS pruner
 
 COPY . .
 
-RUN --mount=type=cache,id=wowdash-pnpm-store,target=/pnpm/store,sharing=locked \
+RUN --mount=type=cache,id=wowdash-pnpm-store-web,target=/pnpm/store,sharing=locked \
   pnpm dlx turbo@2.9.6 prune --docker web --out-dir /pruned
 
 FROM base AS deps
@@ -20,7 +20,7 @@ FROM base AS deps
 COPY --from=pruner /pruned/json/ .
 COPY --from=pruner /pruned/full/packages/ui ./packages/ui
 
-RUN --mount=type=cache,id=wowdash-pnpm-store,target=/pnpm/store,sharing=locked \
+RUN --mount=type=cache,id=wowdash-pnpm-store-web,target=/pnpm/store,sharing=locked \
   pnpm install --frozen-lockfile --fix-lockfile
 
 FROM deps AS build

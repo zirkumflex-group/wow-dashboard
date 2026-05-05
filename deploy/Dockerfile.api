@@ -12,28 +12,28 @@ FROM base AS pruner
 
 COPY . .
 
-RUN --mount=type=cache,id=wowdash-pnpm-store,target=/pnpm/store,sharing=locked \
+RUN --mount=type=cache,id=wowdash-pnpm-store-api,target=/pnpm/store,sharing=locked \
   pnpm dlx turbo@2.9.6 prune --docker @wow-dashboard/api @wow-dashboard/worker --out-dir /pruned
 
 FROM base AS deps
 
 COPY --from=pruner /pruned/json/ .
 
-RUN --mount=type=cache,id=wowdash-pnpm-store,target=/pnpm/store,sharing=locked \
+RUN --mount=type=cache,id=wowdash-pnpm-store-api,target=/pnpm/store,sharing=locked \
   pnpm install --frozen-lockfile --fix-lockfile
 
 FROM base AS migrate-pruner
 
 COPY . .
 
-RUN --mount=type=cache,id=wowdash-pnpm-store,target=/pnpm/store,sharing=locked \
+RUN --mount=type=cache,id=wowdash-pnpm-store-migrate,target=/pnpm/store,sharing=locked \
   pnpm dlx turbo@2.9.6 prune --docker @wow-dashboard/db --out-dir /pruned
 
 FROM base AS migrate-deps
 
 COPY --from=migrate-pruner /pruned/json/ .
 
-RUN --mount=type=cache,id=wowdash-pnpm-store,target=/pnpm/store,sharing=locked \
+RUN --mount=type=cache,id=wowdash-pnpm-store-migrate,target=/pnpm/store,sharing=locked \
   pnpm install --frozen-lockfile --fix-lockfile --prod
 
 FROM migrate-deps AS migrate
