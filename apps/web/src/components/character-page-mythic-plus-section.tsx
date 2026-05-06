@@ -1192,13 +1192,13 @@ function RunSessionCard({
   return (
     <div
       className={cn(
-        "grid min-h-9 grid-cols-[6.25rem_minmax(0,1fr)_auto] items-center gap-2 rounded-sm border px-0 py-1.5",
+        "grid min-h-9 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-sm border px-0 py-1.5",
         paid
           ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-100"
           : "border-amber-400/30 bg-amber-500/10 text-amber-100",
       )}
     >
-      <div className="col-start-2 flex min-w-0 items-center gap-2 px-3">
+      <div className="col-start-1 flex min-w-0 items-center gap-2 px-3">
         {paid ? (
           <CircleDollarSign size={15} className="shrink-0 text-emerald-300" />
         ) : (
@@ -1209,7 +1209,7 @@ function RunSessionCard({
           {session.runCount} run{session.runCount === 1 ? "" : "s"}
         </span>
       </div>
-      <div className="col-start-3 flex items-center gap-2 px-3">
+      <div className="col-start-2 flex items-center gap-2 px-3">
         {canEdit && onUpdatePaid ? (
           <Button
             type="button"
