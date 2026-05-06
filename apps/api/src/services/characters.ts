@@ -738,6 +738,18 @@ async function readCharacterOwner(character: CharacterRecord) {
   });
 }
 
+async function canViewerReadCharacterRunSessions(
+  character: CharacterRecord,
+  viewerUserId: string | null,
+): Promise<boolean> {
+  if (!viewerUserId) {
+    return false;
+  }
+
+  const owner = await readCharacterOwner(character);
+  return owner?.userId === viewerUserId;
+}
+
 async function readFirstSnapshotAtForCharacter(character: CharacterRecord) {
   if (character.firstSnapshotAt) {
     return toUnixSeconds(character.firstSnapshotAt);
@@ -1155,6 +1167,28 @@ async function attachMythicPlusRunSessions(
   };
 }
 
+function stripMythicPlusRunSessionMetadata(
+  data: CharacterMythicPlusResponse,
+): CharacterMythicPlusResponse {
+  return {
+    ...data,
+    runs: data.runs.map((run) => ({ ...run, session: undefined })),
+    sessions: [],
+  };
+}
+
+async function finalizeMythicPlusRunSessions(
+  characterId: string,
+  data: CharacterMythicPlusResponse,
+  includeSessions: boolean,
+): Promise<CharacterMythicPlusResponse> {
+  if (!includeSessions) {
+    return stripMythicPlusRunSessionMetadata(data);
+  }
+
+  return await attachMythicPlusRunSessions(characterId, data);
+}
+
 function getStoredCharacterMythicPlusData(
   character: CharacterRecord,
   includeAllRuns: boolean,
@@ -1194,6 +1228,7 @@ async function readCharacterMythicPlusData(
   character: CharacterRecord,
   includeAllRuns: boolean,
   currentScoreOverride?: number | null,
+  options: { includeSessions?: boolean } = {},
 ): Promise<CharacterMythicPlusResponse> {
   const storedData = getStoredCharacterMythicPlusData(
     character,
@@ -1201,7 +1236,11 @@ async function readCharacterMythicPlusData(
     currentScoreOverride,
   );
   if (storedData) {
-    return attachMythicPlusRunSessions(character.id, storedData);
+    return await finalizeMythicPlusRunSessions(
+      character.id,
+      storedData,
+      options.includeSessions === true,
+    );
   }
 
   const currentScore =
@@ -1220,7 +1259,7 @@ async function readCharacterMythicPlusData(
   const dedupedRuns = dedupeMythicPlusRuns(runRows.map((run) => serializeMythicPlusRunRow(run)));
   const projectedRuns = buildRecentRuns(dedupedRuns);
 
-  return attachMythicPlusRunSessions(
+  return await finalizeMythicPlusRunSessions(
     character.id,
     buildCharacterMythicPlusData(
       buildMythicPlusSummary(dedupedRuns, currentScore),
@@ -1228,6 +1267,7 @@ async function readCharacterMythicPlusData(
       projectedRuns.length,
       includeAllRuns,
     ),
+    options.includeSessions === true,
   );
 }
 
@@ -1250,8 +1290,11 @@ export async function readCharacterPage(
     timeFrame,
     includeStats,
   );
-  const mythicPlusPromise = latestSnapshotPromise.then((latestSnapshot) =>
-    readCharacterMythicPlusData(character, false, latestSnapshot?.mythicPlusScore ?? null),
+  const mythicPlusPromise = Promise.all([latestSnapshotPromise, ownerPromise]).then(
+    ([latestSnapshot, owner]) =>
+      readCharacterMythicPlusData(character, false, latestSnapshot?.mythicPlusScore ?? null, {
+        includeSessions: owner?.userId === viewerUserId,
+      }),
   );
 
   const [owner, latestSnapshot, firstSnapshotAt, timelinePayload, mythicPlus] = await Promise.all([
@@ -1353,7 +1396,9 @@ export async function readCharacterMythicPlus(
     return null;
   }
 
-  return await readCharacterMythicPlusData(character, includeAllRuns);
+  return await readCharacterMythicPlusData(character, includeAllRuns, undefined, {
+    includeSessions: await canViewerReadCharacterRunSessions(character, viewerUserId),
+  });
 }
 
 export async function readCharactersWithLatestSnapshot(

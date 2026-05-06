@@ -1324,6 +1324,46 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     assert.equal(mythicPlusPayload.runs[0]?.session?.position, 0);
     assert.equal(mythicPlusPayload.runs[1]?.session?.position, 1);
 
+    const publicMythicPlusResponse = await app.request(
+      `http://localhost/api/characters/${characterId}/mythic-plus?includeAllRuns=true`,
+    );
+    assert.equal(publicMythicPlusResponse.status, 200);
+    const publicMythicPlusPayload = (await publicMythicPlusResponse.json()) as {
+      sessions: Array<{ id: string }>;
+      runs: Array<{ _id?: string; session?: unknown }>;
+    };
+    assert.equal(publicMythicPlusPayload.sessions.length, 0);
+    assert.equal(publicMythicPlusPayload.runs[0]?.session, undefined);
+    assert.equal(publicMythicPlusPayload.runs[1]?.session, undefined);
+
+    const visitorAuth = await seedAuthenticatedUser();
+    const visitorMythicPlusResponse = await app.request(
+      `http://localhost/api/characters/${characterId}/mythic-plus?includeAllRuns=true`,
+      {
+        headers: authHeaders(visitorAuth.token),
+      },
+    );
+    assert.equal(visitorMythicPlusResponse.status, 200);
+    const visitorMythicPlusPayload = (await visitorMythicPlusResponse.json()) as {
+      sessions: Array<{ id: string }>;
+      runs: Array<{ _id?: string; session?: unknown }>;
+    };
+    assert.equal(visitorMythicPlusPayload.sessions.length, 0);
+    assert.equal(visitorMythicPlusPayload.runs[0]?.session, undefined);
+
+    const publicPageResponse = await app.request(
+      `http://localhost/api/characters/${characterId}/page`,
+    );
+    assert.equal(publicPageResponse.status, 200);
+    const publicPagePayload = (await publicPageResponse.json()) as {
+      mythicPlus: {
+        sessions: Array<{ id: string }>;
+        runs: Array<{ _id?: string; session?: unknown }>;
+      };
+    };
+    assert.equal(publicPagePayload.mythicPlus.sessions.length, 0);
+    assert.equal(publicPagePayload.mythicPlus.runs[0]?.session, undefined);
+
     const paidResponse = await app.request(
       `http://localhost/api/characters/${characterId}/mythic-plus/sessions/${createPayload.sessionId}/paid`,
       {
