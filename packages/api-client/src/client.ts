@@ -90,7 +90,7 @@ export type ApiClientConfig = {
 };
 
 type JsonRequestOptions<TInput, TOutput> = {
-  method: "GET" | "POST" | "PATCH";
+  method: "GET" | "POST" | "PATCH" | "DELETE";
   path: string;
   query?: Record<string, QueryValue>;
   input?: TInput;
@@ -457,6 +457,20 @@ export function createApiClient(config: ApiClientConfig) {
         )}/paid`,
         input,
         inputSchema: updateMythicPlusRunSessionPaidBodySchema,
+        outputSchema: mythicPlusRunSessionMutationResponseSchema,
+      });
+    },
+
+    deleteMythicPlusRunSession(
+      characterId: string,
+      sessionId: string,
+    ): Promise<MythicPlusRunSessionMutationResponse> {
+      const { id } = characterRouteParamsSchema.parse({ id: characterId });
+      const { id: parsedSessionId } = characterRouteParamsSchema.parse({ id: sessionId });
+      const pathId = encodePathSegment(id);
+      return requestJson({
+        method: "DELETE",
+        path: `/characters/${pathId}/mythic-plus/sessions/${encodePathSegment(parsedSessionId)}`,
         outputSchema: mythicPlusRunSessionMutationResponseSchema,
       });
     },

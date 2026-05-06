@@ -1348,6 +1348,20 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
       where: eq(mythicPlusRunSessionRuns.sessionId, createPayload.sessionId),
     });
     assert.equal(memberships.length, 2);
+
+    const deleteResponse = await app.request(
+      `http://localhost/api/characters/${characterId}/mythic-plus/sessions/${createPayload.sessionId}`,
+      {
+        method: "DELETE",
+        headers: authHeaders(auth.token),
+      },
+    );
+
+    assert.equal(deleteResponse.status, 200);
+    const deletedSession = await db.query.mythicPlusRunSessions.findFirst({
+      where: eq(mythicPlusRunSessions.id, createPayload.sessionId),
+    });
+    assert.equal(deletedSession, undefined);
   });
 
   it("only lets the character owner create Mythic+ run sessions", async () => {

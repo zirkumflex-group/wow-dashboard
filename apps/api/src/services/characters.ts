@@ -1885,6 +1885,53 @@ export async function updateMythicPlusRunSessionPaidStatus(
   };
 }
 
+export async function deleteMythicPlusRunSession(
+  characterId: string,
+  sessionId: string,
+  userId: string,
+): Promise<MythicPlusRunSessionMutationResponse | null> {
+  const ownedCharacterId = await readOwnedCharacterId(characterId, userId);
+  if (!ownedCharacterId) {
+    return null;
+  }
+
+  const session = await db.query.mythicPlusRunSessions.findFirst({
+    where: and(
+      eq(mythicPlusRunSessions.id, sessionId),
+      eq(mythicPlusRunSessions.characterId, ownedCharacterId),
+    ),
+  });
+
+  if (!session) {
+    return null;
+  }
+
+  const membershipRows = await db
+    .select({ runId: mythicPlusRunSessionRuns.runId })
+    .from(mythicPlusRunSessionRuns)
+    .where(eq(mythicPlusRunSessionRuns.sessionId, session.id))
+    .orderBy(asc(mythicPlusRunSessionRuns.position));
+  const runIds = membershipRows.map((row) => row.runId);
+
+  await db.delete(mythicPlusRunSessions).where(eq(mythicPlusRunSessions.id, session.id));
+
+  await insertAuditEvent("character.mythic_plus_session.deleted", {
+    userId,
+    metadata: {
+      characterId: ownedCharacterId,
+      sessionId: session.id,
+      runIds,
+    },
+  });
+
+  return {
+    characterId: ownedCharacterId,
+    sessionId: session.id,
+    runIds,
+    isPaid: session.isPaid,
+  };
+}
+
 export async function updateCharacterNonTradeableSlots(
   characterId: string,
   userId: string,

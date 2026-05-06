@@ -13,6 +13,7 @@ import {
   Layers3,
   ReceiptText,
   Sword,
+  Trash2,
   X,
 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
@@ -1126,13 +1127,17 @@ function RecentRunSelectionMark({ selected }: { selected: boolean }) {
 function RunSessionCard({
   session,
   canEdit,
+  canDelete,
   isMutating,
   onUpdatePaid,
+  onDelete,
 }: {
   session: NonNullable<MythicPlusRun["session"]>;
   canEdit: boolean;
+  canDelete: boolean;
   isMutating: boolean;
   onUpdatePaid?: (sessionId: string, isPaid: boolean) => Promise<void> | void;
+  onDelete?: (sessionId: string) => Promise<void> | void;
 }) {
   const paid = session.isPaid;
   return (
@@ -1150,35 +1155,56 @@ function RunSessionCard({
         ) : (
           <ReceiptText size={15} className="shrink-0 text-amber-300" />
         )}
-        <span className="text-xs font-semibold uppercase tracking-wider">Session Card</span>
+        <span className="text-xs font-semibold uppercase tracking-wider">Boost Session</span>
         <span className="text-xs text-muted-foreground">
           {session.runCount} run{session.runCount === 1 ? "" : "s"}
         </span>
       </div>
       <div className="flex items-center gap-2">
-        <Badge
-          variant="outline"
-          className={cn(
-            "h-6 border px-2 text-[11px]",
-            paid
-              ? "border-emerald-400/40 bg-emerald-400/10 text-emerald-200"
-              : "border-amber-400/40 bg-amber-400/10 text-amber-200",
-          )}
-        >
-          {paid ? "Paid" : "Unpaid"}
-        </Badge>
         {canEdit && onUpdatePaid ? (
           <Button
             type="button"
             size="sm"
             variant="outline"
-            className="h-7 border-border/60 bg-background/60 px-2 text-[11px]"
+            aria-pressed={paid}
+            className={cn(
+              "h-7 gap-1.5 border px-2 text-[11px] font-semibold",
+              paid
+                ? "border-emerald-400/40 bg-emerald-400/10 text-emerald-100 hover:bg-emerald-400/15 hover:text-emerald-50"
+                : "border-amber-400/40 bg-amber-400/10 text-amber-100 hover:bg-amber-400/15 hover:text-amber-50",
+            )}
             disabled={isMutating}
             onClick={() => {
               void Promise.resolve(onUpdatePaid(session.id, !paid)).catch(() => undefined);
             }}
           >
-            {paid ? "Mark Unpaid" : "Mark Paid"}
+            {paid ? "Paid" : "Unpaid"}
+          </Button>
+        ) : (
+          <span
+            className={cn(
+              "inline-flex h-7 items-center rounded-md border px-2 text-[11px] font-semibold",
+              paid
+                ? "border-emerald-400/40 bg-emerald-400/10 text-emerald-100"
+                : "border-amber-400/40 bg-amber-400/10 text-amber-100",
+            )}
+          >
+            {paid ? "Paid" : "Unpaid"}
+          </span>
+        )}
+        {canDelete && onDelete ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-7 border-red-400/40 bg-background/60 px-2 text-[11px] text-red-200 hover:bg-red-500/10 hover:text-red-100"
+            disabled={isMutating}
+            onClick={() => {
+              void Promise.resolve(onDelete(session.id)).catch(() => undefined);
+            }}
+          >
+            <Trash2 data-icon="inline-start" aria-hidden="true" />
+            Delete
           </Button>
         ) : null}
       </div>
@@ -1196,6 +1222,7 @@ export function MythicPlusSection({
   isMutatingSession = false,
   onCreateRunSession,
   onUpdateRunSessionPaid,
+  onDeleteRunSession,
 }: {
   data: MythicPlusData | null | undefined;
   isLoadingAllRuns: boolean;
@@ -1206,6 +1233,7 @@ export function MythicPlusSection({
   isMutatingSession?: boolean;
   onCreateRunSession?: (runIds: string[]) => Promise<void> | void;
   onUpdateRunSessionPaid?: (sessionId: string, isPaid: boolean) => Promise<void> | void;
+  onDeleteRunSession?: (sessionId: string) => Promise<void> | void;
 }) {
   const [visibleRecentRunCount, setVisibleRecentRunCount] = useState(INITIAL_RECENT_RUN_COUNT);
   const {
@@ -1529,8 +1557,10 @@ export function MythicPlusSection({
                               <RunSessionCard
                                 session={session}
                                 canEdit={canEditSessions}
+                                canDelete={canEditSessions && isSelectingRuns}
                                 isMutating={isMutatingSession}
                                 onUpdatePaid={onUpdateRunSessionPaid}
+                                onDelete={onDeleteRunSession}
                               />
                             </td>
                           </tr>

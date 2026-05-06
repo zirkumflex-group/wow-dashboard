@@ -35,6 +35,7 @@ import {
   readCharacterSnapshotTimeline,
   readCharactersWithLatestSnapshot,
   createMythicPlusRunSession,
+  deleteMythicPlusRunSession,
   readMyCharactersWithSnapshot,
   readPlayerScoreboard,
   readPlayerCharacters,
@@ -908,6 +909,39 @@ app.patch("/api/characters/:id/mythic-plus/sessions/:sessionId/paid", async (c) 
     parsedSessionParams.data.id,
     user.id,
     parsedBody.data.isPaid,
+  );
+
+  if (!result) {
+    return c.json({ error: "Character or session not found." }, 404);
+  }
+
+  return c.json(result);
+});
+
+app.delete("/api/characters/:id/mythic-plus/sessions/:sessionId", async (c) => {
+  const session = c.get("session");
+  const user = c.get("user");
+
+  if (!session || !user) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const parsedParams = characterRouteParamsSchema.safeParse(c.req.param());
+  if (!parsedParams.success) {
+    return c.json({ error: formatValidationError(parsedParams.error.issues) }, 400);
+  }
+
+  const parsedSessionParams = characterRouteParamsSchema.safeParse({
+    id: c.req.param("sessionId"),
+  });
+  if (!parsedSessionParams.success) {
+    return c.json({ error: formatValidationError(parsedSessionParams.error.issues) }, 400);
+  }
+
+  const result = await deleteMythicPlusRunSession(
+    parsedParams.data.id,
+    parsedSessionParams.data.id,
+    user.id,
   );
 
   if (!result) {

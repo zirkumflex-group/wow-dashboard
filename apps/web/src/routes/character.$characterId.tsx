@@ -1239,6 +1239,7 @@ type LayoutProps = {
   isMutatingMythicPlusSession?: boolean;
   createMythicPlusRunSession?: (runIds: string[]) => Promise<void> | void;
   updateMythicPlusRunSessionPaid?: (sessionId: string, isPaid: boolean) => Promise<void> | void;
+  deleteMythicPlusRunSession?: (sessionId: string) => Promise<void> | void;
   characterId: string;
   characterName: string;
   characterRealm: string;
@@ -2845,6 +2846,7 @@ function OverviewLayout({
   isMutatingMythicPlusSession,
   createMythicPlusRunSession,
   updateMythicPlusRunSessionPaid,
+  deleteMythicPlusRunSession,
   characterRealm,
   characterRegion,
   timeFrame,
@@ -2896,6 +2898,7 @@ function OverviewLayout({
               isMutatingSession={isMutatingMythicPlusSession}
               onCreateRunSession={createMythicPlusRunSession}
               onUpdateRunSessionPaid={updateMythicPlusRunSessionPaid}
+              onDeleteRunSession={deleteMythicPlusRunSession}
             />
           </Suspense>
         </div>
@@ -3418,6 +3421,7 @@ type CharacterPageContentProps = {
   isMutatingMythicPlusSession: boolean;
   onCreateMythicPlusRunSession: (runIds: string[]) => Promise<void> | void;
   onUpdateMythicPlusRunSessionPaid: (sessionId: string, isPaid: boolean) => Promise<void> | void;
+  onDeleteMythicPlusRunSession: (sessionId: string) => Promise<void> | void;
   characterId: string;
   characterName: string;
   characterRealm: string;
@@ -3442,6 +3446,7 @@ const CharacterPageContent = memo(function CharacterPageContent({
   isMutatingMythicPlusSession,
   onCreateMythicPlusRunSession,
   onUpdateMythicPlusRunSessionPaid,
+  onDeleteMythicPlusRunSession,
   characterId,
   characterName,
   characterRealm,
@@ -3465,6 +3470,7 @@ const CharacterPageContent = memo(function CharacterPageContent({
     isMutatingMythicPlusSession,
     createMythicPlusRunSession: onCreateMythicPlusRunSession,
     updateMythicPlusRunSessionPaid: onUpdateMythicPlusRunSessionPaid,
+    deleteMythicPlusRunSession: onDeleteMythicPlusRunSession,
     characterId,
     characterName,
     characterRealm,
@@ -3494,6 +3500,7 @@ const CharacterPageContent = memo(function CharacterPageContent({
             isMutatingSession={isMutatingMythicPlusSession}
             onCreateRunSession={onCreateMythicPlusRunSession}
             onUpdateRunSessionPaid={onUpdateMythicPlusRunSessionPaid}
+            onDeleteRunSession={onDeleteMythicPlusRunSession}
           />
         </Suspense>
       )}
@@ -3864,6 +3871,14 @@ function RouteComponent() {
     },
   });
 
+  const deleteMythicPlusRunSessionMutation = useMutation({
+    mutationFn: (input: { targetCharacterId: string; sessionId: string }) =>
+      apiClient.deleteMythicPlusRunSession(input.targetCharacterId, input.sessionId),
+    onSuccess: async () => {
+      await invalidateMythicPlusQueries();
+    },
+  });
+
   if (characterPageQuery.isError) {
     return (
       <CharacterPageState
@@ -4019,6 +4034,30 @@ function RouteComponent() {
       toast.success(isPaid ? "Session marked paid." : "Session marked unpaid.");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not update session.");
+      throw error;
+    }
+  }
+
+  async function handleDeleteMythicPlusRunSession(sessionId: string) {
+    if (!canEditCharacter) {
+      return;
+    }
+
+    if (
+      typeof window !== "undefined" &&
+      !window.confirm("Delete this run session? The runs stay in history.")
+    ) {
+      return;
+    }
+
+    try {
+      await deleteMythicPlusRunSessionMutation.mutateAsync({
+        targetCharacterId: resolvedCharacterId,
+        sessionId,
+      });
+      toast.success("Run session deleted.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not delete run session.");
       throw error;
     }
   }
@@ -4415,10 +4454,12 @@ function RouteComponent() {
           canEditMythicPlusSessions={canEditCharacter}
           isMutatingMythicPlusSession={
             createMythicPlusRunSessionMutation.isPending ||
-            updateMythicPlusRunSessionPaidMutation.isPending
+            updateMythicPlusRunSessionPaidMutation.isPending ||
+            deleteMythicPlusRunSessionMutation.isPending
           }
           onCreateMythicPlusRunSession={handleCreateMythicPlusRunSession}
           onUpdateMythicPlusRunSessionPaid={handleUpdateMythicPlusRunSessionPaid}
+          onDeleteMythicPlusRunSession={handleDeleteMythicPlusRunSession}
           characterId={resolvedCharacterId}
           characterName={character.name}
           characterRealm={character.realm}
