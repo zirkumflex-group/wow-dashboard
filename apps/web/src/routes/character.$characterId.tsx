@@ -4043,13 +4043,6 @@ function RouteComponent() {
       return;
     }
 
-    if (
-      typeof window !== "undefined" &&
-      !window.confirm("Delete this run session? The runs stay in history.")
-    ) {
-      return;
-    }
-
     try {
       await deleteMythicPlusRunSessionMutation.mutateAsync({
         targetCharacterId: resolvedCharacterId,

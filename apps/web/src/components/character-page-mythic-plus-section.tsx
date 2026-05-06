@@ -545,19 +545,15 @@ function writeHideAllPlayerNames(enabled: boolean) {
 
 function readHideRunServerNames(): boolean {
   try {
-    return localStorage.getItem(HIDE_RUN_SERVER_NAMES_KEY) === "1";
+    return localStorage.getItem(HIDE_RUN_SERVER_NAMES_KEY) !== "0";
   } catch {
-    return false;
+    return true;
   }
 }
 
 function writeHideRunServerNames(enabled: boolean) {
   try {
-    if (enabled) {
-      localStorage.setItem(HIDE_RUN_SERVER_NAMES_KEY, "1");
-      return;
-    }
-    localStorage.removeItem(HIDE_RUN_SERVER_NAMES_KEY);
+    localStorage.setItem(HIDE_RUN_SERVER_NAMES_KEY, enabled ? "1" : "0");
   } catch {
     /* ignore */
   }
@@ -1156,16 +1152,53 @@ function RunSessionCard({
   onDelete?: (sessionId: string) => Promise<void> | void;
 }) {
   const paid = session.isPaid;
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const deleteConfirmRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!deleteConfirmOpen) {
+      return;
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target;
+      if (target instanceof Node && deleteConfirmRef.current?.contains(target)) {
+        return;
+      }
+      setDeleteConfirmOpen(false);
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setDeleteConfirmOpen(false);
+      }
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [deleteConfirmOpen]);
+
+  useEffect(() => {
+    if (!canDelete) {
+      setDeleteConfirmOpen(false);
+    }
+  }, [canDelete]);
+
   return (
     <div
       className={cn(
-        "flex flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2",
+        "grid min-h-9 grid-cols-[6.25rem_minmax(0,1fr)_auto] items-center gap-2 rounded-sm border px-0 py-1.5",
         paid
           ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-100"
           : "border-amber-400/30 bg-amber-500/10 text-amber-100",
       )}
     >
-      <div className="flex min-w-0 items-center gap-2">
+      <div className="col-start-2 flex min-w-0 items-center gap-2 px-3">
         {paid ? (
           <CircleDollarSign size={15} className="shrink-0 text-emerald-300" />
         ) : (
@@ -1176,7 +1209,7 @@ function RunSessionCard({
           {session.runCount} run{session.runCount === 1 ? "" : "s"}
         </span>
       </div>
-      <div className="flex items-center gap-2">
+      <div className="col-start-3 flex items-center gap-2 px-3">
         {canEdit && onUpdatePaid ? (
           <Button
             type="button"
@@ -1209,19 +1242,54 @@ function RunSessionCard({
           </span>
         )}
         {canDelete && onDelete ? (
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="h-7 border-red-400/40 bg-background/60 px-2 text-[11px] text-red-200 hover:bg-red-500/10 hover:text-red-100"
-            disabled={isMutating}
-            onClick={() => {
-              void Promise.resolve(onDelete(session.id)).catch(() => undefined);
-            }}
-          >
-            <Trash2 data-icon="inline-start" aria-hidden="true" />
-            Delete
-          </Button>
+          <div ref={deleteConfirmRef} className="relative">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-7 border-red-400/40 bg-background/60 px-2 text-[11px] text-red-200 hover:bg-red-500/10 hover:text-red-100"
+              disabled={isMutating}
+              aria-expanded={deleteConfirmOpen}
+              onClick={() => setDeleteConfirmOpen((current) => !current)}
+            >
+              <Trash2 data-icon="inline-start" aria-hidden="true" />
+              Delete
+            </Button>
+            {deleteConfirmOpen ? (
+              <div className="absolute right-0 top-full z-30 mt-1 w-64 rounded-md border border-red-400/35 bg-card p-3 text-left text-foreground shadow-lg">
+                <div className="text-xs font-semibold text-red-100">Delete boost session?</div>
+                <p className="mt-1 text-xs leading-snug text-muted-foreground">
+                  The grouped runs stay in history.
+                </p>
+                <div className="mt-3 flex items-center justify-end gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 px-2 text-[11px]"
+                    disabled={isMutating}
+                    onClick={() => setDeleteConfirmOpen(false)}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-7 border-red-400/45 bg-red-500/10 px-2 text-[11px] text-red-100 hover:bg-red-500/15 hover:text-red-50"
+                    disabled={isMutating}
+                    onClick={() => {
+                      void Promise.resolve(onDelete(session.id))
+                        .then(() => setDeleteConfirmOpen(false))
+                        .catch(() => undefined);
+                    }}
+                  >
+                    Delete
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+          </div>
         ) : null}
       </div>
     </div>
@@ -1577,7 +1645,7 @@ export function MythicPlusSection({
                       <Fragment key={getRecentRunRowKey(run)}>
                         {showSessionCard ? (
                           <tr>
-                            <td colSpan={6} className="bg-background px-3 py-2">
+                            <td colSpan={6} className="bg-background px-0 py-1">
                               <RunSessionCard
                                 session={session}
                                 canEdit={canEditSessions}
