@@ -405,6 +405,21 @@ export const characterMythicPlusQuerySchema = z.object({
   includeAllRuns: z.boolean().optional(),
 });
 
+export const createMythicPlusRunSessionBodySchema = z.object({
+  runIds: z
+    .array(z.string().uuid())
+    .min(1)
+    .max(50)
+    .refine((runIds) => new Set(runIds).size === runIds.length, {
+      message: "Run IDs must be unique.",
+    }),
+  isPaid: z.boolean().optional(),
+});
+
+export const updateMythicPlusRunSessionPaidBodySchema = z.object({
+  isPaid: z.boolean(),
+});
+
 export const updatePlayerDiscordBodySchema = z.object({
   discordUserId: z.string().nullable(),
 });
@@ -432,6 +447,10 @@ export type CharacterPageQuery = z.infer<typeof characterPageQuerySchema>;
 export type CharacterDetailTimelineQuery = z.infer<typeof characterDetailTimelineQuerySchema>;
 export type CharacterSnapshotTimelineQuery = z.infer<typeof characterSnapshotTimelineQuerySchema>;
 export type CharacterMythicPlusQuery = z.infer<typeof characterMythicPlusQuerySchema>;
+export type CreateMythicPlusRunSessionBody = z.infer<typeof createMythicPlusRunSessionBodySchema>;
+export type UpdateMythicPlusRunSessionPaidBody = z.infer<
+  typeof updateMythicPlusRunSessionPaidBodySchema
+>;
 export type UpdatePlayerDiscordBody = z.infer<typeof updatePlayerDiscordBodySchema>;
 export type UpdateCharacterBoosterBody = z.infer<typeof updateCharacterBoosterBodySchema>;
 export type UpdateCharacterSlotsBody = z.infer<typeof updateCharacterSlotsBodySchema>;

@@ -10,8 +10,10 @@ import {
   characterRouteParamsSchema,
   characterSnapshotTimelineQuerySchema,
   charactersLatestQuerySchema,
+  createMythicPlusRunSessionBodySchema,
   loginCodeTtlSeconds,
   playerRouteParamsSchema,
+  updateMythicPlusRunSessionPaidBodySchema,
   updateCharacterBoosterBodySchema,
   updateCharacterSlotsBodySchema,
   updateCharacterVisibilityBodySchema,
@@ -32,6 +34,7 @@ import {
   readCharacterPage,
   readCharacterSnapshotTimeline,
   readCharactersWithLatestSnapshot,
+  createMythicPlusRunSession,
   readMyCharactersWithSnapshot,
   readPlayerScoreboard,
   readPlayerCharacters,
@@ -40,6 +43,7 @@ import {
   updateCharacterBoosterStatus,
   updateCharacterNonTradeableSlots,
   updateCharacterVisibility,
+  updateMythicPlusRunSessionPaidStatus,
 } from "./services/characters";
 import { updatePlayerDiscordUserId } from "./services/players";
 
@@ -817,6 +821,100 @@ app.get("/api/characters/:id/mythic-plus", async (c) => {
       c.get("user")?.id ?? null,
     ),
   );
+});
+
+app.post("/api/characters/:id/mythic-plus/sessions", async (c) => {
+  const session = c.get("session");
+  const user = c.get("user");
+
+  if (!session || !user) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const parsedParams = characterRouteParamsSchema.safeParse(c.req.param());
+  if (!parsedParams.success) {
+    return c.json({ error: formatValidationError(parsedParams.error.issues) }, 400);
+  }
+
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "Invalid request body" }, 400);
+  }
+
+  const parsedBody = createMythicPlusRunSessionBodySchema.safeParse(body);
+  if (!parsedBody.success) {
+    return c.json({ error: formatValidationError(parsedBody.error.issues) }, 400);
+  }
+
+  try {
+    const result = await createMythicPlusRunSession(
+      parsedParams.data.id,
+      user.id,
+      parsedBody.data.runIds,
+      parsedBody.data.isPaid === true,
+    );
+
+    if (!result) {
+      return c.json({ error: "Character not found." }, 404);
+    }
+
+    return c.json(result);
+  } catch (error) {
+    return c.json(
+      {
+        error: error instanceof Error ? error.message : String(error),
+      },
+      400,
+    );
+  }
+});
+
+app.patch("/api/characters/:id/mythic-plus/sessions/:sessionId/paid", async (c) => {
+  const session = c.get("session");
+  const user = c.get("user");
+
+  if (!session || !user) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const parsedParams = characterRouteParamsSchema.safeParse(c.req.param());
+  if (!parsedParams.success) {
+    return c.json({ error: formatValidationError(parsedParams.error.issues) }, 400);
+  }
+
+  const parsedSessionParams = characterRouteParamsSchema.safeParse({
+    id: c.req.param("sessionId"),
+  });
+  if (!parsedSessionParams.success) {
+    return c.json({ error: formatValidationError(parsedSessionParams.error.issues) }, 400);
+  }
+
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "Invalid request body" }, 400);
+  }
+
+  const parsedBody = updateMythicPlusRunSessionPaidBodySchema.safeParse(body);
+  if (!parsedBody.success) {
+    return c.json({ error: formatValidationError(parsedBody.error.issues) }, 400);
+  }
+
+  const result = await updateMythicPlusRunSessionPaidStatus(
+    parsedParams.data.id,
+    parsedSessionParams.data.id,
+    user.id,
+    parsedBody.data.isPaid,
+  );
+
+  if (!result) {
+    return c.json({ error: "Character or session not found." }, 404);
+  }
+
+  return c.json(result);
 });
 
 app.get("/api/characters/scoreboard", async (c) => {

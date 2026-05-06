@@ -26,6 +26,8 @@ import {
   account as authAccounts,
   characterDailySnapshots,
   characters,
+  mythicPlusRunSessionRuns,
+  mythicPlusRunSessions,
   mythicPlusRuns,
   players,
   session as authSessions,
@@ -197,6 +199,8 @@ async function truncateTables() {
     sql.raw(`
     truncate table
       "audit_log",
+      "mythic_plus_run_session_runs",
+      "mythic_plus_run_sessions",
       "mythic_plus_runs",
       "character_daily_snapshots",
       "snapshots",
@@ -457,8 +461,9 @@ async function seedMythicPlusRun(input: {
   status?: "active" | "completed" | "abandoned";
   fingerprint?: string;
 }) {
+  const runId = randomUUID();
   await db.insert(mythicPlusRuns).values({
-    id: randomUUID(),
+    id: runId,
     characterId: input.characterId,
     fingerprint: input.fingerprint ?? `fp-${randomUUID()}`,
     attemptId: null,
@@ -489,6 +494,7 @@ async function seedMythicPlusRun(input: {
     ],
     legacyConvexId: null,
   });
+  return runId;
 }
 
 function authHeaders(token: string): HeadersInit {
@@ -1250,6 +1256,136 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     assert.equal(payload.summary.currentScore, 3333);
     assert.equal(payload.summary.overall.totalRuns, 2);
     assert.equal(payload.summary.overall.bestLevel, 17);
+  });
+
+  it("groups Mythic+ runs into owner-managed paid sessions", async () => {
+    const auth = await seedAuthenticatedUser();
+    const playerId = await seedPlayer(auth.userId, "SessionOwner#1000");
+    const characterId = await seedCharacter({
+      playerId,
+      name: "Sessioneer",
+      realm: "Tarren Mill",
+      className: "Paladin",
+      race: "Human",
+      faction: "alliance",
+    });
+    const firstRunId = await seedMythicPlusRun({
+      characterId,
+      observedAt: "2026-04-20T12:05:00.000Z",
+      level: 15,
+      mapName: "The MOTHERLODE!!",
+      fingerprint: "session-run-one",
+    });
+    const secondRunId = await seedMythicPlusRun({
+      characterId,
+      observedAt: "2026-04-21T12:10:00.000Z",
+      level: 17,
+      mapName: "Mists of Tirna Scithe",
+      fingerprint: "session-run-two",
+    });
+
+    const createResponse = await app.request(
+      `http://localhost/api/characters/${characterId}/mythic-plus/sessions`,
+      {
+        method: "POST",
+        headers: {
+          ...authHeaders(auth.token),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          runIds: [secondRunId, firstRunId],
+        }),
+      },
+    );
+
+    assert.equal(createResponse.status, 200);
+    const createPayload = (await createResponse.json()) as {
+      sessionId: string;
+      runIds: string[];
+      isPaid: boolean;
+    };
+    assert.deepEqual(createPayload.runIds, [secondRunId, firstRunId]);
+    assert.equal(createPayload.isPaid, false);
+
+    const mythicPlusResponse = await app.request(
+      `http://localhost/api/characters/${characterId}/mythic-plus?includeAllRuns=true`,
+      {
+        headers: authHeaders(auth.token),
+      },
+    );
+    assert.equal(mythicPlusResponse.status, 200);
+    const mythicPlusPayload = (await mythicPlusResponse.json()) as {
+      sessions: Array<{ id: string; runIds: string[]; isPaid: boolean }>;
+      runs: Array<{ _id?: string; session?: { id: string; position: number; isPaid: boolean } }>;
+    };
+    assert.equal(mythicPlusPayload.sessions.length, 1);
+    assert.deepEqual(mythicPlusPayload.sessions[0]?.runIds, [secondRunId, firstRunId]);
+    assert.equal(mythicPlusPayload.runs[0]?.session?.id, createPayload.sessionId);
+    assert.equal(mythicPlusPayload.runs[0]?.session?.position, 0);
+    assert.equal(mythicPlusPayload.runs[1]?.session?.position, 1);
+
+    const paidResponse = await app.request(
+      `http://localhost/api/characters/${characterId}/mythic-plus/sessions/${createPayload.sessionId}/paid`,
+      {
+        method: "PATCH",
+        headers: {
+          ...authHeaders(auth.token),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          isPaid: true,
+        }),
+      },
+    );
+
+    assert.equal(paidResponse.status, 200);
+    const paidSession = await db.query.mythicPlusRunSessions.findFirst({
+      where: eq(mythicPlusRunSessions.id, createPayload.sessionId),
+    });
+    assert.equal(paidSession?.isPaid, true);
+
+    const memberships = await db.query.mythicPlusRunSessionRuns.findMany({
+      where: eq(mythicPlusRunSessionRuns.sessionId, createPayload.sessionId),
+    });
+    assert.equal(memberships.length, 2);
+  });
+
+  it("only lets the character owner create Mythic+ run sessions", async () => {
+    const ownerAuth = await seedAuthenticatedUser();
+    const ownerPlayerId = await seedPlayer(ownerAuth.userId);
+    const characterId = await seedCharacter({
+      playerId: ownerPlayerId,
+      name: "Protected",
+      realm: "Tarren Mill",
+      className: "Paladin",
+      race: "Human",
+      faction: "alliance",
+    });
+    const runId = await seedMythicPlusRun({
+      characterId,
+      observedAt: "2026-04-20T12:05:00.000Z",
+      level: 15,
+      fingerprint: "protected-run",
+    });
+    const attackerAuth = await seedAuthenticatedUser();
+
+    const response = await app.request(
+      `http://localhost/api/characters/${characterId}/mythic-plus/sessions`,
+      {
+        method: "POST",
+        headers: {
+          ...authHeaders(attackerAuth.token),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          runIds: [runId],
+        }),
+      },
+    );
+
+    assert.equal(response.status, 404);
+    const sessionRows = await db.select().from(mythicPlusRunSessions);
+    assert.equal(sessionRows.length, 0);
   });
 
   it("returns character scoreboard rows sorted by mythic plus score", async () => {

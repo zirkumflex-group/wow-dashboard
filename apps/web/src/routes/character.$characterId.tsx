@@ -1235,6 +1235,10 @@ type LayoutProps = {
   mythicPlus?: MythicPlusData | null;
   mythicPlusIsLoadingAllRuns?: boolean;
   requestAllMythicPlusRuns?: () => void;
+  canEditMythicPlusSessions?: boolean;
+  isMutatingMythicPlusSession?: boolean;
+  createMythicPlusRunSession?: (runIds: string[]) => Promise<void> | void;
+  updateMythicPlusRunSessionPaid?: (sessionId: string, isPaid: boolean) => Promise<void> | void;
   characterId: string;
   characterName: string;
   characterRealm: string;
@@ -1284,6 +1288,12 @@ type MythicPlusRun = {
   members?: MythicPlusRunMember[];
   upgradeCount?: number | null;
   scoreIncrease?: number | null;
+  session?: {
+    id: string;
+    position: number;
+    runCount: number;
+    isPaid: boolean;
+  };
 };
 
 type MythicPlusBucketSummary = {
@@ -1333,6 +1343,13 @@ type MythicPlusSummary = {
 type MythicPlusData = {
   runs: MythicPlusRun[];
   summary: MythicPlusSummary;
+  sessions?: {
+    id: string;
+    runIds: string[];
+    isPaid: boolean;
+    createdAt: number;
+    updatedAt: number;
+  }[];
   totalRunCount: number;
   isPreview: boolean;
 };
@@ -2824,6 +2841,10 @@ function OverviewLayout({
   mythicPlus,
   mythicPlusIsLoadingAllRuns,
   requestAllMythicPlusRuns,
+  canEditMythicPlusSessions,
+  isMutatingMythicPlusSession,
+  createMythicPlusRunSession,
+  updateMythicPlusRunSessionPaid,
   characterRealm,
   characterRegion,
   timeFrame,
@@ -2871,6 +2892,10 @@ function OverviewLayout({
               onRequestAllRuns={requestAllMythicPlusRuns ?? (() => undefined)}
               characterRealm={characterRealm}
               characterRegion={characterRegion}
+              canEditSessions={canEditMythicPlusSessions}
+              isMutatingSession={isMutatingMythicPlusSession}
+              onCreateRunSession={createMythicPlusRunSession}
+              onUpdateRunSessionPaid={updateMythicPlusRunSessionPaid}
             />
           </Suspense>
         </div>
@@ -3389,6 +3414,10 @@ type CharacterPageContentProps = {
   mythicPlusData: MythicPlusData | null | undefined;
   isLoadingAllMythicPlusRuns: boolean;
   onRequestAllMythicPlusRuns: () => void;
+  canEditMythicPlusSessions: boolean;
+  isMutatingMythicPlusSession: boolean;
+  onCreateMythicPlusRunSession: (runIds: string[]) => Promise<void> | void;
+  onUpdateMythicPlusRunSessionPaid: (sessionId: string, isPaid: boolean) => Promise<void> | void;
   characterId: string;
   characterName: string;
   characterRealm: string;
@@ -3409,6 +3438,10 @@ const CharacterPageContent = memo(function CharacterPageContent({
   mythicPlusData,
   isLoadingAllMythicPlusRuns,
   onRequestAllMythicPlusRuns,
+  canEditMythicPlusSessions,
+  isMutatingMythicPlusSession,
+  onCreateMythicPlusRunSession,
+  onUpdateMythicPlusRunSessionPaid,
   characterId,
   characterName,
   characterRealm,
@@ -3428,6 +3461,10 @@ const CharacterPageContent = memo(function CharacterPageContent({
     mythicPlus: mythicPlusData,
     mythicPlusIsLoadingAllRuns: isLoadingAllMythicPlusRuns,
     requestAllMythicPlusRuns: onRequestAllMythicPlusRuns,
+    canEditMythicPlusSessions,
+    isMutatingMythicPlusSession,
+    createMythicPlusRunSession: onCreateMythicPlusRunSession,
+    updateMythicPlusRunSessionPaid: onUpdateMythicPlusRunSessionPaid,
     characterId,
     characterName,
     characterRealm,
@@ -3453,6 +3490,10 @@ const CharacterPageContent = memo(function CharacterPageContent({
             onRequestAllRuns={onRequestAllMythicPlusRuns}
             characterRealm={characterRealm}
             characterRegion={characterRegion}
+            canEditSessions={canEditMythicPlusSessions}
+            isMutatingSession={isMutatingMythicPlusSession}
+            onCreateRunSession={onCreateMythicPlusRunSession}
+            onUpdateRunSessionPaid={onUpdateMythicPlusRunSessionPaid}
           />
         </Suspense>
       )}
@@ -3679,6 +3720,7 @@ function RouteComponent() {
     return {
       ...baseMythicPlusData,
       runs: usableMythicPlusAllRuns?.runs ?? baseMythicPlusData.runs,
+      sessions: usableMythicPlusAllRuns?.sessions ?? baseMythicPlusData.sessions,
       totalRunCount: usableMythicPlusAllRuns?.totalRunCount ?? baseMythicPlusData.totalRunCount,
       isPreview: usableMythicPlusAllRuns?.isPreview ?? baseMythicPlusData.isPreview,
     };
@@ -3705,6 +3747,18 @@ function RouteComponent() {
       queryKey: apiQueryKeys.playerCharacters(ownerPlayerId),
     });
   }, [characterPage?.header.owner?.playerId, queryClient]);
+
+  const invalidateMythicPlusQueries = useCallback(async () => {
+    await Promise.all([
+      invalidateCharacterPageQueries(),
+      queryClient.invalidateQueries({
+        queryKey: apiQueryKeys.characterMythicPlus(characterId, {}),
+      }),
+      queryClient.invalidateQueries({
+        queryKey: apiQueryKeys.characterMythicPlus(characterId, { includeAllRuns: true }),
+      }),
+    ]);
+  }, [characterId, invalidateCharacterPageQueries, queryClient]);
 
   const setCachedCharacterPageBoosterStatus = useCallback(
     (cacheCharacterId: string, isBooster: boolean) => {
@@ -3787,6 +3841,26 @@ function RouteComponent() {
           queryKey: apiQueryKeys.charactersLatest({ characterId: [] }),
         }),
       ]);
+    },
+  });
+
+  const createMythicPlusRunSessionMutation = useMutation({
+    mutationFn: (input: { targetCharacterId: string; runIds: string[] }) =>
+      apiClient.createMythicPlusRunSession(input.targetCharacterId, {
+        runIds: input.runIds,
+      }),
+    onSuccess: async () => {
+      await invalidateMythicPlusQueries();
+    },
+  });
+
+  const updateMythicPlusRunSessionPaidMutation = useMutation({
+    mutationFn: (input: { targetCharacterId: string; sessionId: string; isPaid: boolean }) =>
+      apiClient.updateMythicPlusRunSessionPaid(input.targetCharacterId, input.sessionId, {
+        isPaid: input.isPaid,
+      }),
+    onSuccess: async () => {
+      await invalidateMythicPlusQueries();
     },
   });
 
@@ -3911,6 +3985,41 @@ function RouteComponent() {
       toast.error(error instanceof Error ? error.message : "Could not update visibility.");
     } finally {
       setIsUpdatingVisibility(false);
+    }
+  }
+
+  async function handleCreateMythicPlusRunSession(runIds: string[]) {
+    if (!canEditCharacter || runIds.length === 0) {
+      return;
+    }
+
+    try {
+      await createMythicPlusRunSessionMutation.mutateAsync({
+        targetCharacterId: resolvedCharacterId,
+        runIds,
+      });
+      toast.success(`Session created for ${runIds.length} run${runIds.length === 1 ? "" : "s"}.`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not create Mythic+ session.");
+      throw error;
+    }
+  }
+
+  async function handleUpdateMythicPlusRunSessionPaid(sessionId: string, isPaid: boolean) {
+    if (!canEditCharacter) {
+      return;
+    }
+
+    try {
+      await updateMythicPlusRunSessionPaidMutation.mutateAsync({
+        targetCharacterId: resolvedCharacterId,
+        sessionId,
+        isPaid,
+      });
+      toast.success(isPaid ? "Session marked paid." : "Session marked unpaid.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not update session.");
+      throw error;
     }
   }
 
@@ -4303,6 +4412,13 @@ function RouteComponent() {
           mythicPlusData={mythicPlusData}
           isLoadingAllMythicPlusRuns={isLoadingAllMythicPlusRuns}
           onRequestAllMythicPlusRuns={handleRequestAllMythicPlusRuns}
+          canEditMythicPlusSessions={canEditCharacter}
+          isMutatingMythicPlusSession={
+            createMythicPlusRunSessionMutation.isPending ||
+            updateMythicPlusRunSessionPaidMutation.isPending
+          }
+          onCreateMythicPlusRunSession={handleCreateMythicPlusRunSession}
+          onUpdateMythicPlusRunSessionPaid={handleUpdateMythicPlusRunSessionPaid}
           characterId={resolvedCharacterId}
           characterName={character.name}
           characterRealm={character.realm}

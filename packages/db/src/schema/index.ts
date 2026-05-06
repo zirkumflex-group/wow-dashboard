@@ -2,6 +2,7 @@ import { account, session, user, verification } from "./auth";
 import { auditLog } from "./auditLog";
 import { characterDailySnapshots } from "./characterDailySnapshots";
 import { characters } from "./characters";
+import { mythicPlusRunSessionRuns, mythicPlusRunSessions } from "./mythicPlusRunSessions";
 import { mythicPlusRuns } from "./mythicPlusRuns";
 import { players } from "./players";
 import { snapshots } from "./snapshots";
@@ -10,6 +11,7 @@ export * from "./auth";
 export * from "./auditLog";
 export * from "./characterDailySnapshots";
 export * from "./characters";
+export * from "./mythicPlusRunSessions";
 export * from "./mythicPlusRuns";
 export * from "./players";
 export * from "./snapshots";
@@ -25,5 +27,7 @@ export const schema = {
   snapshots,
   characterDailySnapshots,
   mythicPlusRuns,
+  mythicPlusRunSessions,
+  mythicPlusRunSessionRuns,
   auditLog,
 };

@@ -158,6 +158,14 @@ export const mythicPlusRecentRunPreviewSchema = z.object({
   members: z.array(addonMythicPlusRunMemberSchema).optional(),
   upgradeCount: z.number().nullable(),
   scoreIncrease: z.number().nullable(),
+  session: z
+    .object({
+      id: z.string().uuid(),
+      position: z.number().int().nonnegative(),
+      runCount: z.number().int().positive(),
+      isPaid: z.boolean(),
+    })
+    .optional(),
 });
 
 export const serializedCharacterSchema = z.object({
@@ -302,8 +310,26 @@ export const characterCurrenciesTimelineSnapshotSchema = z.object({
 export const characterMythicPlusResponseSchema = z.object({
   summary: mythicPlusSummarySchema,
   runs: z.array(mythicPlusRecentRunPreviewSchema),
+  sessions: z
+    .array(
+      z.object({
+        id: z.string().uuid(),
+        runIds: z.array(z.string().uuid()),
+        isPaid: z.boolean(),
+        createdAt: z.number(),
+        updatedAt: z.number(),
+      }),
+    )
+    .default([]),
   totalRunCount: z.number(),
   isPreview: z.boolean(),
+});
+
+export const mythicPlusRunSessionMutationResponseSchema = z.object({
+  characterId: z.string().uuid(),
+  sessionId: z.string().uuid(),
+  runIds: z.array(z.string().uuid()),
+  isPaid: z.boolean(),
 });
 
 export const characterPageResponseSchema = z.object({
@@ -439,6 +465,9 @@ export type CharacterSnapshotTimelineResponse = z.infer<
   typeof characterSnapshotTimelineResponseSchema
 >;
 export type CharacterMythicPlusResponse = z.infer<typeof characterMythicPlusResponseSchema>;
+export type MythicPlusRunSessionMutationResponse = z.infer<
+  typeof mythicPlusRunSessionMutationResponseSchema
+>;
 export type CharacterBoosterExportEntry = z.infer<typeof characterBoosterExportEntrySchema>;
 export type ResyncCharactersResponse = z.infer<typeof resyncCharactersResponseSchema>;
 export type UpdateCharacterBoosterResponse = z.infer<typeof updateCharacterBoosterResponseSchema>;

@@ -279,6 +279,13 @@ export interface MythicPlusRunMember {
   role?: SnapshotRole;
 }
 
+export interface MythicPlusRunSessionPreview {
+  id: string;
+  position: number;
+  runCount: number;
+  isPaid: boolean;
+}
+
 export interface MythicPlusRecentRunPreview {
   _id?: string;
   _creationTime?: number;
@@ -308,4 +315,5 @@ export interface MythicPlusRecentRunPreview {
   members?: MythicPlusRunMember[];
   upgradeCount: number | null;
   scoreIncrease: number | null;
+  session?: MythicPlusRunSessionPreview;
 }

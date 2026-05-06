@@ -1,8 +1,21 @@
 import { Badge } from "@wow-dashboard/ui/components/badge";
 import { Button } from "@wow-dashboard/ui/components/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@wow-dashboard/ui/components/card";
-import { Clock, Eye, EyeOff, Flame, History, Sword } from "lucide-react";
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { cn } from "@wow-dashboard/ui/lib/utils";
+import {
+  CheckCircle2,
+  CircleDollarSign,
+  Clock,
+  Eye,
+  EyeOff,
+  Flame,
+  History,
+  Layers3,
+  ReceiptText,
+  Sword,
+  X,
+} from "lucide-react";
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   getRaiderIoDungeonScoreColor,
   getMythicPlusDungeonMeta,
@@ -66,6 +79,12 @@ type MythicPlusRun = {
   members?: MythicPlusRunMember[];
   upgradeCount?: number | null;
   scoreIncrease?: number | null;
+  session?: {
+    id: string;
+    position: number;
+    runCount: number;
+    isPaid: boolean;
+  };
 };
 
 type MythicPlusBucketSummary = {
@@ -115,6 +134,13 @@ type MythicPlusSummary = {
 type MythicPlusData = {
   runs: MythicPlusRun[];
   summary: MythicPlusSummary;
+  sessions?: {
+    id: string;
+    runIds: string[];
+    isPaid: boolean;
+    createdAt: number;
+    updatedAt: number;
+  }[];
   totalRunCount: number;
   isPreview: boolean;
 };
@@ -606,6 +632,7 @@ function RecentRunPartyMembers({
   hiddenKeys,
   hideAllNames,
   hideServerNames,
+  disableActions = false,
   onHide,
 }: {
   run: MythicPlusRun;
@@ -614,6 +641,7 @@ function RecentRunPartyMembers({
   hiddenKeys: Set<string>;
   hideAllNames: boolean;
   hideServerNames: boolean;
+  disableActions?: boolean;
   onHide: (key: string) => void;
 }) {
   const allMembers = getDisplayedRunMembers(run.members);
@@ -654,14 +682,17 @@ function RecentRunPartyMembers({
               rel="noreferrer"
               className={`inline-flex shrink-0 whitespace-nowrap font-medium decoration-current/40 underline-offset-2 hover:underline ${classColor(member.classTag ?? "")}`}
               title={`View ${member.name} on Raider.IO`}
+              tabIndex={disableActions ? -1 : undefined}
             >
               {formatRunMemberName(member, characterRealm, hideServerNames)}
             </a>
             <button
               type="button"
               onClick={(event) => {
-                event.stopPropagation();
-                onHide(key);
+                if (!disableActions) {
+                  event.stopPropagation();
+                  onHide(key);
+                }
               }}
               className="pointer-events-none absolute left-1/2 top-[calc(100%+1px)] z-10 -translate-x-1/2 rounded-sm border border-border/70 bg-background/95 p-1 text-muted-foreground/55 opacity-0 shadow-sm transition-opacity duration-150 group-hover/member:pointer-events-auto group-hover/member:opacity-100 group-focus-within/member:pointer-events-auto group-focus-within/member:opacity-100 hover:text-foreground"
               title={`Hide ${member.name}`}
@@ -1072,18 +1103,109 @@ function MythicPlusDungeonBestList({
   );
 }
 
+function getSelectableRunId(run: MythicPlusRun) {
+  return typeof run._id === "string" && run._id.trim() !== "" ? run._id : null;
+}
+
+function RecentRunSelectionMark({ selected }: { selected: boolean }) {
+  return (
+    <span
+      className={cn(
+        "inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-sm border transition-colors",
+        selected
+          ? "border-primary bg-primary text-primary-foreground"
+          : "border-border/70 bg-background/80 text-transparent",
+      )}
+      aria-hidden="true"
+    >
+      <CheckCircle2 size={11} />
+    </span>
+  );
+}
+
+function RunSessionCard({
+  session,
+  canEdit,
+  isMutating,
+  onUpdatePaid,
+}: {
+  session: NonNullable<MythicPlusRun["session"]>;
+  canEdit: boolean;
+  isMutating: boolean;
+  onUpdatePaid?: (sessionId: string, isPaid: boolean) => Promise<void> | void;
+}) {
+  const paid = session.isPaid;
+  return (
+    <div
+      className={cn(
+        "flex flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2",
+        paid
+          ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-100"
+          : "border-amber-400/30 bg-amber-500/10 text-amber-100",
+      )}
+    >
+      <div className="flex min-w-0 items-center gap-2">
+        {paid ? (
+          <CircleDollarSign size={15} className="shrink-0 text-emerald-300" />
+        ) : (
+          <ReceiptText size={15} className="shrink-0 text-amber-300" />
+        )}
+        <span className="text-xs font-semibold uppercase tracking-wider">Session Card</span>
+        <span className="text-xs text-muted-foreground">
+          {session.runCount} run{session.runCount === 1 ? "" : "s"}
+        </span>
+      </div>
+      <div className="flex items-center gap-2">
+        <Badge
+          variant="outline"
+          className={cn(
+            "h-6 border px-2 text-[11px]",
+            paid
+              ? "border-emerald-400/40 bg-emerald-400/10 text-emerald-200"
+              : "border-amber-400/40 bg-amber-400/10 text-amber-200",
+          )}
+        >
+          {paid ? "Paid" : "Unpaid"}
+        </Badge>
+        {canEdit && onUpdatePaid ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-7 border-border/60 bg-background/60 px-2 text-[11px]"
+            disabled={isMutating}
+            onClick={() => {
+              void Promise.resolve(onUpdatePaid(session.id, !paid)).catch(() => undefined);
+            }}
+          >
+            {paid ? "Mark Unpaid" : "Mark Paid"}
+          </Button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 export function MythicPlusSection({
   data,
   isLoadingAllRuns,
   onRequestAllRuns,
   characterRealm,
   characterRegion,
+  canEditSessions = false,
+  isMutatingSession = false,
+  onCreateRunSession,
+  onUpdateRunSessionPaid,
 }: {
   data: MythicPlusData | null | undefined;
   isLoadingAllRuns: boolean;
   onRequestAllRuns: () => void;
   characterRealm: string;
   characterRegion: string;
+  canEditSessions?: boolean;
+  isMutatingSession?: boolean;
+  onCreateRunSession?: (runIds: string[]) => Promise<void> | void;
+  onUpdateRunSessionPaid?: (sessionId: string, isPaid: boolean) => Promise<void> | void;
 }) {
   const [visibleRecentRunCount, setVisibleRecentRunCount] = useState(INITIAL_RECENT_RUN_COUNT);
   const {
@@ -1098,6 +1220,9 @@ export function MythicPlusSection({
   } = useHiddenPlayers();
   const [summaryCardHeight, setSummaryCardHeight] = useState<number | null>(null);
   const summaryCardRef = useRef<HTMLDivElement | null>(null);
+  const [isSelectingRuns, setIsSelectingRuns] = useState(false);
+  const [selectedRunIds, setSelectedRunIds] = useState<string[]>([]);
+  const [lastSelectedRunId, setLastSelectedRunId] = useState<string | null>(null);
   const latestRunResetKey = data?.runs[0] ? getRecentRunRowKey(data.runs[0]) : "";
   const recentRunsResetKey = `${data?.totalRunCount ?? 0}:${latestRunResetKey}`;
   const totalRunCount = data?.totalRunCount ?? 0;
@@ -1105,6 +1230,9 @@ export function MythicPlusSection({
 
   useEffect(() => {
     setVisibleRecentRunCount(INITIAL_RECENT_RUN_COUNT);
+    setIsSelectingRuns(false);
+    setSelectedRunIds([]);
+    setLastSelectedRunId(null);
   }, [recentRunsResetKey]);
 
   useEffect(() => {
@@ -1169,11 +1297,94 @@ export function MythicPlusSection({
 
   const currentSeason = summary.currentSeason;
   const visibleRecentRuns = runs.slice(0, Math.min(visibleRecentRunCount, runs.length));
+  const visibleSelectableRunIds = visibleRecentRuns
+    .map((run) => getSelectableRunId(run))
+    .filter((runId): runId is string => runId !== null);
+  const selectedRunIdSet = new Set(selectedRunIds);
+  const selectedVisibleRunIds = visibleSelectableRunIds.filter((runId) =>
+    selectedRunIdSet.has(runId),
+  );
+  const canStartSessionSelection =
+    canEditSessions && Boolean(onCreateRunSession) && visibleSelectableRunIds.length > 0;
   const nextRecentRunCount = Math.min(
     RECENT_RUN_LOAD_INCREMENT,
     totalRunCount - visibleRecentRunCount,
   );
   const shouldRequestAllRuns = data.isPreview;
+
+  function getSelectedRunIdsInVisibleOrder(nextSelectedRunIds = selectedRunIds) {
+    const selected = new Set(nextSelectedRunIds);
+    return visibleSelectableRunIds.filter((runId) => selected.has(runId));
+  }
+
+  function selectRun(
+    run: MythicPlusRun,
+    event: { shiftKey?: boolean; preventDefault: () => void },
+  ) {
+    if (!isSelectingRuns) {
+      return;
+    }
+
+    event.preventDefault();
+    const runId = getSelectableRunId(run);
+    if (!runId) {
+      return;
+    }
+
+    const runIndex = visibleRecentRuns.findIndex(
+      (candidate) => getSelectableRunId(candidate) === runId,
+    );
+    const anchorIndex = lastSelectedRunId
+      ? visibleRecentRuns.findIndex(
+          (candidate) => getSelectableRunId(candidate) === lastSelectedRunId,
+        )
+      : -1;
+
+    if (event.shiftKey && anchorIndex >= 0 && runIndex >= 0) {
+      const [startIndex, endIndex] =
+        anchorIndex < runIndex ? [anchorIndex, runIndex] : [runIndex, anchorIndex];
+      const rangeIds = visibleRecentRuns
+        .slice(startIndex, endIndex + 1)
+        .map((candidate) => getSelectableRunId(candidate))
+        .filter((candidateId): candidateId is string => candidateId !== null);
+      setSelectedRunIds((currentIds) =>
+        getSelectedRunIdsInVisibleOrder([...currentIds, ...rangeIds]),
+      );
+      return;
+    }
+
+    setSelectedRunIds((currentIds) => {
+      const currentSet = new Set(currentIds);
+      if (currentSet.has(runId)) {
+        currentSet.delete(runId);
+      } else {
+        currentSet.add(runId);
+      }
+      return getSelectedRunIdsInVisibleOrder([...currentSet]);
+    });
+    setLastSelectedRunId(runId);
+  }
+
+  async function saveSelectedRunSession() {
+    if (!onCreateRunSession || selectedVisibleRunIds.length === 0) {
+      return;
+    }
+
+    try {
+      await onCreateRunSession(selectedVisibleRunIds);
+      setIsSelectingRuns(false);
+      setSelectedRunIds([]);
+      setLastSelectedRunId(null);
+    } catch {
+      // Parent mutation handler owns the error toast; keep the selection intact for retry.
+    }
+  }
+
+  function cancelRunSelection() {
+    setIsSelectingRuns(false);
+    setSelectedRunIds([]);
+    setLastSelectedRunId(null);
+  }
 
   function loadMoreRecentRuns() {
     setVisibleRecentRunCount((currentValue) => {
@@ -1225,20 +1436,65 @@ export function MythicPlusSection({
           style={summaryCardHeight === null ? undefined : { height: `${summaryCardHeight}px` }}
         >
           <CardHeader className="border-b bg-muted/10 px-4 py-3">
-            <div className="flex items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
               <CardTitle className="flex items-center gap-2 text-lg">
                 <Clock size={16} className="text-muted-foreground" />
                 Recent Runs
               </CardTitle>
-              <HiddenPlayersControl
-                hiddenKeys={hiddenPlayerKeys}
-                hideAllNames={hideAllNames}
-                hideServerNames={hideServerNames}
-                onToggleHideAllNames={toggleHideAllNames}
-                onToggleHideServerNames={toggleHideServerNames}
-                onUnhide={unhidePlayer}
-                onUnhideAll={unhideAllPlayers}
-              />
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                {canEditSessions ? (
+                  isSelectingRuns ? (
+                    <div className="flex flex-wrap items-center justify-end gap-2">
+                      <span className="text-xs text-muted-foreground">
+                        {selectedVisibleRunIds.length} selected
+                      </span>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => void saveSelectedRunSession()}
+                        disabled={selectedVisibleRunIds.length === 0 || isMutatingSession}
+                        className="h-8"
+                      >
+                        <Layers3 data-icon="inline-start" aria-hidden="true" />
+                        Save Session
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        onClick={cancelRunSelection}
+                        disabled={isMutatingSession}
+                        className="h-8"
+                      >
+                        <X data-icon="inline-start" aria-hidden="true" />
+                        Cancel
+                      </Button>
+                    </div>
+                  ) : (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setIsSelectingRuns(true)}
+                      disabled={!canStartSessionSelection || isMutatingSession}
+                      className="h-8"
+                    >
+                      <Layers3 data-icon="inline-start" aria-hidden="true" />
+                      Group Runs
+                    </Button>
+                  )
+                ) : null}
+                <HiddenPlayersControl
+                  hiddenKeys={hiddenPlayerKeys}
+                  hideAllNames={hideAllNames}
+                  hideServerNames={hideServerNames}
+                  onToggleHideAllNames={toggleHideAllNames}
+                  onToggleHideServerNames={toggleHideServerNames}
+                  onUnhide={unhidePlayer}
+                  onUnhideAll={unhideAllPlayers}
+                />
+              </div>
             </div>
           </CardHeader>
           <CardContent className="flex min-h-0 flex-1 flex-col p-4">
@@ -1257,55 +1513,105 @@ export function MythicPlusSection({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border/50">
-                  {visibleRecentRuns.map((run) => (
-                    <tr
-                      key={getRecentRunRowKey(run)}
-                      className="transition-colors hover:bg-muted/15"
-                    >
-                      <td className="px-3 py-2 align-top text-muted-foreground">
-                        <RecentRunPlayedAt run={run} />
-                      </td>
-                      <td className="px-3 py-2 align-top">
-                        <div className="flex items-center gap-2">
-                          <DungeonIcon
-                            mapChallengeModeID={run.mapChallengeModeID}
-                            mapName={run.mapName}
-                          />
-                          <div className="font-medium leading-tight text-foreground">
-                            {getRunLabel(run)}
-                          </div>
-                        </div>
-                        <RecentRunPartyMembers
-                          run={run}
-                          characterRealm={characterRealm}
-                          characterRegion={characterRegion}
-                          hiddenKeys={hiddenPlayerKeys}
-                          hideAllNames={hideAllNames}
-                          hideServerNames={hideServerNames}
-                          onHide={hidePlayer}
-                        />
-                      </td>
-                      <td className="px-3 py-2 align-top text-right">
-                        <RecentRunKeyCell run={run} />
-                      </td>
-                      <td className="px-3 py-2 align-top">
-                        <MythicPlusResultBadge run={run} />
-                      </td>
-                      <td className="px-3 py-2 align-top text-right">
-                        <div className="flex items-center justify-end gap-1.5 tabular-nums">
-                          <span>{formatRunScore(run.runScore)}</span>
-                          {formatRunScoreIncrease(run.scoreIncrease) ? (
-                            <span className="text-xs font-medium text-emerald-300">
-                              (+{formatRunScoreIncrease(run.scoreIncrease)})
-                            </span>
-                          ) : null}
-                        </div>
-                      </td>
-                      <td className="w-[7rem] whitespace-nowrap px-3 py-2 align-top text-right tabular-nums text-muted-foreground">
-                        {formatRunTimeComparison(run)}
-                      </td>
-                    </tr>
-                  ))}
+                  {visibleRecentRuns.map((run, index) => {
+                    const runId = getSelectableRunId(run);
+                    const isSelected = runId ? selectedRunIdSet.has(runId) : false;
+                    const session = run.session;
+                    const previousSessionId = visibleRecentRuns[index - 1]?.session?.id ?? null;
+                    const showSessionCard = session && session.id !== previousSessionId;
+                    const isGrouped = Boolean(session);
+
+                    return (
+                      <Fragment key={getRecentRunRowKey(run)}>
+                        {showSessionCard ? (
+                          <tr>
+                            <td colSpan={6} className="bg-background px-3 py-2">
+                              <RunSessionCard
+                                session={session}
+                                canEdit={canEditSessions}
+                                isMutating={isMutatingSession}
+                                onUpdatePaid={onUpdateRunSessionPaid}
+                              />
+                            </td>
+                          </tr>
+                        ) : null}
+                        <tr
+                          className={cn(
+                            "transition-colors hover:bg-muted/15",
+                            isSelectingRuns && runId ? "cursor-pointer select-none" : "",
+                            isSelected ? "bg-primary/10 hover:bg-primary/15" : "",
+                            isGrouped && session?.isPaid
+                              ? "border-l-2 border-l-emerald-400/70 bg-emerald-500/[0.04]"
+                              : "",
+                            isGrouped && !session?.isPaid
+                              ? "border-l-2 border-l-amber-400/70 bg-amber-500/[0.04]"
+                              : "",
+                          )}
+                          role={isSelectingRuns && runId ? "button" : undefined}
+                          tabIndex={isSelectingRuns && runId ? 0 : undefined}
+                          aria-pressed={isSelectingRuns && runId ? isSelected : undefined}
+                          onClick={(event) => selectRun(run, event)}
+                          onKeyDown={(event) => {
+                            if (!isSelectingRuns || !runId) {
+                              return;
+                            }
+                            if (event.key === "Enter" || event.key === " ") {
+                              selectRun(run, event);
+                            }
+                          }}
+                        >
+                          <td className="px-3 py-2 align-top text-muted-foreground">
+                            <div className="flex items-start gap-2">
+                              {isSelectingRuns ? (
+                                <RecentRunSelectionMark selected={isSelected} />
+                              ) : null}
+                              <RecentRunPlayedAt run={run} />
+                            </div>
+                          </td>
+                          <td className="px-3 py-2 align-top">
+                            <div className="flex items-center gap-2">
+                              <DungeonIcon
+                                mapChallengeModeID={run.mapChallengeModeID}
+                                mapName={run.mapName}
+                              />
+                              <div className="font-medium leading-tight text-foreground">
+                                {getRunLabel(run)}
+                              </div>
+                            </div>
+                            <RecentRunPartyMembers
+                              run={run}
+                              characterRealm={characterRealm}
+                              characterRegion={characterRegion}
+                              hiddenKeys={hiddenPlayerKeys}
+                              hideAllNames={hideAllNames}
+                              hideServerNames={hideServerNames}
+                              disableActions={isSelectingRuns}
+                              onHide={hidePlayer}
+                            />
+                          </td>
+                          <td className="px-3 py-2 align-top text-right">
+                            <RecentRunKeyCell run={run} />
+                          </td>
+                          <td className="px-3 py-2 align-top">
+                            <MythicPlusResultBadge run={run} />
+                          </td>
+                          <td className="px-3 py-2 align-top text-right">
+                            <div className="flex items-center justify-end gap-1.5 tabular-nums">
+                              <span>{formatRunScore(run.runScore)}</span>
+                              {formatRunScoreIncrease(run.scoreIncrease) ? (
+                                <span className="text-xs font-medium text-emerald-300">
+                                  (+{formatRunScoreIncrease(run.scoreIncrease)})
+                                </span>
+                              ) : null}
+                            </div>
+                          </td>
+                          <td className="w-[7rem] whitespace-nowrap px-3 py-2 align-top text-right tabular-nums text-muted-foreground">
+                            {formatRunTimeComparison(run)}
+                          </td>
+                        </tr>
+                      </Fragment>
+                    );
+                  })}
                   {hasMoreRecentRuns ? (
                     <tr className="bg-muted/10">
                       <td colSpan={6} className="px-3 py-3 text-center">

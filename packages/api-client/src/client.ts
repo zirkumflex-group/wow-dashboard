@@ -16,8 +16,10 @@ import {
   charactersLatestQuerySchema,
   charactersLatestResponseSchema,
   charactersScoreboardResponseSchema,
+  createMythicPlusRunSessionBodySchema,
   loginCodeResponseSchema,
   meResponseSchema,
+  mythicPlusRunSessionMutationResponseSchema,
   myCharactersResponseSchema,
   playerCharactersResultSchema,
   playerRouteParamsSchema,
@@ -25,6 +27,7 @@ import {
   redeemLoginCodeBodySchema,
   redeemLoginCodeResponseSchema,
   resyncCharactersResponseSchema,
+  updateMythicPlusRunSessionPaidBodySchema,
   updateCharacterBoosterBodySchema,
   updateCharacterBoosterResponseSchema,
   updateCharacterSlotsBodySchema,
@@ -45,8 +48,10 @@ import {
   type CharacterSnapshotTimelineQuery,
   type CharacterSnapshotTimelineResponse,
   type CharactersLatestQuery,
+  type CreateMythicPlusRunSessionBody,
   type LoginCodeResponse,
   type MeResponse,
+  type MythicPlusRunSessionMutationResponse,
   type PlayerCharactersResponse,
   type PlayerScoreboardEntry,
   type RedeemLoginCodeBody,
@@ -61,6 +66,7 @@ import {
   type UpdateCharacterSlotsResponse,
   type UpdateCharacterVisibilityBody,
   type UpdateCharacterVisibilityResponse,
+  type UpdateMythicPlusRunSessionPaidBody,
   type UpdatePlayerDiscordBody,
   type UpdatePlayerDiscordResponse,
 } from "@wow-dashboard/api-schema";
@@ -418,6 +424,40 @@ export function createApiClient(config: ApiClientConfig) {
             ? { includeAllRuns: parsedQuery.includeAllRuns }
             : undefined,
         outputSchema: characterMythicPlusResultSchema,
+      });
+    },
+
+    createMythicPlusRunSession(
+      characterId: string,
+      input: CreateMythicPlusRunSessionBody,
+    ): Promise<MythicPlusRunSessionMutationResponse> {
+      const { id } = characterRouteParamsSchema.parse({ id: characterId });
+      const pathId = encodePathSegment(id);
+      return requestJson({
+        method: "POST",
+        path: `/characters/${pathId}/mythic-plus/sessions`,
+        input,
+        inputSchema: createMythicPlusRunSessionBodySchema,
+        outputSchema: mythicPlusRunSessionMutationResponseSchema,
+      });
+    },
+
+    updateMythicPlusRunSessionPaid(
+      characterId: string,
+      sessionId: string,
+      input: UpdateMythicPlusRunSessionPaidBody,
+    ): Promise<MythicPlusRunSessionMutationResponse> {
+      const { id } = characterRouteParamsSchema.parse({ id: characterId });
+      const { id: parsedSessionId } = characterRouteParamsSchema.parse({ id: sessionId });
+      const pathId = encodePathSegment(id);
+      return requestJson({
+        method: "PATCH",
+        path: `/characters/${pathId}/mythic-plus/sessions/${encodePathSegment(
+          parsedSessionId,
+        )}/paid`,
+        input,
+        inputSchema: updateMythicPlusRunSessionPaidBodySchema,
+        outputSchema: mythicPlusRunSessionMutationResponseSchema,
       });
     },
 

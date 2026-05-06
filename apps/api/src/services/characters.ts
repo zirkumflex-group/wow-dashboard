@@ -14,6 +14,8 @@ import {
 import {
   characterDailySnapshots,
   characters,
+  mythicPlusRunSessionRuns,
+  mythicPlusRunSessions,
   mythicPlusRuns,
   players,
   snapshots,
@@ -23,6 +25,7 @@ import {
   type LatestSnapshotDetails,
   type LatestSnapshotSummary,
   type MythicPlusRecentRunPreview,
+  type MythicPlusRunSessionPreview,
   type MythicPlusSummary,
   type NonTradeableSlot,
   type OwnedKeystone,
@@ -43,6 +46,7 @@ type CharacterRecord = typeof characters.$inferSelect;
 type CharacterDailySnapshotRecord = typeof characterDailySnapshots.$inferSelect;
 type MythicPlusRunRecord = typeof mythicPlusRuns.$inferSelect;
 type SnapshotRecord = typeof snapshots.$inferSelect;
+type MythicPlusRunSessionRecord = typeof mythicPlusRunSessions.$inferSelect;
 
 const mythicPlusAllRunsResponseLimit = 250;
 const scoreboardResponseLimit = 500;
@@ -164,6 +168,21 @@ type CharacterBoosterExportEntry = {
     takenAt: number;
     ownedKeystone: OwnedKeystone | null;
   } | null;
+};
+
+type MythicPlusRunSessionSummary = {
+  id: string;
+  runIds: string[];
+  isPaid: boolean;
+  createdAt: number;
+  updatedAt: number;
+};
+
+type MythicPlusRunSessionMutationResponse = {
+  characterId: string;
+  sessionId: string;
+  runIds: string[];
+  isPaid: boolean;
 };
 
 type SnapshotTimeFrame = "7d" | "14d" | "30d" | "90d" | "all" | "tww-s3" | "mn-s1";
@@ -1037,8 +1056,102 @@ function buildCharacterMythicPlusData(
   return {
     summary,
     runs: visibleRuns,
+    sessions: [],
     totalRunCount,
     isPreview: totalRunCount > visibleRuns.length,
+  };
+}
+
+function projectMythicPlusRunSession(
+  session: MythicPlusRunSessionRecord,
+  runIds: string[],
+): MythicPlusRunSessionSummary {
+  return {
+    id: session.id,
+    runIds,
+    isPaid: session.isPaid,
+    createdAt: toUnixSeconds(session.createdAt) ?? 0,
+    updatedAt: toUnixSeconds(session.updatedAt) ?? 0,
+  };
+}
+
+async function attachMythicPlusRunSessions(
+  characterId: string,
+  data: CharacterMythicPlusResponse,
+): Promise<CharacterMythicPlusResponse> {
+  const visibleRunIds = data.runs
+    .map((run) => run._id)
+    .filter((runId): runId is string => typeof runId === "string" && runId.length > 0);
+
+  if (visibleRunIds.length === 0) {
+    return data;
+  }
+
+  const visibleRunIdSet = new Set(visibleRunIds);
+  const rows = await db
+    .select({
+      session: mythicPlusRunSessions,
+      runId: mythicPlusRunSessionRuns.runId,
+      position: mythicPlusRunSessionRuns.position,
+    })
+    .from(mythicPlusRunSessions)
+    .innerJoin(
+      mythicPlusRunSessionRuns,
+      eq(mythicPlusRunSessionRuns.sessionId, mythicPlusRunSessions.id),
+    )
+    .where(eq(mythicPlusRunSessions.characterId, characterId))
+    .orderBy(asc(mythicPlusRunSessions.createdAt), asc(mythicPlusRunSessionRuns.position));
+
+  const visibleSessionIds = new Set<string>();
+  for (const row of rows) {
+    if (visibleRunIdSet.has(row.runId)) {
+      visibleSessionIds.add(row.session.id);
+    }
+  }
+
+  if (visibleSessionIds.size === 0) {
+    return data;
+  }
+
+  const rowsBySessionId = new Map<
+    string,
+    { session: MythicPlusRunSessionRecord; runs: { runId: string; position: number }[] }
+  >();
+
+  for (const row of rows) {
+    if (!visibleSessionIds.has(row.session.id)) {
+      continue;
+    }
+    const current = rowsBySessionId.get(row.session.id) ?? {
+      session: row.session,
+      runs: [],
+    };
+    current.runs.push({ runId: row.runId, position: row.position });
+    rowsBySessionId.set(row.session.id, current);
+  }
+
+  const sessionByRunId = new Map<string, MythicPlusRunSessionPreview>();
+  const sessions = Array.from(rowsBySessionId.values()).map(({ session, runs }) => {
+    const orderedRuns = runs.sort((left, right) => left.position - right.position);
+    const runIds = orderedRuns.map((run) => run.runId);
+    for (const run of orderedRuns) {
+      sessionByRunId.set(run.runId, {
+        id: session.id,
+        position: run.position,
+        runCount: orderedRuns.length,
+        isPaid: session.isPaid,
+      });
+    }
+    return projectMythicPlusRunSession(session, runIds);
+  });
+
+  return {
+    ...data,
+    runs: data.runs.map((run) => {
+      const session = run._id ? sessionByRunId.get(run._id) : undefined;
+      return session ? { ...run, session } : run;
+    }),
+    sessions,
   };
 }
 
@@ -1088,7 +1201,7 @@ async function readCharacterMythicPlusData(
     currentScoreOverride,
   );
   if (storedData) {
-    return storedData;
+    return attachMythicPlusRunSessions(character.id, storedData);
   }
 
   const currentScore =
@@ -1107,11 +1220,14 @@ async function readCharacterMythicPlusData(
   const dedupedRuns = dedupeMythicPlusRuns(runRows.map((run) => serializeMythicPlusRunRow(run)));
   const projectedRuns = buildRecentRuns(dedupedRuns);
 
-  return buildCharacterMythicPlusData(
-    buildMythicPlusSummary(dedupedRuns, currentScore),
-    projectedRuns,
-    projectedRuns.length,
-    includeAllRuns,
+  return attachMythicPlusRunSessions(
+    character.id,
+    buildCharacterMythicPlusData(
+      buildMythicPlusSummary(dedupedRuns, currentScore),
+      projectedRuns,
+      projectedRuns.length,
+      includeAllRuns,
+    ),
   );
 }
 
@@ -1607,6 +1723,165 @@ export async function updateCharacterBoosterStatus(
   return {
     characterId: ownedCharacterId,
     isBooster,
+  };
+}
+
+function dedupeRunIds(runIds: readonly string[]) {
+  return Array.from(new Set(runIds));
+}
+
+export async function createMythicPlusRunSession(
+  characterId: string,
+  userId: string,
+  runIds: readonly string[],
+  isPaid = false,
+): Promise<MythicPlusRunSessionMutationResponse | null> {
+  const ownedCharacterId = await readOwnedCharacterId(characterId, userId);
+  if (!ownedCharacterId) {
+    return null;
+  }
+
+  const normalizedRunIds = dedupeRunIds(runIds);
+  const runRows = await db
+    .select({ id: mythicPlusRuns.id })
+    .from(mythicPlusRuns)
+    .where(
+      and(
+        eq(mythicPlusRuns.characterId, ownedCharacterId),
+        inArray(mythicPlusRuns.id, normalizedRunIds),
+      ),
+    );
+
+  if (runRows.length !== normalizedRunIds.length) {
+    throw new Error("Selected Mythic+ runs are no longer available for this character.");
+  }
+
+  const now = new Date();
+  const result = await db.transaction(async (tx) => {
+    const oldMemberships = await tx
+      .select({ sessionId: mythicPlusRunSessionRuns.sessionId })
+      .from(mythicPlusRunSessionRuns)
+      .where(inArray(mythicPlusRunSessionRuns.runId, normalizedRunIds));
+    const oldSessionIds = dedupeRunIds(oldMemberships.map((membership) => membership.sessionId));
+
+    if (oldSessionIds.length > 0) {
+      await tx
+        .delete(mythicPlusRunSessionRuns)
+        .where(inArray(mythicPlusRunSessionRuns.runId, normalizedRunIds));
+    }
+
+    const [session] = await tx
+      .insert(mythicPlusRunSessions)
+      .values({
+        characterId: ownedCharacterId,
+        isPaid,
+        createdByUserId: userId,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning();
+
+    if (!session) {
+      throw new Error("Could not create Mythic+ session.");
+    }
+
+    await tx.insert(mythicPlusRunSessionRuns).values(
+      normalizedRunIds.map((runId, position) => ({
+        sessionId: session.id,
+        runId,
+        position,
+      })),
+    );
+
+    if (oldSessionIds.length > 0) {
+      const remainingMemberships = await tx
+        .select({ sessionId: mythicPlusRunSessionRuns.sessionId })
+        .from(mythicPlusRunSessionRuns)
+        .where(inArray(mythicPlusRunSessionRuns.sessionId, oldSessionIds));
+      const remainingSessionIds = new Set(
+        remainingMemberships.map((membership) => membership.sessionId),
+      );
+      const emptySessionIds = oldSessionIds.filter(
+        (sessionId) => !remainingSessionIds.has(sessionId),
+      );
+      if (emptySessionIds.length > 0) {
+        await tx
+          .delete(mythicPlusRunSessions)
+          .where(inArray(mythicPlusRunSessions.id, emptySessionIds));
+      }
+    }
+
+    return session;
+  });
+
+  await insertAuditEvent("character.mythic_plus_session.created", {
+    userId,
+    metadata: {
+      characterId: ownedCharacterId,
+      sessionId: result.id,
+      runIds: normalizedRunIds,
+      isPaid,
+    },
+  });
+
+  return {
+    characterId: ownedCharacterId,
+    sessionId: result.id,
+    runIds: normalizedRunIds,
+    isPaid: result.isPaid,
+  };
+}
+
+export async function updateMythicPlusRunSessionPaidStatus(
+  characterId: string,
+  sessionId: string,
+  userId: string,
+  isPaid: boolean,
+): Promise<MythicPlusRunSessionMutationResponse | null> {
+  const ownedCharacterId = await readOwnedCharacterId(characterId, userId);
+  if (!ownedCharacterId) {
+    return null;
+  }
+
+  const [session] = await db
+    .update(mythicPlusRunSessions)
+    .set({
+      isPaid,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(mythicPlusRunSessions.id, sessionId),
+        eq(mythicPlusRunSessions.characterId, ownedCharacterId),
+      ),
+    )
+    .returning();
+
+  if (!session) {
+    return null;
+  }
+
+  const membershipRows = await db
+    .select({ runId: mythicPlusRunSessionRuns.runId })
+    .from(mythicPlusRunSessionRuns)
+    .where(eq(mythicPlusRunSessionRuns.sessionId, session.id))
+    .orderBy(asc(mythicPlusRunSessionRuns.position));
+  const runIds = membershipRows.map((row) => row.runId);
+
+  await insertAuditEvent("character.mythic_plus_session.paid.updated", {
+    userId,
+    metadata: {
+      characterId: ownedCharacterId,
+      sessionId: session.id,
+      isPaid,
+    },
+  });
+
+  return {
+    characterId: ownedCharacterId,
+    sessionId: session.id,
+    runIds,
+    isPaid: session.isPaid,
   };
 }
 
