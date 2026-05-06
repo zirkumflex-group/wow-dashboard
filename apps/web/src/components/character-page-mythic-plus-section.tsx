@@ -421,6 +421,19 @@ function formatRunMemberName(
   return `${member.name}-${member.realm}`;
 }
 
+function getRunMemberRealmSuffix(
+  member: MythicPlusRunMember,
+  characterRealm: string,
+  hideServerNames: boolean,
+) {
+  const realm = member.realm?.trim();
+  if (hideServerNames || !realm || realm.toLowerCase() === characterRealm.trim().toLowerCase()) {
+    return null;
+  }
+
+  return realm;
+}
+
 function getRunMemberRoleSortOrder(member: MythicPlusRunMember) {
   const normalizedRole = member.role?.trim().toLowerCase();
   if (normalizedRole === "tank") return 0;
@@ -651,14 +664,14 @@ function RecentRunPartyMembers({
   }
 
   return (
-    <div className="mt-1 flex min-w-0 flex-nowrap items-center gap-x-0.5 overflow-visible whitespace-nowrap text-[11px] leading-tight">
+    <div className="mt-1 flex min-w-0 max-w-full flex-nowrap items-center gap-x-0.5 overflow-x-clip overflow-y-visible whitespace-nowrap text-[11px] leading-tight">
       {allMembers.map((member, index) => {
         const key = getMemberKey(member, characterRealm);
         const isHidden = hiddenKeys.has(key);
 
         if (isHidden) {
           return (
-            <span key={key} className="inline-flex shrink-0 items-center whitespace-nowrap">
+            <span key={key} className="inline-flex min-w-0 shrink items-center whitespace-nowrap">
               {index > 0 ? (
                 <span className="shrink-0 px-0.5 text-muted-foreground/25">/</span>
               ) : null}
@@ -671,21 +684,24 @@ function RecentRunPartyMembers({
         }
 
         const url = buildMemberRaiderIoUrl(member, characterRealm, characterRegion);
+        const realmSuffix = getRunMemberRealmSuffix(member, characterRealm, hideServerNames);
+        const fullMemberName = formatRunMemberName(member, characterRealm, hideServerNames);
         return (
           <span
             key={key}
-            className="group/member relative inline-flex shrink-0 items-center whitespace-nowrap after:absolute after:left-0 after:right-0 after:top-full after:h-2 after:content-['']"
+            className="group/member relative inline-flex min-w-0 shrink items-center whitespace-nowrap after:absolute after:left-0 after:right-0 after:top-full after:h-2 after:content-['']"
           >
             {index > 0 ? <span className="shrink-0 px-0.5 text-muted-foreground/25">/</span> : null}
             <a
               href={url}
               target="_blank"
               rel="noreferrer"
-              className={`inline-flex shrink-0 whitespace-nowrap font-medium decoration-current/40 underline-offset-2 hover:underline ${classColor(member.classTag ?? "")}`}
-              title={`View ${member.name} on Raider.IO`}
+              className={`inline-flex min-w-0 max-w-full whitespace-nowrap font-medium decoration-current/40 underline-offset-2 hover:underline ${classColor(member.classTag ?? "")}`}
+              title={`View ${fullMemberName} on Raider.IO`}
               tabIndex={disableActions ? -1 : undefined}
             >
-              {formatRunMemberName(member, characterRealm, hideServerNames)}
+              <span className="shrink-0">{member.name}</span>
+              {realmSuffix ? <span className="min-w-0 truncate">-{realmSuffix}</span> : null}
             </a>
             <button
               type="button"
@@ -1527,7 +1543,15 @@ export function MythicPlusSection({
           </CardHeader>
           <CardContent className="flex min-h-0 flex-1 flex-col p-4">
             <div className="dark-scrollbar min-h-0 flex-1 overflow-auto rounded-md border border-border/60">
-              <table className="w-full min-w-[700px] text-sm">
+              <table className="w-full min-w-[700px] table-fixed text-sm">
+                <colgroup>
+                  <col className="w-[6.25rem]" />
+                  <col />
+                  <col className="w-[4rem]" />
+                  <col className="w-[8rem]" />
+                  <col className="w-[5rem]" />
+                  <col className="w-[7rem]" />
+                </colgroup>
                 <thead className="sticky top-0 z-10 bg-muted/40 text-[11px] uppercase tracking-wider text-muted-foreground">
                   <tr>
                     <th className="px-3 py-2 text-left font-medium">Played</th>
@@ -1598,13 +1622,16 @@ export function MythicPlusSection({
                               <RecentRunPlayedAt run={run} />
                             </div>
                           </td>
-                          <td className="px-3 py-2 align-top">
-                            <div className="flex items-center gap-2">
+                          <td className="min-w-0 px-3 py-2 align-top">
+                            <div className="flex min-w-0 items-center gap-2">
                               <DungeonIcon
                                 mapChallengeModeID={run.mapChallengeModeID}
                                 mapName={run.mapName}
                               />
-                              <div className="font-medium leading-tight text-foreground">
+                              <div
+                                className="min-w-0 truncate font-medium leading-tight text-foreground"
+                                title={getRunLabel(run)}
+                              >
                                 {getRunLabel(run)}
                               </div>
                             </div>
