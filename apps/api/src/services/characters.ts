@@ -174,6 +174,7 @@ type MythicPlusRunSessionSummary = {
   id: string;
   runIds: string[];
   isPaid: boolean;
+  externalId: string | null;
   createdAt: number;
   updatedAt: number;
 };
@@ -183,6 +184,7 @@ type MythicPlusRunSessionMutationResponse = {
   sessionId: string;
   runIds: string[];
   isPaid: boolean;
+  externalId: string | null;
 };
 
 type SnapshotTimeFrame = "7d" | "14d" | "30d" | "90d" | "all" | "tww-s3" | "mn-s1";
@@ -1082,6 +1084,7 @@ function projectMythicPlusRunSession(
     id: session.id,
     runIds,
     isPaid: session.isPaid,
+    externalId: session.externalId ?? null,
     createdAt: toUnixSeconds(session.createdAt) ?? 0,
     updatedAt: toUnixSeconds(session.updatedAt) ?? 0,
   };
@@ -1152,6 +1155,7 @@ async function attachMythicPlusRunSessions(
         position: run.position,
         runCount: orderedRuns.length,
         isPaid: session.isPaid,
+        externalId: session.externalId ?? null,
       });
     }
     return projectMythicPlusRunSession(session, runIds);
@@ -1780,6 +1784,7 @@ export async function createMythicPlusRunSession(
   userId: string,
   runIds: readonly string[],
   isPaid = false,
+  externalId: string | null = null,
 ): Promise<MythicPlusRunSessionMutationResponse | null> {
   const ownedCharacterId = await readOwnedCharacterId(characterId, userId);
   if (!ownedCharacterId) {
@@ -1819,6 +1824,7 @@ export async function createMythicPlusRunSession(
       .insert(mythicPlusRunSessions)
       .values({
         characterId: ownedCharacterId,
+        externalId,
         isPaid,
         createdByUserId: userId,
         createdAt: now,
@@ -1866,6 +1872,7 @@ export async function createMythicPlusRunSession(
       sessionId: result.id,
       runIds: normalizedRunIds,
       isPaid,
+      externalId,
     },
   });
 
@@ -1874,6 +1881,7 @@ export async function createMythicPlusRunSession(
     sessionId: result.id,
     runIds: normalizedRunIds,
     isPaid: result.isPaid,
+    externalId: result.externalId ?? null,
   };
 }
 
@@ -1927,6 +1935,61 @@ export async function updateMythicPlusRunSessionPaidStatus(
     sessionId: session.id,
     runIds,
     isPaid: session.isPaid,
+    externalId: session.externalId ?? null,
+  };
+}
+
+export async function updateMythicPlusRunSessionExternalId(
+  characterId: string,
+  sessionId: string,
+  userId: string,
+  externalId: string | null,
+): Promise<MythicPlusRunSessionMutationResponse | null> {
+  const ownedCharacterId = await readOwnedCharacterId(characterId, userId);
+  if (!ownedCharacterId) {
+    return null;
+  }
+
+  const [session] = await db
+    .update(mythicPlusRunSessions)
+    .set({
+      externalId,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(mythicPlusRunSessions.id, sessionId),
+        eq(mythicPlusRunSessions.characterId, ownedCharacterId),
+      ),
+    )
+    .returning();
+
+  if (!session) {
+    return null;
+  }
+
+  const membershipRows = await db
+    .select({ runId: mythicPlusRunSessionRuns.runId })
+    .from(mythicPlusRunSessionRuns)
+    .where(eq(mythicPlusRunSessionRuns.sessionId, session.id))
+    .orderBy(asc(mythicPlusRunSessionRuns.position));
+  const runIds = membershipRows.map((row) => row.runId);
+
+  await insertAuditEvent("character.mythic_plus_session.external_id.updated", {
+    userId,
+    metadata: {
+      characterId: ownedCharacterId,
+      sessionId: session.id,
+      externalId,
+    },
+  });
+
+  return {
+    characterId: ownedCharacterId,
+    sessionId: session.id,
+    runIds,
+    isPaid: session.isPaid,
+    externalId: session.externalId ?? null,
   };
 }
 
@@ -1974,6 +2037,7 @@ export async function deleteMythicPlusRunSession(
     sessionId: session.id,
     runIds,
     isPaid: session.isPaid,
+    externalId: session.externalId ?? null,
   };
 }
 

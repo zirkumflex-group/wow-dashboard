@@ -19,6 +19,7 @@ export const mythicPlusRunSessions = pgTable(
     characterId: uuid("character_id")
       .notNull()
       .references(() => characters.id, { onDelete: "cascade" }),
+    externalId: text("external_id"),
     isPaid: boolean("is_paid").notNull().default(false),
     createdByUserId: text("created_by_user_id").notNull(),
     createdAt: timestamp("created_at", { mode: "date", withTimezone: true }).notNull().defaultNow(),

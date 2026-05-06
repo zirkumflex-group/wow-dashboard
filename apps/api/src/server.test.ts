@@ -1294,6 +1294,7 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
         },
         body: JSON.stringify({
           runIds: [secondRunId, firstRunId],
+          externalId: "session-test-id",
         }),
       },
     );
@@ -1303,9 +1304,11 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
       sessionId: string;
       runIds: string[];
       isPaid: boolean;
+      externalId: string | null;
     };
     assert.deepEqual(createPayload.runIds, [secondRunId, firstRunId]);
     assert.equal(createPayload.isPaid, false);
+    assert.equal(createPayload.externalId, "session-test-id");
 
     const mythicPlusResponse = await app.request(
       `http://localhost/api/characters/${characterId}/mythic-plus?includeAllRuns=true`,
@@ -1315,13 +1318,18 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     );
     assert.equal(mythicPlusResponse.status, 200);
     const mythicPlusPayload = (await mythicPlusResponse.json()) as {
-      sessions: Array<{ id: string; runIds: string[]; isPaid: boolean }>;
-      runs: Array<{ _id?: string; session?: { id: string; position: number; isPaid: boolean } }>;
+      sessions: Array<{ id: string; runIds: string[]; isPaid: boolean; externalId: string | null }>;
+      runs: Array<{
+        _id?: string;
+        session?: { id: string; position: number; isPaid: boolean; externalId: string | null };
+      }>;
     };
     assert.equal(mythicPlusPayload.sessions.length, 1);
     assert.deepEqual(mythicPlusPayload.sessions[0]?.runIds, [secondRunId, firstRunId]);
+    assert.equal(mythicPlusPayload.sessions[0]?.externalId, "session-test-id");
     assert.equal(mythicPlusPayload.runs[0]?.session?.id, createPayload.sessionId);
     assert.equal(mythicPlusPayload.runs[0]?.session?.position, 0);
+    assert.equal(mythicPlusPayload.runs[0]?.session?.externalId, "session-test-id");
     assert.equal(mythicPlusPayload.runs[1]?.session?.position, 1);
 
     const publicMythicPlusResponse = await app.request(
@@ -1383,6 +1391,47 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
       where: eq(mythicPlusRunSessions.id, createPayload.sessionId),
     });
     assert.equal(paidSession?.isPaid, true);
+    assert.equal(paidSession?.externalId, "session-test-id");
+
+    const externalIdResponse = await app.request(
+      `http://localhost/api/characters/${characterId}/mythic-plus/sessions/${createPayload.sessionId}/external-id`,
+      {
+        method: "PATCH",
+        headers: {
+          ...authHeaders(auth.token),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          externalId: "Updated_123",
+        }),
+      },
+    );
+
+    assert.equal(externalIdResponse.status, 200);
+    const externalIdPayload = (await externalIdResponse.json()) as {
+      externalId: string | null;
+    };
+    assert.equal(externalIdPayload.externalId, "Updated_123");
+
+    const clearExternalIdResponse = await app.request(
+      `http://localhost/api/characters/${characterId}/mythic-plus/sessions/${createPayload.sessionId}/external-id`,
+      {
+        method: "PATCH",
+        headers: {
+          ...authHeaders(auth.token),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          externalId: "",
+        }),
+      },
+    );
+
+    assert.equal(clearExternalIdResponse.status, 200);
+    const clearedExternalIdPayload = (await clearExternalIdResponse.json()) as {
+      externalId: string | null;
+    };
+    assert.equal(clearedExternalIdPayload.externalId, null);
 
     const memberships = await db.query.mythicPlusRunSessionRuns.findMany({
       where: eq(mythicPlusRunSessionRuns.sessionId, createPayload.sessionId),

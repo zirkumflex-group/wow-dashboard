@@ -1237,8 +1237,15 @@ type LayoutProps = {
   requestAllMythicPlusRuns?: () => void;
   canEditMythicPlusSessions?: boolean;
   isMutatingMythicPlusSession?: boolean;
-  createMythicPlusRunSession?: (runIds: string[]) => Promise<void> | void;
+  createMythicPlusRunSession?: (
+    runIds: string[],
+    externalId?: string | null,
+  ) => Promise<void> | void;
   updateMythicPlusRunSessionPaid?: (sessionId: string, isPaid: boolean) => Promise<void> | void;
+  updateMythicPlusRunSessionExternalId?: (
+    sessionId: string,
+    externalId: string | null,
+  ) => Promise<void> | void;
   deleteMythicPlusRunSession?: (sessionId: string) => Promise<void> | void;
   characterId: string;
   characterName: string;
@@ -1294,6 +1301,7 @@ type MythicPlusRun = {
     position: number;
     runCount: number;
     isPaid: boolean;
+    externalId: string | null;
   };
 };
 
@@ -1348,6 +1356,7 @@ type MythicPlusData = {
     id: string;
     runIds: string[];
     isPaid: boolean;
+    externalId: string | null;
     createdAt: number;
     updatedAt: number;
   }[];
@@ -2846,6 +2855,7 @@ function OverviewLayout({
   isMutatingMythicPlusSession,
   createMythicPlusRunSession,
   updateMythicPlusRunSessionPaid,
+  updateMythicPlusRunSessionExternalId,
   deleteMythicPlusRunSession,
   characterRealm,
   characterRegion,
@@ -2898,6 +2908,7 @@ function OverviewLayout({
               isMutatingSession={isMutatingMythicPlusSession}
               onCreateRunSession={createMythicPlusRunSession}
               onUpdateRunSessionPaid={updateMythicPlusRunSessionPaid}
+              onUpdateRunSessionExternalId={updateMythicPlusRunSessionExternalId}
               onDeleteRunSession={deleteMythicPlusRunSession}
             />
           </Suspense>
@@ -3419,8 +3430,15 @@ type CharacterPageContentProps = {
   onRequestAllMythicPlusRuns: () => void;
   canEditMythicPlusSessions: boolean;
   isMutatingMythicPlusSession: boolean;
-  onCreateMythicPlusRunSession: (runIds: string[]) => Promise<void> | void;
+  onCreateMythicPlusRunSession: (
+    runIds: string[],
+    externalId?: string | null,
+  ) => Promise<void> | void;
   onUpdateMythicPlusRunSessionPaid: (sessionId: string, isPaid: boolean) => Promise<void> | void;
+  onUpdateMythicPlusRunSessionExternalId: (
+    sessionId: string,
+    externalId: string | null,
+  ) => Promise<void> | void;
   onDeleteMythicPlusRunSession: (sessionId: string) => Promise<void> | void;
   characterId: string;
   characterName: string;
@@ -3446,6 +3464,7 @@ const CharacterPageContent = memo(function CharacterPageContent({
   isMutatingMythicPlusSession,
   onCreateMythicPlusRunSession,
   onUpdateMythicPlusRunSessionPaid,
+  onUpdateMythicPlusRunSessionExternalId,
   onDeleteMythicPlusRunSession,
   characterId,
   characterName,
@@ -3470,6 +3489,7 @@ const CharacterPageContent = memo(function CharacterPageContent({
     isMutatingMythicPlusSession,
     createMythicPlusRunSession: onCreateMythicPlusRunSession,
     updateMythicPlusRunSessionPaid: onUpdateMythicPlusRunSessionPaid,
+    updateMythicPlusRunSessionExternalId: onUpdateMythicPlusRunSessionExternalId,
     deleteMythicPlusRunSession: onDeleteMythicPlusRunSession,
     characterId,
     characterName,
@@ -3500,6 +3520,7 @@ const CharacterPageContent = memo(function CharacterPageContent({
             isMutatingSession={isMutatingMythicPlusSession}
             onCreateRunSession={onCreateMythicPlusRunSession}
             onUpdateRunSessionPaid={onUpdateMythicPlusRunSessionPaid}
+            onUpdateRunSessionExternalId={onUpdateMythicPlusRunSessionExternalId}
             onDeleteRunSession={onDeleteMythicPlusRunSession}
           />
         </Suspense>
@@ -3852,9 +3873,14 @@ function RouteComponent() {
   });
 
   const createMythicPlusRunSessionMutation = useMutation({
-    mutationFn: (input: { targetCharacterId: string; runIds: string[] }) =>
+    mutationFn: (input: {
+      targetCharacterId: string;
+      runIds: string[];
+      externalId: string | null;
+    }) =>
       apiClient.createMythicPlusRunSession(input.targetCharacterId, {
         runIds: input.runIds,
+        externalId: input.externalId,
       }),
     onSuccess: async () => {
       await invalidateMythicPlusQueries();
@@ -3865,6 +3891,20 @@ function RouteComponent() {
     mutationFn: (input: { targetCharacterId: string; sessionId: string; isPaid: boolean }) =>
       apiClient.updateMythicPlusRunSessionPaid(input.targetCharacterId, input.sessionId, {
         isPaid: input.isPaid,
+      }),
+    onSuccess: async () => {
+      await invalidateMythicPlusQueries();
+    },
+  });
+
+  const updateMythicPlusRunSessionExternalIdMutation = useMutation({
+    mutationFn: (input: {
+      targetCharacterId: string;
+      sessionId: string;
+      externalId: string | null;
+    }) =>
+      apiClient.updateMythicPlusRunSessionExternalId(input.targetCharacterId, input.sessionId, {
+        externalId: input.externalId,
       }),
     onSuccess: async () => {
       await invalidateMythicPlusQueries();
@@ -4003,7 +4043,10 @@ function RouteComponent() {
     }
   }
 
-  async function handleCreateMythicPlusRunSession(runIds: string[]) {
+  async function handleCreateMythicPlusRunSession(
+    runIds: string[],
+    externalId: string | null = null,
+  ) {
     if (!canEditCharacter || runIds.length === 0) {
       return;
     }
@@ -4012,6 +4055,7 @@ function RouteComponent() {
       await createMythicPlusRunSessionMutation.mutateAsync({
         targetCharacterId: resolvedCharacterId,
         runIds,
+        externalId,
       });
       toast.success(`Session created for ${runIds.length} run${runIds.length === 1 ? "" : "s"}.`);
     } catch (error) {
@@ -4034,6 +4078,27 @@ function RouteComponent() {
       toast.success(isPaid ? "Session marked paid." : "Session marked unpaid.");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not update session.");
+      throw error;
+    }
+  }
+
+  async function handleUpdateMythicPlusRunSessionExternalId(
+    sessionId: string,
+    externalId: string | null,
+  ) {
+    if (!canEditCharacter) {
+      return;
+    }
+
+    try {
+      await updateMythicPlusRunSessionExternalIdMutation.mutateAsync({
+        targetCharacterId: resolvedCharacterId,
+        sessionId,
+        externalId,
+      });
+      toast.success(externalId ? "Session ID saved." : "Session ID cleared.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not update session ID.");
       throw error;
     }
   }
@@ -4448,10 +4513,12 @@ function RouteComponent() {
           isMutatingMythicPlusSession={
             createMythicPlusRunSessionMutation.isPending ||
             updateMythicPlusRunSessionPaidMutation.isPending ||
+            updateMythicPlusRunSessionExternalIdMutation.isPending ||
             deleteMythicPlusRunSessionMutation.isPending
           }
           onCreateMythicPlusRunSession={handleCreateMythicPlusRunSession}
           onUpdateMythicPlusRunSessionPaid={handleUpdateMythicPlusRunSessionPaid}
+          onUpdateMythicPlusRunSessionExternalId={handleUpdateMythicPlusRunSessionExternalId}
           onDeleteMythicPlusRunSession={handleDeleteMythicPlusRunSession}
           characterId={resolvedCharacterId}
           characterName={character.name}

@@ -164,6 +164,7 @@ export const mythicPlusRecentRunPreviewSchema = z.object({
       position: z.number().int().nonnegative(),
       runCount: z.number().int().positive(),
       isPaid: z.boolean(),
+      externalId: z.string().nullable(),
     })
     .optional(),
 });
@@ -316,6 +317,7 @@ export const characterMythicPlusResponseSchema = z.object({
         id: z.string().uuid(),
         runIds: z.array(z.string().uuid()),
         isPaid: z.boolean(),
+        externalId: z.string().nullable(),
         createdAt: z.number(),
         updatedAt: z.number(),
       }),
@@ -330,6 +332,7 @@ export const mythicPlusRunSessionMutationResponseSchema = z.object({
   sessionId: z.string().uuid(),
   runIds: z.array(z.string().uuid()),
   isPaid: z.boolean(),
+  externalId: z.string().nullable(),
 });
 
 export const characterPageResponseSchema = z.object({

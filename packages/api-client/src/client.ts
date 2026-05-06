@@ -27,6 +27,7 @@ import {
   redeemLoginCodeBodySchema,
   redeemLoginCodeResponseSchema,
   resyncCharactersResponseSchema,
+  updateMythicPlusRunSessionExternalIdBodySchema,
   updateMythicPlusRunSessionPaidBodySchema,
   updateCharacterBoosterBodySchema,
   updateCharacterBoosterResponseSchema,
@@ -66,6 +67,7 @@ import {
   type UpdateCharacterSlotsResponse,
   type UpdateCharacterVisibilityBody,
   type UpdateCharacterVisibilityResponse,
+  type UpdateMythicPlusRunSessionExternalIdBody,
   type UpdateMythicPlusRunSessionPaidBody,
   type UpdatePlayerDiscordBody,
   type UpdatePlayerDiscordResponse,
@@ -457,6 +459,25 @@ export function createApiClient(config: ApiClientConfig) {
         )}/paid`,
         input,
         inputSchema: updateMythicPlusRunSessionPaidBodySchema,
+        outputSchema: mythicPlusRunSessionMutationResponseSchema,
+      });
+    },
+
+    updateMythicPlusRunSessionExternalId(
+      characterId: string,
+      sessionId: string,
+      input: UpdateMythicPlusRunSessionExternalIdBody,
+    ): Promise<MythicPlusRunSessionMutationResponse> {
+      const { id } = characterRouteParamsSchema.parse({ id: characterId });
+      const { id: parsedSessionId } = characterRouteParamsSchema.parse({ id: sessionId });
+      const pathId = encodePathSegment(id);
+      return requestJson({
+        method: "PATCH",
+        path: `/characters/${pathId}/mythic-plus/sessions/${encodePathSegment(
+          parsedSessionId,
+        )}/external-id`,
+        input,
+        inputSchema: updateMythicPlusRunSessionExternalIdBodySchema,
         outputSchema: mythicPlusRunSessionMutationResponseSchema,
       });
     },

@@ -13,6 +13,7 @@ import {
   createMythicPlusRunSessionBodySchema,
   loginCodeTtlSeconds,
   playerRouteParamsSchema,
+  updateMythicPlusRunSessionExternalIdBodySchema,
   updateMythicPlusRunSessionPaidBodySchema,
   updateCharacterBoosterBodySchema,
   updateCharacterSlotsBodySchema,
@@ -44,6 +45,7 @@ import {
   updateCharacterBoosterStatus,
   updateCharacterNonTradeableSlots,
   updateCharacterVisibility,
+  updateMythicPlusRunSessionExternalId,
   updateMythicPlusRunSessionPaidStatus,
 } from "./services/characters";
 import { updatePlayerDiscordUserId } from "./services/players";
@@ -855,6 +857,7 @@ app.post("/api/characters/:id/mythic-plus/sessions", async (c) => {
       user.id,
       parsedBody.data.runIds,
       parsedBody.data.isPaid === true,
+      parsedBody.data.externalId ?? null,
     );
 
     if (!result) {
@@ -909,6 +912,52 @@ app.patch("/api/characters/:id/mythic-plus/sessions/:sessionId/paid", async (c) 
     parsedSessionParams.data.id,
     user.id,
     parsedBody.data.isPaid,
+  );
+
+  if (!result) {
+    return c.json({ error: "Character or session not found." }, 404);
+  }
+
+  return c.json(result);
+});
+
+app.patch("/api/characters/:id/mythic-plus/sessions/:sessionId/external-id", async (c) => {
+  const session = c.get("session");
+  const user = c.get("user");
+
+  if (!session || !user) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const parsedParams = characterRouteParamsSchema.safeParse(c.req.param());
+  if (!parsedParams.success) {
+    return c.json({ error: formatValidationError(parsedParams.error.issues) }, 400);
+  }
+
+  const parsedSessionParams = characterRouteParamsSchema.safeParse({
+    id: c.req.param("sessionId"),
+  });
+  if (!parsedSessionParams.success) {
+    return c.json({ error: formatValidationError(parsedSessionParams.error.issues) }, 400);
+  }
+
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "Invalid request body" }, 400);
+  }
+
+  const parsedBody = updateMythicPlusRunSessionExternalIdBodySchema.safeParse(body);
+  if (!parsedBody.success) {
+    return c.json({ error: formatValidationError(parsedBody.error.issues) }, 400);
+  }
+
+  const result = await updateMythicPlusRunSessionExternalId(
+    parsedParams.data.id,
+    parsedSessionParams.data.id,
+    user.id,
+    parsedBody.data.externalId,
   );
 
   if (!result) {

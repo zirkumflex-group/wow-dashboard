@@ -1,0 +1,1 @@
+ALTER TABLE "mythic_plus_run_sessions" ADD COLUMN "external_id" text;

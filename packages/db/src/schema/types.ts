@@ -284,6 +284,7 @@ export interface MythicPlusRunSessionPreview {
   position: number;
   runCount: number;
   isPaid: boolean;
+  externalId: string | null;
 }
 
 export interface MythicPlusRecentRunPreview {

@@ -1,6 +1,7 @@
 import { Badge } from "@wow-dashboard/ui/components/badge";
 import { Button } from "@wow-dashboard/ui/components/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@wow-dashboard/ui/components/card";
+import { Input } from "@wow-dashboard/ui/components/input";
 import { cn } from "@wow-dashboard/ui/lib/utils";
 import {
   CheckCircle2,
@@ -85,6 +86,7 @@ type MythicPlusRun = {
     position: number;
     runCount: number;
     isPaid: boolean;
+    externalId: string | null;
   };
 };
 
@@ -139,6 +141,7 @@ type MythicPlusData = {
     id: string;
     runIds: string[];
     isPaid: boolean;
+    externalId: string | null;
     createdAt: number;
     updatedAt: number;
   }[];
@@ -1139,21 +1142,32 @@ function RecentRunSelectionMark({ selected }: { selected: boolean }) {
 function RunSessionCard({
   session,
   canEdit,
+  canEditExternalId,
   canDelete,
   isMutating,
   onUpdatePaid,
+  onUpdateExternalId,
   onDelete,
 }: {
   session: NonNullable<MythicPlusRun["session"]>;
   canEdit: boolean;
+  canEditExternalId: boolean;
   canDelete: boolean;
   isMutating: boolean;
   onUpdatePaid?: (sessionId: string, isPaid: boolean) => Promise<void> | void;
+  onUpdateExternalId?: (sessionId: string, externalId: string | null) => Promise<void> | void;
   onDelete?: (sessionId: string) => Promise<void> | void;
 }) {
   const paid = session.isPaid;
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [externalIdEditorOpen, setExternalIdEditorOpen] = useState(false);
+  const [externalIdDraft, setExternalIdDraft] = useState(session.externalId ?? "");
   const deleteConfirmRef = useRef<HTMLDivElement | null>(null);
+  const externalIdEditorRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    setExternalIdDraft(session.externalId ?? "");
+  }, [session.externalId]);
 
   useEffect(() => {
     if (!deleteConfirmOpen) {
@@ -1184,10 +1198,54 @@ function RunSessionCard({
   }, [deleteConfirmOpen]);
 
   useEffect(() => {
+    if (!externalIdEditorOpen) {
+      return;
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target;
+      if (target instanceof Node && externalIdEditorRef.current?.contains(target)) {
+        return;
+      }
+      setExternalIdEditorOpen(false);
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setExternalIdEditorOpen(false);
+      }
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [externalIdEditorOpen]);
+
+  useEffect(() => {
     if (!canDelete) {
       setDeleteConfirmOpen(false);
     }
   }, [canDelete]);
+
+  useEffect(() => {
+    if (!canEditExternalId) {
+      setExternalIdEditorOpen(false);
+    }
+  }, [canEditExternalId]);
+
+  async function saveExternalIdDraft() {
+    if (!canEditExternalId || !onUpdateExternalId) {
+      return;
+    }
+
+    const nextExternalId = externalIdDraft.trim() || null;
+    await Promise.resolve(onUpdateExternalId(session.id, nextExternalId));
+    setExternalIdEditorOpen(false);
+  }
 
   return (
     <div
@@ -1204,12 +1262,99 @@ function RunSessionCard({
         ) : (
           <ReceiptText size={15} className="shrink-0 text-amber-300" />
         )}
-        <span className="text-xs font-semibold uppercase tracking-wider">Boost Session</span>
-        <span className="text-xs text-muted-foreground">
+        <span className="inline-flex h-5 items-center text-xs font-semibold uppercase leading-none tracking-wider">
+          Boost Session
+        </span>
+        <span className="inline-flex h-5 items-center text-xs leading-none text-muted-foreground">
           {session.runCount} run{session.runCount === 1 ? "" : "s"}
         </span>
+        {session.externalId ? (
+          <span className="inline-flex h-5 min-w-0 items-center gap-1 truncate text-xs leading-none text-muted-foreground">
+            <span>ID:</span>
+            <span className="truncate font-mono leading-none text-foreground/80">
+              {session.externalId}
+            </span>
+          </span>
+        ) : null}
       </div>
       <div className="col-start-2 flex items-center gap-2 px-3">
+        {canEditExternalId && onUpdateExternalId ? (
+          <div ref={externalIdEditorRef} className="relative">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-7 border-border/70 bg-background/60 px-2 text-[11px]"
+              disabled={isMutating}
+              aria-expanded={externalIdEditorOpen}
+              onClick={() => {
+                setExternalIdDraft(session.externalId ?? "");
+                setExternalIdEditorOpen((current) => !current);
+              }}
+            >
+              {session.externalId ? "Edit ID" : "Add ID"}
+            </Button>
+            {externalIdEditorOpen ? (
+              <form
+                className="absolute right-0 top-full z-30 mt-1 w-72 rounded-md border bg-card p-3 text-left text-foreground shadow-lg"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void saveExternalIdDraft().catch(() => undefined);
+                }}
+              >
+                <div className="text-xs font-semibold">Boost ID</div>
+                <Input
+                  value={externalIdDraft}
+                  onChange={(event) => setExternalIdDraft(event.target.value)}
+                  placeholder="Optional ID"
+                  maxLength={64}
+                  className="mt-2 h-8 font-mono text-xs"
+                  disabled={isMutating}
+                />
+                <div className="mt-3 flex items-center justify-end gap-2">
+                  {session.externalId ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 px-2 text-[11px]"
+                      disabled={isMutating}
+                      onClick={() => {
+                        void Promise.resolve(onUpdateExternalId(session.id, null))
+                          .then(() => {
+                            setExternalIdDraft("");
+                            setExternalIdEditorOpen(false);
+                          })
+                          .catch(() => undefined);
+                      }}
+                    >
+                      Clear
+                    </Button>
+                  ) : null}
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 px-2 text-[11px]"
+                    disabled={isMutating}
+                    onClick={() => setExternalIdEditorOpen(false)}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    type="submit"
+                    size="sm"
+                    variant="outline"
+                    className="h-7 px-2 text-[11px]"
+                    disabled={isMutating}
+                  >
+                    Save
+                  </Button>
+                </div>
+              </form>
+            ) : null}
+          </div>
+        ) : null}
         {canEdit && onUpdatePaid ? (
           <Button
             type="button"
@@ -1306,6 +1451,7 @@ export function MythicPlusSection({
   isMutatingSession = false,
   onCreateRunSession,
   onUpdateRunSessionPaid,
+  onUpdateRunSessionExternalId,
   onDeleteRunSession,
 }: {
   data: MythicPlusData | null | undefined;
@@ -1315,8 +1461,12 @@ export function MythicPlusSection({
   characterRegion: string;
   canEditSessions?: boolean;
   isMutatingSession?: boolean;
-  onCreateRunSession?: (runIds: string[]) => Promise<void> | void;
+  onCreateRunSession?: (runIds: string[], externalId?: string | null) => Promise<void> | void;
   onUpdateRunSessionPaid?: (sessionId: string, isPaid: boolean) => Promise<void> | void;
+  onUpdateRunSessionExternalId?: (
+    sessionId: string,
+    externalId: string | null,
+  ) => Promise<void> | void;
   onDeleteRunSession?: (sessionId: string) => Promise<void> | void;
 }) {
   const [visibleRecentRunCount, setVisibleRecentRunCount] = useState(INITIAL_RECENT_RUN_COUNT);
@@ -1335,6 +1485,7 @@ export function MythicPlusSection({
   const [isSelectingRuns, setIsSelectingRuns] = useState(false);
   const [selectedRunIds, setSelectedRunIds] = useState<string[]>([]);
   const [lastSelectedRunId, setLastSelectedRunId] = useState<string | null>(null);
+  const [newSessionExternalId, setNewSessionExternalId] = useState("");
   const latestRunResetKey = data?.runs[0] ? getRecentRunRowKey(data.runs[0]) : "";
   const recentRunsResetKey = `${data?.totalRunCount ?? 0}:${latestRunResetKey}`;
   const totalRunCount = data?.totalRunCount ?? 0;
@@ -1345,6 +1496,7 @@ export function MythicPlusSection({
     setIsSelectingRuns(false);
     setSelectedRunIds([]);
     setLastSelectedRunId(null);
+    setNewSessionExternalId("");
   }, [recentRunsResetKey]);
 
   useEffect(() => {
@@ -1483,10 +1635,11 @@ export function MythicPlusSection({
     }
 
     try {
-      await onCreateRunSession(selectedVisibleRunIds);
+      await onCreateRunSession(selectedVisibleRunIds, newSessionExternalId.trim() || null);
       setIsSelectingRuns(false);
       setSelectedRunIds([]);
       setLastSelectedRunId(null);
+      setNewSessionExternalId("");
     } catch {
       // Parent mutation handler owns the error toast; keep the selection intact for retry.
     }
@@ -1496,6 +1649,7 @@ export function MythicPlusSection({
     setIsSelectingRuns(false);
     setSelectedRunIds([]);
     setLastSelectedRunId(null);
+    setNewSessionExternalId("");
   }
 
   function loadMoreRecentRuns() {
@@ -1560,6 +1714,14 @@ export function MythicPlusSection({
                       <span className="text-xs text-muted-foreground">
                         {selectedVisibleRunIds.length} selected
                       </span>
+                      <Input
+                        value={newSessionExternalId}
+                        onChange={(event) => setNewSessionExternalId(event.target.value)}
+                        placeholder="Session ID"
+                        maxLength={64}
+                        disabled={isMutatingSession}
+                        className="h-8 w-36 font-mono text-xs"
+                      />
                       <Button
                         type="button"
                         size="sm"
@@ -1649,9 +1811,11 @@ export function MythicPlusSection({
                               <RunSessionCard
                                 session={session}
                                 canEdit={canEditSessions}
+                                canEditExternalId={canEditSessions && isSelectingRuns}
                                 canDelete={canEditSessions && isSelectingRuns}
                                 isMutating={isMutatingSession}
                                 onUpdatePaid={onUpdateRunSessionPaid}
+                                onUpdateExternalId={onUpdateRunSessionExternalId}
                                 onDelete={onDeleteRunSession}
                               />
                             </td>

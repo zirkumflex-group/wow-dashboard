@@ -405,6 +405,20 @@ export const characterMythicPlusQuerySchema = z.object({
   includeAllRuns: z.boolean().optional(),
 });
 
+export const mythicPlusRunSessionExternalIdSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(64)
+  .regex(/^[A-Za-z0-9_-]+$/, "Use only letters, numbers, underscores, or dashes.");
+
+const nullableMythicPlusRunSessionExternalIdSchema = z.preprocess((value) => {
+  if (typeof value === "string" && value.trim().length === 0) {
+    return null;
+  }
+  return value;
+}, mythicPlusRunSessionExternalIdSchema.nullable());
+
 export const createMythicPlusRunSessionBodySchema = z.object({
   runIds: z
     .array(z.string().uuid())
@@ -414,10 +428,15 @@ export const createMythicPlusRunSessionBodySchema = z.object({
       message: "Run IDs must be unique.",
     }),
   isPaid: z.boolean().optional(),
+  externalId: nullableMythicPlusRunSessionExternalIdSchema.optional(),
 });
 
 export const updateMythicPlusRunSessionPaidBodySchema = z.object({
   isPaid: z.boolean(),
+});
+
+export const updateMythicPlusRunSessionExternalIdBodySchema = z.object({
+  externalId: nullableMythicPlusRunSessionExternalIdSchema,
 });
 
 export const updatePlayerDiscordBodySchema = z.object({
@@ -450,6 +469,9 @@ export type CharacterMythicPlusQuery = z.infer<typeof characterMythicPlusQuerySc
 export type CreateMythicPlusRunSessionBody = z.infer<typeof createMythicPlusRunSessionBodySchema>;
 export type UpdateMythicPlusRunSessionPaidBody = z.infer<
   typeof updateMythicPlusRunSessionPaidBodySchema
+>;
+export type UpdateMythicPlusRunSessionExternalIdBody = z.infer<
+  typeof updateMythicPlusRunSessionExternalIdBodySchema
 >;
 export type UpdatePlayerDiscordBody = z.infer<typeof updatePlayerDiscordBodySchema>;
 export type UpdateCharacterBoosterBody = z.infer<typeof updateCharacterBoosterBodySchema>;
