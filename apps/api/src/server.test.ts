@@ -251,21 +251,35 @@ async function seedAuthenticatedUser(input?: { expiresAt?: Date; userAgent?: str
   };
 }
 
-async function seedBattleNetAccount(input: { userId: string; accessToken?: string | null }) {
+async function seedBattleNetAccount(input: {
+  userId: string;
+  accessToken?: string | null;
+  refreshToken?: string | null;
+  accessTokenExpiresAt?: Date | null;
+  refreshTokenExpiresAt?: Date | null;
+  createdAt?: Date;
+  updatedAt?: Date;
+}) {
+  const createdAt = input.createdAt ?? new Date("2026-04-21T12:00:00.000Z");
+  const updatedAt = input.updatedAt ?? createdAt;
+
   await db.insert(authAccounts).values({
     id: `account-${randomUUID()}`,
     accountId: `bnet-${randomUUID()}`,
     providerId: "battlenet",
     userId: input.userId,
     accessToken: input.accessToken ?? null,
-    refreshToken: null,
+    refreshToken: input.refreshToken ?? null,
     idToken: null,
-    accessTokenExpiresAt: null,
-    refreshTokenExpiresAt: null,
+    accessTokenExpiresAt:
+      input.accessTokenExpiresAt === undefined
+        ? new Date(Date.now() + 60 * 60 * 1000)
+        : input.accessTokenExpiresAt,
+    refreshTokenExpiresAt: input.refreshTokenExpiresAt ?? null,
     scope: "openid wow.profile",
     password: null,
-    createdAt: new Date("2026-04-21T12:00:00.000Z"),
-    updatedAt: new Date("2026-04-21T12:00:00.000Z"),
+    createdAt,
+    updatedAt,
   });
 }
 
@@ -584,6 +598,47 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     assert.ok(desktopSession);
     assert.equal(desktopSession.userAgent, "wow-dashboard-desktop");
     assert.ok(desktopSession.expiresAt.getTime() > Date.now() + 9 * 365 * 24 * 60 * 60 * 1000);
+  });
+
+  it("supports the legacy desktop login polling handoff", async () => {
+    const auth = await seedAuthenticatedUser();
+    const attemptId = randomUUID();
+
+    const pendingResponse = await app.request(
+      `http://localhost/api/auth/desktop-login?attemptId=${encodeURIComponent(attemptId)}`,
+    );
+    assert.equal(pendingResponse.status, 200);
+    assert.deepEqual(await pendingResponse.json(), { status: "pending" });
+
+    const completeResponse = await app.request("http://localhost/api/auth/desktop-login/complete", {
+      method: "POST",
+      headers: {
+        ...authHeaders(auth.token),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ attemptId }),
+    });
+    assert.equal(completeResponse.status, 200);
+
+    const pollResponse = await app.request(
+      `http://localhost/api/auth/desktop-login?attemptId=${encodeURIComponent(attemptId)}`,
+    );
+    assert.equal(pollResponse.status, 200);
+    const pollPayload = (await pollResponse.json()) as { status: string; token?: string };
+    assert.equal(pollPayload.status, "complete");
+    assert.ok(pollPayload.token);
+    assert.notEqual(pollPayload.token, auth.token);
+
+    const desktopSessionResponse = await app.request("http://localhost/api/me", {
+      headers: authHeaders(pollPayload.token),
+    });
+    assert.equal(desktopSessionResponse.status, 200);
+
+    const consumedAgainResponse = await app.request(
+      `http://localhost/api/auth/desktop-login?attemptId=${encodeURIComponent(attemptId)}`,
+    );
+    assert.equal(consumedAgainResponse.status, 200);
+    assert.deepEqual(await consumedAgainResponse.json(), { status: "pending" });
   });
 
   it("extends existing short-lived desktop sessions on authenticated requests", async () => {
@@ -1960,6 +2015,106 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     assert.equal(rateLimitedPayload.ok, false);
     assert.ok(rateLimitedPayload.nextAllowedAt !== null);
     assert.ok((rateLimitedPayload.nextAllowedAt ?? 0) >= Date.now());
+  });
+
+  it("accepts recent legacy Battle.net access tokens without expiry metadata", async () => {
+    const auth = await seedAuthenticatedUser();
+    const issuedAt = new Date(Date.now() - 60 * 60 * 1000);
+    await seedPlayer(auth.userId, "LegacyFresh#5555");
+    await seedBattleNetAccount({
+      userId: auth.userId,
+      accessToken: "legacy-access-token",
+      accessTokenExpiresAt: null,
+      createdAt: issuedAt,
+      updatedAt: issuedAt,
+    });
+
+    const response = await app.request("http://localhost/api/characters/resync", {
+      method: "POST",
+      headers: authHeaders(auth.token),
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      ok: true,
+      nextAllowedAt: null,
+    });
+  });
+
+  it("does not treat stale legacy Battle.net access tokens as fresh forever", async () => {
+    const auth = await seedAuthenticatedUser();
+    const issuedAt = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    await seedPlayer(auth.userId, "LegacyStale#5555");
+    await seedBattleNetAccount({
+      userId: auth.userId,
+      accessToken: "stale-legacy-access-token",
+      accessTokenExpiresAt: null,
+      createdAt: issuedAt,
+      updatedAt: issuedAt,
+    });
+
+    const response = await app.request("http://localhost/api/characters/resync", {
+      method: "POST",
+      headers: authHeaders(auth.token),
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      ok: false,
+      nextAllowedAt: null,
+    });
+  });
+
+  it("refreshes legacy Battle.net access tokens with missing expiry when possible", async () => {
+    const auth = await seedAuthenticatedUser();
+    const issuedAt = new Date(Date.now() - 60 * 60 * 1000);
+    await seedPlayer(auth.userId, "Refreshable#5555");
+    await seedBattleNetAccount({
+      userId: auth.userId,
+      accessToken: "legacy-access-token",
+      refreshToken: "stored-refresh-token",
+      accessTokenExpiresAt: null,
+      createdAt: issuedAt,
+      updatedAt: issuedAt,
+    });
+
+    globalThis.fetch = async (input, init) => {
+      const requestUrl =
+        typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+
+      if (requestUrl === "https://oauth.battle.net/token") {
+        assert.equal(init?.method, "POST");
+        return Response.json({
+          access_token: "refreshed-access-token",
+          refresh_token: "refreshed-refresh-token",
+          expires_in: 7200,
+          refresh_token_expires_in: 2_419_200,
+          scope: "openid wow.profile",
+        });
+      }
+
+      return originalFetch(input, init);
+    };
+
+    const response = await app.request("http://localhost/api/characters/resync", {
+      method: "POST",
+      headers: authHeaders(auth.token),
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      ok: true,
+      nextAllowedAt: null,
+    });
+
+    const accountRow = await db.query.account.findFirst({
+      where: and(eq(authAccounts.userId, auth.userId), eq(authAccounts.providerId, "battlenet")),
+    });
+    assert.ok(accountRow);
+    assert.equal(accountRow.accessToken, "refreshed-access-token");
+    assert.equal(accountRow.refreshToken, "refreshed-refresh-token");
+    assert.ok(accountRow.accessTokenExpiresAt);
+    assert.ok(accountRow.accessTokenExpiresAt.getTime() > Date.now() + 60 * 60 * 1000);
   });
 
   it("updates the booster flag through /api/characters/:id/booster", async () => {

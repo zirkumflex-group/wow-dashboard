@@ -5,6 +5,7 @@ import { insertAuditEvent } from "./audit";
 import { ensureRedis } from "./redis";
 
 const loginCodePrefix = "auth:login-code";
+const desktopLoginAttemptPrefix = "auth:desktop-login";
 const codeBytes = 32;
 const desktopSessionUserAgent = "wow-dashboard-desktop";
 const desktopSessionTtlSeconds = 10 * 365 * 24 * 60 * 60;
@@ -16,8 +17,18 @@ type StoredLoginCode = {
   createdAt: string;
 };
 
+type StoredDesktopLoginAttempt = {
+  token: string;
+  userId: string;
+  createdAt: string;
+};
+
 function buildLoginCodeKey(code: string): string {
   return `${loginCodePrefix}:${code}`;
+}
+
+function buildDesktopLoginAttemptKey(attemptId: string): string {
+  return `${desktopLoginAttemptPrefix}:${attemptId}`;
 }
 
 function createRandomCode(): string {
@@ -78,9 +89,7 @@ async function createDesktopSessionToken(userId: string): Promise<string> {
   return session.token;
 }
 
-export async function createLoginCode(input: {
-  userId: string;
-}): Promise<string> {
+export async function createLoginCode(input: { userId: string }): Promise<string> {
   const redis = await ensureRedis();
   const token = await createDesktopSessionToken(input.userId);
 
@@ -130,6 +139,63 @@ export async function redeemLoginCode(code: string): Promise<string | null> {
   }
 
   await insertAuditEvent("auth.code.redeemed", {
+    userId: payload.userId,
+    metadata: {
+      expiresInSeconds: loginCodeTtlSeconds,
+    },
+  });
+
+  return payload.token;
+}
+
+export async function completeDesktopLoginAttempt(input: {
+  attemptId: string;
+  userId: string;
+}): Promise<void> {
+  const attemptId = input.attemptId.trim();
+  if (!attemptId) return;
+
+  const redis = await ensureRedis();
+  const payload: StoredDesktopLoginAttempt = {
+    token: await createDesktopSessionToken(input.userId),
+    userId: input.userId,
+    createdAt: new Date().toISOString(),
+  };
+
+  await redis.set(
+    buildDesktopLoginAttemptKey(attemptId),
+    JSON.stringify(payload),
+    "EX",
+    loginCodeTtlSeconds,
+  );
+
+  await insertAuditEvent("auth.desktop.completed", {
+    userId: input.userId,
+    metadata: {
+      expiresInSeconds: loginCodeTtlSeconds,
+    },
+  });
+}
+
+export async function consumeDesktopLoginAttempt(attemptId: string): Promise<string | null> {
+  const normalizedAttemptId = attemptId.trim();
+  if (!normalizedAttemptId) return null;
+
+  const redis = await ensureRedis();
+  const rawValue = (await redis.call(
+    "GETDEL",
+    buildDesktopLoginAttemptKey(normalizedAttemptId),
+  )) as string | null;
+  if (!rawValue) return null;
+
+  let payload: StoredDesktopLoginAttempt;
+  try {
+    payload = JSON.parse(rawValue) as StoredDesktopLoginAttempt;
+  } catch {
+    return null;
+  }
+
+  await insertAuditEvent("auth.desktop.consumed", {
     userId: payload.userId,
     metadata: {
       expiresInSeconds: loginCodeTtlSeconds,

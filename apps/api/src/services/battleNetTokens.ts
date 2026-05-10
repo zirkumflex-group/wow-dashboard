@@ -33,6 +33,7 @@ type BattleNetAccessTokenResult =
 
 const battleNetTokenEndpoint = "https://oauth.battle.net/token";
 const accessTokenRefreshSkewMs = 5 * 60 * 1000;
+const legacyAccessTokenTtlMs = 24 * 60 * 60 * 1000;
 
 function readString(value: unknown): string | null {
   return typeof value === "string" && value.trim() !== "" ? value : null;
@@ -48,6 +49,31 @@ function expiresAtFromNow(expiresInSeconds: number | null): Date | null {
   return expiresInSeconds === null ? null : new Date(Date.now() + expiresInSeconds * 1000);
 }
 
+function getLegacyAccessTokenIssuedAt(accountRow: BattleNetAccountRecord): Date | null {
+  return accountRow.updatedAt ?? accountRow.createdAt ?? null;
+}
+
+function getEffectiveAccessTokenExpiresAt(accountRow: BattleNetAccountRecord): Date | null {
+  if (accountRow.accessTokenExpiresAt) {
+    return accountRow.accessTokenExpiresAt;
+  }
+
+  const issuedAt = getLegacyAccessTokenIssuedAt(accountRow);
+  return issuedAt ? new Date(issuedAt.getTime() + legacyAccessTokenTtlMs) : null;
+}
+
+function getAccessTokenExpiryMetadata(accountRow: BattleNetAccountRecord) {
+  const inferredAccessTokenExpiresAt = accountRow.accessTokenExpiresAt
+    ? null
+    : getEffectiveAccessTokenExpiresAt(accountRow);
+
+  return {
+    accessTokenExpiresAt: accountRow.accessTokenExpiresAt?.toISOString() ?? null,
+    inferredAccessTokenExpiresAt: inferredAccessTokenExpiresAt?.toISOString() ?? null,
+    accessTokenExpirySource: accountRow.accessTokenExpiresAt ? "provider" : "legacy_inferred",
+  };
+}
+
 function hasFreshAccessToken(
   accountRow: BattleNetAccountRecord,
 ): accountRow is BattleNetAccountRecord & {
@@ -57,8 +83,12 @@ function hasFreshAccessToken(
     return false;
   }
 
-  const expiresAt = accountRow.accessTokenExpiresAt;
-  return !expiresAt || expiresAt.getTime() > Date.now() + accessTokenRefreshSkewMs;
+  if (!accountRow.accessTokenExpiresAt && accountRow.refreshToken) {
+    return false;
+  }
+
+  const expiresAt = getEffectiveAccessTokenExpiresAt(accountRow);
+  return Boolean(expiresAt && expiresAt.getTime() > Date.now() + accessTokenRefreshSkewMs);
 }
 
 async function requestRefreshedBattleNetToken(
@@ -103,9 +133,10 @@ async function refreshBattleNetAccessToken(
     }
 
     const refreshToken = readString(refreshedToken.refresh_token) ?? accountRow.refreshToken;
+    const refreshedAt = new Date();
     const accessTokenExpiresAt =
       expiresAtFromNow(readExpiresInSeconds(refreshedToken.expires_in)) ??
-      accountRow.accessTokenExpiresAt;
+      new Date(refreshedAt.getTime() + legacyAccessTokenTtlMs);
     const refreshTokenExpiresIn = readExpiresInSeconds(refreshedToken.refresh_token_expires_in);
     const refreshTokenExpiresAt =
       refreshTokenExpiresIn === null
@@ -121,7 +152,7 @@ async function refreshBattleNetAccessToken(
         accessTokenExpiresAt,
         refreshTokenExpiresAt,
         scope: readString(refreshedToken.scope) ?? accountRow.scope,
-        updatedAt: new Date(),
+        updatedAt: refreshedAt,
       })
       .where(eq(account.id, accountRow.id));
 
@@ -129,7 +160,11 @@ async function refreshBattleNetAccessToken(
       userId: accountRow.userId,
       metadata: {
         battlenetAccountId: accountRow.accountId,
-        accessTokenExpiresAt: accessTokenExpiresAt?.toISOString() ?? null,
+        ...getAccessTokenExpiryMetadata({
+          ...accountRow,
+          accessTokenExpiresAt,
+          updatedAt: refreshedAt,
+        }),
       },
     });
 
@@ -190,7 +225,7 @@ export async function resolveBattleNetAccessTokenForUser(
       userId,
       metadata: {
         battlenetAccountId: accountRow.accountId,
-        accessTokenExpiresAt: accountRow.accessTokenExpiresAt?.toISOString() ?? null,
+        ...getAccessTokenExpiryMetadata(accountRow),
       },
     });
 

@@ -217,6 +217,7 @@ export const auth = betterAuth({
           clientSecret: env.BATTLENET_CLIENT_SECRET,
           scopes: ["openid", "wow.profile"],
           accessType: "offline",
+          prompt: "consent",
           mapProfileToUser: (profile: BattleNetProfile) => ({
             id: String(profile.sub),
             name: profile.battletag ?? profile.battle_tag ?? String(profile.sub),
