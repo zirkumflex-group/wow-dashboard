@@ -24,6 +24,7 @@ import { after, beforeEach, describe, it } from "node:test";
 import { and, eq, sql } from "drizzle-orm";
 import {
   account as authAccounts,
+  auditLog,
   characterDailySnapshots,
   characters,
   mythicPlusRunSessionRuns,
@@ -2854,6 +2855,164 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     assert.equal(storedRuns[0]?.attemptId, `attempt|17|402|10|${activeStart}`);
     assert.equal(Math.floor((storedRuns[0]?.startDate?.getTime() ?? 0) / 1000), activeStart);
     assert.equal(storedRuns[0]?.runScore, 331);
+  });
+
+  it("backfills missing Mythic+ scores from later history uploads", async () => {
+    const auth = await seedAuthenticatedUser();
+    const playerId = await seedAddonIngestOwner(
+      auth,
+      [
+        {
+          name: "Scorelate",
+          realm: "Blackhand",
+          className: "Death Knight",
+          race: "Orc",
+          faction: "horde",
+        },
+      ],
+      "Uploader#3638",
+    );
+
+    const startDate = 1_779_115_910;
+    const completedAt = 1_779_117_226;
+    const durationMs = (completedAt - startDate) * 1000;
+    const attemptId = `attempt|17|558|12|${startDate}`;
+    const baseCharacter = {
+      name: "Scorelate",
+      realm: "Blackhand",
+      region: "eu",
+      class: "Death Knight",
+      race: "Orc",
+      faction: "horde",
+      snapshots: [],
+    } as const;
+
+    const firstResponse = await app.request("http://localhost/api/addon/ingest", {
+      method: "POST",
+      headers: {
+        ...authHeaders(auth.token),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        characters: [
+          {
+            ...baseCharacter,
+            mythicPlusRuns: [
+              {
+                fingerprint: `aid|${attemptId}`,
+                attemptId,
+                observedAt: startDate,
+                seasonID: 17,
+                mapChallengeModeID: 558,
+                mapName: "Magisters' Terrace",
+                level: 12,
+                status: "completed",
+                completed: true,
+                completedInTime: true,
+                durationMs,
+                startDate,
+                completedAt,
+                endedAt: completedAt,
+                members: [
+                  {
+                    name: "Scorelate",
+                    realm: "Blackhand",
+                    classTag: "DEATHKNIGHT",
+                    role: "dps",
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      }),
+    });
+
+    assert.equal(firstResponse.status, 200);
+
+    const character = await db.query.characters.findFirst({
+      where: and(eq(characters.playerId, playerId), eq(characters.name, "Scorelate")),
+    });
+    assert.ok(character);
+    assert.equal(character.mythicPlusRunCount, 1);
+    assert.equal(character.mythicPlusRecentRunsPreview?.[0]?.runScore, undefined);
+
+    const firstAuditRows = await db
+      .select()
+      .from(auditLog)
+      .where(and(eq(auditLog.userId, auth.userId), eq(auditLog.event, "addon.ingest")))
+      .orderBy(auditLog.timestamp);
+    const firstAuditMetadata = firstAuditRows.at(-1)?.metadata as
+      | { completedRunsMissingScore?: number }
+      | undefined;
+    assert.equal(firstAuditMetadata?.completedRunsMissingScore, 1);
+
+    const historyResponse = await app.request("http://localhost/api/addon/ingest", {
+      method: "POST",
+      headers: {
+        ...authHeaders(auth.token),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        characters: [
+          {
+            ...baseCharacter,
+            mythicPlusRuns: [
+              {
+                fingerprint: `run|17|558|12|${completedAt}`,
+                observedAt: completedAt + 60,
+                seasonID: 17,
+                mapChallengeModeID: 558,
+                mapName: "Magisters' Terrace",
+                level: 12,
+                status: "completed",
+                completed: true,
+                completedInTime: true,
+                durationMs,
+                runScore: 376,
+                completedAt,
+                endedAt: completedAt,
+                thisWeek: true,
+              },
+            ],
+          },
+        ],
+      }),
+    });
+
+    assert.equal(historyResponse.status, 200);
+    const historyPayload = (await historyResponse.json()) as {
+      newMythicPlusRuns: number;
+      collapsedMythicPlusRuns: number;
+    };
+    assert.equal(historyPayload.newMythicPlusRuns, 0);
+    assert.equal(historyPayload.collapsedMythicPlusRuns, 0);
+
+    const updatedCharacter = await db.query.characters.findFirst({
+      where: and(eq(characters.playerId, playerId), eq(characters.name, "Scorelate")),
+    });
+    assert.ok(updatedCharacter);
+    assert.equal(updatedCharacter.mythicPlusRunCount, 1);
+    assert.equal(updatedCharacter.mythicPlusRecentRunsPreview?.[0]?.attemptId, attemptId);
+    assert.equal(updatedCharacter.mythicPlusRecentRunsPreview?.[0]?.runScore, 376);
+    assert.equal(updatedCharacter.mythicPlusRecentRunsPreview?.[0]?.members?.length, 1);
+
+    const storedRuns = await db.query.mythicPlusRuns.findMany({
+      where: eq(mythicPlusRuns.characterId, updatedCharacter.id),
+    });
+    assert.equal(storedRuns.length, 1);
+    assert.equal(storedRuns[0]?.attemptId, attemptId);
+    assert.equal(storedRuns[0]?.runScore, 376);
+
+    const auditRows = await db
+      .select()
+      .from(auditLog)
+      .where(and(eq(auditLog.userId, auth.userId), eq(auditLog.event, "addon.ingest")))
+      .orderBy(auditLog.timestamp);
+    const latestAuditMetadata = auditRows.at(-1)?.metadata as
+      | { completedRunsMissingScore?: number }
+      | undefined;
+    assert.equal(latestAuditMetadata?.completedRunsMissingScore, 0);
   });
 
   it("enriches existing history-only mythic plus runs with late uploaded members", async () => {

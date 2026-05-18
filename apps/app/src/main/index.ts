@@ -74,6 +74,7 @@ const ADDON_FILE_SYNC_DEBOUNCE_MS = 5_000;
 const ADDON_STARTUP_SYNC_DELAY_MS = 3_000;
 const MYTHIC_PLUS_UPLOAD_LOOKBACK_SECONDS = 2 * 60 * 60;
 const MYTHIC_PLUS_MEMBER_UPLOAD_LOOKBACK_SECONDS = 48 * 60 * 60;
+const MYTHIC_PLUS_MISSING_SCORE_UPLOAD_LOOKBACK_SECONDS = 48 * 60 * 60;
 const ADDON_UPLOAD_CHARACTERS_PER_BATCH = 20;
 const ADDON_UPLOAD_SNAPSHOTS_PER_CHARACTER = 100;
 const ADDON_UPLOAD_RUNS_PER_CHARACTER = 150;
@@ -3121,12 +3122,19 @@ function getMythicPlusRunLastMutationAt(run: MythicPlusRunData): number {
   return latestMutationAt;
 }
 
+function isCompletedMythicPlusRunMissingScore(run: MythicPlusRunData): boolean {
+  return getMythicPlusRunStatus(run) === "completed" && run.runScore === undefined;
+}
+
 function isUploadableMythicPlusRun(run: MythicPlusRunData, sinceTs: number) {
   const nowTs = Math.floor(Date.now() / 1000);
-  const lookbackSeconds =
-    (run.members?.length ?? 0) > 0
-      ? MYTHIC_PLUS_MEMBER_UPLOAD_LOOKBACK_SECONDS
-      : MYTHIC_PLUS_UPLOAD_LOOKBACK_SECONDS;
+  const lookbackSeconds = Math.max(
+    MYTHIC_PLUS_UPLOAD_LOOKBACK_SECONDS,
+    (run.members?.length ?? 0) > 0 ? MYTHIC_PLUS_MEMBER_UPLOAD_LOOKBACK_SECONDS : 0,
+    isCompletedMythicPlusRunMissingScore(run)
+      ? MYTHIC_PLUS_MISSING_SCORE_UPLOAD_LOOKBACK_SECONDS
+      : 0,
+  );
   const effectiveSinceTs = Math.min(sinceTs, nowTs - lookbackSeconds);
   const lastMutationAt = getMythicPlusRunLastMutationAt(run);
   return lastMutationAt > effectiveSinceTs;

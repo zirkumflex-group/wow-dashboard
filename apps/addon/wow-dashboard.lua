@@ -297,6 +297,11 @@ addon.uiHelpers = {
 --   pendingMythicPlusMembers table -- keyed by "Name-Realm"
 --     capturedAt    number
 --     members       array
+--   pendingMythicPlusScoreBackfill table -- keyed by "Name-Realm"
+--     startedAt     number
+--     retryIndex    number
+--     lastScheduledAt number?
+--     missingCount  number?
 --   activeMythicPlusMembers table -- keyed by "Name-Realm"
 --     startedAt     number
 --     updatedAt     number
@@ -351,6 +356,9 @@ local ACTIVE_ATTEMPT_STALE_ACTIVE_RETRY_DELAY = 4
 local ACTIVE_ATTEMPT_STALE_ACTIVE_MAX_RETRIES = 6
 local RECENT_COMPLETION_EVENT_GRACE = 20
 local STALE_ATTEMPT_RECOVERY_SECONDS = 10 * 60
+local MPLUS_SCORE_BACKFILL_WINDOW = 48 * 60 * 60
+local MPLUS_SCORE_BACKFILL_RETRY_DELAYS = { 5, 45, 120, 300, 900 }
+local MPLUS_SCORE_BACKFILL_PERIODIC_DELAY = 15 * 60
 local MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS = 4 * 60 * 60 * 1000
 local MYTHIC_PLUS_DEBUG_EVENT_LIMIT = 30
 local MAX_SNAPSHOTS_PER_CHARACTER = 500
@@ -411,8 +419,10 @@ local pendingMPlusSync     = false
 local lastMPlusSyncAt      = 0
 local pendingCompletedRunMembers = nil
 local pendingActiveAttemptReconcile = false
+local pendingMPlusScoreBackfillSync = false
 
 local StartSnapshotTicker = nil
+local ScheduleNextMythicPlusScoreBackfill = nil
 
 local function GetCharKey()
     local name, realm = UnitFullName("player")
@@ -701,6 +711,14 @@ local function EnsurePendingMythicPlusMemberStore()
     end
 
     return WowDashboardDB.pendingMythicPlusMembers
+end
+
+local function EnsurePendingMythicPlusScoreBackfillStore()
+    if type(WowDashboardDB.pendingMythicPlusScoreBackfill) ~= "table" then
+        WowDashboardDB.pendingMythicPlusScoreBackfill = {}
+    end
+
+    return WowDashboardDB.pendingMythicPlusScoreBackfill
 end
 
 local function EnsureActiveMythicPlusMemberStore()
@@ -3507,6 +3525,46 @@ ScheduleActiveAttemptReconcile = function(reason, delaySeconds, options)
     end)
 end
 
+local function GetCompletedRunsMissingScoreCount(entry)
+    if type(entry) ~= "table" or type(entry.mythicPlusRuns) ~= "table" then
+        return 0
+    end
+
+    local nowTs = time()
+    local count = 0
+    for _, run in ipairs(entry.mythicPlusRuns) do
+        if type(run) == "table"
+            and GetRunStatus(run) == "completed"
+            and tonumber(run.runScore) == nil
+        then
+            local playedAt = GetRunSortValue(run)
+            if playedAt > 0
+                and playedAt <= (nowTs + 5 * 60)
+                and (nowTs - playedAt) <= MPLUS_SCORE_BACKFILL_WINDOW
+            then
+                count = count + 1
+            end
+        end
+    end
+
+    return count
+end
+
+local function ClearMythicPlusScoreBackfillState(characterKey, reason)
+    if type(characterKey) ~= "string" or characterKey == "" then
+        return
+    end
+
+    local store = EnsurePendingMythicPlusScoreBackfillStore()
+    if store[characterKey] ~= nil then
+        store[characterKey] = nil
+        AppendMythicPlusDebugEvent(characterKey, "score_backfill_cleared", {
+            summary = reason or "cleared",
+            reason = reason,
+        })
+    end
+end
+
 local function SyncMythicPlusHistory(reason, options)
     options = options or {}
     if not IsLoggedIn() then
@@ -3568,6 +3626,19 @@ local function SyncMythicPlusHistory(reason, options)
         runCount = #runs,
     })
 
+    local missingScoreCount = GetCompletedRunsMissingScoreCount(entry)
+    UpdateMythicPlusDebugState(key, {
+        lastMissingScoreCount = missingScoreCount,
+    })
+    if missingScoreCount > 0 then
+        ScheduleNextMythicPlusScoreBackfill("missing_score_after_sync", {
+            characterKey = key,
+            entry = entry,
+        })
+    else
+        ClearMythicPlusScoreBackfillState(key, "score_present")
+    end
+
     return added > 0 or updated or beforeCount ~= #entry.mythicPlusRuns
 end
 
@@ -3601,6 +3672,86 @@ local function ScheduleMythicPlusHistorySync(reason, delaySeconds, options)
         end
         SyncMythicPlusHistory(reason, options)
     end)
+end
+
+ScheduleNextMythicPlusScoreBackfill = function(reason, options)
+    options = options or {}
+    local characterKey = options.characterKey
+    local entry = options.entry
+
+    if type(characterKey) ~= "string" or characterKey == "" or type(entry) ~= "table" then
+        local key, name, realm, charInfo = GetCharacterIdentity()
+        characterKey = key
+        entry = EnsureCharacterEntry(key, name, realm, charInfo)
+        NormalizeAndDeduplicateRuns(entry)
+    end
+
+    local missingScoreCount = GetCompletedRunsMissingScoreCount(entry)
+    if missingScoreCount <= 0 then
+        ClearMythicPlusScoreBackfillState(characterKey, "score_present")
+        return false
+    end
+
+    if pendingMPlusScoreBackfillSync and not options.force then
+        return false
+    end
+
+    local store = EnsurePendingMythicPlusScoreBackfillStore()
+    local state = store[characterKey]
+    if type(state) ~= "table" or options.reset == true then
+        state = {
+            startedAt = time(),
+            retryIndex = 1,
+        }
+        store[characterKey] = state
+    end
+
+    local retryIndex = tonumber(state.retryIndex) or 1
+    local delaySeconds = options.delaySeconds
+        or MPLUS_SCORE_BACKFILL_RETRY_DELAYS[retryIndex]
+        or MPLUS_SCORE_BACKFILL_PERIODIC_DELAY
+    state.retryIndex = retryIndex + 1
+    state.lastScheduledAt = time()
+    state.lastReason = reason or "missing_score"
+    state.missingCount = missingScoreCount
+
+    pendingMPlusScoreBackfillSync = true
+    AppendMythicPlusDebugEvent(characterKey, "score_backfill_scheduled", {
+        summary = tostring(reason or "missing_score")
+            .. " in " .. tostring(delaySeconds) .. "s"
+            .. " (" .. tostring(missingScoreCount) .. ")",
+        reason = reason,
+        delaySeconds = delaySeconds,
+        retryIndex = retryIndex,
+        missingScoreCount = missingScoreCount,
+    })
+
+    C_Timer.After(delaySeconds, function()
+        pendingMPlusScoreBackfillSync = false
+        if not IsLoggedIn() then
+            return
+        end
+
+        local key, name, realm, charInfo = GetCharacterIdentity()
+        local currentEntry = EnsureCharacterEntry(key, name, realm, charInfo)
+        NormalizeAndDeduplicateRuns(currentEntry)
+        local currentMissingScoreCount = GetCompletedRunsMissingScoreCount(currentEntry)
+        if currentMissingScoreCount <= 0 then
+            ClearMythicPlusScoreBackfillState(key, "score_present")
+            return
+        end
+
+        AppendMythicPlusDebugEvent(key, "score_backfill_sync", {
+            summary = tostring(currentMissingScoreCount) .. " missing score",
+            reason = reason,
+            missingScoreCount = currentMissingScoreCount,
+        })
+        SyncMythicPlusHistory(reason or "missing_score_backfill", {
+            scoreBackfill = true,
+        })
+    end)
+
+    return true
 end
 
 function addon.BuildSnapshotClientInfo()
@@ -4295,6 +4446,10 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
             completedAt = completionAt,
             members = mergedCompletionMembers,
             startDate = GetChallengeModeStartTimestamp(),
+        })
+        ScheduleNextMythicPlusScoreBackfill("challenge_mode_completed_score", {
+            reset = true,
+            force = true,
         })
         UpdateMythicPlusDebugState(characterKey, {
             lastCompletionEventAt = completionAt,

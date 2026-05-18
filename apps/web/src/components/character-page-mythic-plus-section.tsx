@@ -1802,6 +1802,9 @@ export function MythicPlusSection({
                     const previousSessionId = visibleRecentRuns[index - 1]?.session?.id ?? null;
                     const showSessionCard = session && session.id !== previousSessionId;
                     const isGrouped = Boolean(session);
+                    const isScorePending =
+                      isCompletedMythicPlusRun(run) &&
+                      (run.runScore === undefined || run.runScore === null);
 
                     return (
                       <Fragment key={getRecentRunRowKey(run)}>
@@ -1886,7 +1889,14 @@ export function MythicPlusSection({
                           </td>
                           <td className="px-3 py-2 align-top text-right">
                             <div className="flex items-center justify-end gap-1.5 tabular-nums">
-                              <span>{formatRunScore(run.runScore)}</span>
+                              <span
+                                className={cn(
+                                  isScorePending ? "text-xs text-muted-foreground" : "",
+                                )}
+                                title={isScorePending ? "Pending score" : undefined}
+                              >
+                                {isScorePending ? "Pending" : formatRunScore(run.runScore)}
+                              </span>
                               {formatRunScoreIncrease(run.scoreIncrease) ? (
                                 <span className="text-xs font-medium text-emerald-300">
                                   (+{formatRunScoreIncrease(run.scoreIncrease)})

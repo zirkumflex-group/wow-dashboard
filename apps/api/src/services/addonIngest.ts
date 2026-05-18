@@ -1425,6 +1425,12 @@ async function collapseDuplicateMythicPlusRunsForCharacter(tx: DbExecutor, chara
   return collapsedCount;
 }
 
+function countCompletedRunsMissingScore(runs: MythicPlusRunDocument[]) {
+  return runs.filter(
+    (run) => getMythicPlusRunLifecycleStatus(run) === "completed" && run.runScore === undefined,
+  ).length;
+}
+
 export async function ingestAddonData(userId: string, inputCharacters: AddonCharacterInput[]) {
   const rateLimit = await limitAddonIngest(userId);
   if (!rateLimit.ok) {
@@ -1453,6 +1459,7 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
     let newSnapshots = 0;
     let newMythicPlusRuns = 0;
     let collapsedMythicPlusRuns = 0;
+    let completedRunsMissingScore = 0;
 
     for (const charData of inputCharacters) {
       const verifiedCharacter = verifiedCharacters.get(
@@ -1873,6 +1880,7 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
         nextCharacterLatestSnapshotDetails?.mythicPlusScore ??
         null;
       const dedupedRuns = dedupeMythicPlusRuns(Array.from(currentCharacterRuns.values()));
+      completedRunsMissingScore += countCompletedRunsMissingScore(dedupedRuns);
       const recentRuns = buildRecentRuns(dedupedRuns);
       const mythicPlusSummary = buildMythicPlusSummary(dedupedRuns, currentScore);
       const mythicPlusRecentRunsPreview = recentRuns.slice(
@@ -1906,6 +1914,7 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
       newSnapshots,
       newMythicPlusRuns,
       collapsedMythicPlusRuns,
+      completedRunsMissingScore,
     };
   });
 
@@ -1917,5 +1926,10 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
     },
   });
 
-  return result;
+  return {
+    newChars: result.newChars,
+    newSnapshots: result.newSnapshots,
+    newMythicPlusRuns: result.newMythicPlusRuns,
+    collapsedMythicPlusRuns: result.collapsedMythicPlusRuns,
+  };
 }
