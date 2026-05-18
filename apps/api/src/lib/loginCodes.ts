@@ -46,7 +46,19 @@ type MaybeDesktopSession = {
 };
 
 export async function ensureDesktopSessionLifetime(session: MaybeDesktopSession): Promise<void> {
-  if (session.userAgent !== desktopSessionUserAgent || !session.token) return;
+  await ensureDesktopSessionLifetimeWithOptions(session);
+}
+
+export async function ensureElectronSessionLifetime(session: MaybeDesktopSession): Promise<void> {
+  await ensureDesktopSessionLifetimeWithOptions(session, { promoteLegacySession: true });
+}
+
+async function ensureDesktopSessionLifetimeWithOptions(
+  session: MaybeDesktopSession,
+  options: { promoteLegacySession?: boolean } = {},
+): Promise<void> {
+  if (!session.token) return;
+  if (session.userAgent !== desktopSessionUserAgent && !options.promoteLegacySession) return;
 
   const expiresAt =
     session.expiresAt instanceof Date
@@ -54,19 +66,21 @@ export async function ensureDesktopSessionLifetime(session: MaybeDesktopSession)
       : session.expiresAt
         ? new Date(session.expiresAt)
         : null;
+  const shouldRefreshExpiry =
+    !expiresAt ||
+    !Number.isFinite(expiresAt.getTime()) ||
+    expiresAt.getTime() <= Date.now() + desktopSessionRefreshThresholdSeconds * 1000;
+  const shouldUpdateUserAgent = session.userAgent !== desktopSessionUserAgent;
 
-  if (
-    expiresAt &&
-    Number.isFinite(expiresAt.getTime()) &&
-    expiresAt.getTime() > Date.now() + desktopSessionRefreshThresholdSeconds * 1000
-  ) {
+  if (!shouldRefreshExpiry && !shouldUpdateUserAgent) {
     return;
   }
 
   const authContext = await auth.$context;
   await authContext.internalAdapter.updateSession(session.token, {
-    expiresAt: getDesktopSessionExpiresAt(),
+    ...(shouldRefreshExpiry ? { expiresAt: getDesktopSessionExpiresAt() } : {}),
     updatedAt: new Date(),
+    ...(shouldUpdateUserAgent ? { userAgent: desktopSessionUserAgent } : {}),
   });
 }
 

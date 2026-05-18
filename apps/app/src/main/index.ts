@@ -28,7 +28,7 @@ import type {
   AppInstallUpdateResult,
   AppUpdateState,
 } from "../shared/update";
-import type { DesktopAuthSessionState } from "../shared/auth";
+import { resolveDesktopAuthSessionState, type DesktopAuthSessionState } from "../shared/auth";
 import type {
   AddonFileState,
   AddonFileStats,
@@ -106,6 +106,8 @@ const addonUpdateState: AddonUpdateState = {
 };
 const SITE_URL = appEnv.VITE_SITE_URL;
 const API_URL = appEnv.VITE_API_URL;
+const DESKTOP_CLIENT_HEADER = "X-Wow-Dashboard-Client";
+const DESKTOP_CLIENT_HEADER_VALUE = "desktop";
 const RENDERER_DEV_URL = process.env["ELECTRON_RENDERER_URL"] ?? null;
 const RENDERER_FILE_PATH = join(__dirname, "../renderer/index.html");
 const RENDERER_DIR = resolve(__dirname, "../renderer");
@@ -201,6 +203,7 @@ function buildApiProxyHeaders(inputHeaders: Array<[string, string]> | undefined)
   }
 
   headers.set("Origin", SITE_URL);
+  headers.set(DESKTOP_CLIENT_HEADER, DESKTOP_CLIENT_HEADER_VALUE);
   if (storedSessionToken) {
     headers.set("Authorization", `Bearer ${storedSessionToken}`);
   }
@@ -216,6 +219,21 @@ function getApiAuthUrl(pathname: string): string {
     pathname.replace(/^\//, ""),
     API_URL.endsWith("/") ? API_URL : `${API_URL}/`,
   ).toString();
+}
+
+function parseJsonResponseText(text: string): { ok: true; value: unknown } | { ok: false } {
+  if (text.trim() === "") {
+    return { ok: false };
+  }
+
+  try {
+    return {
+      ok: true,
+      value: JSON.parse(text) as unknown,
+    };
+  } catch {
+    return { ok: false };
+  }
 }
 
 function persistDesktopSessionToken(token: string): void {
@@ -3589,9 +3607,11 @@ ipcMain.handle("auth:getSession", async () => {
     const resp = await session.defaultSession.fetch(getApiAuthUrl("/auth/get-session"), {
       headers: {
         Origin: SITE_URL,
+        [DESKTOP_CLIENT_HEADER]: DESKTOP_CLIENT_HEADER_VALUE,
         ...(storedSessionToken ? { Authorization: `Bearer ${storedSessionToken}` } : {}),
       },
     });
+    const responseText = await resp.text();
     if (!resp.ok) {
       if (resp.status === 401) {
         saveSessionToken(null);
@@ -3603,10 +3623,19 @@ ipcMain.handle("auth:getSession", async () => {
         status: "unknown",
       } satisfies DesktopAuthSessionState;
     }
-    return {
-      status: "valid",
-      session: await resp.json(),
-    } satisfies DesktopAuthSessionState;
+
+    const parsed = parseJsonResponseText(responseText);
+    if (!parsed.ok) {
+      return {
+        status: "unknown",
+      } satisfies DesktopAuthSessionState;
+    }
+
+    const sessionState = resolveDesktopAuthSessionState(parsed.value);
+    if (sessionState.status === "unauthenticated") {
+      saveSessionToken(null);
+    }
+    return sessionState;
   } catch {
     return {
       status: "unknown",
@@ -3624,6 +3653,7 @@ ipcMain.handle("auth:logout", async () => {
       headers: {
         "Content-Type": "application/json",
         Origin: SITE_URL,
+        [DESKTOP_CLIENT_HEADER]: DESKTOP_CLIENT_HEADER_VALUE,
         ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
       },
       body: JSON.stringify({}),
@@ -3651,12 +3681,16 @@ ipcMain.handle(
       headers: buildApiProxyHeaders(request.headers),
       ...(method !== "GET" && request.body !== undefined ? { body: request.body } : {}),
     });
+    const body = await response.text();
+    if (response.status === 401) {
+      saveSessionToken(null);
+    }
 
     return {
       status: response.status,
       statusText: response.statusText,
       headers: Array.from(response.headers.entries()),
-      body: await response.text(),
+      body,
     };
   },
 );

@@ -29,6 +29,7 @@ import {
   consumeDesktopLoginAttempt,
   createLoginCode,
   ensureDesktopSessionLifetime,
+  ensureElectronSessionLifetime,
   redeemLoginCode,
 } from "./lib/loginCodes";
 import { limitPublicHeavyRead, limitPublicRead } from "./lib/rateLimit";
@@ -64,6 +65,8 @@ type AppBindings = {
 };
 
 export const app = new Hono<AppBindings>();
+const desktopClientHeader = "x-wow-dashboard-client";
+const desktopClientHeaderValue = "desktop";
 
 function isAllowedApiOrigin(origin: string) {
   if (!origin) {
@@ -92,6 +95,13 @@ function isAllowedApiOrigin(origin: string) {
 
 function hasAuthorizationHeader(value: string | null | undefined) {
   return typeof value === "string" && value.trim() !== "";
+}
+
+function isElectronBearerRequest(c: Context<AppBindings>) {
+  return (
+    c.req.header(desktopClientHeader)?.trim().toLowerCase() === desktopClientHeaderValue &&
+    hasAuthorizationHeader(c.req.header("authorization"))
+  );
 }
 
 function requestsAuthorizationHeader(value: string | null | undefined) {
@@ -562,7 +572,11 @@ app.use("/api/*", async (c, next) => {
 
   if (session?.session) {
     try {
-      await ensureDesktopSessionLifetime(session.session);
+      if (isElectronBearerRequest(c)) {
+        await ensureElectronSessionLifetime(session.session);
+      } else {
+        await ensureDesktopSessionLifetime(session.session);
+      }
     } catch (error) {
       console.warn("[api] failed to extend desktop session lifetime", error);
     }

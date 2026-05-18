@@ -664,6 +664,60 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     assert.ok(desktopSession.expiresAt.getTime() > Date.now() + 9 * 365 * 24 * 60 * 60 * 1000);
   });
 
+  it("promotes valid legacy Electron bearer sessions to long-lived desktop sessions", async () => {
+    const auth = await seedAuthenticatedUser({
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      userAgent: "legacy-electron",
+    });
+
+    const response = await app.request("http://localhost/api/me", {
+      headers: {
+        ...authHeaders(auth.token),
+        "x-wow-dashboard-client": "desktop",
+      },
+    });
+
+    assert.equal(response.status, 200);
+
+    const [desktopSession] = await db
+      .select({
+        expiresAt: authSessions.expiresAt,
+        userAgent: authSessions.userAgent,
+      })
+      .from(authSessions)
+      .where(eq(authSessions.token, auth.token));
+
+    assert.ok(desktopSession);
+    assert.equal(desktopSession.userAgent, "wow-dashboard-desktop");
+    assert.ok(desktopSession.expiresAt.getTime() > Date.now() + 9 * 365 * 24 * 60 * 60 * 1000);
+  });
+
+  it("does not promote non-desktop bearer sessions without the Electron client marker", async () => {
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const auth = await seedAuthenticatedUser({
+      expiresAt,
+      userAgent: "browser",
+    });
+
+    const response = await app.request("http://localhost/api/me", {
+      headers: authHeaders(auth.token),
+    });
+
+    assert.equal(response.status, 200);
+
+    const [sessionRow] = await db
+      .select({
+        expiresAt: authSessions.expiresAt,
+        userAgent: authSessions.userAgent,
+      })
+      .from(authSessions)
+      .where(eq(authSessions.token, auth.token));
+
+    assert.ok(sessionRow);
+    assert.equal(sessionRow.userAgent, "browser");
+    assert.equal(sessionRow.expiresAt.getTime(), expiresAt.getTime());
+  });
+
   it("allows desktop null-origin preflights only for bearer-authenticated API requests", async () => {
     const webPreflightResponse = await app.request("http://localhost/api/me", {
       method: "OPTIONS",
