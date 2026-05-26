@@ -43,7 +43,8 @@ import {
   getMythicPlusRunCanonicalKey,
   getMythicPlusRunCompatibilityLookupAliases,
   getMythicPlusRunLifecycleStatus,
-  mergeMythicPlusRunMembers,
+  mergeMythicPlusRunMembersForDuplicate,
+  normalizeMythicPlusRunTiming,
   pickMergedMythicPlusSeasonID,
   pickMythicPlusActiveCompletionAttemptId,
   pickMythicPlusActiveCompletionCanonicalKey,
@@ -907,18 +908,19 @@ function mergeMythicPlusRunData(
   currentRun: MythicPlusRunInputDocument | undefined,
   candidateRun: MythicPlusRunInputDocument,
 ): MythicPlusRunInputDocument {
+  const normalizedCandidateRun = normalizeMythicPlusRunTiming(candidateRun);
   if (!currentRun) {
     const merged: MythicPlusRunInputDocument = {
-      ...candidateRun,
-      attemptId: deriveAttemptIdFromRun(candidateRun),
-      canonicalKey: deriveCanonicalKeyFromRun(candidateRun),
-      fingerprint: candidateRun.fingerprint,
+      ...normalizedCandidateRun,
+      attemptId: deriveAttemptIdFromRun(normalizedCandidateRun),
+      canonicalKey: deriveCanonicalKeyFromRun(normalizedCandidateRun),
+      fingerprint: normalizedCandidateRun.fingerprint,
     };
     merged.canonicalKey = deriveCanonicalKeyFromRun(merged);
     merged.fingerprint =
       buildCanonicalMythicPlusRunFingerprint(merged) ??
       merged.canonicalKey ??
-      candidateRun.fingerprint;
+      normalizedCandidateRun.fingerprint;
     const status = getMythicPlusRunLifecycleStatus(merged);
     if (status !== undefined) {
       merged.status = status;
@@ -933,9 +935,13 @@ function mergeMythicPlusRunData(
     return merged;
   }
 
-  const candidatePreferred = shouldReplaceMythicPlusRun(currentRun, candidateRun);
-  const preferredRun = candidatePreferred ? candidateRun : currentRun;
-  const fallbackRun = candidatePreferred ? currentRun : candidateRun;
+  const normalizedCurrentRun = normalizeMythicPlusRunTiming(currentRun);
+  const candidatePreferred = shouldReplaceMythicPlusRun(
+    normalizedCurrentRun,
+    normalizedCandidateRun,
+  );
+  const preferredRun = candidatePreferred ? normalizedCandidateRun : normalizedCurrentRun;
+  const fallbackRun = candidatePreferred ? normalizedCurrentRun : normalizedCandidateRun;
   const activeCompletionAttemptId = pickMythicPlusActiveCompletionAttemptId(
     preferredRun,
     fallbackRun,
@@ -1000,7 +1006,12 @@ function mergeMythicPlusRunData(
     abandonedAt: mergeLifecycleTimestamp(preferredRun.abandonedAt, fallbackRun.abandonedAt),
     abandonReason: pickDefinedValue(preferredRun.abandonReason, fallbackRun.abandonReason),
     thisWeek: pickDefinedValue(preferredRun.thisWeek, fallbackRun.thisWeek),
-    members: mergeMythicPlusRunMembers(currentRun.members, candidateRun.members),
+    members: mergeMythicPlusRunMembersForDuplicate(
+      normalizedCurrentRun,
+      normalizedCandidateRun,
+      preferredRun,
+      fallbackRun,
+    ),
     ...mergeAddonSignatureFields(preferredRun, fallbackRun),
   };
 

@@ -356,6 +356,7 @@ local ACTIVE_ATTEMPT_STALE_ACTIVE_RETRY_DELAY = 4
 local ACTIVE_ATTEMPT_STALE_ACTIVE_MAX_RETRIES = 6
 local RECENT_COMPLETION_EVENT_GRACE = 20
 local STALE_ATTEMPT_RECOVERY_SECONDS = 10 * 60
+local COMPLETED_RUN_DERIVED_START_TOLERANCE_SECONDS = 2 * 60
 local MPLUS_SCORE_BACKFILL_WINDOW = 48 * 60 * 60
 local MPLUS_SCORE_BACKFILL_RETRY_DELAYS = { 5, 45, 120, 300, 900 }
 local MPLUS_SCORE_BACKFILL_PERIODIC_DELAY = 15 * 60
@@ -1887,6 +1888,39 @@ local function GetRunDurationMs(run)
     return nil
 end
 
+local function GetRunTerminalTimestamp(run)
+    return NormalizeMythicPlusDate(run.endedAt)
+        or NormalizeMythicPlusDate(run.completedAt)
+        or NormalizeMythicPlusDate(run.abandonedAt)
+end
+
+local function NormalizeCompletedRunStartDate(run)
+    if type(run) ~= "table" or GetRunStatus(run) ~= "completed" then
+        return
+    end
+
+    local startDate = NormalizeMythicPlusDate(run.startDate)
+    local terminalAt = GetRunTerminalTimestamp(run)
+    local durationMs = GetRunDurationMs(run)
+    if startDate == nil or terminalAt == nil or durationMs == nil then
+        return
+    end
+
+    local derivedStart = terminalAt - math.floor(durationMs / 1000 + 0.5)
+    if math.abs(startDate - derivedStart) <= COMPLETED_RUN_DERIVED_START_TOLERANCE_SECONDS then
+        return
+    end
+
+    run.startDate = derivedStart
+    run.attemptId = nil
+    if type(run.fingerprint) == "string"
+        and (string.sub(run.fingerprint, 1, 8) == "attempt|"
+            or string.sub(run.fingerprint, 1, 12) == "aid|attempt|")
+    then
+        run.fingerprint = nil
+    end
+end
+
 NormalizeOptionalBoolean = function(value)
     if type(value) == "boolean" then
         return value
@@ -2519,14 +2553,21 @@ end
 
 local function GetChallengeModeStartTimestamp()
     local startDate = nil
+    local nowTs = time()
     if type(C_ChallengeMode) == "table" and type(C_ChallengeMode.GetStartTime) == "function" then
         local ok, value = pcall(C_ChallengeMode.GetStartTime)
         if ok then
-            startDate = NormalizeLifecycleTimestamp(value)
+            local normalized = NormalizeLifecycleTimestamp(value)
+            if normalized ~= nil
+                and normalized <= (nowTs + 5 * 60)
+                and normalized >= (nowTs - MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS / 1000)
+            then
+                startDate = normalized
+            end
         end
     end
 
-    return startDate or time()
+    return startDate or nowTs
 end
 
 local function BuildSyntheticAttemptFingerprint(run)
@@ -2926,6 +2967,8 @@ NormalizeStoredMythicPlusRun = function(run)
         end
     end
 
+    NormalizeCompletedRunStartDate(run)
+
     if IsTemporaryRunFingerprint(run.fingerprint) and run.status == "active" then
         -- Preserve temporary synthetic fingerprint while the attempt is active.
         run.fingerprint = run.fingerprint
@@ -3055,6 +3098,8 @@ local function NormalizeMythicPlusRun(rawRun, seasonID)
             run.abandonReason = run.abandonReason or "history_incomplete"
         end
     end
+
+    NormalizeCompletedRunStartDate(run)
 
     run.fingerprint = BuildRunFingerprint(run)
     run.attemptId = GetRunAttemptID(run)

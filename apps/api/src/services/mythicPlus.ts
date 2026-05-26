@@ -50,11 +50,14 @@ const MYTHIC_PLUS_TIMER_MS_BY_MAP_NAME = new Map<string, number>(
 );
 
 const MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS = 4 * 60 * 60 * 1000;
+const MAX_MYTHIC_PLUS_RUN_MEMBERS = 5;
 const LEGACY_DST_SHIFT_SECONDS = 60 * 60;
 const LEGACY_DST_SHIFT_TOLERANCE_SECONDS = 2 * 60;
 const MAX_COMPAT_DURATION_DRIFT_MS = 1000;
 const LEGACY_DISPLAY_DUPLICATE_RUN_TOLERANCE_SECONDS = 2 * 60;
 const ACTIVE_COMPLETION_START_TOLERANCE_SECONDS = 2 * 60;
+const COMPLETED_RUN_DERIVED_START_TOLERANCE_SECONDS = 2 * 60;
+const STALE_MISSING_SCORE_DUPLICATE_TOLERANCE_SECONDS = 10 * 60;
 
 function normalizeMapName(mapName: string) {
   return mapName.trim().toLowerCase();
@@ -265,6 +268,52 @@ function getRunDurationDerivedStartTimestamp(run: MythicPlusRunDocument): number
   }
 
   return endAt - durationSeconds;
+}
+
+function getRunTerminalTimestamp(run: MythicPlusRunDocument): number | null {
+  return (
+    normalizeLifecycleTimestamp(run.endedAt) ??
+    normalizeLifecycleTimestamp(run.completedAt) ??
+    normalizeLifecycleTimestamp(run.abandonedAt)
+  );
+}
+
+function hasCompletedRunInconsistentStartDate(run: MythicPlusRunDocument): boolean {
+  if (getMythicPlusRunLifecycleStatus(run) !== "completed") {
+    return false;
+  }
+
+  const startDate = normalizeLifecycleTimestamp(run.startDate);
+  const derivedStart = getRunDurationDerivedStartTimestamp(run);
+  return (
+    startDate !== null &&
+    derivedStart !== null &&
+    Math.abs(startDate - derivedStart) > COMPLETED_RUN_DERIVED_START_TOLERANCE_SECONDS
+  );
+}
+
+export function normalizeMythicPlusRunTiming<T extends MythicPlusRunDocument>(run: T): T {
+  if (!hasCompletedRunInconsistentStartDate(run)) {
+    return run;
+  }
+
+  const derivedStart = getRunDurationDerivedStartTimestamp(run);
+  if (derivedStart === null) {
+    return run;
+  }
+
+  const normalizedRun: MythicPlusRunDocument = {
+    ...run,
+    startDate: derivedStart,
+  };
+  const normalizedAttemptId = buildRunAttemptIdFromStartDate(normalizedRun);
+  if (normalizedAttemptId !== null) {
+    normalizedRun.attemptId = normalizedAttemptId;
+    normalizedRun.canonicalKey = `aid|${normalizedAttemptId}`;
+    normalizedRun.fingerprint = `aid|${normalizedAttemptId}`;
+  }
+
+  return normalizedRun as T;
 }
 
 function getRunDerivedEndTimestamp(run: MythicPlusRunDocument): number | null {
@@ -892,7 +941,7 @@ function hasCompatibleCompletedDisplayIdentity(
     Math.abs(getRunTimestamp(a) - getRunTimestamp(b)) >
     LEGACY_DISPLAY_DUPLICATE_RUN_TOLERANCE_SECONDS
   ) {
-    return false;
+    return hasLikelyStaleMissingScoreDuplicate(a, b);
   }
 
   return areLegacyDisplayDuplicatePartiesCompatible(a, b);
@@ -1352,6 +1401,34 @@ function getRunMemberIdentityFingerprint(run: MythicPlusRunDocument) {
     .join(",");
 }
 
+function getRunMemberIdentityTokens(run: MythicPlusRunDocument): Set<string> {
+  return new Set(
+    (run.members ?? [])
+      .map((member) =>
+        [getNormalizedMemberName(member), getNormalizedMemberRealm(member)].join("|"),
+      )
+      .filter((token) => token !== "|"),
+  );
+}
+
+function hasStrongRunMemberOverlap(a: MythicPlusRunDocument, b: MythicPlusRunDocument): boolean {
+  const tokensA = getRunMemberIdentityTokens(a);
+  const tokensB = getRunMemberIdentityTokens(b);
+  if (tokensA.size === 0 || tokensB.size === 0) {
+    return false;
+  }
+
+  let sharedCount = 0;
+  for (const token of tokensA) {
+    if (tokensB.has(token)) {
+      sharedCount += 1;
+    }
+  }
+
+  const smallerPartySize = Math.min(tokensA.size, tokensB.size);
+  return sharedCount >= 4 && sharedCount >= smallerPartySize - 1;
+}
+
 function getLegacyDisplayDuplicateSignature(run: MythicPlusRunDocument) {
   const durationSeconds = getRunDurationSeconds(run);
   if (!isCompletedRun(run) || run.level === undefined || durationSeconds === null) {
@@ -1387,6 +1464,76 @@ function areLegacyDisplayDuplicatePartiesCompatible(
   return mergedMembers.length <= Math.max(a.members?.length ?? 0, b.members?.length ?? 0);
 }
 
+function hasLikelyStaleMissingScoreDuplicate(
+  a: MythicPlusRunDocument,
+  b: MythicPlusRunDocument,
+): boolean {
+  if (!isCompletedRun(a) || !isCompletedRun(b)) {
+    return false;
+  }
+  if (!areRunCoreIdentityFieldsCompatible(a, b)) {
+    return false;
+  }
+  if (!hasCompletedRunInconsistentStartDate(a) && !hasCompletedRunInconsistentStartDate(b)) {
+    return false;
+  }
+  if (!hasStrongRunMemberOverlap(a, b)) {
+    return false;
+  }
+
+  const aHasScore = a.runScore !== undefined;
+  const bHasScore = b.runScore !== undefined;
+  if (aHasScore === bHasScore) {
+    return false;
+  }
+
+  const durationA = getSanitizedRunDurationMs(a);
+  const durationB = getSanitizedRunDurationMs(b);
+  if (
+    durationA === undefined ||
+    durationB === undefined ||
+    Math.abs(durationA - durationB) > MAX_COMPAT_DURATION_DRIFT_MS
+  ) {
+    return false;
+  }
+
+  const timedA = getMythicPlusRunTimedState(a);
+  const timedB = getMythicPlusRunTimedState(b);
+  if (timedA !== null && timedB !== null && timedA !== timedB) {
+    return false;
+  }
+
+  const terminalA = getRunTerminalTimestamp(a);
+  const terminalB = getRunTerminalTimestamp(b);
+  if (terminalA === null || terminalB === null) {
+    return false;
+  }
+
+  return Math.abs(terminalA - terminalB) <= STALE_MISSING_SCORE_DUPLICATE_TOLERANCE_SECONDS;
+}
+
+export function mergeMythicPlusRunMembersForDuplicate(
+  currentRun: MythicPlusRunDocument,
+  candidateRun: MythicPlusRunDocument,
+  preferredRun: MythicPlusRunDocument,
+  fallbackRun: MythicPlusRunDocument,
+) {
+  const mergedMembers = mergeMythicPlusRunMembers(currentRun.members, candidateRun.members);
+  if (!mergedMembers || mergedMembers.length <= MAX_MYTHIC_PLUS_RUN_MEMBERS) {
+    return mergedMembers;
+  }
+
+  if (hasStrongRunMemberOverlap(currentRun, candidateRun)) {
+    return (
+      preferredRun.members ??
+      fallbackRun.members ??
+      mergedMembers.slice(0, MAX_MYTHIC_PLUS_RUN_MEMBERS)
+    );
+  }
+
+  return mergedMembers;
+}
+
 function mergeLegacyDisplayDuplicateRuns(
   currentRun: MythicPlusRunDocument,
   candidateRun: MythicPlusRunDocument,
@@ -1399,7 +1546,12 @@ function mergeLegacyDisplayDuplicateRuns(
     ...fallbackRun,
     ...preferredRun,
     seasonID: pickMergedMythicPlusSeasonID(preferredRun, fallbackRun),
-    members: mergeMythicPlusRunMembers(currentRun.members, candidateRun.members),
+    members: mergeMythicPlusRunMembersForDuplicate(
+      currentRun,
+      candidateRun,
+      preferredRun,
+      fallbackRun,
+    ),
   };
 }
 
@@ -1423,13 +1575,12 @@ function collapseLegacyDisplayDuplicateRuns(runs: MythicPlusRunDocument[]) {
       if (!currentRun) {
         continue;
       }
-      if (
-        Math.abs(getRunTimestamp(currentRun) - playedAt) >
-        LEGACY_DISPLAY_DUPLICATE_RUN_TOLERANCE_SECONDS
-      ) {
-        continue;
-      }
-      if (!areLegacyDisplayDuplicatePartiesCompatible(currentRun, run)) {
+      const hasLegacyDisplayMatch =
+        Math.abs(getRunTimestamp(currentRun) - playedAt) <=
+          LEGACY_DISPLAY_DUPLICATE_RUN_TOLERANCE_SECONDS &&
+        areLegacyDisplayDuplicatePartiesCompatible(currentRun, run);
+      const hasStaleMissingScoreMatch = hasLikelyStaleMissingScoreDuplicate(currentRun, run);
+      if (!hasLegacyDisplayMatch && !hasStaleMissingScoreMatch) {
         continue;
       }
 
@@ -1449,7 +1600,7 @@ function collapseLegacyDisplayDuplicateRuns(runs: MythicPlusRunDocument[]) {
     );
   }
 
-  return collapsedRuns;
+  return collapsedRuns.map((run) => normalizeMythicPlusRunTiming(run));
 }
 
 export function buildMythicPlusSummary(
@@ -1792,7 +1943,12 @@ export function dedupeMythicPlusRuns(runs: MythicPlusRunDocument[]) {
       abandonedAt: mergeLifecycleTimestamp(preferredRun.abandonedAt, fallbackRun.abandonedAt),
       abandonReason: pickDefinedValue(preferredRun.abandonReason, fallbackRun.abandonReason),
       thisWeek: pickDefinedValue(preferredRun.thisWeek, fallbackRun.thisWeek),
-      members: mergeMythicPlusRunMembers(currentRun.members, candidateRun.members),
+      members: mergeMythicPlusRunMembersForDuplicate(
+        currentRun,
+        candidateRun,
+        preferredRun,
+        fallbackRun,
+      ),
     };
 
     const canonicalFingerprint = buildCanonicalMythicPlusRunFingerprint(merged);
@@ -1842,9 +1998,11 @@ export function dedupeMythicPlusRuns(runs: MythicPlusRunDocument[]) {
     ]);
   }
 
-  return dedupedRuns.sort((a, b) => {
-    const timeDiff = getRunTimestamp(b) - getRunTimestamp(a);
-    if (timeDiff !== 0) return timeDiff;
-    return (b.observedAt ?? 0) - (a.observedAt ?? 0);
-  });
+  return dedupedRuns
+    .map((run) => normalizeMythicPlusRunTiming(run))
+    .sort((a, b) => {
+      const timeDiff = getRunTimestamp(b) - getRunTimestamp(a);
+      if (timeDiff !== 0) return timeDiff;
+      return (b.observedAt ?? 0) - (a.observedAt ?? 0);
+    });
 }
