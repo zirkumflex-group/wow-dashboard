@@ -3887,16 +3887,26 @@ function getStagedAddonMetaPath(): string {
   return join(getAddonUpdateStageDir(), "staged.json");
 }
 
-function isOutdatedVersion(installed: string, latest: string): boolean {
-  const a = installed.split(".").map(Number);
-  const b = latest.split(".").map(Number);
+function parseVersionParts(version: string): number[] | null {
+  if (!/^\d+(?:\.\d+)*$/.test(version)) return null;
+  return version.split(".").map(Number);
+}
+
+function compareVersionStrings(left: string, right: string): number {
+  const a = parseVersionParts(left);
+  const b = parseVersionParts(right);
+  if (!a || !b) return left.localeCompare(right);
   for (let i = 0; i < Math.max(a.length, b.length); i++) {
     const ai = a[i] ?? 0;
     const bi = b[i] ?? 0;
-    if (ai < bi) return true;
-    if (ai > bi) return false;
+    if (ai < bi) return -1;
+    if (ai > bi) return 1;
   }
-  return false;
+  return 0;
+}
+
+function isOutdatedVersion(installed: string, latest: string): boolean {
+  return compareVersionStrings(installed, latest) < 0;
 }
 
 function downloadFile(url: string, destPath: string): Promise<void> {
@@ -4059,19 +4069,29 @@ async function installAddonFromPackage(retailPath: string, zipPath: string, chec
 }
 
 async function fetchLatestAddonRelease(): Promise<AddonReleaseInfo> {
-  const res = await net.fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases`, {
+  const res = await net.fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=100`, {
     headers: { Accept: "application/vnd.github+json" },
   });
   if (!res.ok) throw new Error(`GitHub API error: ${res.status}`);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const releases = (await res.json()) as any[];
-  const addonRelease = releases.find(
+  const addonReleases = releases.filter(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (release: any) =>
       typeof release.tag_name === "string" &&
-      release.tag_name.startsWith("addon-v") &&
+      /^addon-v\d+(?:\.\d+)*$/.test(release.tag_name) &&
       !release.draft &&
       !release.prerelease,
+  );
+  const addonRelease = addonReleases.reduce(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (latest: any | null, release: any) => {
+      if (!latest) return release;
+      const version = (release.tag_name as string).replace("addon-v", "");
+      const latestVersion = (latest.tag_name as string).replace("addon-v", "");
+      return compareVersionStrings(version, latestVersion) > 0 ? release : latest;
+    },
+    null,
   );
   if (!addonRelease) throw new Error("No addon release found on GitHub");
   const tagName = addonRelease.tag_name as string;
