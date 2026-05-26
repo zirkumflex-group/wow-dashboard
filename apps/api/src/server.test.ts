@@ -3143,6 +3143,127 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     assert.notEqual(Math.floor((storedRuns[0]?.startDate?.getTime() ?? 0) / 1000), staleStartDate);
   });
 
+  it("collapses stale completed Mythic+ duplicates with overlapping normalized starts", async () => {
+    const auth = await seedAuthenticatedUser();
+    const playerId = await seedAddonIngestOwner(
+      auth,
+      [
+        {
+          name: "Overlapdupe",
+          realm: "Blackhand",
+          className: "Death Knight",
+          race: "Orc",
+          faction: "horde",
+        },
+      ],
+      "Uploader#3640",
+    );
+
+    const scoredStart = 1_779_798_012;
+    const scoredCompletedAt = 1_779_799_324;
+    const duplicateCompletedAt = 1_779_799_880;
+    const durationMs = 1_314_194;
+    const duplicateStart = duplicateCompletedAt - Math.floor(durationMs / 1000 + 0.5);
+    const sharedMembers = [
+      {
+        name: "Overlapdupe",
+        realm: "Blackhand",
+        classTag: "DEATHKNIGHT",
+        role: "dps" as const,
+      },
+      { name: "Makhasak", realm: "TarrenMill", classTag: "PALADIN", role: "tank" as const },
+      { name: "Kasuml", realm: "Moonglade", classTag: "DEMONHUNTER", role: "dps" as const },
+      { name: "Shambadiil", realm: "Ravencrest", classTag: "SHAMAN", role: "healer" as const },
+    ];
+
+    const response = await app.request("http://localhost/api/addon/ingest", {
+      method: "POST",
+      headers: {
+        ...authHeaders(auth.token),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        characters: [
+          {
+            name: "Overlapdupe",
+            realm: "Blackhand",
+            region: "eu",
+            class: "Death Knight",
+            race: "Orc",
+            faction: "horde",
+            snapshots: [],
+            mythicPlusRuns: [
+              {
+                fingerprint: `aid|attempt|17|558|10|${duplicateStart}`,
+                attemptId: `attempt|17|558|10|${duplicateStart}`,
+                observedAt: duplicateCompletedAt - 199,
+                seasonID: 17,
+                mapChallengeModeID: 558,
+                mapName: "Magisters' Terrace",
+                level: 10,
+                status: "completed",
+                completed: true,
+                completedInTime: true,
+                durationMs,
+                startDate: duplicateStart,
+                completedAt: duplicateCompletedAt,
+                endedAt: duplicateCompletedAt,
+                members: [
+                  ...sharedMembers,
+                  { name: "Wonderfull", realm: "Archimonde", classTag: "HUNTER", role: "dps" },
+                ],
+              },
+              {
+                fingerprint: `aid|attempt|17|558|10|${scoredStart}`,
+                attemptId: `attempt|17|558|10|${scoredStart}`,
+                observedAt: scoredStart,
+                seasonID: 17,
+                mapChallengeModeID: 558,
+                mapName: "Magisters' Terrace",
+                level: 10,
+                status: "completed",
+                completed: true,
+                completedInTime: true,
+                durationMs,
+                runScore: 333,
+                startDate: scoredStart,
+                completedAt: scoredCompletedAt,
+                endedAt: scoredCompletedAt,
+                thisWeek: true,
+                members: [
+                  ...sharedMembers,
+                  { name: "Elgringoo", realm: "Draenor", classTag: "PALADIN", role: "dps" },
+                ],
+              },
+            ],
+          },
+        ],
+      }),
+    });
+
+    assert.equal(response.status, 200);
+    const payload = (await response.json()) as {
+      newMythicPlusRuns: number;
+      collapsedMythicPlusRuns: number;
+    };
+    assert.equal(payload.newMythicPlusRuns, 1);
+    assert.equal(payload.collapsedMythicPlusRuns, 0);
+
+    const character = await db.query.characters.findFirst({
+      where: and(eq(characters.playerId, playerId), eq(characters.name, "Overlapdupe")),
+    });
+    assert.ok(character);
+    assert.equal(character.mythicPlusRunCount, 1);
+    assert.equal(character.mythicPlusRecentRunsPreview?.[0]?.runScore, 333);
+
+    const storedRuns = await db.query.mythicPlusRuns.findMany({
+      where: eq(mythicPlusRuns.characterId, character.id),
+    });
+    assert.equal(storedRuns.length, 1);
+    assert.equal(storedRuns[0]?.runScore, 333);
+    assert.equal(Math.floor((storedRuns[0]?.startDate?.getTime() ?? 0) / 1000), scoredStart);
+  });
+
   it("enriches existing history-only mythic plus runs with late uploaded members", async () => {
     const auth = await seedAuthenticatedUser();
     const playerId = await seedAddonIngestOwner(

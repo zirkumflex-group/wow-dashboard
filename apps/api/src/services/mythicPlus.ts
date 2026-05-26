@@ -58,6 +58,7 @@ const LEGACY_DISPLAY_DUPLICATE_RUN_TOLERANCE_SECONDS = 2 * 60;
 const ACTIVE_COMPLETION_START_TOLERANCE_SECONDS = 2 * 60;
 const COMPLETED_RUN_DERIVED_START_TOLERANCE_SECONDS = 2 * 60;
 const STALE_MISSING_SCORE_DUPLICATE_TOLERANCE_SECONDS = 10 * 60;
+const STALE_MISSING_SCORE_DUPLICATE_MIN_OVERLAP_SECONDS = 2 * 60;
 
 function normalizeMapName(mapName: string) {
   return mapName.trim().toLowerCase();
@@ -290,6 +291,29 @@ function hasCompletedRunInconsistentStartDate(run: MythicPlusRunDocument): boole
     derivedStart !== null &&
     Math.abs(startDate - derivedStart) > COMPLETED_RUN_DERIVED_START_TOLERANCE_SECONDS
   );
+}
+
+function hasOverlappingCompletedRunInterval(
+  a: MythicPlusRunDocument,
+  b: MythicPlusRunDocument,
+): boolean {
+  if (!isCompletedRun(a) || !isCompletedRun(b)) {
+    return false;
+  }
+
+  const startA = getRunDerivedStartTimestamp(a);
+  const startB = getRunDerivedStartTimestamp(b);
+  const endA = getRunTerminalTimestamp(a) ?? getRunDerivedEndTimestamp(a);
+  const endB = getRunTerminalTimestamp(b) ?? getRunDerivedEndTimestamp(b);
+  if (startA === null || startB === null || endA === null || endB === null) {
+    return false;
+  }
+  if (endA <= startA || endB <= startB) {
+    return false;
+  }
+
+  const overlapSeconds = Math.min(endA, endB) - Math.max(startA, startB);
+  return overlapSeconds >= STALE_MISSING_SCORE_DUPLICATE_MIN_OVERLAP_SECONDS;
 }
 
 export function normalizeMythicPlusRunTiming<T extends MythicPlusRunDocument>(run: T): T {
@@ -1474,9 +1498,6 @@ function hasLikelyStaleMissingScoreDuplicate(
   if (!areRunCoreIdentityFieldsCompatible(a, b)) {
     return false;
   }
-  if (!hasCompletedRunInconsistentStartDate(a) && !hasCompletedRunInconsistentStartDate(b)) {
-    return false;
-  }
   if (!hasStrongRunMemberOverlap(a, b)) {
     return false;
   }
@@ -1509,7 +1530,15 @@ function hasLikelyStaleMissingScoreDuplicate(
     return false;
   }
 
-  return Math.abs(terminalA - terminalB) <= STALE_MISSING_SCORE_DUPLICATE_TOLERANCE_SECONDS;
+  if (Math.abs(terminalA - terminalB) > STALE_MISSING_SCORE_DUPLICATE_TOLERANCE_SECONDS) {
+    return false;
+  }
+
+  return (
+    hasCompletedRunInconsistentStartDate(a) ||
+    hasCompletedRunInconsistentStartDate(b) ||
+    hasOverlappingCompletedRunInterval(a, b)
+  );
 }
 
 export function mergeMythicPlusRunMembersForDuplicate(
