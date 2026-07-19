@@ -13,11 +13,13 @@ import { useState } from "react";
 import { toast } from "sonner";
 import type { MeResponse } from "@wow-dashboard/api-schema";
 import { apiClient, apiQueryOptions } from "@/lib/api-client";
+import { DISPLAY_LOCALE, DISPLAY_TIME_ZONE } from "@/lib/format";
 
 export const Route = createFileRoute("/settings")({
   beforeLoad: ({ context }) => {
     if (!context.isAuthenticated) throw redirect({ to: "/" });
   },
+  loader: ({ context }) => context.queryClient.ensureQueryData(apiQueryOptions.me()),
   component: SettingsPage,
 });
 
@@ -57,7 +59,7 @@ function DiscordPrivacySettings({ player }: { player: PlayerSettings }) {
   });
 
   return (
-    <Card className="border-border/70 bg-card">
+    <Card className="analytics-panel">
       <CardHeader className="border-b border-border/70 pb-4">
         <CardTitle className="flex items-center gap-2 text-base">
           <ShieldCheck className="h-4 w-4" />
@@ -102,7 +104,12 @@ function DiscordPrivacySettings({ player }: { player: PlayerSettings }) {
         </label>
 
         <Button onClick={() => saveSettings.mutate()} disabled={saveSettings.isPending}>
-          {saveSettings.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+          {saveSettings.isPending ? (
+            <Loader2
+              aria-hidden="true"
+              className="mr-2 h-4 w-4 animate-spin motion-reduce:animate-none"
+            />
+          ) : null}
           Save privacy settings
         </Button>
       </CardContent>
@@ -143,7 +150,7 @@ function ActiveSessions() {
   });
 
   return (
-    <Card className="border-border/70 bg-card">
+    <Card className="analytics-panel">
       <CardHeader className="border-b border-border/70 pb-4">
         <CardTitle className="text-base">Active sessions</CardTitle>
         <p className="text-sm text-muted-foreground">
@@ -153,10 +160,19 @@ function ActiveSessions() {
       <CardContent className="space-y-3 pt-6">
         {sessions.isPending ? (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Loader2 className="h-4 w-4 animate-spin" /> Loading sessions…
+            <Loader2
+              aria-hidden="true"
+              className="h-4 w-4 animate-spin motion-reduce:animate-none"
+            />{" "}
+            Loading sessions…
           </div>
         ) : sessions.isError ? (
-          <p className="text-sm text-red-400">Could not load active sessions.</p>
+          <div className="flex flex-col items-start gap-2">
+            <p className="text-sm text-destructive">Could not load active sessions.</p>
+            <Button variant="outline" size="sm" onClick={() => void sessions.refetch()}>
+              Try Again
+            </Button>
+          </div>
         ) : sessions.data.length === 0 ? (
           <p className="text-sm text-muted-foreground">No active sessions were returned.</p>
         ) : (
@@ -179,7 +195,11 @@ function ActiveSessions() {
                       {session.userAgent || "Unknown device"}
                     </p>
                     <p className="mt-1 text-xs text-muted-foreground">
-                      Expires {new Date(session.expiresAt).toLocaleString()}
+                      Expires{" "}
+                      {new Date(session.expiresAt).toLocaleString(DISPLAY_LOCALE, {
+                        timeZone: DISPLAY_TIME_ZONE,
+                        timeZoneName: "short",
+                      })}
                     </p>
                   </div>
                 </div>
@@ -204,9 +224,10 @@ function SettingsPage() {
   const me = useQuery(apiQueryOptions.me());
 
   return (
-    <div className="w-full max-w-3xl space-y-6 px-4 py-6 sm:px-6 lg:px-8">
+    <div className="analytics-shell w-full max-w-3xl space-y-6 px-4 py-6 sm:px-6 lg:px-8">
       <div className="mb-2">
-        <h1 className="text-3xl font-bold">Settings</h1>
+        <p className="analytics-kicker text-primary">Account / Privacy / Sessions</p>
+        <h1 className="mt-2 text-3xl font-bold tracking-tight">Settings</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Manage privacy and signed-in devices for your account.
         </p>
@@ -218,11 +239,18 @@ function SettingsPage() {
           player={me.data.player}
         />
       ) : me.isPending ? (
-        <Card className="border-border/70 bg-card p-6 text-sm text-muted-foreground">
+        <Card className="analytics-panel p-6 text-sm text-muted-foreground">
           Loading account settings…
         </Card>
+      ) : me.isError ? (
+        <Card className="analytics-panel border-destructive/40 p-6">
+          <p className="text-sm text-muted-foreground">Account settings could not be loaded.</p>
+          <Button className="mt-3" variant="outline" size="sm" onClick={() => void me.refetch()}>
+            Try Again
+          </Button>
+        </Card>
       ) : (
-        <Card className="border-border/70 bg-card p-6 text-sm text-muted-foreground">
+        <Card className="analytics-panel p-6 text-sm text-muted-foreground">
           Your Battle.net player profile is not linked yet. Sign in again to repair the connection.
         </Card>
       )}

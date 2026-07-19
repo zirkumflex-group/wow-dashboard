@@ -8,15 +8,13 @@ import { formatPlaytime, PlaytimeBreakdown } from "../components/playtime-breakd
 import { Badge } from "@wow-dashboard/ui/components/badge";
 import { Button } from "@wow-dashboard/ui/components/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@wow-dashboard/ui/components/card";
-import {
-  ChartContainer,
-  ChartLegend,
-  ChartLegendContent,
-  ChartTooltip,
-  ChartTooltipContent,
-  type ChartConfig,
-} from "@wow-dashboard/ui/components/chart";
 import { Checkbox } from "@wow-dashboard/ui/components/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogTitle,
+  DialogTrigger,
+} from "@wow-dashboard/ui/components/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -62,7 +60,6 @@ import Maximize2 from "lucide-react/dist/esm/icons/maximize-2.mjs";
 import Star from "lucide-react/dist/esm/icons/star.mjs";
 import Sword from "lucide-react/dist/esm/icons/sword.mjs";
 import Trophy from "lucide-react/dist/esm/icons/trophy.mjs";
-import X from "lucide-react/dist/esm/icons/x.mjs";
 import Zap from "lucide-react/dist/esm/icons/zap.mjs";
 import {
   Suspense,
@@ -72,28 +69,14 @@ import {
   type ComponentType,
   useCallback,
   useEffect,
-  useId,
   useMemo,
   useState,
 } from "react";
-import { createPortal } from "react-dom";
 import {
   createCharacterRouteId,
   type CharacterPageResponse,
   type CharacterVisibility,
 } from "@wow-dashboard/api-schema";
-import {
-  CartesianGrid,
-  Line,
-  LineChart,
-  PolarAngleAxis,
-  PolarGrid,
-  PolarRadiusAxis,
-  Radar,
-  RadarChart,
-  XAxis,
-  YAxis,
-} from "recharts";
 import { toast } from "sonner";
 import {
   getTradeSlotExportLabels,
@@ -105,6 +88,20 @@ import {
 } from "../lib/trade-slots";
 import { apiClient, apiQueryKeys, apiQueryOptions } from "@/lib/api-client";
 import { authClient } from "@/lib/auth-client";
+import { DISPLAY_LOCALE, DISPLAY_TIME_ZONE } from "@/lib/format";
+import { ActiveDot } from "@/components/dither-kit/dot";
+import { Grid } from "@/components/dither-kit/grid";
+import { BlockLegend } from "@/components/dither-kit/block-legend";
+import { Legend } from "@/components/dither-kit/legend";
+import { Line as DitherLine } from "@/components/dither-kit/area";
+import { LineChart as DitherLineChart } from "@/components/dither-kit/area-chart";
+import type { ChartConfig as DitherChartConfig } from "@/components/dither-kit/chart-context";
+import type { DitherColor } from "@/components/dither-kit/palette";
+import { Radar as DitherRadar } from "@/components/dither-kit/radar";
+import { RadarChart as DitherRadarChart } from "@/components/dither-kit/radar-chart";
+import { Tooltip as DitherTooltip } from "@/components/dither-kit/tooltip";
+import { XAxis as DitherXAxis } from "@/components/dither-kit/x-axis";
+import { YAxis as DitherYAxis } from "@/components/dither-kit/y-axis";
 
 type TimeFrame = "7d" | "14d" | "30d" | "90d" | "all" | "tww-s3" | "mn-s1";
 type LayoutMode = "overview" | "focus" | "timeline";
@@ -297,11 +294,13 @@ export const Route = createFileRoute("/character/$characterId")({
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const ROLE_LABELS: Record<string, string> = { tank: "Tank", healer: "Healer", dps: "DPS" };
-const CARD_DATE_TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
+const CARD_DATE_TIME_FORMATTER = new Intl.DateTimeFormat(DISPLAY_LOCALE, {
+  timeZone: DISPLAY_TIME_ZONE,
   month: "short",
   day: "numeric",
   hour: "2-digit",
   minute: "2-digit",
+  timeZoneName: "short",
 });
 
 // ── Time frame ───────────────────────────────────────────────────────────────
@@ -468,21 +467,13 @@ function classColor(cls: string) {
 }
 
 function formatDate(takenAtSeconds: number) {
-  return new Date(takenAtSeconds * 1000).toLocaleDateString(undefined, {
+  return new Date(takenAtSeconds * 1000).toLocaleDateString(DISPLAY_LOCALE, {
+    timeZone: DISPLAY_TIME_ZONE,
     year: "numeric",
     month: "short",
     day: "numeric",
   });
 }
-
-type ChartTooltipPayloadItem =
-  | {
-      payload?: {
-        date?: unknown;
-      };
-    }
-  | null
-  | undefined;
 
 function normalizeTimestampSeconds(value: unknown): number | null {
   if (value instanceof Date) {
@@ -513,150 +504,17 @@ function xAxisTickFormatter(ts: unknown, frame: TimeFrame): string {
   if (Number.isNaN(d.getTime())) return "—";
 
   if (frame === "7d" || frame === "14d") {
-    return d.toLocaleDateString(undefined, { weekday: "short", day: "numeric" });
+    return d.toLocaleDateString(DISPLAY_LOCALE, {
+      timeZone: DISPLAY_TIME_ZONE,
+      weekday: "short",
+      day: "numeric",
+    });
   }
-  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-}
-
-function getTickBucketKey(timestamp: number, frame: TimeFrame) {
-  const date = new Date(timestamp * 1000);
-  if (Number.isNaN(date.getTime())) {
-    return null;
-  }
-
-  const year = date.getFullYear();
-  const month = date.getMonth();
-  const day = date.getDate();
-
-  if (frame === "all") {
-    return `${year}-${month}`;
-  }
-
-  return `${year}-${month}-${day}`;
-}
-
-function dedupeTicksByBucket(ticks: number[], frame: TimeFrame, preserveEndpoints = false) {
-  if (preserveEndpoints && ticks.length <= 2) {
-    return ticks;
-  }
-
-  const seenBuckets = new Set<string>();
-  const firstIndex = 0;
-  const lastIndex = ticks.length - 1;
-
-  if (preserveEndpoints) {
-    const firstBucket = getTickBucketKey(ticks[firstIndex]!, frame);
-    const lastBucket = getTickBucketKey(ticks[lastIndex]!, frame);
-    if (firstBucket) seenBuckets.add(firstBucket);
-    if (lastBucket) seenBuckets.add(lastBucket);
-  }
-
-  return ticks.filter((timestamp, index) => {
-    if (preserveEndpoints && (index === firstIndex || index === lastIndex)) {
-      return true;
-    }
-
-    const bucketKey = getTickBucketKey(timestamp, frame);
-    if (bucketKey === null || seenBuckets.has(bucketKey)) {
-      return false;
-    }
-
-    seenBuckets.add(bucketKey);
-    return true;
+  return d.toLocaleDateString(DISPLAY_LOCALE, {
+    timeZone: DISPLAY_TIME_ZONE,
+    month: "short",
+    day: "numeric",
   });
-}
-
-function capXAxisTicks(ticks: number[], maxCount: number) {
-  if (ticks.length <= maxCount) {
-    return ticks;
-  }
-
-  const selectedTicks = new Set<number>([ticks[0]!, ticks[ticks.length - 1]!]);
-  const step = (ticks.length - 1) / (maxCount - 1);
-  for (let index = 1; index < maxCount - 1; index += 1) {
-    selectedTicks.add(ticks[Math.round(step * index)]!);
-  }
-
-  return Array.from(selectedTicks).sort((a, b) => a - b);
-}
-
-function getXAxisDomain(data: Record<string, number | undefined>[]): [number, number] | undefined {
-  const timestamps = data
-    .map((datum) => normalizeTimestampSeconds(datum.date))
-    .filter((timestamp): timestamp is number => timestamp !== null);
-  const uniqueTimestamps = Array.from(new Set(timestamps)).sort((a, b) => a - b);
-  if (uniqueTimestamps.length < 2) {
-    return undefined;
-  }
-
-  const minTimestamp = uniqueTimestamps[0]!;
-  const maxTimestamp = uniqueTimestamps[uniqueTimestamps.length - 1]!;
-  const span = maxTimestamp - minTimestamp;
-  if (span <= 0) {
-    return undefined;
-  }
-
-  const padding = Math.max(Math.round(span * 0.025), 1);
-  return [minTimestamp - padding, maxTimestamp + padding];
-}
-
-function getXAxisTicks(data: Record<string, number | undefined>[], frame: TimeFrame) {
-  const timestamps = data
-    .map((datum) => normalizeTimestampSeconds(datum.date))
-    .filter((timestamp): timestamp is number => timestamp !== null);
-  const uniqueTimestamps = Array.from(new Set(timestamps)).sort((a, b) => a - b);
-  if (uniqueTimestamps.length <= 2) {
-    return uniqueTimestamps;
-  }
-
-  const importantTicks = uniqueTimestamps.filter((timestamp, index) => {
-    if (index === 0 || index === uniqueTimestamps.length - 1) {
-      return true;
-    }
-
-    const date = new Date(timestamp * 1000);
-    if (Number.isNaN(date.getTime())) {
-      return false;
-    }
-
-    if (frame === "7d") {
-      return true;
-    }
-    if (frame === "14d" || frame === "30d") {
-      return date.getDay() === 1;
-    }
-    if (frame === "90d") {
-      return date.getDate() === 1 || date.getDate() === 15;
-    }
-    return date.getDate() === 1;
-  });
-  const dedupedImportantTicks = dedupeTicksByBucket(importantTicks, frame, true);
-
-  const maxTickCount =
-    frame === "all" || isSeasonTimeFrame(frame) ? 8 : frame === "90d" ? 9 : frame === "30d" ? 7 : 8;
-  if (dedupedImportantTicks.length >= 3) {
-    return capXAxisTicks(dedupedImportantTicks, maxTickCount);
-  }
-
-  return capXAxisTicks(dedupeTicksByBucket(uniqueTimestamps, frame, true), maxTickCount);
-}
-
-function xTooltipLabelFormatter(
-  value: unknown,
-  frame: TimeFrame,
-  payload?: ReadonlyArray<ChartTooltipPayloadItem>,
-): string {
-  const parsedTs =
-    normalizeTimestampSeconds(value) ?? normalizeTimestampSeconds(payload?.[0]?.payload?.date);
-  if (parsedTs === null) return "Unknown date";
-
-  const d = new Date(parsedTs * 1000);
-  if (Number.isNaN(d.getTime())) return "Unknown date";
-
-  if (frame === "7d" || frame === "14d") {
-    return d.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" });
-  }
-  return d.toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" });
 }
 
 function parseGoldValue(value: number) {
@@ -710,7 +568,7 @@ function GoldDisplay({ value }: { value: number }) {
   const { gold, silver, copper } = parseGoldValue(value);
   return (
     <span className="tabular-nums font-medium">
-      {gold > 0 && <span className="text-yellow-400">{gold.toLocaleString()}g </span>}
+      {gold > 0 && <span className="text-yellow-400">{gold.toLocaleString(DISPLAY_LOCALE)}g </span>}
       {silver > 0 && <span className="text-slate-400">{silver}s </span>}
       {(copper > 0 || (gold === 0 && silver === 0)) && (
         <span className="text-orange-500">{copper}c</span>
@@ -788,7 +646,7 @@ function formatCombatStatPercent(value: number) {
 
 function formatCombatStatRating(value?: number) {
   return typeof value === "number" && Number.isFinite(value)
-    ? Math.round(value).toLocaleString()
+    ? Math.round(value).toLocaleString(DISPLAY_LOCALE)
     : null;
 }
 
@@ -838,49 +696,6 @@ function getTertiaryStats(snapshot: Snapshot) {
   })).filter((stat) => stat.percent > 0 || (stat.rating ?? 0) > 0);
 }
 
-function CombatRadarTooltip({
-  active,
-  payload,
-}: {
-  active?: boolean;
-  payload?: Array<{ payload?: CombatRadarDatum }>;
-}) {
-  const datum = payload?.[0]?.payload;
-
-  if (!active || !datum) {
-    return null;
-  }
-
-  const rating = formatCombatStatRating(datum.ratingValue);
-
-  return (
-    <div className="grid min-w-36 gap-1.5 rounded-lg border border-border/50 bg-background px-2.5 py-1.5 text-xs shadow-xl">
-      <div className="font-medium">{datum.stat}</div>
-      {rating ? (
-        <>
-          <div className="flex items-center justify-between gap-3">
-            <span className="text-muted-foreground">Rating</span>
-            <span className="font-mono font-medium text-foreground tabular-nums">{rating}</span>
-          </div>
-          <div className="flex items-center justify-between gap-3">
-            <span className="text-muted-foreground">Percent</span>
-            <span className="font-mono font-medium text-foreground tabular-nums">
-              {formatCombatStatPercent(datum.percentValue)}
-            </span>
-          </div>
-        </>
-      ) : (
-        <div className="flex items-center justify-between gap-3">
-          <span className="text-muted-foreground">Percent</span>
-          <span className="font-mono font-medium text-foreground tabular-nums">
-            {formatCombatStatPercent(datum.percentValue)}
-          </span>
-        </div>
-      )}
-    </div>
-  );
-}
-
 function StatGrid({
   label,
   value,
@@ -924,18 +739,18 @@ function TopMetricCard({
   delta?: React.ReactNode;
 }) {
   return (
-    <div className="rounded-md border border-border/60 bg-card px-4 py-3">
+    <div className="analytics-panel rounded-md border px-4 py-3">
       <div className="flex items-center justify-between gap-3">
-        <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground/75">
-          {label}
-        </div>
+        <div className="analytics-kicker text-[10px]">{label}</div>
         {meta && (
           <div className="text-[9px] uppercase tracking-[0.16em] text-muted-foreground/55">
             {meta}
           </div>
         )}
       </div>
-      <div className="mt-3 min-w-0 text-xl font-semibold leading-none text-foreground">{value}</div>
+      <div className="analytics-number mt-3 min-w-0 text-xl font-semibold leading-none text-foreground">
+        {value}
+      </div>
       {delta ? <div className="mt-2">{delta}</div> : null}
     </div>
   );
@@ -978,72 +793,28 @@ function RangeDelta({
 
 // ── Fullscreen ────────────────────────────────────────────────────────────────
 
-function FullscreenOverlay({
-  title,
-  onClose,
-  children,
-}: {
-  title: string;
-  onClose: () => void;
-  children: React.ReactNode;
-}) {
-  const titleId = useId();
-
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
-  }, [onClose]);
-
-  return createPortal(
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby={titleId}
-      className="fixed inset-0 z-50 flex flex-col bg-background/60 backdrop-blur-xl"
-    >
-      <button
-        type="button"
-        aria-label="Close fullscreen chart"
-        className="absolute inset-0 cursor-default"
-        onClick={onClose}
-      />
-      <div className="relative z-10 mx-auto flex min-h-0 w-full max-w-6xl flex-1 flex-col p-6">
-        <div className="mb-4 flex shrink-0 items-center justify-between">
-          <h2 id={titleId} className="text-base font-semibold">
-            {title}
-          </h2>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            onClick={onClose}
-            aria-label="Close fullscreen"
-          >
-            <X data-icon="inline-start" aria-hidden="true" />
-          </Button>
-        </div>
-        <div className="flex-1 min-h-0">{children}</div>
-      </div>
-    </div>,
-    document.body,
-  );
-}
-
-function FullscreenButton({ onClick }: { onClick: () => void }) {
+function FullscreenChart({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <Button
-      type="button"
-      variant="ghost"
-      size="icon"
-      onClick={onClick}
-      className="size-8 text-muted-foreground hover:text-foreground"
-      aria-label="View chart fullscreen"
-    >
-      <Maximize2 data-icon="inline-start" aria-hidden="true" />
-    </Button>
+    <Dialog>
+      <DialogTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="size-8 text-muted-foreground hover:text-foreground"
+          aria-label={`View ${title} chart fullscreen`}
+        >
+          <Maximize2 data-icon="inline-start" aria-hidden="true" />
+        </Button>
+      </DialogTrigger>
+      <DialogContent
+        aria-describedby={undefined}
+        className="flex h-[calc(100dvh-2rem)] max-w-6xl flex-col overflow-hidden p-6"
+      >
+        <DialogTitle className="mb-1 shrink-0 pr-8">{title}</DialogTitle>
+        <div className="min-h-0 flex-1">{children}</div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -1434,27 +1205,33 @@ function isFullMythicPlusDataFreshForPreview(
 // ── Chart palette ─────────────────────────────────────────────────────────────
 
 const C = {
-  blue: "oklch(0.74 0.14 245)",
-  red: "oklch(0.71 0.16 25)",
-  gold: "oklch(0.82 0.14 82)",
-  purple: "oklch(0.72 0.14 295)",
-  teal: "oklch(0.74 0.13 190)",
-  green: "oklch(0.75 0.13 155)",
-  pink: "oklch(0.74 0.14 330)",
-} as const;
+  blue: "blue",
+  red: "red",
+  gold: "orange",
+  purple: "purple",
+  teal: "pink",
+  green: "green",
+  pink: "pink",
+} as const satisfies Record<string, DitherColor>;
 
-const ilvlConfig: ChartConfig = { itemLevel: { label: "Item Level", color: C.blue } };
-const mplusConfig: ChartConfig = { mythicPlusScore: { label: "M+ Score", color: C.red } };
-const goldConfig: ChartConfig = { gold: { label: "Gold", color: C.gold } };
-const playtimeConfig: ChartConfig = { playtimeHours: { label: "Playtime", color: C.purple } };
-const radarConfig: ChartConfig = { value: { label: "Value", color: C.blue } };
-const secondaryStatsConfig: ChartConfig = {
+const ilvlConfig: DitherChartConfig = {
+  itemLevel: { label: "Item Level", color: C.blue },
+};
+const mplusConfig: DitherChartConfig = {
+  mythicPlusScore: { label: "M+ Score", color: C.red },
+};
+const goldConfig: DitherChartConfig = { gold: { label: "Gold", color: C.gold } };
+const playtimeConfig: DitherChartConfig = {
+  playtimeHours: { label: "Playtime", color: C.purple },
+};
+const radarConfig: DitherChartConfig = { value: { label: "Value", color: C.blue } };
+const secondaryStatsConfig: DitherChartConfig = {
   critPercent: { label: "Crit", color: C.red },
   hastePercent: { label: "Haste", color: C.green },
   masteryPercent: { label: "Mastery", color: C.blue },
   versatilityPercent: { label: "Versatility", color: C.purple },
 };
-const currenciesConfig: ChartConfig = {
+const currenciesConfig: DitherChartConfig = {
   adventurerDawncrest: { label: "Adventurer", color: C.blue },
   veteranDawncrest: { label: "Veteran", color: C.teal },
   championDawncrest: { label: "Champion", color: C.green },
@@ -1476,17 +1253,10 @@ type YScaleOptions = {
 
 type SnapshotLineSeries = {
   key: string;
-  color: string;
+  color: DitherColor;
 };
 
 type LineEmphasisMode = "primary" | "equal";
-
-type EndpointDotProps = {
-  cx?: number;
-  cy?: number;
-  index?: number;
-  value?: number | string;
-};
 
 const ITEM_LEVEL_AUTO_SCALE: YScaleOptions = {
   minDomain: 0,
@@ -1496,7 +1266,7 @@ const ITEM_LEVEL_AUTO_SCALE: YScaleOptions = {
   stepFloor: 0.5,
 };
 const MPLUS_AUTO_SCALE: YScaleOptions = {
-  includeZero: true,
+  minDomain: 0,
   minSpan: 150,
   minPadding: 40,
   padRatio: 0.16,
@@ -1608,7 +1378,7 @@ function getYAxisWidth(
   );
 
   const maxLabelLength = labelCandidates.reduce((longest, value) => {
-    const label = valueFormatter?.(value) ?? value.toLocaleString();
+    const label = valueFormatter?.(value) ?? value.toLocaleString(DISPLAY_LOCALE);
     return Math.max(longest, label.length);
   }, 0);
 
@@ -1653,7 +1423,7 @@ function SnapshotLineChart({
 }: {
   data: Record<string, number | undefined>[];
   lines: SnapshotLineSeries[];
-  config: ChartConfig;
+  config: DitherChartConfig;
   valueFormatter?: (v: number) => string;
   className?: string;
   showLegend?: boolean;
@@ -1666,186 +1436,95 @@ function SnapshotLineChart({
 }) {
   if (data.length < 2) {
     return (
-      <p className="text-muted-foreground text-sm py-6 text-center">Not enough data points yet.</p>
+      <p className="py-6 text-center text-sm text-muted-foreground">Not enough data points yet.</p>
     );
   }
 
-  const xAxisTicks = getXAxisTicks(data, timeFrame ?? "all");
-  const xAxisDomain = getXAxisDomain(data);
+  const frame = timeFrame ?? "all";
+  const chartData = data.map((datum) => {
+    const date = typeof datum.date === "number" ? datum.date : 0;
+    return {
+      ...datum,
+      dateLabel: xAxisTickFormatter(date, frame),
+      tooltipLabel: formatDate(date),
+    };
+  });
   const latestDatum = data[data.length - 1];
   const hasPrimaryEmphasis = lineEmphasis === "primary" && lines.length > 1;
   const primaryLineKey = hasPrimaryEmphasis ? getPrimaryLineKey(lines, latestDatum) : undefined;
   const shouldShowLatestValue = showLatestValue ?? lines.length === 1;
-
   const allValues = data
     .flatMap((d) => lines.map((l) => d[l.key]))
     .filter((v): v is number => typeof v === "number" && !Number.isNaN(v));
   const yDomain: [number, number] =
     yDomainOverride ?? getAdaptiveYDomain(allValues, data.length, yScaleOptions);
   const resolvedYAxisWidth = yAxisWidth ?? getYAxisWidth(yDomain, valueFormatter);
-
-  const renderEndpointMarker =
-    ({
-      color,
-      variant,
-      showLabel,
-    }: {
-      color: string;
-      variant: "primary" | "secondary" | "equal";
-      showLabel: boolean;
-    }) =>
-    ({ cx, cy, index, value }: EndpointDotProps) => {
-      if (typeof cx !== "number" || typeof cy !== "number" || index !== data.length - 1) {
-        return null;
-      }
-
-      const numericValue =
-        typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
-      const label =
-        showLabel && Number.isFinite(numericValue)
-          ? (valueFormatter?.(numericValue) ?? numericValue.toLocaleString())
-          : null;
-      const showLabelBelow = cy < 28;
-      const markerOpacity = variant === "primary" ? 1 : variant === "equal" ? 0.9 : 0.65;
-      const markerRadius = variant === "primary" ? 4 : variant === "equal" ? 3.5 : 3;
-      const markerStrokeWidth = variant === "primary" ? 2 : 1.5;
-      const markerGlow = variant === "primary" ? 4 : variant === "equal" ? 3 : 2;
-
-      return (
-        <g opacity={markerOpacity}>
-          <circle
-            cx={cx}
-            cy={cy}
-            r={markerRadius}
-            fill={color}
-            stroke="var(--card)"
-            strokeWidth={markerStrokeWidth}
-            style={{ filter: `drop-shadow(0 0 ${markerGlow}px ${color})` }}
-          />
-          {label ? (
-            <text
-              x={cx - 10}
-              y={showLabelBelow ? cy + 12 : cy - 10}
-              textAnchor="end"
-              dominantBaseline={showLabelBelow ? "hanging" : "auto"}
-              fill={color}
-              fontSize={11}
-              fontWeight={600}
-              letterSpacing="0.01em"
-              paintOrder="stroke"
-              stroke="var(--card)"
-              strokeWidth={3}
-              style={{ fontVariantNumeric: "tabular-nums" }}
-            >
-              {label}
-            </text>
-          ) : null}
-        </g>
-      );
-    };
-
-  // Sparse data reads crisper as straight segments; dense data benefits from smoothing.
-  const curveType: "linear" | "monotone" = data.length <= 20 ? "linear" : "monotone";
+  const latestValueKey = primaryLineKey ?? lines[0]?.key;
+  const latestValue = latestValueKey ? latestDatum?.[latestValueKey] : undefined;
+  const latestValueLabel =
+    shouldShowLatestValue && typeof latestValue === "number"
+      ? (valueFormatter?.(latestValue) ?? latestValue.toLocaleString(DISPLAY_LOCALE))
+      : null;
+  const showOverlayLegend = showLegend && lines.length <= 3;
+  const showBlockLegend = showLegend && lines.length > 3;
+  const ariaLabel = `${lines.map((line) => config[line.key]?.label ?? line.key).join(", ")} over time`;
 
   return (
-    <ChartContainer
-      config={config}
-      className={`w-full [&_text]:tabular-nums ${className ?? "h-[200px]"}`}
-    >
-      <LineChart data={data} margin={{ top: 16, right: 12, left: 4, bottom: 8 }}>
-        <CartesianGrid
-          vertical={false}
-          stroke="var(--border)"
-          strokeOpacity={0.45}
-          strokeDasharray="3 3"
-        />
-        <XAxis
-          dataKey="date"
-          type="number"
-          scale="time"
-          domain={xAxisDomain}
-          tickLine={false}
-          axisLine={false}
-          tickMargin={8}
-          tick={{
-            fontSize: 11,
-            fill: "var(--muted-foreground)",
-            fillOpacity: 0.75,
-          }}
-          ticks={xAxisTicks}
-          interval={0}
-          minTickGap={18}
-          tickFormatter={(ts: number) => xAxisTickFormatter(ts, timeFrame ?? "all")}
-        />
-        <YAxis
-          tickLine={false}
-          axisLine={false}
-          tickMargin={6}
-          tick={{
-            fontSize: 11,
-            fill: "var(--muted-foreground)",
-            fillOpacity: 0.75,
-          }}
-          tickFormatter={valueFormatter}
-          width={resolvedYAxisWidth}
-          domain={yDomain}
-          tickCount={yScaleOptions?.tickCount ?? 5}
-          allowDataOverflow={!!yDomainOverride}
-        />
-        <ChartTooltip
-          cursor={false}
-          content={
-            <ChartTooltipContent
-              labelFormatter={(value, payload) =>
-                xTooltipLabelFormatter(
-                  value,
-                  timeFrame ?? "all",
-                  payload as ReadonlyArray<ChartTooltipPayloadItem>,
-                )
-              }
-              valueFormatter={valueFormatter}
-              indicator="dot"
-            />
+    <div className={cn("relative flex w-full flex-col", className ?? "h-[200px]")}>
+      <DitherLineChart
+        data={chartData}
+        config={config}
+        className="min-h-0 flex-1"
+        margins={{
+          top: showOverlayLegend ? 30 : 12,
+          right: 16,
+          bottom: 28,
+          left: resolvedYAxisWidth,
+        }}
+        yDomain={yDomain}
+        ariaLabel={ariaLabel}
+        animate={false}
+        sparkles={false}
+        bloom={lines.length <= 2 ? "low" : "off"}
+        bloomOnHover
+      >
+        <Grid horizontal vertical={false} />
+        <DitherXAxis dataKey="dateLabel" maxTicks={Math.min(8, data.length)} />
+        <DitherYAxis tickCount={yScaleOptions?.tickCount ?? 5} tickFormatter={valueFormatter} />
+        <DitherTooltip
+          labelKey="tooltipLabel"
+          valueFormatter={(value) =>
+            valueFormatter?.(value) ?? value.toLocaleString(DISPLAY_LOCALE)
           }
+          variant="frosted-glass"
         />
-        {showLegend && (
-          <ChartLegend content={<ChartLegendContent className="text-muted-foreground/85" />} />
-        )}
-        {lines.map(({ key, color }) => {
+        {showOverlayLegend ? <Legend isClickable /> : null}
+        {lines.map(({ key }, index) => {
           const isPrimaryLine = primaryLineKey === undefined || key === primaryLineKey;
-          const lineVariant = hasPrimaryEmphasis
-            ? isPrimaryLine
-              ? "primary"
-              : "secondary"
-            : "equal";
+          const variant =
+            hasPrimaryEmphasis && !isPrimaryLine
+              ? "dotted"
+              : index % 2 === 0
+                ? "gradient"
+                : "hatched";
 
           return (
-            <Line
-              key={key}
-              type={curveType}
-              dataKey={key}
-              stroke={color}
-              strokeWidth={lineVariant === "primary" ? 2 : lineVariant === "equal" ? 1.75 : 1.5}
-              strokeOpacity={lineVariant === "primary" ? 1 : lineVariant === "equal" ? 0.9 : 0.5}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              dot={renderEndpointMarker({
-                color,
-                variant: lineVariant,
-                showLabel: shouldShowLatestValue && isPrimaryLine,
-              })}
-              activeDot={{
-                r: lineVariant === "primary" ? 5 : 4,
-                fill: color,
-                stroke: "var(--card)",
-                strokeWidth: 2,
-              }}
-              isAnimationActive={false}
-            />
+            <DitherLine key={key} dataKey={key} variant={variant} isClickable={lines.length > 1}>
+              <ActiveDot />
+            </DitherLine>
           );
         })}
-      </LineChart>
-    </ChartContainer>
+      </DitherLineChart>
+      {latestValueLabel ? (
+        <output
+          className="pointer-events-none absolute right-4 top-3 rounded-sm border border-border/70 bg-card/85 px-2 py-1 font-mono text-[11px] font-semibold tabular-nums text-foreground backdrop-blur-sm"
+          aria-label={`Latest value: ${latestValueLabel}`}
+        >
+          {latestValueLabel}
+        </output>
+      ) : null}
+      {showBlockLegend ? <BlockLegend config={config} className="pt-2" /> : null}
+    </div>
   );
 }
 
@@ -1859,35 +1538,32 @@ function RadarPanel({ snapshot }: { snapshot: Snapshot }) {
     percentValue: stat.percent,
     ratingValue: stat.rating,
   }));
-  const radarMax = Math.max(
-    10,
-    Math.ceil(Math.max(...radarData.map((stat) => stat.value)) / 5) * 5,
-  );
   const tertiaryStats = getTertiaryStats(snapshot);
   const primaryStat = getPrimaryStat(snapshot);
 
   return (
     <div className="flex flex-col gap-3">
-      <ChartContainer config={radarConfig} className="h-[170px] w-full">
-        <RadarChart data={radarData} margin={{ top: 14, right: 22, bottom: 14, left: 22 }}>
-          <PolarGrid />
-          <PolarRadiusAxis axisLine={false} tick={false} domain={[0, radarMax]} />
-          <PolarAngleAxis dataKey="stat" tick={{ fontSize: 11 }} />
-          <ChartTooltip cursor={false} content={<CombatRadarTooltip />} />
-          <Radar
-            dataKey="value"
-            fill={C.blue}
-            fillOpacity={0.25}
-            stroke={C.blue}
-            strokeWidth={2}
-            dot={{ r: 3, fill: C.blue, strokeWidth: 0 }}
-          />
-        </RadarChart>
-      </ChartContainer>
+      <DitherRadarChart
+        data={radarData}
+        config={radarConfig}
+        nameKey="stat"
+        className="h-[180px] w-full"
+        margins={{ top: 18, right: 28, bottom: 18, left: 28 }}
+        animate={false}
+        bloom="low"
+        bloomOnHover
+        ariaLabel="Current secondary-stat balance"
+      >
+        <DitherTooltip valueFormatter={(value) => `${value.toFixed(1)}%`} variant="frosted-glass" />
+        <DitherRadar dataKey="value" variant="gradient" />
+      </DitherRadarChart>
       <div className="flex flex-col gap-1 text-sm">
-        <StatRow label="Stamina" value={snapshot.stats.stamina.toLocaleString()} />
+        <StatRow label="Stamina" value={snapshot.stats.stamina.toLocaleString(DISPLAY_LOCALE)} />
         {primaryStat && (
-          <StatRow label={primaryStat.label} value={primaryStat.value.toLocaleString()} />
+          <StatRow
+            label={primaryStat.label}
+            value={primaryStat.value.toLocaleString(DISPLAY_LOCALE)}
+          />
         )}
         <div className="border-t border-border/50 my-1" />
         {combatStats.map((stat) => (
@@ -1911,10 +1587,6 @@ function RadarStrip({ snapshot }: { snapshot: Snapshot }) {
     percentValue: stat.percent,
     ratingValue: stat.rating,
   }));
-  const radarMax = Math.max(
-    10,
-    Math.ceil(Math.max(...radarData.map((stat) => stat.value)) / 5) * 5,
-  );
   const tertiaryStats = getTertiaryStats(snapshot);
   const primaryStat = getPrimaryStat(snapshot);
   return (
@@ -1922,31 +1594,36 @@ function RadarStrip({ snapshot }: { snapshot: Snapshot }) {
       <CardContent className="py-4">
         <div className="flex items-center gap-6">
           <div className="shrink-0">
-            <ChartContainer config={radarConfig} className="h-[150px] w-[150px]">
-              <RadarChart data={radarData} margin={{ top: 12, right: 18, bottom: 12, left: 18 }}>
-                <PolarGrid />
-                <PolarRadiusAxis axisLine={false} tick={false} domain={[0, radarMax]} />
-                <PolarAngleAxis dataKey="stat" tick={{ fontSize: 10 }} />
-                <ChartTooltip cursor={false} content={<CombatRadarTooltip />} />
-                <Radar
-                  dataKey="value"
-                  fill={C.blue}
-                  fillOpacity={0.25}
-                  stroke={C.blue}
-                  strokeWidth={2}
-                  dot={{ r: 2, fill: C.blue, strokeWidth: 0 }}
-                />
-              </RadarChart>
-            </ChartContainer>
+            <DitherRadarChart
+              data={radarData}
+              config={radarConfig}
+              nameKey="stat"
+              className="h-[160px] w-[160px]"
+              margins={{ top: 18, right: 18, bottom: 18, left: 18 }}
+              animate={false}
+              ariaLabel="Current secondary-stat balance"
+            >
+              <DitherTooltip
+                valueFormatter={(value) => `${value.toFixed(1)}%`}
+                variant="frosted-glass"
+              />
+              <DitherRadar dataKey="value" variant="gradient" />
+            </DitherRadarChart>
           </div>
           <div className="flex flex-1 flex-col gap-2">
             <div className="grid grid-cols-2 gap-x-8 gap-y-1.5 text-sm">
               {combatStats.map((stat) => (
                 <StatRow key={stat.label} label={stat.label} value={renderCombatStatValue(stat)} />
               ))}
-              <StatRow label="Stamina" value={snapshot.stats.stamina.toLocaleString()} />
+              <StatRow
+                label="Stamina"
+                value={snapshot.stats.stamina.toLocaleString(DISPLAY_LOCALE)}
+              />
               {primaryStat && (
-                <StatRow label={primaryStat.label} value={primaryStat.value.toLocaleString()} />
+                <StatRow
+                  label={primaryStat.label}
+                  value={primaryStat.value.toLocaleString(DISPLAY_LOCALE)}
+                />
               )}
             </div>
             {tertiaryStats.length > 0 && (
@@ -1976,7 +1653,6 @@ function IlvlChartCard({
   snapshots: CoreChartSnapshot[];
   timeFrame: TimeFrame;
 }) {
-  const [fullscreen, setFullscreen] = useState(false);
   const data = snapshots.map((s) => ({ date: s.takenAt, itemLevel: s.itemLevel }));
   const lines = [{ key: "itemLevel", color: C.blue }];
   return (
@@ -1986,7 +1662,18 @@ function IlvlChartCard({
           <CardTitle className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
             <Sword size={14} className="text-muted-foreground" /> Item Level
           </CardTitle>
-          <FullscreenButton onClick={() => setFullscreen(true)} />
+          <FullscreenChart title="Item Level">
+            <SnapshotLineChart
+              data={data}
+              lines={lines}
+              config={ilvlConfig}
+              valueFormatter={(v) => v.toFixed(1)}
+              className="h-full"
+              showLegend
+              yScaleOptions={ITEM_LEVEL_AUTO_SCALE}
+              timeFrame={timeFrame}
+            />
+          </FullscreenChart>
         </div>
       </CardHeader>
       <CardContent className="px-4 pb-4 pt-2">
@@ -2000,20 +1687,6 @@ function IlvlChartCard({
           timeFrame={timeFrame}
         />
       </CardContent>
-      {fullscreen && (
-        <FullscreenOverlay title="Item Level" onClose={() => setFullscreen(false)}>
-          <SnapshotLineChart
-            data={data}
-            lines={lines}
-            config={ilvlConfig}
-            valueFormatter={(v) => v.toFixed(1)}
-            className="h-full"
-            showLegend
-            yScaleOptions={ITEM_LEVEL_AUTO_SCALE}
-            timeFrame={timeFrame}
-          />
-        </FullscreenOverlay>
-      )}
     </Card>
   );
 }
@@ -2024,7 +1697,6 @@ function MplusChartCard({
   snapshots: CoreChartSnapshot[];
   timeFrame: TimeFrame;
 }) {
-  const [fullscreen, setFullscreen] = useState(false);
   const data = snapshots.map((s) => ({ date: s.takenAt, mythicPlusScore: s.mythicPlusScore }));
   const lines = [{ key: "mythicPlusScore", color: C.red }];
   return (
@@ -2034,7 +1706,18 @@ function MplusChartCard({
           <CardTitle className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
             <Flame size={14} className="text-muted-foreground" /> M+ Score
           </CardTitle>
-          <FullscreenButton onClick={() => setFullscreen(true)} />
+          <FullscreenChart title="M+ Score">
+            <SnapshotLineChart
+              data={data}
+              lines={lines}
+              config={mplusConfig}
+              valueFormatter={(v) => v.toLocaleString(DISPLAY_LOCALE)}
+              className="h-full"
+              showLegend
+              yScaleOptions={MPLUS_AUTO_SCALE}
+              timeFrame={timeFrame}
+            />
+          </FullscreenChart>
         </div>
       </CardHeader>
       <CardContent className="px-4 pb-4 pt-2">
@@ -2042,26 +1725,12 @@ function MplusChartCard({
           data={data}
           lines={lines}
           config={mplusConfig}
-          valueFormatter={(v) => v.toLocaleString()}
+          valueFormatter={(v) => v.toLocaleString(DISPLAY_LOCALE)}
           className="h-[150px]"
           yScaleOptions={MPLUS_AUTO_SCALE}
           timeFrame={timeFrame}
         />
       </CardContent>
-      {fullscreen && (
-        <FullscreenOverlay title="M+ Score" onClose={() => setFullscreen(false)}>
-          <SnapshotLineChart
-            data={data}
-            lines={lines}
-            config={mplusConfig}
-            valueFormatter={(v) => v.toLocaleString()}
-            className="h-full"
-            showLegend
-            yScaleOptions={MPLUS_AUTO_SCALE}
-            timeFrame={timeFrame}
-          />
-        </FullscreenOverlay>
-      )}
     </Card>
   );
 }
@@ -2072,7 +1741,6 @@ function GoldChartCard({
   snapshots: CoreChartSnapshot[];
   timeFrame: TimeFrame;
 }) {
-  const [fullscreen, setFullscreen] = useState(false);
   const data = snapshots.map((s) => ({ date: s.takenAt, gold: s.gold }));
   const lines = [{ key: "gold", color: C.gold }];
   return (
@@ -2082,7 +1750,18 @@ function GoldChartCard({
           <CardTitle className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
             <Coins size={14} className="text-muted-foreground" /> Gold
           </CardTitle>
-          <FullscreenButton onClick={() => setFullscreen(true)} />
+          <FullscreenChart title="Gold">
+            <SnapshotLineChart
+              data={data}
+              lines={lines}
+              config={goldConfig}
+              valueFormatter={(v) => `${goldUnits(v).toLocaleString(DISPLAY_LOCALE)}g`}
+              className="h-full"
+              showLegend
+              yScaleOptions={GOLD_SCALE}
+              timeFrame={timeFrame}
+            />
+          </FullscreenChart>
         </div>
       </CardHeader>
       <CardContent className="px-4 pb-4 pt-2">
@@ -2090,26 +1769,12 @@ function GoldChartCard({
           data={data}
           lines={lines}
           config={goldConfig}
-          valueFormatter={(v) => `${goldUnits(v).toLocaleString()}g`}
+          valueFormatter={(v) => `${goldUnits(v).toLocaleString(DISPLAY_LOCALE)}g`}
           className="h-[150px]"
           yScaleOptions={GOLD_SCALE}
           timeFrame={timeFrame}
         />
       </CardContent>
-      {fullscreen && (
-        <FullscreenOverlay title="Gold" onClose={() => setFullscreen(false)}>
-          <SnapshotLineChart
-            data={data}
-            lines={lines}
-            config={goldConfig}
-            valueFormatter={(v) => `${goldUnits(v).toLocaleString()}g`}
-            className="h-full"
-            showLegend
-            yScaleOptions={GOLD_SCALE}
-            timeFrame={timeFrame}
-          />
-        </FullscreenOverlay>
-      )}
     </Card>
   );
 }
@@ -2296,7 +1961,9 @@ function getCurrencyProgress(
 
   if (detail?.maxWeeklyQuantity && detail.maxWeeklyQuantity > 0) {
     const earned = detail.quantityEarnedThisWeek ?? 0;
-    labels.push(`${earned.toLocaleString()}/${detail.maxWeeklyQuantity.toLocaleString()} weekly`);
+    labels.push(
+      `${earned.toLocaleString(DISPLAY_LOCALE)}/${detail.maxWeeklyQuantity.toLocaleString(DISPLAY_LOCALE)} weekly`,
+    );
     percent = getBoundedPercent(earned, detail.maxWeeklyQuantity);
   }
 
@@ -2304,7 +1971,9 @@ function getCurrencyProgress(
     detail?.maxQuantity && detail.maxQuantity > 0 ? detail.maxQuantity : fallbackMaxQuantity;
   if (maxQuantity && maxQuantity > 0) {
     const capProgressQuantity = getCurrencyCapProgressQuantity(quantity, detail);
-    labels.push(`${capProgressQuantity.toLocaleString()}/${maxQuantity.toLocaleString()} cap`);
+    labels.push(
+      `${capProgressQuantity.toLocaleString(DISPLAY_LOCALE)}/${maxQuantity.toLocaleString(DISPLAY_LOCALE)} cap`,
+    );
     percent ??= getBoundedPercent(capProgressQuantity, maxQuantity);
   }
 
@@ -2335,7 +2004,9 @@ function CurrencyProgressRow({
     <div className="grid gap-1 py-1">
       <div className="flex items-center justify-between gap-3 text-sm">
         <span className="min-w-0 truncate text-muted-foreground">{detail?.name ?? label}</span>
-        <span className="shrink-0 font-medium tabular-nums">{quantity.toLocaleString()}</span>
+        <span className="shrink-0 font-medium tabular-nums">
+          {quantity.toLocaleString(DISPLAY_LOCALE)}
+        </span>
       </div>
       {progress ? (
         <div className="grid gap-1">
@@ -2660,13 +2331,13 @@ function GreatVaultSlot({ group, slot }: { group: GreatVaultGroup; slot: GreatVa
         ) : (
           <span className="flex items-center justify-center gap-1 leading-none">
             <CheckCircle2 size={11} />
-            <span className="tabular-nums">{slot.threshold.toLocaleString()}</span>
+            <span className="tabular-nums">{slot.threshold.toLocaleString(DISPLAY_LOCALE)}</span>
           </span>
         )
       ) : (
         <span className="flex items-center justify-center gap-1 leading-none">
           <Lock size={10} />
-          <span className="tabular-nums">{slot.threshold.toLocaleString()}</span>
+          <span className="tabular-nums">{slot.threshold.toLocaleString(DISPLAY_LOCALE)}</span>
         </span>
       )}
     </div>
@@ -2697,7 +2368,8 @@ function GreatVaultGroupRow({
       <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
         <span className="min-w-0 truncate">
           <span className="font-medium tabular-nums text-foreground">
-            {shownProgress.toLocaleString()}/{finalThreshold.toLocaleString()}
+            {shownProgress.toLocaleString(DISPLAY_LOCALE)}/
+            {finalThreshold.toLocaleString(DISPLAY_LOCALE)}
           </span>{" "}
           {formatVaultProgressLabel(group, shownProgress)}
         </span>
@@ -2943,7 +2615,7 @@ function FocusCurrentValue({ metric, snapshot }: { metric: FocusMetric; snapshot
     case "mplus":
       return (
         <span className="text-4xl font-bold tabular-nums">
-          {snapshot.mythicPlusScore.toLocaleString()}
+          {snapshot.mythicPlusScore.toLocaleString(DISPLAY_LOCALE)}
         </span>
       );
     case "gold":
@@ -2973,7 +2645,7 @@ function FocusCurrentValue({ metric, snapshot }: { metric: FocusMetric; snapshot
           ].map(({ l, v }) => (
             <span key={l}>
               <span className="text-muted-foreground">{l} </span>
-              <strong className="tabular-nums">{v.toLocaleString()}</strong>
+              <strong className="tabular-nums">{v.toLocaleString(DISPLAY_LOCALE)}</strong>
             </span>
           ))}
         </div>
@@ -3024,7 +2696,7 @@ function FocusChart({
         data={coreSnapshots.map((s) => ({ date: s.takenAt, mythicPlusScore: s.mythicPlusScore }))}
         lines={[{ key: "mythicPlusScore", color: C.red }]}
         config={mplusConfig}
-        valueFormatter={(v) => v.toLocaleString()}
+        valueFormatter={(v) => v.toLocaleString(DISPLAY_LOCALE)}
         className={h}
         yScaleOptions={MPLUS_AUTO_SCALE}
         timeFrame={timeFrame}
@@ -3037,7 +2709,7 @@ function FocusChart({
         data={coreSnapshots.map((s) => ({ date: s.takenAt, gold: s.gold }))}
         lines={[{ key: "gold", color: C.gold }]}
         config={goldConfig}
-        valueFormatter={(v) => `${goldUnits(v).toLocaleString()}g`}
+        valueFormatter={(v) => `${goldUnits(v).toLocaleString(DISPLAY_LOCALE)}g`}
         className={h}
         yScaleOptions={GOLD_SCALE}
         timeFrame={timeFrame}
@@ -3202,7 +2874,10 @@ function FocusLayout({
           <CardContent className="pt-4">
             <div className="grid grid-cols-2 gap-2">
               <StatGrid label="Item Level" value={latest.itemLevel.toFixed(1)} />
-              <StatGrid label="M+ Score" value={latest.mythicPlusScore.toLocaleString()} />
+              <StatGrid
+                label="M+ Score"
+                value={latest.mythicPlusScore.toLocaleString(DISPLAY_LOCALE)}
+              />
               <StatGrid label="Gold" value={<GoldDisplay value={latest.gold} />} />
               <StatGrid
                 label="Playtime"
@@ -3287,7 +2962,7 @@ function TimelineLayout({
             }))}
             lines={[{ key: "mythicPlusScore", color: C.red }]}
             config={mplusConfig}
-            valueFormatter={(v) => v.toLocaleString()}
+            valueFormatter={(v) => v.toLocaleString(DISPLAY_LOCALE)}
             className={chartH}
             yScaleOptions={MPLUS_AUTO_SCALE}
             timeFrame={timeFrame}
@@ -3306,7 +2981,7 @@ function TimelineLayout({
             data={coreSnapshots.map((s) => ({ date: s.takenAt, gold: s.gold }))}
             lines={[{ key: "gold", color: C.gold }]}
             config={goldConfig}
-            valueFormatter={(v) => `${goldUnits(v).toLocaleString()}g`}
+            valueFormatter={(v) => `${goldUnits(v).toLocaleString(DISPLAY_LOCALE)}g`}
             className={chartH}
             yScaleOptions={GOLD_SCALE}
             timeFrame={timeFrame}
@@ -3540,8 +3215,8 @@ function CharacterPageState({
   isLoading?: boolean;
 }) {
   return (
-    <div className="w-full px-4 py-6 sm:px-6 lg:px-8">
-      <Card className="border-border/60 bg-background">
+    <div className="analytics-shell w-full px-4 py-6 sm:px-6 lg:px-8">
+      <Card className="analytics-panel">
         <CardContent className="flex flex-col gap-4 px-6 py-6">
           {isLoading ? (
             <>
@@ -3579,6 +3254,7 @@ function RouteComponent() {
   const characterPageQuery = useQuery({
     ...getCharacterPageQueryOptions(characterId, timeFrame),
     refetchInterval: CHARACTER_PAGE_REFETCH_INTERVAL_MS,
+    refetchIntervalInBackground: false,
   });
   const characterPage = characterPageQuery.data;
   const pageHeader = characterPage?.header;
@@ -3976,7 +3652,9 @@ function RouteComponent() {
   const lastMythicPlusRunAt = mythicPlusData?.summary.overall.lastRunAt ?? null;
   const trackingCountLabel = snapshotCount === null ? "Tracked Points" : "Snapshots";
   const trackingCountValue =
-    snapshotCount === null ? coreSnapshots.length.toLocaleString() : snapshotCount.toLocaleString();
+    snapshotCount === null
+      ? coreSnapshots.length.toLocaleString(DISPLAY_LOCALE)
+      : snapshotCount.toLocaleString(DISPLAY_LOCALE);
   const rangeBaselineSnapshot = getRangeBaselineSnapshot(timeFrame, coreSnapshots, latest);
   const rangeDeltaLabel = getTimeFrameDeltaLabel(timeFrame);
 
@@ -4155,10 +3833,10 @@ function RouteComponent() {
   }
 
   return (
-    <div className="flex w-full flex-col gap-4 px-4 py-6 sm:px-6 lg:px-8">
+    <div className="analytics-shell flex w-full flex-col gap-4 px-4 py-6 sm:px-6 lg:px-8">
       {/* Character header */}
-      <Card className="overflow-hidden border-border/60 bg-background">
-        <CardHeader className="border-b border-border/60 bg-background pb-4">
+      <Card className="analytics-hero">
+        <CardHeader className="relative z-10 border-b border-border/60 bg-transparent pb-4">
           <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
             <div className="flex flex-col gap-4">
               {latest && (
@@ -4387,7 +4065,7 @@ function RouteComponent() {
         </CardHeader>
 
         {latest && (
-          <CardContent className="px-6 pb-5 pt-4">
+          <CardContent className="relative z-10 px-6 pb-5 pt-4">
             <div className="grid gap-3 xl:grid-cols-4">
               <TopMetricCard
                 label="Item level"
@@ -4407,13 +4085,15 @@ function RouteComponent() {
                 label="M+ score"
                 meta="Current"
                 value={
-                  <span className="tabular-nums">{latest.mythicPlusScore.toLocaleString()}</span>
+                  <span className="tabular-nums">
+                    {latest.mythicPlusScore.toLocaleString(DISPLAY_LOCALE)}
+                  </span>
                 }
                 delta={
                   rangeBaselineSnapshot ? (
                     <RangeDelta
                       value={latest.mythicPlusScore - rangeBaselineSnapshot.mythicPlusScore}
-                      formatter={(value) => Math.round(value).toLocaleString()}
+                      formatter={(value) => Math.round(value).toLocaleString(DISPLAY_LOCALE)}
                       label={rangeDeltaLabel}
                     />
                   ) : null
@@ -4451,37 +4131,29 @@ function RouteComponent() {
             </div>
 
             <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-              <div className="rounded-md border border-border/60 bg-card px-4 py-3">
-                <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground/75">
-                  Character
-                </div>
+              <div className="analytics-panel rounded-md border px-4 py-3">
+                <div className="analytics-kicker text-[10px]">Character</div>
                 <div className="mt-3 flex flex-col gap-2">
                   <StatRow label="Race" value={character.race} />
                   <StatRow label="Class" value={character.class} />
                 </div>
               </div>
-              <div className="rounded-md border border-border/60 bg-card px-4 py-3">
-                <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground/75">
-                  Server
-                </div>
+              <div className="analytics-panel rounded-md border px-4 py-3">
+                <div className="analytics-kicker text-[10px]">Server</div>
                 <div className="mt-3 flex flex-col gap-2">
                   <StatRow label="Server" value={character.realm} />
                   <StatRow label="Region" value={character.region.toUpperCase()} />
                 </div>
               </div>
-              <div className="rounded-md border border-border/60 bg-card px-4 py-3">
-                <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground/75">
-                  Tracking
-                </div>
+              <div className="analytics-panel rounded-md border px-4 py-3">
+                <div className="analytics-kicker text-[10px]">Tracking</div>
                 <div className="mt-3 flex flex-col gap-2">
                   <StatRow label="Since" value={formatDate(firstSnapshotAt ?? latest.takenAt)} />
                   <StatRow label={trackingCountLabel} value={trackingCountValue} />
                 </div>
               </div>
-              <div className="rounded-md border border-border/60 bg-card px-4 py-3">
-                <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground/75">
-                  Activity
-                </div>
+              <div className="analytics-panel rounded-md border px-4 py-3">
+                <div className="analytics-kicker text-[10px]">Activity</div>
                 <div className="mt-3 flex flex-col gap-2">
                   <StatRow label="Last Snapshot" value={formatCardDateTime(latest.takenAt)} />
                   <StatRow
@@ -4535,7 +4207,7 @@ function RouteComponent() {
           onFocusMetricChange={handleFocusMetricChange}
         />
       ) : (
-        <Card className="border-border/60 bg-background">
+        <Card className="analytics-panel">
           <CardContent className="px-6 py-6">
             <CardTitle className="text-lg font-semibold tracking-tight">
               No snapshots available

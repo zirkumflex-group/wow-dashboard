@@ -13,22 +13,20 @@ import Shield from "lucide-react/dist/esm/icons/shield.mjs";
 import Star from "lucide-react/dist/esm/icons/star.mjs";
 import Swords from "lucide-react/dist/esm/icons/swords.mjs";
 import type React from "react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createCharacterRouteId } from "@wow-dashboard/api-schema";
 import { apiClient, apiQueryOptions } from "@/lib/api-client";
+import { useDashboardPreferences } from "@/lib/dashboard-preferences";
+import { DISPLAY_LOCALE, DISPLAY_TIME_ZONE } from "@/lib/format";
+import { usePinnedCharacters } from "@/lib/pinned-characters";
 import { PlaytimeBreakdown } from "../components/playtime-breakdown";
 import { getClassBgColor, getClassTextColor } from "../lib/class-colors";
-
-const HIDE_BELOW_90_KEY = "wow_dashboard_hide_below_90";
-const MIN_ILVL_KEY = "wow_dashboard_min_ilvl";
-const HIDE_NO_SNAPSHOT_KEY = "wow_dashboard_hide_no_snapshot";
-const DEFAULT_MIN_ILVL = 200;
-const FAVORITES_KEY = "wow_dashboard_favorites";
 
 export const Route = createFileRoute("/dashboard")({
   beforeLoad: ({ context }) => {
     if (!context.isAuthenticated) throw redirect({ to: "/" });
   },
+  loader: ({ context }) => context.queryClient.ensureQueryData(apiQueryOptions.myCharacters()),
   component: RouteComponent,
 });
 
@@ -47,36 +45,10 @@ function formatGold(value: number) {
   const s = Math.floor((totalCopper % 10000) / 100);
   const c = totalCopper % 100;
   const parts: string[] = [];
-  if (g > 0) parts.push(`${g.toLocaleString()}g`);
+  if (g > 0) parts.push(`${g.toLocaleString(DISPLAY_LOCALE)}g`);
   if (s > 0) parts.push(`${s}s`);
   if (c > 0 || parts.length === 0) parts.push(`${c}c`);
   return parts.join(" ");
-}
-
-function useFavorites() {
-  const [favorites, setFavorites] = useState<Set<string>>(() => {
-    try {
-      const stored = localStorage.getItem(FAVORITES_KEY);
-      return stored ? new Set<string>(JSON.parse(stored) as string[]) : new Set();
-    } catch {
-      return new Set();
-    }
-  });
-
-  const toggle = useCallback((id: string) => {
-    setFavorites((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
-      localStorage.setItem(FAVORITES_KEY, JSON.stringify([...next]));
-      return next;
-    });
-  }, []);
-
-  return { favorites, toggle };
 }
 
 function useResyncCooldown() {
@@ -163,30 +135,14 @@ function CharacterCard({
   const cls = char.class.toLowerCase();
 
   return (
-    <Link
-      to="/character/$characterId"
-      params={{ characterId: createCharacterRouteId(char) }}
-      className="block"
+    <Card
+      className={`analytics-panel group relative h-full border ${classBg(cls)} motion-safe:transition-[transform,box-shadow] motion-safe:hover:-translate-y-0.5 hover:shadow-lg`}
     >
-      <Card
-        className={`relative h-full transition-all hover:scale-[1.01] hover:shadow-lg border ${classBg(cls)}`}
+      <Link
+        to="/character/$characterId"
+        params={{ characterId: createCharacterRouteId(char) }}
+        className="block h-full rounded-[inherit] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
       >
-        <button
-          onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            onToggleFavorite(char._id);
-          }}
-          aria-label={isFavorite ? "Remove from favorites" : "Add to favorites"}
-          title={isFavorite ? "Remove from favorites" : "Add to favorites"}
-          className={`absolute right-3 top-3 z-10 rounded-full p-1 transition-colors hover:bg-white/10 ${
-            isFavorite ? "text-yellow-400" : "text-muted-foreground hover:text-yellow-400"
-          }`}
-        >
-          <Star
-            className={`h-4 w-4 transition-transform duration-200 hover:scale-125 ${isFavorite ? "fill-current" : ""}`}
-          />
-        </button>
         <CardHeader className="pb-2 pr-9">
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
@@ -220,7 +176,10 @@ function CharacterCard({
                 <StatCell label="Level" value={snapshot.level} />
                 <StatCell label="Spec" value={snapshot.spec} />
                 <StatCell label="iLvl" value={snapshot.itemLevel.toFixed(1)} />
-                <StatCell label="M+ Score" value={snapshot.mythicPlusScore.toLocaleString()} />
+                <StatCell
+                  label="M+ Score"
+                  value={snapshot.mythicPlusScore.toLocaleString(DISPLAY_LOCALE)}
+                />
                 <StatCell label="Gold" value={formatGold(snapshot.gold)} />
                 <StatCell
                   label="Playtime"
@@ -235,7 +194,8 @@ function CharacterCard({
               </div>
               <p className="text-muted-foreground text-xs border-t border-border/50 pt-2">
                 Snapshot:{" "}
-                {new Date(snapshot.takenAt * 1000).toLocaleDateString(undefined, {
+                {new Date(snapshot.takenAt * 1000).toLocaleDateString(DISPLAY_LOCALE, {
+                  timeZone: DISPLAY_TIME_ZONE,
                   year: "numeric",
                   month: "short",
                   day: "numeric",
@@ -246,8 +206,23 @@ function CharacterCard({
             <p className="text-muted-foreground text-sm">No snapshot yet</p>
           )}
         </CardContent>
-      </Card>
-    </Link>
+      </Link>
+      <button
+        type="button"
+        onClick={() => onToggleFavorite(char._id)}
+        aria-label={isFavorite ? `Unpin ${char.name}` : `Pin ${char.name}`}
+        aria-pressed={isFavorite}
+        title={isFavorite ? "Remove from quick access" : "Add to quick access"}
+        className={`absolute right-2.5 top-2.5 z-10 flex size-8 items-center justify-center rounded-full transition-colors hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+          isFavorite ? "text-yellow-400" : "text-muted-foreground hover:text-yellow-400"
+        }`}
+      >
+        <Star
+          aria-hidden="true"
+          className={`h-4 w-4 motion-safe:transition-transform motion-safe:hover:scale-110 ${isFavorite ? "fill-current" : ""}`}
+        />
+      </button>
+    </Card>
   );
 }
 
@@ -321,52 +296,16 @@ function Dashboard() {
   });
   const [syncing, setSyncing] = useState(false);
   const { isCoolingDown, remaining, setCooldown, formatRemaining } = useResyncCooldown();
-  const { favorites, toggle: toggleFavorite } = useFavorites();
-
-  const [hideBelow90, setHideBelow90] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem(HIDE_BELOW_90_KEY) === "true";
-    } catch {
-      return false;
-    }
-  });
-  const [minIlvlInput, setMinIlvlInput] = useState<string>(() => {
-    try {
-      const v = localStorage.getItem(MIN_ILVL_KEY);
-      return v !== null ? v : String(DEFAULT_MIN_ILVL);
-    } catch {
-      return String(DEFAULT_MIN_ILVL);
-    }
-  });
-  const [hideNoSnapshot, setHideNoSnapshot] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem(HIDE_NO_SNAPSHOT_KEY) === "true";
-    } catch {
-      return false;
-    }
-  });
+  const { pinnedCharacterIdSet: favorites, togglePinnedCharacter: toggleFavorite } =
+    usePinnedCharacters();
+  const { preferences, updatePreferences } = useDashboardPreferences();
+  const { hideBelow90, hideNoSnapshot } = preferences;
+  const [minIlvlInput, setMinIlvlInput] = useState(() => String(preferences.minItemLevel));
   const minIlvl = Number(minIlvlInput) || 0;
 
-  function toggleHideBelow90(checked: boolean) {
-    setHideBelow90(checked);
-    try {
-      localStorage.setItem(HIDE_BELOW_90_KEY, String(checked));
-    } catch {}
-  }
-
-  function handleMinIlvlChange(value: string) {
-    setMinIlvlInput(value);
-    try {
-      localStorage.setItem(MIN_ILVL_KEY, value);
-    } catch {}
-  }
-
-  function toggleHideNoSnapshot(checked: boolean) {
-    setHideNoSnapshot(checked);
-    try {
-      localStorage.setItem(HIDE_NO_SNAPSHOT_KEY, String(checked));
-    } catch {}
-  }
+  useEffect(() => {
+    setMinIlvlInput(String(preferences.minItemLevel));
+  }, [preferences.minItemLevel]);
 
   function applyFilters(chars: Character[]): Character[] {
     return chars.filter((c) => {
@@ -382,9 +321,13 @@ function Dashboard() {
     setSyncing(true);
     try {
       const result = await resync.mutateAsync();
-      if (result?.nextAllowedAt) {
+      if (result.ok) {
+        toast.success("Battle.net sync queued. New characters will appear when it finishes.");
+      } else if (result.nextAllowedAt) {
         setCooldown(result.nextAllowedAt);
         toast.error("Too many requests — please wait before trying again.");
+      } else {
+        toast.error("Battle.net access is unavailable. Sign in again, then retry the sync.");
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -410,10 +353,11 @@ function Dashboard() {
   const isDisabled = syncing || isCoolingDown;
 
   return (
-    <div className="w-full px-4 py-6 sm:px-6 lg:px-8">
+    <div className="analytics-shell w-full px-4 py-6 sm:px-6 lg:px-8">
       <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold">My Characters</h1>
+          <p className="analytics-kicker text-primary">Roster / Live Snapshots</p>
+          <h1 className="mt-2 text-3xl font-bold tracking-tight">My Characters</h1>
           {characters !== undefined && characters !== null && characters.length > 0 && (
             <p className="text-muted-foreground text-sm mt-1">
               {filteredCharacters?.length ?? 0} of {characters.length} character
@@ -426,7 +370,7 @@ function Dashboard() {
           <label className="flex cursor-pointer items-center gap-2 text-sm">
             <Checkbox
               checked={hideBelow90}
-              onCheckedChange={(v) => toggleHideBelow90(!!v)}
+              onCheckedChange={(value) => updatePreferences({ hideBelow90: !!value })}
               id="dashboard-hide-below-90"
             />
             <span className="text-muted-foreground select-none">Hide below Lvl 90</span>
@@ -436,15 +380,22 @@ function Dashboard() {
             <Input
               type="number"
               min={0}
+              max={1000}
+              step={0.1}
               value={minIlvlInput}
-              onChange={(e) => handleMinIlvlChange(e.target.value)}
+              onChange={(event) => setMinIlvlInput(event.target.value)}
+              onBlur={() => updatePreferences({ minItemLevel: minIlvl })}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") event.currentTarget.blur();
+              }}
               className="h-7 w-20 text-sm"
+              aria-label="Minimum item level"
             />
           </label>
           <label className="flex cursor-pointer items-center gap-2 text-sm">
             <Checkbox
               checked={hideNoSnapshot}
-              onCheckedChange={(v) => toggleHideNoSnapshot(!!v)}
+              onCheckedChange={(value) => updatePreferences({ hideNoSnapshot: !!value })}
               id="dashboard-hide-no-snapshot"
             />
             <span className="text-muted-foreground select-none">Hide no snapshot</span>
@@ -456,13 +407,26 @@ function Dashboard() {
             onClick={handleResync}
             disabled={isDisabled}
           >
-            <RefreshCw className={`h-3.5 w-3.5 ${syncing ? "animate-spin" : ""}`} />
+            <RefreshCw
+              aria-hidden="true"
+              className={`h-3.5 w-3.5 ${syncing ? "animate-spin motion-reduce:animate-none" : ""}`}
+            />
             {syncing ? "Syncing…" : isCoolingDown ? formatRemaining(remaining) : "Resync"}
           </Button>
         </div>
       </div>
 
-      {characters === undefined ? (
+      {charactersQuery.isError && characters === undefined ? (
+        <Card className="analytics-panel border-destructive/40">
+          <CardContent className="flex flex-col items-start gap-3 py-8">
+            <p className="font-medium">Your characters could not be loaded.</p>
+            <p className="text-sm text-muted-foreground">{charactersQuery.error.message}</p>
+            <Button variant="outline" size="sm" onClick={() => void charactersQuery.refetch()}>
+              Try Again
+            </Button>
+          </CardContent>
+        </Card>
+      ) : characters === undefined ? (
         <div className="space-y-8">
           {["Favorites", "Tank", "Healer", "DPS"].map((role) => (
             <section key={role}>
@@ -479,7 +443,7 @@ function Dashboard() {
           ))}
         </div>
       ) : characters === null || characters.length === 0 ? (
-        <Card className="border-dashed">
+        <Card className="analytics-panel border-dashed">
           <CardContent className="flex flex-col items-center justify-center py-12 text-center">
             <p className="text-muted-foreground">No characters found.</p>
             <p className="text-muted-foreground text-sm mt-1">
@@ -493,7 +457,7 @@ function Dashboard() {
             <section>
               <div className="mb-3 flex items-center gap-2">
                 <Star className="h-5 w-5 fill-current text-yellow-400" />
-                <h2 className="text-lg font-semibold">Favorites</h2>
+                <h2 className="text-lg font-semibold">Pinned</h2>
                 <span className="text-muted-foreground rounded-full bg-muted px-2 py-0.5 text-xs">
                   {favoriteChars.length}
                 </span>

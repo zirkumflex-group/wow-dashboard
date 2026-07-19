@@ -84,7 +84,7 @@ function NavUser() {
               <div className="grid flex-1 text-left text-sm leading-tight">
                 <span className="truncate font-medium">{user?.name ?? "Loading…"}</span>
               </div>
-              <ChevronUp className="ml-auto size-4" />
+              <ChevronUp aria-hidden="true" className="ml-auto size-4" />
             </SidebarMenuButton>
           </DropdownMenuTrigger>
           <DropdownMenuContent
@@ -153,10 +153,10 @@ export function AppSidebar() {
           <SidebarMenuItem>
             <SidebarMenuButton size="lg" asChild>
               <Link to="/dashboard">
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground text-xs font-bold">
-                  W
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-primary/35 bg-primary/10 font-mono text-[10px] font-bold text-primary">
+                  WD
                 </div>
-                <span className="font-semibold">WoW Dashboard</span>
+                <span className="font-semibold tracking-tight">WoW Dashboard</span>
               </Link>
             </SidebarMenuButton>
           </SidebarMenuItem>
@@ -177,7 +177,7 @@ export function AppSidebar() {
                   <SidebarMenuItem key={item.to}>
                     <SidebarMenuButton asChild isActive={isActive} tooltip={item.label}>
                       <Link to={item.to}>
-                        <item.icon />
+                        <item.icon aria-hidden="true" />
                         <span>{item.label}</span>
                       </Link>
                     </SidebarMenuButton>
@@ -191,7 +191,7 @@ export function AppSidebar() {
         {showQuickAccess && (
           <SidebarGroup>
             <SidebarGroupLabel className="flex items-center gap-2">
-              <Star className="size-3.5 text-yellow-400" />
+              <Star aria-hidden="true" className="size-3.5 text-yellow-400" />
               <span>Quick Access</span>
             </SidebarGroupLabel>
             <SidebarGroupContent>
@@ -250,7 +250,7 @@ export function AppSidebar() {
                           disabled={index === 0}
                           aria-label={`Move ${character.name} up`}
                         >
-                          <ArrowUp />
+                          <ArrowUp aria-hidden="true" />
                         </SidebarMenuAction>
                         <SidebarMenuAction
                           showOnHover
@@ -263,7 +263,7 @@ export function AppSidebar() {
                           disabled={index === quickAccessCharacters.length - 1}
                           aria-label={`Move ${character.name} down`}
                         >
-                          <ArrowDown />
+                          <ArrowDown aria-hidden="true" />
                         </SidebarMenuAction>
                       </SidebarMenuItem>
                     );
@@ -282,7 +282,7 @@ export function AppSidebar() {
                 <SidebarMenuItem key={item.to}>
                   <SidebarMenuButton asChild isActive={pathname === item.to} tooltip={item.label}>
                     <Link to={item.to}>
-                      <item.icon />
+                      <item.icon aria-hidden="true" />
                       <span>{item.label}</span>
                     </Link>
                   </SidebarMenuButton>

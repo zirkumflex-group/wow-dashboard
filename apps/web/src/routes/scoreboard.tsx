@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { Badge } from "@wow-dashboard/ui/components/badge";
+import { Button } from "@wow-dashboard/ui/components/button";
 import { Card, CardContent } from "@wow-dashboard/ui/components/card";
 import { Checkbox } from "@wow-dashboard/ui/components/checkbox";
 import { Input } from "@wow-dashboard/ui/components/input";
@@ -22,33 +23,16 @@ import Users from "lucide-react/dist/esm/icons/users.mjs";
 import { useEffect, useState } from "react";
 import { createCharacterRouteId } from "@wow-dashboard/api-schema";
 import { apiQueryOptions } from "@/lib/api-client";
+import { useDashboardPreferences } from "@/lib/dashboard-preferences";
+import { DISPLAY_LOCALE, DISPLAY_TIME_ZONE } from "@/lib/format";
 import { getClassTextColor } from "../lib/class-colors";
 import { getMythicPlusDungeonMeta, getRaiderIoScoreColor } from "../lib/mythic-plus-static";
 
-const HIDE_BELOW_90_KEY = "wow_dashboard_hide_below_90";
-const MIN_ILVL_KEY = "wow_dashboard_min_ilvl";
-const DEFAULT_MIN_ILVL = 200;
-
 export const Route = createFileRoute("/scoreboard")({
+  loader: ({ context }) =>
+    context.queryClient.ensureQueryData(apiQueryOptions.scoreboardCharacters()),
   component: RouteComponent,
 });
-
-function readHideBelow90() {
-  try {
-    return localStorage.getItem(HIDE_BELOW_90_KEY) === "true";
-  } catch {
-    return false;
-  }
-}
-
-function readMinIlvl() {
-  try {
-    const value = localStorage.getItem(MIN_ILVL_KEY);
-    return value !== null ? Number(value) : DEFAULT_MIN_ILVL;
-  } catch {
-    return DEFAULT_MIN_ILVL;
-  }
-}
 
 function classColor(className: string) {
   return getClassTextColor(className);
@@ -66,11 +50,12 @@ function formatPlaytime(seconds: number) {
 function formatGold(gold: number) {
   if (gold >= 1_000_000) return `${(gold / 1_000_000).toFixed(1)}M`;
   if (gold >= 1_000) return `${(gold / 1_000).toFixed(1)}k`;
-  return Math.floor(gold).toLocaleString();
+  return Math.floor(gold).toLocaleString(DISPLAY_LOCALE);
 }
 
 function formatSnapshotDate(takenAt: number) {
-  return new Date(takenAt * 1000).toLocaleDateString(undefined, {
+  return new Date(takenAt * 1000).toLocaleDateString(DISPLAY_LOCALE, {
+    timeZone: DISPLAY_TIME_ZONE,
     month: "short",
     day: "numeric",
   });
@@ -136,11 +121,47 @@ function SortIcon({
   sort: string;
   direction: "asc" | "desc";
 }) {
-  if (sort !== column) return <ArrowUpDown className="ml-1 inline h-3 w-3 opacity-50" />;
+  if (sort !== column) {
+    return <ArrowUpDown aria-hidden="true" className="ml-1 inline h-3 w-3 opacity-50" />;
+  }
   return direction === "desc" ? (
-    <ArrowDown className="ml-1 inline h-3 w-3" />
+    <ArrowDown aria-hidden="true" className="ml-1 inline h-3 w-3" />
   ) : (
-    <ArrowUp className="ml-1 inline h-3 w-3" />
+    <ArrowUp aria-hidden="true" className="ml-1 inline h-3 w-3" />
+  );
+}
+
+function SortableTableHead({
+  label,
+  column,
+  sort,
+  direction,
+  onSort,
+  className = "",
+}: {
+  label: string;
+  column: string;
+  sort: string;
+  direction: SortDir;
+  onSort: () => void;
+  className?: string;
+}) {
+  const isActive = sort === column;
+
+  return (
+    <TableHead
+      className={className}
+      aria-sort={isActive ? (direction === "asc" ? "ascending" : "descending") : "none"}
+    >
+      <button
+        type="button"
+        onClick={onSort}
+        className="flex min-h-10 w-full items-center justify-end whitespace-nowrap rounded-sm px-1 text-right font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        {label}
+        <SortIcon column={column} sort={sort} direction={direction} />
+      </button>
+    </TableHead>
   );
 }
 
@@ -149,27 +170,19 @@ type CharacterSort = "mplus" | "ilvl" | "key" | "playtime";
 type PlayerSort = "mplus" | "playtime" | "gold";
 
 function CharactersTab() {
-  const entries = useQuery(apiQueryOptions.scoreboardCharacters()).data;
+  const entriesQuery = useQuery(apiQueryOptions.scoreboardCharacters());
+  const entries = entriesQuery.data;
   const [sort, setSort] = useState<CharacterSort>("mplus");
   const [dir, setDir] = useState<SortDir>("desc");
-  const [hideBelow90, setHideBelow90] = useState<boolean>(() => readHideBelow90());
-  const [minIlvlInput, setMinIlvlInput] = useState<string>(() => String(readMinIlvl()));
+  const { preferences, updatePreferences } = useDashboardPreferences();
+  const { hideBelow90 } = preferences;
+  const [minIlvlInput, setMinIlvlInput] = useState(() => String(preferences.minItemLevel));
 
   const minIlvl = Number(minIlvlInput) || 0;
 
-  function toggleHideBelow90(checked: boolean) {
-    setHideBelow90(checked);
-    try {
-      localStorage.setItem(HIDE_BELOW_90_KEY, String(checked));
-    } catch {}
-  }
-
-  function handleMinIlvlChange(value: string) {
-    setMinIlvlInput(value);
-    try {
-      localStorage.setItem(MIN_ILVL_KEY, value);
-    } catch {}
-  }
+  useEffect(() => {
+    setMinIlvlInput(String(preferences.minItemLevel));
+  }, [preferences.minItemLevel]);
 
   function handleSort(nextSort: CharacterSort) {
     if (sort === nextSort) {
@@ -180,13 +193,27 @@ function CharactersTab() {
     setDir("desc");
   }
 
-  if (entries === undefined) {
+  if (entriesQuery.isPending) {
     return (
       <Card>
         <CardContent className="space-y-2 py-3">
           {Array.from({ length: 10 }).map((_, index) => (
             <Skeleton key={index} className="h-12 w-full rounded-md" />
           ))}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (entriesQuery.isError && entries === undefined) {
+    return (
+      <Card className="analytics-panel border-destructive/40">
+        <CardContent className="flex flex-col items-start gap-3 py-8">
+          <p className="font-medium">Character rankings could not be loaded.</p>
+          <p className="text-sm text-muted-foreground">{entriesQuery.error.message}</p>
+          <Button variant="outline" size="sm" onClick={() => void entriesQuery.refetch()}>
+            Try Again
+          </Button>
         </CardContent>
       </Card>
     );
@@ -253,7 +280,7 @@ function CharactersTab() {
         <label className="flex cursor-pointer items-center gap-2">
           <Checkbox
             checked={hideBelow90}
-            onCheckedChange={(value) => toggleHideBelow90(!!value)}
+            onCheckedChange={(value) => updatePreferences({ hideBelow90: !!value })}
             id="scoreboard-hide-below-90"
           />
           <span className="select-none text-muted-foreground">Hide below Lvl 90</span>
@@ -263,9 +290,16 @@ function CharactersTab() {
           <Input
             type="number"
             min={0}
+            max={1000}
+            step={0.1}
             value={minIlvlInput}
-            onChange={(event) => handleMinIlvlChange(event.target.value)}
+            onChange={(event) => setMinIlvlInput(event.target.value)}
+            onBlur={() => updatePreferences({ minItemLevel: minIlvl })}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") event.currentTarget.blur();
+            }}
             className="h-8 w-24 text-sm"
+            aria-label="Minimum item level"
           />
         </label>
         <span className="text-xs text-muted-foreground">
@@ -273,7 +307,7 @@ function CharactersTab() {
         </span>
         <span className="text-xs text-muted-foreground">Avg iLvl {averageIlvl.toFixed(1)}</span>
         <span className="text-xs text-muted-foreground">
-          Avg M+ {Math.round(averageMythicPlus).toLocaleString()}
+          Avg M+ {Math.round(averageMythicPlus).toLocaleString(DISPLAY_LOCALE)}
         </span>
         <span className="text-xs text-muted-foreground">{keyedCharacters} with keystone</span>
       </div>
@@ -285,41 +319,43 @@ function CharactersTab() {
           </CardContent>
         </Card>
       ) : (
-        <Card className="border-border/70 bg-card">
+        <Card className="analytics-panel">
           <CardContent className="p-0">
-            <Table>
+            <Table className="min-w-[640px]">
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
                   <TableHead className="w-14">#</TableHead>
                   <TableHead>Character</TableHead>
-                  <TableHead
-                    className="cursor-pointer select-none text-right"
-                    onClick={() => handleSort("key")}
-                  >
-                    Key
-                    <SortIcon column="key" sort={sort} direction={dir} />
-                  </TableHead>
-                  <TableHead
-                    className="cursor-pointer select-none text-right"
-                    onClick={() => handleSort("mplus")}
-                  >
-                    M+ Score
-                    <SortIcon column="mplus" sort={sort} direction={dir} />
-                  </TableHead>
-                  <TableHead
-                    className="hidden cursor-pointer select-none text-right sm:table-cell"
-                    onClick={() => handleSort("ilvl")}
-                  >
-                    iLvl
-                    <SortIcon column="ilvl" sort={sort} direction={dir} />
-                  </TableHead>
-                  <TableHead
-                    className="hidden cursor-pointer select-none text-right md:table-cell"
-                    onClick={() => handleSort("playtime")}
-                  >
-                    Playtime
-                    <SortIcon column="playtime" sort={sort} direction={dir} />
-                  </TableHead>
+                  <SortableTableHead
+                    label="Key"
+                    column="key"
+                    sort={sort}
+                    direction={dir}
+                    onSort={() => handleSort("key")}
+                  />
+                  <SortableTableHead
+                    label="M+ Score"
+                    column="mplus"
+                    sort={sort}
+                    direction={dir}
+                    onSort={() => handleSort("mplus")}
+                  />
+                  <SortableTableHead
+                    label="iLvl"
+                    column="ilvl"
+                    sort={sort}
+                    direction={dir}
+                    onSort={() => handleSort("ilvl")}
+                    className="hidden sm:table-cell"
+                  />
+                  <SortableTableHead
+                    label="Playtime"
+                    column="playtime"
+                    sort={sort}
+                    direction={dir}
+                    onSort={() => handleSort("playtime")}
+                    className="hidden md:table-cell"
+                  />
                   <TableHead className="hidden text-right lg:table-cell">Gold</TableHead>
                   <TableHead className="hidden text-right xl:table-cell">Snapshot</TableHead>
                 </TableRow>
@@ -371,7 +407,7 @@ function CharactersTab() {
                       </TableCell>
                       <TableCell className="text-right">
                         <p className="font-semibold tabular-nums" style={{ color: scoreColor }}>
-                          {entry.mythicPlusScore.toLocaleString()}
+                          {entry.mythicPlusScore.toLocaleString(DISPLAY_LOCALE)}
                         </p>
                         <p className="text-[11px] text-muted-foreground sm:hidden">
                           iLvl {entry.itemLevel.toFixed(1)}
@@ -402,7 +438,8 @@ function CharactersTab() {
 }
 
 function PlayersTab() {
-  const entries = useQuery(apiQueryOptions.playerScoreboard()).data;
+  const entriesQuery = useQuery(apiQueryOptions.playerScoreboard());
+  const entries = entriesQuery.data;
   const [sort, setSort] = useState<PlayerSort>("mplus");
   const [dir, setDir] = useState<SortDir>("desc");
 
@@ -415,13 +452,27 @@ function PlayersTab() {
     setDir("desc");
   }
 
-  if (entries === undefined) {
+  if (entriesQuery.isPending) {
     return (
       <Card>
         <CardContent className="space-y-3 py-4">
           {Array.from({ length: 6 }).map((_, index) => (
             <Skeleton key={index} className="h-12 w-full rounded-lg" />
           ))}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (entriesQuery.isError && entries === undefined) {
+    return (
+      <Card className="analytics-panel border-destructive/40">
+        <CardContent className="flex flex-col items-start gap-3 py-8">
+          <p className="font-medium">Player rankings could not be loaded.</p>
+          <p className="text-sm text-muted-foreground">{entriesQuery.error.message}</p>
+          <Button variant="outline" size="sm" onClick={() => void entriesQuery.refetch()}>
+            Try Again
+          </Button>
         </CardContent>
       </Card>
     );
@@ -462,36 +513,37 @@ function PlayersTab() {
   });
 
   return (
-    <Card className="border-border/70 bg-card">
+    <Card className="analytics-panel">
       <CardContent className="p-0">
-        <Table>
+        <Table className="min-w-[680px]">
           <TableHeader>
             <TableRow className="hover:bg-transparent">
               <TableHead className="w-14">#</TableHead>
               <TableHead>Player</TableHead>
-              <TableHead
-                className="cursor-pointer select-none text-right"
-                onClick={() => handleSort("mplus")}
-              >
-                Highest M+ Score
-                <SortIcon column="mplus" sort={sort} direction={dir} />
-              </TableHead>
+              <SortableTableHead
+                label="Highest M+ Score"
+                column="mplus"
+                sort={sort}
+                direction={dir}
+                onSort={() => handleSort("mplus")}
+              />
               <TableHead className="hidden text-right sm:table-cell">Avg iLvl</TableHead>
               <TableHead className="hidden text-right md:table-cell">Best Key</TableHead>
-              <TableHead
-                className="hidden cursor-pointer select-none text-right lg:table-cell"
-                onClick={() => handleSort("playtime")}
-              >
-                Playtime
-                <SortIcon column="playtime" sort={sort} direction={dir} />
-              </TableHead>
-              <TableHead
-                className="cursor-pointer select-none text-right"
-                onClick={() => handleSort("gold")}
-              >
-                Gold
-                <SortIcon column="gold" sort={sort} direction={dir} />
-              </TableHead>
+              <SortableTableHead
+                label="Playtime"
+                column="playtime"
+                sort={sort}
+                direction={dir}
+                onSort={() => handleSort("playtime")}
+                className="hidden lg:table-cell"
+              />
+              <SortableTableHead
+                label="Gold"
+                column="gold"
+                sort={sort}
+                direction={dir}
+                onSort={() => handleSort("gold")}
+              />
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -532,7 +584,7 @@ function PlayersTab() {
                         className="font-semibold tabular-nums"
                         style={{ color: highestScoreColor }}
                       >
-                        {Math.round(entry.highestMythicPlusScore).toLocaleString()}
+                        {Math.round(entry.highestMythicPlusScore).toLocaleString(DISPLAY_LOCALE)}
                       </p>
                       <p className="text-[11px] text-muted-foreground">
                         {entry.highestMythicPlusCharacterName ?? "No character"}
@@ -583,10 +635,11 @@ function Scoreboard() {
       : "Player aggregates with click-through character rosters.";
 
   return (
-    <div className="w-full px-4 py-6 sm:px-6 lg:px-8">
+    <div className="analytics-shell w-full px-4 py-6 sm:px-6 lg:px-8">
       <div className="mb-6">
-        <h1 className="flex items-center gap-2 text-3xl font-bold">
-          <Trophy className="h-7 w-7 text-zinc-300" />
+        <p className="analytics-kicker text-primary">Roster / Ranked Signals</p>
+        <h1 className="mt-2 flex items-center gap-2 text-3xl font-bold tracking-tight">
+          <Trophy aria-hidden="true" className="h-7 w-7 text-zinc-300" />
           Scoreboard
         </h1>
         <p className="mt-1 text-sm text-muted-foreground">{subtitle}</p>

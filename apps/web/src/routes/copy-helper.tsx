@@ -38,6 +38,8 @@ export const Route = createFileRoute("/copy-helper")({
   beforeLoad: ({ context }) => {
     if (!context.isAuthenticated) throw redirect({ to: "/" });
   },
+  loader: ({ context }) =>
+    context.queryClient.ensureQueryData(apiQueryOptions.boosterCharactersForExport()),
   component: RouteComponent,
 });
 
@@ -511,7 +513,7 @@ function RouteComponent() {
 
   if (boosterCharacters === undefined) {
     return (
-      <div className="w-full px-4 py-6 sm:px-6 lg:px-8">
+      <div className="analytics-shell w-full px-4 py-6 sm:px-6 lg:px-8">
         <div className="space-y-6">
           <div className="space-y-2">
             <Skeleton className="h-9 w-52" />
@@ -539,11 +541,12 @@ function RouteComponent() {
   }
 
   return (
-    <div className="w-full px-4 py-6 sm:px-6 lg:px-8">
+    <div className="analytics-shell w-full px-4 py-6 sm:px-6 lg:px-8">
       <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="flex items-center gap-2 text-3xl font-bold">
-            <Copy className="h-7 w-7 text-zinc-300" />
+          <p className="analytics-kicker text-primary">Booster Ops / Export</p>
+          <h1 className="mt-2 flex items-center gap-2 text-3xl font-bold tracking-tight">
+            <Copy aria-hidden="true" className="h-7 w-7 text-zinc-300" />
             Copy Helper
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
@@ -558,7 +561,7 @@ function RouteComponent() {
       </div>
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
-        <Card className="border-border/70 bg-card">
+        <Card className="analytics-panel">
           <CardHeader className="border-b border-border/70 pb-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
@@ -827,7 +830,7 @@ function RouteComponent() {
                                     onClick={() => void handleTradeLockSave(character)}
                                     disabled={!hasTradeLockChanges || isSavingTradeLocks}
                                   >
-                                    {isSavingTradeLocks ? "Saving..." : "Save Slots"}
+                                    {isSavingTradeLocks ? "Saving…" : "Save Slots"}
                                   </Button>
                                 </div>
                               </div>
@@ -843,7 +846,7 @@ function RouteComponent() {
           </CardContent>
         </Card>
 
-        <Card className="border-border/70 bg-card">
+        <Card className="analytics-panel">
           <CardHeader className="border-b border-border/70 pb-4">
             <CardTitle className="flex items-center gap-2 text-lg">
               <Zap className="h-4 w-4 text-muted-foreground" />
@@ -870,16 +873,19 @@ function RouteComponent() {
 
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-3">
-                <span className="text-sm font-medium text-foreground">Output</span>
+                <label htmlFor="copy-helper-output" className="text-sm font-medium text-foreground">
+                  Output
+                </label>
                 <span className="text-xs text-muted-foreground">
                   {selectedCharacters.length} line{selectedCharacters.length === 1 ? "" : "s"}
                 </span>
               </div>
               <textarea
+                id="copy-helper-output"
                 value={exportText}
                 readOnly
                 wrap="off"
-                className="scrollbar-hidden min-h-64 w-full overflow-x-auto rounded-xl border border-border/70 bg-background/70 p-3 font-mono text-sm leading-6 text-foreground outline-none"
+                className="scrollbar-hidden min-h-64 w-full overflow-x-auto rounded-md border border-border/70 bg-background/70 p-3 font-mono text-sm leading-6 text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                 placeholder="Select booster characters to generate an export string."
               />
             </div>

@@ -1,6 +1,7 @@
-import { useCallback, useMemo, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
 
 const PINNED_CHARACTERS_KEY = "wow_dashboard_quick_access_pins";
+const LEGACY_FAVORITES_KEY = "wow_dashboard_favorites";
 const PINNED_CHARACTERS_EVENT = "wow-dashboard:pinned-characters";
 const EMPTY_PINNED_CHARACTER_IDS: string[] = [];
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -31,7 +32,9 @@ function readPinnedCharacterIds(): string[] {
   if (typeof window === "undefined") return EMPTY_PINNED_CHARACTER_IDS;
 
   try {
-    const storedValue = window.localStorage.getItem(PINNED_CHARACTERS_KEY);
+    const storedValue =
+      window.localStorage.getItem(PINNED_CHARACTERS_KEY) ??
+      window.localStorage.getItem(LEGACY_FAVORITES_KEY);
     const normalizedStoredValue = storedValue ?? "";
 
     if (normalizedStoredValue === cachedPinnedCharacterIdsRaw) {
@@ -66,8 +69,26 @@ function writePinnedCharacterIds(pinnedCharacterIds: string[]) {
       ? normalizedPinnedCharacterIds
       : EMPTY_PINNED_CHARACTER_IDS;
 
-  window.localStorage.setItem(PINNED_CHARACTERS_KEY, nextRawValue);
+  try {
+    window.localStorage.setItem(PINNED_CHARACTERS_KEY, nextRawValue);
+    window.localStorage.removeItem(LEGACY_FAVORITES_KEY);
+  } catch {
+    return;
+  }
   window.dispatchEvent(new Event(PINNED_CHARACTERS_EVENT));
+}
+
+function migrateLegacyFavorites() {
+  if (typeof window === "undefined") return;
+
+  try {
+    if (window.localStorage.getItem(PINNED_CHARACTERS_KEY) !== null) return;
+    const legacyValue = window.localStorage.getItem(LEGACY_FAVORITES_KEY);
+    if (!legacyValue) return;
+    writePinnedCharacterIds(normalizePinnedCharacterIds(JSON.parse(legacyValue) as unknown));
+  } catch {
+    // Invalid legacy data is ignored and will be replaced on the next user change.
+  }
 }
 
 function moveArrayItem<T>(items: T[], fromIndex: number, toIndex: number) {
@@ -113,10 +134,14 @@ export function usePinnedCharacters() {
   const pinnedCharacterIds = useSyncExternalStore(
     subscribeToPinnedCharacters,
     readPinnedCharacterIds,
-    () => [],
+    () => EMPTY_PINNED_CHARACTER_IDS,
   );
 
   const pinnedCharacterIdSet = useMemo(() => new Set(pinnedCharacterIds), [pinnedCharacterIds]);
+
+  useEffect(() => {
+    migrateLegacyFavorites();
+  }, []);
 
   const togglePinnedCharacter = useCallback((characterId: string) => {
     const currentPinnedCharacterIds = readPinnedCharacterIds();

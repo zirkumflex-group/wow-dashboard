@@ -17,12 +17,15 @@ const TanStackRouterDevtools = import.meta.env.PROD
       })),
     );
 import { Toaster } from "@wow-dashboard/ui/components/sonner";
-import { SidebarInset, SidebarProvider } from "@wow-dashboard/ui/components/sidebar";
+import {
+  SidebarInset,
+  SidebarProvider,
+  SidebarTrigger,
+} from "@wow-dashboard/ui/components/sidebar";
 
 import { authClient } from "@/lib/auth-client";
 import { getAuthSession } from "@/lib/auth-server";
 import { AppSidebar } from "@/components/app-sidebar";
-import { ThemeProvider, THEME_SCRIPT } from "@/components/theme-provider";
 
 import appCss from "../index.css?url";
 
@@ -81,6 +84,11 @@ export const Route = createRootRouteWithContext<RouterAppContext>()({
         content: "#050505",
       },
       {
+        name: "description",
+        content:
+          "A self-hosted World of Warcraft character dashboard for progression, Mythic+, and addon snapshots.",
+      },
+      {
         title: APP_TITLE,
       },
     ],
@@ -132,33 +140,44 @@ function RootDocument() {
   }, [pathname]);
 
   return (
-    <html lang="en">
+    <html lang="en" className="dark">
       <head>
         <HeadContent />
-        {/* Inline script runs before first paint to avoid theme flash */}
-        <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
       </head>
       <body>
-        <ThemeProvider>
-          {isAuthenticated && !noLayout ? (
-            <SidebarProvider>
-              <AppSidebar />
-              <SidebarInset>
-                <Outlet />
-              </SidebarInset>
-            </SidebarProvider>
-          ) : (
-            <div className="h-svh">
+        <a
+          href="#main-content"
+          className="fixed left-3 top-3 z-50 -translate-y-20 rounded-md bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground shadow-lg transition-transform focus-visible:translate-y-0 motion-reduce:transition-none"
+        >
+          Skip to Main Content
+        </a>
+        {isAuthenticated && !noLayout ? (
+          <SidebarProvider>
+            <AppSidebar />
+            <SidebarInset id="main-content" tabIndex={-1}>
+              <header className="sticky top-0 z-40 flex h-12 items-center gap-3 border-b border-border/70 bg-background/90 px-3 backdrop-blur-md md:hidden">
+                <SidebarTrigger className="size-9" />
+                <div className="flex items-center gap-2">
+                  <span className="flex size-6 items-center justify-center rounded-sm border border-primary/35 bg-primary/10 font-mono text-[8px] font-bold text-primary">
+                    WD
+                  </span>
+                  <span className="text-sm font-semibold tracking-tight">WoW Dashboard</span>
+                </div>
+              </header>
               <Outlet />
-            </div>
-          )}
-          <Toaster richColors />
-          {import.meta.env.DEV && (
-            <div className="fixed bottom-2 right-2 z-[9999] rounded bg-orange-500 px-2 py-0.5 text-xs font-bold text-white select-none pointer-events-none opacity-80">
-              DEV
-            </div>
-          )}
-        </ThemeProvider>
+            </SidebarInset>
+          </SidebarProvider>
+        ) : (
+          <main id="main-content" tabIndex={-1} className="min-h-svh">
+            <Outlet />
+          </main>
+        )}
+        <Toaster richColors />
+        {import.meta.env.DEV && (
+          <div className="fixed bottom-2 right-2 z-[9999] rounded bg-orange-500 px-2 py-0.5 text-xs font-bold text-white select-none pointer-events-none opacity-80">
+            DEV
+          </div>
+        )}
         <TanStackRouterDevtools position="bottom-left" />
         <Scripts />
       </body>

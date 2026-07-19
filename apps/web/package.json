@@ -7,6 +7,7 @@
     "check-types": "tsc --noEmit --project tsconfig.json",
     "lint": "oxlint .",
     "format:check": "oxfmt --check .",
+    "test": "tsx --test src/lib/*.test.ts",
     "serve": "vite preview",
     "start": "node .output/server/index.mjs",
     "dev": "vite dev"
@@ -22,6 +23,9 @@
     "@wow-dashboard/env": "workspace:*",
     "@wow-dashboard/ui": "workspace:*",
     "better-auth": "^1.6.23",
+    "clsx": "^2.1.1",
+    "d3-scale": "^4.0.2",
+    "d3-shape": "^3.2.0",
     "dotenv": "catalog:",
     "lucide-react": "catalog:",
     "nitro": "3.0.260610-beta",
@@ -30,14 +34,19 @@
     "recharts": "catalog:",
     "sonner": "catalog:",
     "srvx": "^0.11.22",
+    "tailwind-merge": "^3.6.0",
     "tailwindcss": "catalog:"
   },
   "devDependencies": {
     "@rsbuild/core": "^2.1.6",
     "@tanstack/react-router-devtools": "^1.167.0",
+    "@types/d3-scale": "4.0.9",
+    "@types/d3-shape": "3.1.7",
+    "@types/node": "catalog:",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
     "@vitejs/plugin-react": "^6.0.3",
+    "tsx": "catalog:",
     "typescript": "catalog:",
     "vite": "^8.1.5"
   }

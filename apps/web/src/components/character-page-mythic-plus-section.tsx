@@ -16,6 +16,7 @@ import Sword from "lucide-react/dist/esm/icons/sword.mjs";
 import Trash2 from "lucide-react/dist/esm/icons/trash-2.mjs";
 import X from "lucide-react/dist/esm/icons/x.mjs";
 import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { DISPLAY_LOCALE, DISPLAY_TIME_ZONE } from "@/lib/format";
 import {
   getRaiderIoDungeonScoreColor,
   getMythicPlusDungeonMeta,
@@ -26,16 +27,20 @@ import { getClassTextColor } from "../lib/class-colors";
 
 const INITIAL_RECENT_RUN_COUNT = 12;
 const RECENT_RUN_LOAD_INCREMENT = 10;
-const RUN_TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
+const RUN_TIME_FORMATTER = new Intl.DateTimeFormat(DISPLAY_LOCALE, {
+  timeZone: DISPLAY_TIME_ZONE,
   hour: "2-digit",
   minute: "2-digit",
+  timeZoneName: "short",
 });
-const RUN_FULL_DATE_TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
+const RUN_FULL_DATE_TIME_FORMATTER = new Intl.DateTimeFormat(DISPLAY_LOCALE, {
+  timeZone: DISPLAY_TIME_ZONE,
   year: "numeric",
   month: "short",
   day: "numeric",
   hour: "2-digit",
   minute: "2-digit",
+  timeZoneName: "short",
 });
 const MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS = 4 * 60 * 60 * 1000;
 
@@ -153,7 +158,8 @@ function classColor(cls: string) {
 
 function formatRunDate(ts?: number | null) {
   if (!ts) return "—";
-  return new Date(ts * 1000).toLocaleDateString(undefined, {
+  return new Date(ts * 1000).toLocaleDateString(DISPLAY_LOCALE, {
+    timeZone: DISPLAY_TIME_ZONE,
     month: "short",
     day: "numeric",
   });
@@ -268,7 +274,7 @@ function formatTimedKeyLevel(level?: number | null, upgradeCount?: number | null
 function formatRunScore(value?: number | null) {
   if (value === undefined || value === null) return "-";
   const hasFraction = Math.abs(value % 1) > 0.001;
-  return value.toLocaleString(undefined, {
+  return value.toLocaleString(DISPLAY_LOCALE, {
     minimumFractionDigits: hasFraction ? 1 : 0,
     maximumFractionDigits: 1,
   });
@@ -277,7 +283,7 @@ function formatRunScore(value?: number | null) {
 function formatRunScoreIncrease(value?: number | null) {
   if (value === undefined || value === null || value <= 0) return null;
   const hasFraction = Math.abs(value % 1) > 0.001;
-  return value.toLocaleString(undefined, {
+  return value.toLocaleString(DISPLAY_LOCALE, {
     minimumFractionDigits: hasFraction ? 1 : 0,
     maximumFractionDigits: 1,
   });
@@ -507,6 +513,7 @@ function buildMemberRaiderIoUrl(
 }
 
 function readHiddenPlayers(): Set<string> {
+  if (typeof window === "undefined") return new Set();
   try {
     const raw = localStorage.getItem(HIDDEN_PLAYERS_KEY);
     if (!raw) return new Set();
@@ -517,6 +524,7 @@ function readHiddenPlayers(): Set<string> {
 }
 
 function writeHiddenPlayers(keys: Set<string>) {
+  if (typeof window === "undefined") return;
   try {
     localStorage.setItem(HIDDEN_PLAYERS_KEY, JSON.stringify([...keys]));
   } catch {
@@ -525,6 +533,7 @@ function writeHiddenPlayers(keys: Set<string>) {
 }
 
 function readHideAllPlayerNames(): boolean {
+  if (typeof window === "undefined") return false;
   try {
     return localStorage.getItem(HIDE_ALL_PLAYER_NAMES_KEY) === "1";
   } catch {
@@ -533,6 +542,7 @@ function readHideAllPlayerNames(): boolean {
 }
 
 function writeHideAllPlayerNames(enabled: boolean) {
+  if (typeof window === "undefined") return;
   try {
     if (enabled) {
       localStorage.setItem(HIDE_ALL_PLAYER_NAMES_KEY, "1");
@@ -545,6 +555,7 @@ function writeHideAllPlayerNames(enabled: boolean) {
 }
 
 function readHideRunServerNames(): boolean {
+  if (typeof window === "undefined") return true;
   try {
     return localStorage.getItem(HIDE_RUN_SERVER_NAMES_KEY) !== "0";
   } catch {
@@ -553,6 +564,7 @@ function readHideRunServerNames(): boolean {
 }
 
 function writeHideRunServerNames(enabled: boolean) {
+  if (typeof window === "undefined") return;
   try {
     localStorage.setItem(HIDE_RUN_SERVER_NAMES_KEY, enabled ? "1" : "0");
   } catch {
@@ -561,9 +573,15 @@ function writeHideRunServerNames(enabled: boolean) {
 }
 
 function useHiddenPlayers() {
-  const [hidden, setHidden] = useState<Set<string>>(() => readHiddenPlayers());
-  const [hideAllNames, setHideAllNames] = useState<boolean>(() => readHideAllPlayerNames());
-  const [hideServerNames, setHideServerNames] = useState<boolean>(() => readHideRunServerNames());
+  const [hidden, setHidden] = useState<Set<string>>(() => new Set());
+  const [hideAllNames, setHideAllNames] = useState(false);
+  const [hideServerNames, setHideServerNames] = useState(true);
+
+  useEffect(() => {
+    setHidden(readHiddenPlayers());
+    setHideAllNames(readHideAllPlayerNames());
+    setHideServerNames(readHideRunServerNames());
+  }, []);
 
   const hide = useCallback((key: string) => {
     setHidden((prev) => {
@@ -980,20 +998,23 @@ function MythicPlusSeasonHero({
       </div>
 
       <div className="grid grid-cols-3 gap-2">
-        <StatGrid compact label="Runs" value={totalAttempts.toLocaleString()} />
-        <StatGrid compact label="Timed" value={currentSeason.timedRuns.toLocaleString()} />
+        <StatGrid compact label="Runs" value={totalAttempts.toLocaleString(DISPLAY_LOCALE)} />
+        <StatGrid
+          compact
+          label="Timed"
+          value={currentSeason.timedRuns.toLocaleString(DISPLAY_LOCALE)}
+        />
         <StatGrid
           compact
           label="Depleted"
-          value={Math.max(
-            0,
-            currentSeason.completedRuns - currentSeason.timedRuns,
-          ).toLocaleString()}
+          value={Math.max(0, currentSeason.completedRuns - currentSeason.timedRuns).toLocaleString(
+            DISPLAY_LOCALE,
+          )}
         />
         <StatGrid
           compact
           label="Abandoned"
-          value={(currentSeason.abandonedRuns ?? 0).toLocaleString()}
+          value={(currentSeason.abandonedRuns ?? 0).toLocaleString(DISPLAY_LOCALE)}
         />
         <StatGrid compact label="Timed Rate" value={timedRate === null ? "-" : `${timedRate}%`} />
         <StatGrid
@@ -1026,7 +1047,7 @@ function MythicPlusKeyProfile({ currentSeason }: { currentSeason: MythicPlusBuck
       <div className="mb-2 flex items-center justify-between gap-3">
         <div className="text-xs font-semibold text-foreground">Timed Key Profile</div>
         <div className="text-[11px] text-muted-foreground">
-          {currentSeason.timedRuns.toLocaleString()} timed
+          {currentSeason.timedRuns.toLocaleString(DISPLAY_LOCALE)} timed
         </div>
       </div>
       <div className="grid gap-2">
@@ -1045,7 +1066,7 @@ function MythicPlusKeyProfile({ currentSeason }: { currentSeason: MythicPlusBuck
                 />
               </div>
               <div className="text-right text-[11px] font-semibold tabular-nums text-foreground">
-                {bucket.value.toLocaleString()}
+                {bucket.value.toLocaleString(DISPLAY_LOCALE)}
               </div>
             </div>
           );
@@ -1300,8 +1321,11 @@ function RunSessionCard({
                   void saveExternalIdDraft().catch(() => undefined);
                 }}
               >
-                <div className="text-xs font-semibold">Boost ID</div>
+                <label htmlFor={`boost-session-id-${session.id}`} className="text-xs font-semibold">
+                  Boost ID
+                </label>
                 <Input
+                  id={`boost-session-id-${session.id}`}
                   value={externalIdDraft}
                   onChange={(event) => setExternalIdDraft(event.target.value)}
                   placeholder="Optional ID"
@@ -1713,6 +1737,7 @@ export function MythicPlusSection({
                         {selectedVisibleRunIds.length} selected
                       </span>
                       <Input
+                        aria-label="New boost session ID"
                         value={newSessionExternalId}
                         onChange={(event) => setNewSessionExternalId(event.target.value)}
                         placeholder="Session ID"
@@ -1918,7 +1943,7 @@ export function MythicPlusSection({
                           onClick={loadMoreRecentRuns}
                           disabled={isLoadingAllRuns}
                         >
-                          {isLoadingAllRuns ? "Loading more..." : `Load ${nextRecentRunCount} More`}
+                          {isLoadingAllRuns ? "Loading more…" : `Load ${nextRecentRunCount} More`}
                         </Button>
                       </td>
                     </tr>

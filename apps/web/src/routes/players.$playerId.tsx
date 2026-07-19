@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { Button } from "@wow-dashboard/ui/components/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@wow-dashboard/ui/components/card";
 import { Skeleton } from "@wow-dashboard/ui/components/skeleton";
 import {
@@ -14,10 +15,13 @@ import ArrowLeft from "lucide-react/dist/esm/icons/arrow-left.mjs";
 import { useEffect } from "react";
 import { createCharacterRouteId } from "@wow-dashboard/api-schema";
 import { apiQueryOptions } from "@/lib/api-client";
+import { DISPLAY_LOCALE, DISPLAY_TIME_ZONE } from "@/lib/format";
 import { getClassTextColor } from "../lib/class-colors";
 import { getMythicPlusDungeonMeta } from "../lib/mythic-plus-static";
 
 export const Route = createFileRoute("/players/$playerId")({
+  loader: ({ context, params }) =>
+    context.queryClient.ensureQueryData(apiQueryOptions.playerCharacters(params.playerId)),
   component: RouteComponent,
 });
 
@@ -37,11 +41,12 @@ function formatPlaytime(seconds: number) {
 function formatGold(gold: number) {
   if (gold >= 1_000_000) return `${(gold / 1_000_000).toFixed(1)}M`;
   if (gold >= 1_000) return `${(gold / 1_000).toFixed(1)}k`;
-  return Math.floor(gold).toLocaleString();
+  return Math.floor(gold).toLocaleString(DISPLAY_LOCALE);
 }
 
 function formatSnapshotDate(takenAt: number) {
-  return new Date(takenAt * 1000).toLocaleDateString(undefined, {
+  return new Date(takenAt * 1000).toLocaleDateString(DISPLAY_LOCALE, {
+    timeZone: DISPLAY_TIME_ZONE,
     year: "numeric",
     month: "short",
     day: "numeric",
@@ -79,10 +84,10 @@ function getKeystoneDisplay(
 
 function StatCard({ label, value, helper }: { label: string; value: string; helper?: string }) {
   return (
-    <Card className="border-border/60 bg-card">
+    <Card className="analytics-panel">
       <CardContent className="p-4">
-        <p className="text-[11px] uppercase tracking-wider text-muted-foreground">{label}</p>
-        <p className="mt-1 text-xl font-semibold tabular-nums">{value}</p>
+        <p className="analytics-kicker text-[10px]">{label}</p>
+        <p className="analytics-number mt-2 text-xl font-semibold">{value}</p>
         {helper && <p className="mt-1 text-xs text-muted-foreground">{helper}</p>}
       </CardContent>
     </Card>
@@ -91,7 +96,8 @@ function StatCard({ label, value, helper }: { label: string; value: string; help
 
 function RouteComponent() {
   const { playerId } = Route.useParams();
-  const data = useQuery(apiQueryOptions.playerCharacters(playerId)).data;
+  const playerQuery = useQuery(apiQueryOptions.playerCharacters(playerId));
+  const data = playerQuery.data;
 
   useEffect(() => {
     const appTitle = "WoW Dashboard";
@@ -108,9 +114,25 @@ function RouteComponent() {
     document.title = `${playerName} | ${appTitle}`;
   }, [data]);
 
+  if (playerQuery.isError && data === undefined) {
+    return (
+      <div className="analytics-shell w-full px-4 py-6 sm:px-6 lg:px-8">
+        <Card className="analytics-panel border-destructive/40">
+          <CardContent className="flex flex-col items-start gap-3 py-8">
+            <p className="font-medium">This player could not be loaded.</p>
+            <p className="text-sm text-muted-foreground">{playerQuery.error.message}</p>
+            <Button variant="outline" size="sm" onClick={() => void playerQuery.refetch()}>
+              Try Again
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   if (data === undefined) {
     return (
-      <div className="w-full space-y-4 px-4 py-6 sm:px-6 lg:px-8">
+      <div className="analytics-shell w-full space-y-4 px-4 py-6 sm:px-6 lg:px-8">
         <Skeleton className="h-10 w-64" />
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
           {Array.from({ length: 6 }).map((_, index) => (
@@ -124,8 +146,8 @@ function RouteComponent() {
 
   if (!data) {
     return (
-      <div className="w-full px-4 py-6 sm:px-6 lg:px-8">
-        <Card className="border-dashed">
+      <div className="analytics-shell w-full px-4 py-6 sm:px-6 lg:px-8">
+        <Card className="analytics-panel border-dashed">
           <CardContent className="space-y-2 py-12 text-center">
             <p className="text-muted-foreground">Player not found.</p>
             <Link to="/scoreboard" className="text-sm text-primary hover:underline">
@@ -141,31 +163,35 @@ function RouteComponent() {
   const bestKey = getKeystoneDisplay(data.summary.bestKeystone);
 
   return (
-    <div className="w-full space-y-4 px-4 py-6 sm:px-6 lg:px-8">
+    <div className="analytics-shell w-full space-y-4 px-4 py-6 sm:px-6 lg:px-8">
       <div className="space-y-3">
         <Link
           to="/scoreboard"
           className="inline-flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
         >
-          <ArrowLeft className="h-4 w-4" />
+          <ArrowLeft aria-hidden="true" className="h-4 w-4" />
           Back to scoreboard
         </Link>
         <div>
-          <h1 className="text-3xl font-bold">{playerName}</h1>
+          <p className="analytics-kicker text-primary">Player / Character Roster</p>
+          <h1 className="mt-2 text-3xl font-bold tracking-tight">{playerName}</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            {data.player.battleTag || "No BattleTag"} - Character roster and current snapshot stats
+            {data.player.battleTag || "No BattleTag"} — Character roster and current snapshot stats
           </p>
         </div>
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
-        <StatCard label="Tracked" value={data.summary.trackedCharacters.toLocaleString()} />
+        <StatCard
+          label="Tracked"
+          value={data.summary.trackedCharacters.toLocaleString(DISPLAY_LOCALE)}
+        />
         <StatCard
           label="Highest M+"
           value={
             data.summary.highestMythicPlusScore === null
               ? "-"
-              : Math.round(data.summary.highestMythicPlusScore).toLocaleString()
+              : Math.round(data.summary.highestMythicPlusScore).toLocaleString(DISPLAY_LOCALE)
           }
           helper={data.summary.highestMythicPlusCharacterName ?? undefined}
         />
@@ -187,7 +213,7 @@ function RouteComponent() {
         />
       </div>
 
-      <Card className="border-border/70 bg-card">
+      <Card className="analytics-panel">
         <CardHeader className="pb-3">
           <CardTitle className="text-base">Characters ({data.characters.length})</CardTitle>
         </CardHeader>
@@ -245,7 +271,7 @@ function RouteComponent() {
                       {snapshot ? snapshot.itemLevel.toFixed(1) : "-"}
                     </TableCell>
                     <TableCell className="hidden text-right tabular-nums sm:table-cell">
-                      {snapshot ? snapshot.mythicPlusScore.toLocaleString() : "-"}
+                      {snapshot ? snapshot.mythicPlusScore.toLocaleString(DISPLAY_LOCALE) : "-"}
                     </TableCell>
                     <TableCell className="hidden text-right lg:table-cell">
                       <div className="flex flex-col items-end leading-tight">
