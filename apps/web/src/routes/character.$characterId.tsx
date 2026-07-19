@@ -7,7 +7,14 @@ import { usePinnedCharacters } from "../lib/pinned-characters";
 import { formatPlaytime, PlaytimeBreakdown } from "../components/playtime-breakdown";
 import { Badge } from "@wow-dashboard/ui/components/badge";
 import { Button } from "@wow-dashboard/ui/components/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@wow-dashboard/ui/components/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@wow-dashboard/ui/components/card";
+import type { ChartConfig } from "@wow-dashboard/ui/components/chart";
 import { Checkbox } from "@wow-dashboard/ui/components/checkbox";
 import {
   Dialog,
@@ -33,13 +40,8 @@ import {
   SheetTrigger,
 } from "@wow-dashboard/ui/components/sheet";
 import { Skeleton } from "@wow-dashboard/ui/components/skeleton";
+import { Separator } from "@wow-dashboard/ui/components/separator";
 import { ToggleGroup, ToggleGroupItem } from "@wow-dashboard/ui/components/toggle-group";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@wow-dashboard/ui/components/tooltip";
 import { cn } from "@wow-dashboard/ui/lib/utils";
 import CheckCircle2 from "lucide-react/dist/esm/icons/check-circle-2.mjs";
 import ChevronDown from "lucide-react/dist/esm/icons/chevron-down.mjs";
@@ -67,6 +69,7 @@ import {
   memo,
   startTransition,
   type ComponentType,
+  type CSSProperties,
   useCallback,
   useEffect,
   useMemo,
@@ -89,19 +92,7 @@ import {
 import { apiClient, apiQueryKeys, apiQueryOptions } from "@/lib/api-client";
 import { authClient } from "@/lib/auth-client";
 import { DISPLAY_LOCALE, DISPLAY_TIME_ZONE } from "@/lib/format";
-import { ActiveDot } from "@/components/dither-kit/dot";
-import { Grid } from "@/components/dither-kit/grid";
-import { BlockLegend } from "@/components/dither-kit/block-legend";
-import { Legend } from "@/components/dither-kit/legend";
-import { Line as DitherLine } from "@/components/dither-kit/area";
-import { LineChart as DitherLineChart } from "@/components/dither-kit/area-chart";
-import type { ChartConfig as DitherChartConfig } from "@/components/dither-kit/chart-context";
-import type { DitherColor } from "@/components/dither-kit/palette";
-import { Radar as DitherRadar } from "@/components/dither-kit/radar";
-import { RadarChart as DitherRadarChart } from "@/components/dither-kit/radar-chart";
-import { Tooltip as DitherTooltip } from "@/components/dither-kit/tooltip";
-import { XAxis as DitherXAxis } from "@/components/dither-kit/x-axis";
-import { YAxis as DitherYAxis } from "@/components/dither-kit/y-axis";
+import { CharacterTrendChart } from "@/components/character-trend-chart";
 
 type TimeFrame = "7d" | "14d" | "30d" | "90d" | "all" | "tww-s3" | "mn-s1";
 type LayoutMode = "overview" | "focus" | "timeline";
@@ -146,9 +137,7 @@ function isTimeFrame(value: unknown): value is TimeFrame {
 }
 
 function isCharacterPageTimeFrame(value: unknown): value is TimeFrame {
-  return (
-    value === "7d" || value === "14d" || value === "30d" || value === "tww-s3" || value === "mn-s1"
-  );
+  return isTimeFrame(value);
 }
 
 function isLayoutMode(value: unknown): value is LayoutMode {
@@ -305,34 +294,37 @@ const CARD_DATE_TIME_FORMATTER = new Intl.DateTimeFormat(DISPLAY_LOCALE, {
 
 // ── Time frame ───────────────────────────────────────────────────────────────
 
-const SEASON_TIME_FRAME_OPTIONS: {
-  value: Extract<TimeFrame, "tww-s3" | "mn-s1">;
+const HISTORY_TIME_FRAME_OPTIONS: {
+  value: Extract<TimeFrame, "all" | "tww-s3" | "mn-s1">;
   label: string;
+  shortLabel: string;
 }[] = [
-  { value: "mn-s1", label: "MN-S1" },
-  { value: "tww-s3", label: "TWW-S3" },
+  { value: "mn-s1", label: "Midnight Season 1", shortLabel: "MN-S1" },
+  { value: "tww-s3", label: "The War Within Season 3", shortLabel: "TWW-S3" },
+  { value: "all", label: "All History", shortLabel: "All" },
 ];
 
 const RELATIVE_TIME_FRAME_OPTIONS: {
-  value: Extract<TimeFrame, "30d" | "14d" | "7d">;
+  value: Extract<TimeFrame, "90d" | "30d" | "14d" | "7d">;
   label: string;
 }[] = [
+  { value: "90d", label: "90D" },
   { value: "30d", label: "30D" },
   { value: "14d", label: "14D" },
   { value: "7d", label: "7D" },
 ];
 
-function isSeasonTimeFrame(
+function isHistoryTimeFrame(
   timeFrame: TimeFrame,
-): timeFrame is (typeof SEASON_TIME_FRAME_OPTIONS)[number]["value"] {
-  return timeFrame === "tww-s3" || timeFrame === "mn-s1";
+): timeFrame is (typeof HISTORY_TIME_FRAME_OPTIONS)[number]["value"] {
+  return timeFrame === "all" || timeFrame === "tww-s3" || timeFrame === "mn-s1";
 }
 
 function getTimeFrameOptionLabel(timeFrame: TimeFrame) {
   return (
-    SEASON_TIME_FRAME_OPTIONS.find((option) => option.value === timeFrame)?.label ??
+    HISTORY_TIME_FRAME_OPTIONS.find((option) => option.value === timeFrame)?.shortLabel ??
     RELATIVE_TIME_FRAME_OPTIONS.find((option) => option.value === timeFrame)?.label ??
-    (timeFrame === "all" ? "All" : timeFrame)
+    timeFrame
   );
 }
 
@@ -343,14 +335,17 @@ function TimeFramePicker({
   value: TimeFrame;
   onChange: (v: TimeFrame) => void;
 }) {
-  const activeSeason = isSeasonTimeFrame(value)
-    ? SEASON_TIME_FRAME_OPTIONS.find((option) => option.value === value)
+  const activeHistoryRange = isHistoryTimeFrame(value)
+    ? HISTORY_TIME_FRAME_OPTIONS.find((option) => option.value === value)
     : null;
 
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <span id="character-time-frame-label" className="text-xs text-muted-foreground">
-        Range
+      <span
+        id="character-time-frame-label"
+        className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground"
+      >
+        History
       </span>
       <div
         className="flex flex-wrap items-center gap-2"
@@ -360,26 +355,26 @@ function TimeFramePicker({
           <DropdownMenuTrigger asChild>
             <Button
               type="button"
-              variant={activeSeason ? "default" : "outline"}
+              variant={activeHistoryRange ? "secondary" : "outline"}
               size="sm"
-              className="h-8 gap-1.5 px-3 text-xs"
+              className="px-3 text-xs"
             >
-              {activeSeason?.label ?? "Season"}
+              {activeHistoryRange?.shortLabel ?? "Season"}
               <ChevronDown data-icon="inline-end" aria-hidden="true" />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-44">
             <DropdownMenuGroup>
-              <DropdownMenuLabel>Season</DropdownMenuLabel>
+              <DropdownMenuLabel>History Range</DropdownMenuLabel>
               <DropdownMenuRadioGroup
-                value={activeSeason?.value ?? ""}
+                value={activeHistoryRange?.value ?? ""}
                 onValueChange={(nextValue) => {
-                  if (isTimeFrame(nextValue) && isSeasonTimeFrame(nextValue)) {
+                  if (isTimeFrame(nextValue) && isHistoryTimeFrame(nextValue)) {
                     onChange(nextValue);
                   }
                 }}
               >
-                {SEASON_TIME_FRAME_OPTIONS.map((option) => (
+                {HISTORY_TIME_FRAME_OPTIONS.map((option) => (
                   <DropdownMenuRadioItem key={option.value} value={option.value}>
                     {option.label}
                   </DropdownMenuRadioItem>
@@ -399,7 +394,7 @@ function TimeFramePicker({
           variant="outline"
           size="sm"
           aria-label="Relative snapshot range"
-          className="justify-start"
+          className="justify-start gap-1"
         >
           {RELATIVE_TIME_FRAME_OPTIONS.map((opt) => (
             <ToggleGroupItem key={opt.value} value={opt.value} className="px-3 text-xs">
@@ -431,32 +426,63 @@ function LayoutSwitcher({
     },
   ] as const;
   return (
-    <TooltipProvider delayDuration={200}>
-      <ToggleGroup
-        type="single"
-        value={value}
-        onValueChange={(nextValue) => {
-          if (isLayoutMode(nextValue)) {
-            onChange(nextValue);
-          }
-        }}
-        variant="outline"
-        size="sm"
-        aria-label="Character page layout"
-        className="justify-start"
-      >
-        {opts.map(({ mode, Icon, label }) => (
-          <Tooltip key={mode}>
-            <TooltipTrigger asChild>
-              <ToggleGroupItem value={mode} aria-label={label}>
-                <Icon data-icon="inline-start" aria-hidden="true" />
-              </ToggleGroupItem>
-            </TooltipTrigger>
-            <TooltipContent>{label}</TooltipContent>
-          </Tooltip>
-        ))}
-      </ToggleGroup>
-    </TooltipProvider>
+    <ToggleGroup
+      type="single"
+      value={value}
+      onValueChange={(nextValue) => {
+        if (isLayoutMode(nextValue)) {
+          onChange(nextValue);
+        }
+      }}
+      variant="outline"
+      size="sm"
+      aria-label="Character page layout"
+      className="justify-start gap-1"
+    >
+      {opts.map(({ mode, Icon, label }) => (
+        <ToggleGroupItem key={mode} value={mode} aria-label={label} className="px-3">
+          <Icon data-icon="inline-start" aria-hidden="true" />
+          <span>{label}</span>
+        </ToggleGroupItem>
+      ))}
+    </ToggleGroup>
+  );
+}
+
+function CharacterViewToolbar({
+  layoutMode,
+  onLayoutChange,
+  timeFrame,
+  onTimeFrameChange,
+  pointCount,
+}: {
+  layoutMode: LayoutMode;
+  onLayoutChange: (mode: LayoutMode) => void;
+  timeFrame: TimeFrame;
+  onTimeFrameChange: (timeFrame: TimeFrame) => void;
+  pointCount: number;
+}) {
+  return (
+    <section
+      aria-label="Character view controls"
+      className="analytics-panel flex flex-col gap-3 rounded-lg border px-4 py-3 lg:flex-row lg:items-center lg:justify-between"
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+          View
+        </span>
+        <LayoutSwitcher value={layoutMode} onChange={onLayoutChange} />
+      </div>
+      <div className="flex flex-wrap items-center gap-3 lg:justify-end">
+        <TimeFramePicker value={timeFrame} onChange={onTimeFrameChange} />
+        <output
+          aria-live="polite"
+          className="min-w-16 text-right text-xs tabular-nums text-muted-foreground"
+        >
+          {pointCount.toLocaleString(DISPLAY_LOCALE)} point{pointCount === 1 ? "" : "s"}
+        </output>
+      </div>
+    </section>
   );
 }
 
@@ -545,12 +571,12 @@ function getTimeFrameDeltaLabel(timeFrame: TimeFrame) {
     return "this week";
   }
 
-  if (isSeasonTimeFrame(timeFrame)) {
-    return getTimeFrameOptionLabel(timeFrame);
-  }
-
   if (timeFrame === "all") {
     return "all time";
+  }
+
+  if (isHistoryTimeFrame(timeFrame)) {
+    return getTimeFrameOptionLabel(timeFrame);
   }
 
   return `last ${getTimeFrameOptionLabel(timeFrame)}`;
@@ -590,13 +616,6 @@ type CombatStatSummary = {
   label: string;
   percent: number;
   rating?: number;
-};
-
-type CombatRadarDatum = {
-  stat: string;
-  value: number;
-  percentValue: number;
-  ratingValue?: number;
 };
 
 const CORE_COMBAT_STATS = [
@@ -739,19 +758,32 @@ function TopMetricCard({
   delta?: React.ReactNode;
 }) {
   return (
-    <div className="analytics-panel rounded-md border px-4 py-3">
+    <div className="analytics-panel min-h-32 rounded-lg border px-5 py-4">
       <div className="flex items-center justify-between gap-3">
-        <div className="analytics-kicker text-[10px]">{label}</div>
+        <div className="analytics-kicker">{label}</div>
         {meta && (
-          <div className="text-[9px] uppercase tracking-[0.16em] text-muted-foreground/55">
+          <div className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground/60">
             {meta}
           </div>
         )}
       </div>
-      <div className="analytics-number mt-3 min-w-0 text-xl font-semibold leading-none text-foreground">
+      <div className="analytics-number mt-4 min-w-0 text-2xl font-semibold leading-none text-foreground">
         {value}
       </div>
-      {delta ? <div className="mt-2">{delta}</div> : null}
+      {delta ? <div className="mt-3">{delta}</div> : null}
+    </div>
+  );
+}
+
+function HeroMetaItem({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="flex min-w-0 items-center justify-between gap-4 sm:block">
+      <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+        {label}
+      </div>
+      <div className="mt-0 min-w-0 truncate text-right text-sm font-medium tabular-nums text-foreground sm:mt-1 sm:text-left">
+        {value}
+      </div>
     </div>
   );
 }
@@ -1025,7 +1057,6 @@ type LayoutProps = {
   characterRegion: string;
   currentMythicPlusScore: number | null;
   timeFrame: TimeFrame;
-  setTimeFrame: (f: TimeFrame) => void;
 };
 
 type MythicPlusRunMember = {
@@ -1205,39 +1236,38 @@ function isFullMythicPlusDataFreshForPreview(
 // ── Chart palette ─────────────────────────────────────────────────────────────
 
 const C = {
-  blue: "blue",
-  red: "red",
-  gold: "orange",
-  purple: "purple",
-  teal: "pink",
-  green: "green",
-  pink: "pink",
-} as const satisfies Record<string, DitherColor>;
+  blue: "var(--chart-1)",
+  red: "var(--chart-3)",
+  gold: "var(--chart-2)",
+  purple: "var(--chart-5)",
+  teal: "var(--chart-5)",
+  green: "var(--chart-4)",
+  pink: "var(--chart-3)",
+} as const;
 
-const ilvlConfig: DitherChartConfig = {
+const ilvlConfig = {
   itemLevel: { label: "Item Level", color: C.blue },
-};
-const mplusConfig: DitherChartConfig = {
+} satisfies ChartConfig;
+const mplusConfig = {
   mythicPlusScore: { label: "M+ Score", color: C.red },
-};
-const goldConfig: DitherChartConfig = { gold: { label: "Gold", color: C.gold } };
-const playtimeConfig: DitherChartConfig = {
+} satisfies ChartConfig;
+const goldConfig = { gold: { label: "Gold", color: C.gold } } satisfies ChartConfig;
+const playtimeConfig = {
   playtimeHours: { label: "Playtime", color: C.purple },
-};
-const radarConfig: DitherChartConfig = { value: { label: "Value", color: C.blue } };
-const secondaryStatsConfig: DitherChartConfig = {
+} satisfies ChartConfig;
+const secondaryStatsConfig = {
   critPercent: { label: "Crit", color: C.red },
   hastePercent: { label: "Haste", color: C.green },
   masteryPercent: { label: "Mastery", color: C.blue },
   versatilityPercent: { label: "Versatility", color: C.purple },
-};
-const currenciesConfig: DitherChartConfig = {
+} satisfies ChartConfig;
+const currenciesConfig = {
   adventurerDawncrest: { label: "Adventurer", color: C.blue },
   veteranDawncrest: { label: "Veteran", color: C.teal },
   championDawncrest: { label: "Champion", color: C.green },
   heroDawncrest: { label: "Hero", color: C.gold },
   mythDawncrest: { label: "Myth", color: C.red },
-};
+} satisfies ChartConfig;
 
 // ── Reusable line chart ───────────────────────────────────────────────────────
 
@@ -1253,7 +1283,7 @@ type YScaleOptions = {
 
 type SnapshotLineSeries = {
   key: string;
-  color: DitherColor;
+  color: string;
 };
 
 type LineEmphasisMode = "primary" | "equal";
@@ -1423,7 +1453,7 @@ function SnapshotLineChart({
 }: {
   data: Record<string, number | undefined>[];
   lines: SnapshotLineSeries[];
-  config: DitherChartConfig;
+  config: ChartConfig;
   valueFormatter?: (v: number) => string;
   className?: string;
   showLegend?: boolean;
@@ -1465,98 +1495,112 @@ function SnapshotLineChart({
     shouldShowLatestValue && typeof latestValue === "number"
       ? (valueFormatter?.(latestValue) ?? latestValue.toLocaleString(DISPLAY_LOCALE))
       : null;
-  const showOverlayLegend = showLegend && lines.length <= 3;
-  const showBlockLegend = showLegend && lines.length > 3;
   const ariaLabel = `${lines.map((line) => config[line.key]?.label ?? line.key).join(", ")} over time`;
+  const trendSeries = lines.map(({ key }) => ({
+    key,
+    primary: lines.length === 1 || (hasPrimaryEmphasis && key === primaryLineKey),
+    secondary: hasPrimaryEmphasis && key !== primaryLineKey,
+  }));
+  const trendColor =
+    (latestValueKey ? config[latestValueKey]?.color : undefined) ??
+    lines[0]?.color ??
+    "var(--chart-1)";
 
   return (
-    <div className={cn("relative flex w-full flex-col", className ?? "h-[200px]")}>
-      <DitherLineChart
+    <div
+      className={cn(
+        "analytics-trend-chart relative flex w-full flex-col",
+        className ?? "h-[200px]",
+      )}
+      style={{ "--trend-color": trendColor } as CSSProperties}
+    >
+      <CharacterTrendChart
         data={chartData}
+        series={trendSeries}
         config={config}
-        className="min-h-0 flex-1"
-        margins={{
-          top: showOverlayLegend ? 30 : 12,
-          right: 16,
-          bottom: 28,
-          left: resolvedYAxisWidth,
-        }}
         yDomain={yDomain}
+        yAxisWidth={resolvedYAxisWidth}
+        yTickCount={yScaleOptions?.tickCount ?? 5}
+        valueFormatter={valueFormatter}
+        showLegend={showLegend}
         ariaLabel={ariaLabel}
-        animate={false}
-        sparkles={false}
-        bloom={lines.length <= 2 ? "low" : "off"}
-        bloomOnHover
-      >
-        <Grid horizontal vertical={false} />
-        <DitherXAxis dataKey="dateLabel" maxTicks={Math.min(8, data.length)} />
-        <DitherYAxis tickCount={yScaleOptions?.tickCount ?? 5} tickFormatter={valueFormatter} />
-        <DitherTooltip
-          labelKey="tooltipLabel"
-          valueFormatter={(value) =>
-            valueFormatter?.(value) ?? value.toLocaleString(DISPLAY_LOCALE)
-          }
-          variant="frosted-glass"
-        />
-        {showOverlayLegend ? <Legend isClickable /> : null}
-        {lines.map(({ key }, index) => {
-          const isPrimaryLine = primaryLineKey === undefined || key === primaryLineKey;
-          const variant =
-            hasPrimaryEmphasis && !isPrimaryLine
-              ? "dotted"
-              : index % 2 === 0
-                ? "gradient"
-                : "hatched";
-
-          return (
-            <DitherLine key={key} dataKey={key} variant={variant} isClickable={lines.length > 1}>
-              <ActiveDot />
-            </DitherLine>
-          );
-        })}
-      </DitherLineChart>
+        className="min-h-0 flex-1"
+      />
       {latestValueLabel ? (
         <output
-          className="pointer-events-none absolute right-4 top-3 rounded-sm border border-border/70 bg-card/85 px-2 py-1 font-mono text-[11px] font-semibold tabular-nums text-foreground backdrop-blur-sm"
+          className="analytics-current-value pointer-events-none absolute right-4 top-3 flex items-center gap-2 rounded-md px-2.5 py-1.5"
           aria-label={`Latest value: ${latestValueLabel}`}
         >
-          {latestValueLabel}
+          <span
+            className="size-1.5 shrink-0 rounded-full bg-(--trend-color) shadow-[0_0_0_3px_color-mix(in_oklab,var(--trend-color)_16%,transparent)]"
+            aria-hidden="true"
+          />
+          <span className="text-[9px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+            Current
+          </span>
+          <strong className="font-mono text-[11px] font-semibold tabular-nums text-foreground">
+            {latestValueLabel}
+          </strong>
         </output>
       ) : null}
-      {showBlockLegend ? <BlockLegend config={config} className="pt-2" /> : null}
     </div>
   );
 }
 
-// ── Radar panel (always-visible, reused across layouts) ───────────────────────
+// ── Current combat profile ────────────────────────────────────────────────────
 
-function RadarPanel({ snapshot }: { snapshot: Snapshot }) {
+const COMBAT_STAT_COLORS = [C.red, C.green, C.blue, C.purple] as const;
+
+function CombatStatBars({ stats, className }: { stats: CombatStatSummary[]; className?: string }) {
+  return (
+    <div className={cn("grid gap-3", className)}>
+      {stats.map((stat, index) => {
+        const boundedPercent = Math.max(0, Math.min(100, stat.percent));
+        const rating = formatCombatStatRating(stat.rating);
+
+        return (
+          <div key={stat.label} className="min-w-0">
+            <div className="mb-1.5 flex items-baseline justify-between gap-3 text-xs">
+              <span className="font-medium text-foreground">{stat.label}</span>
+              <span className="min-w-0 text-right tabular-nums text-muted-foreground">
+                <strong className="font-semibold text-foreground">
+                  {formatCombatStatPercent(stat.percent)}
+                </strong>
+                {rating ? <span className="ml-1.5">{rating}</span> : null}
+              </span>
+            </div>
+            <div
+              className="h-1.5 overflow-hidden rounded-full bg-muted"
+              role="progressbar"
+              aria-label={`${stat.label}: ${formatCombatStatPercent(stat.percent)}`}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={boundedPercent}
+            >
+              <div
+                className="h-full rounded-full"
+                style={{
+                  width: `${boundedPercent}%`,
+                  backgroundColor: COMBAT_STAT_COLORS[index % COMBAT_STAT_COLORS.length],
+                }}
+              />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function CombatStatsPanel({ snapshot }: { snapshot: Snapshot }) {
   const combatStats = getCoreCombatStats(snapshot);
-  const radarData = combatStats.map<CombatRadarDatum>((stat) => ({
-    stat: stat.label,
-    value: stat.percent,
-    percentValue: stat.percent,
-    ratingValue: stat.rating,
-  }));
   const tertiaryStats = getTertiaryStats(snapshot);
   const primaryStat = getPrimaryStat(snapshot);
 
   return (
-    <div className="flex flex-col gap-3">
-      <DitherRadarChart
-        data={radarData}
-        config={radarConfig}
-        nameKey="stat"
-        className="h-[180px] w-full"
-        margins={{ top: 18, right: 28, bottom: 18, left: 28 }}
-        animate={false}
-        bloom="low"
-        bloomOnHover
-        ariaLabel="Current secondary-stat balance"
-      >
-        <DitherTooltip valueFormatter={(value) => `${value.toFixed(1)}%`} variant="frosted-glass" />
-        <DitherRadar dataKey="value" variant="gradient" />
-      </DitherRadarChart>
+    <div className="flex flex-col gap-4">
+      <CombatStatBars stats={combatStats} />
+      <Separator />
       <div className="flex flex-col gap-1 text-sm">
         <StatRow label="Stamina" value={snapshot.stats.stamina.toLocaleString(DISPLAY_LOCALE)} />
         {primaryStat && (
@@ -1565,11 +1609,7 @@ function RadarPanel({ snapshot }: { snapshot: Snapshot }) {
             value={primaryStat.value.toLocaleString(DISPLAY_LOCALE)}
           />
         )}
-        <div className="border-t border-border/50 my-1" />
-        {combatStats.map((stat) => (
-          <StatRow key={stat.label} label={stat.label} value={renderCombatStatValue(stat)} />
-        ))}
-        {tertiaryStats.length > 0 && <div className="border-t border-border/50 my-1" />}
+        {tertiaryStats.length > 0 ? <Separator className="my-1" /> : null}
         {tertiaryStats.map((stat) => (
           <StatRow key={stat.label} label={stat.label} value={renderCombatStatValue(stat)} />
         ))}
@@ -1578,66 +1618,33 @@ function RadarPanel({ snapshot }: { snapshot: Snapshot }) {
   );
 }
 
-// Compact horizontal radar for Timeline layout
-function RadarStrip({ snapshot }: { snapshot: Snapshot }) {
+function CombatStatsStrip({ snapshot }: { snapshot: Snapshot }) {
   const combatStats = getCoreCombatStats(snapshot);
-  const radarData = combatStats.map<CombatRadarDatum>((stat) => ({
-    stat: stat.label,
-    value: stat.percent,
-    percentValue: stat.percent,
-    ratingValue: stat.rating,
-  }));
   const tertiaryStats = getTertiaryStats(snapshot);
   const primaryStat = getPrimaryStat(snapshot);
+
   return (
     <Card>
-      <CardContent className="py-4">
-        <div className="flex items-center gap-6">
-          <div className="shrink-0">
-            <DitherRadarChart
-              data={radarData}
-              config={radarConfig}
-              nameKey="stat"
-              className="h-[160px] w-[160px]"
-              margins={{ top: 18, right: 18, bottom: 18, left: 18 }}
-              animate={false}
-              ariaLabel="Current secondary-stat balance"
-            >
-              <DitherTooltip
-                valueFormatter={(value) => `${value.toFixed(1)}%`}
-                variant="frosted-glass"
-              />
-              <DitherRadar dataKey="value" variant="gradient" />
-            </DitherRadarChart>
-          </div>
-          <div className="flex flex-1 flex-col gap-2">
-            <div className="grid grid-cols-2 gap-x-8 gap-y-1.5 text-sm">
-              {combatStats.map((stat) => (
-                <StatRow key={stat.label} label={stat.label} value={renderCombatStatValue(stat)} />
-              ))}
-              <StatRow
-                label="Stamina"
-                value={snapshot.stats.stamina.toLocaleString(DISPLAY_LOCALE)}
-              />
-              {primaryStat && (
-                <StatRow
-                  label={primaryStat.label}
-                  value={primaryStat.value.toLocaleString(DISPLAY_LOCALE)}
-                />
-              )}
-            </div>
-            {tertiaryStats.length > 0 && (
-              <div className="grid grid-cols-2 gap-x-8 gap-y-1.5 border-t border-border/50 pt-2 text-sm">
-                {tertiaryStats.map((stat) => (
-                  <StatRow
-                    key={stat.label}
-                    label={stat.label}
-                    value={renderCombatStatValue(stat)}
-                  />
-                ))}
-              </div>
-            )}
-          </div>
+      <CardHeader className="border-b px-5 py-4">
+        <CardTitle className="flex items-center gap-2 text-sm font-semibold">
+          <Zap data-icon="inline-start" aria-hidden="true" />
+          Combat Profile
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="px-5 py-5">
+        <CombatStatBars stats={combatStats} className="sm:grid-cols-2 xl:grid-cols-4" />
+        <Separator className="my-4" />
+        <div className="grid gap-x-8 gap-y-2 text-sm sm:grid-cols-2 xl:grid-cols-4">
+          <StatRow label="Stamina" value={snapshot.stats.stamina.toLocaleString(DISPLAY_LOCALE)} />
+          {primaryStat ? (
+            <StatRow
+              label={primaryStat.label}
+              value={primaryStat.value.toLocaleString(DISPLAY_LOCALE)}
+            />
+          ) : null}
+          {tertiaryStats.map((stat) => (
+            <StatRow key={stat.label} label={stat.label} value={renderCombatStatValue(stat)} />
+          ))}
         </div>
       </CardContent>
     </Card>
@@ -1656,10 +1663,10 @@ function IlvlChartCard({
   const data = snapshots.map((s) => ({ date: s.takenAt, itemLevel: s.itemLevel }));
   const lines = [{ key: "itemLevel", color: C.blue }];
   return (
-    <Card>
-      <CardHeader className="px-4 pb-0 pt-4">
+    <Card className="analytics-panel h-full overflow-hidden">
+      <CardHeader className="border-b border-border/60 px-5 py-3.5">
         <div className="flex items-center justify-between">
-          <CardTitle className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+          <CardTitle className="flex items-center gap-2 text-sm font-semibold">
             <Sword size={14} className="text-muted-foreground" /> Item Level
           </CardTitle>
           <FullscreenChart title="Item Level">
@@ -1676,13 +1683,13 @@ function IlvlChartCard({
           </FullscreenChart>
         </div>
       </CardHeader>
-      <CardContent className="px-4 pb-4 pt-2">
+      <CardContent className="px-4 pb-4 pt-3">
         <SnapshotLineChart
           data={data}
           lines={lines}
           config={ilvlConfig}
           valueFormatter={(v) => v.toFixed(1)}
-          className="h-[150px]"
+          className="h-[210px]"
           yScaleOptions={ITEM_LEVEL_AUTO_SCALE}
           timeFrame={timeFrame}
         />
@@ -1700,10 +1707,10 @@ function MplusChartCard({
   const data = snapshots.map((s) => ({ date: s.takenAt, mythicPlusScore: s.mythicPlusScore }));
   const lines = [{ key: "mythicPlusScore", color: C.red }];
   return (
-    <Card>
-      <CardHeader className="px-4 pb-0 pt-4">
+    <Card className="analytics-panel h-full overflow-hidden">
+      <CardHeader className="border-b border-border/60 px-5 py-3.5">
         <div className="flex items-center justify-between">
-          <CardTitle className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+          <CardTitle className="flex items-center gap-2 text-sm font-semibold">
             <Flame size={14} className="text-muted-foreground" /> M+ Score
           </CardTitle>
           <FullscreenChart title="M+ Score">
@@ -1720,13 +1727,13 @@ function MplusChartCard({
           </FullscreenChart>
         </div>
       </CardHeader>
-      <CardContent className="px-4 pb-4 pt-2">
+      <CardContent className="px-4 pb-4 pt-3">
         <SnapshotLineChart
           data={data}
           lines={lines}
           config={mplusConfig}
           valueFormatter={(v) => v.toLocaleString(DISPLAY_LOCALE)}
-          className="h-[150px]"
+          className="h-[210px]"
           yScaleOptions={MPLUS_AUTO_SCALE}
           timeFrame={timeFrame}
         />
@@ -1744,10 +1751,10 @@ function GoldChartCard({
   const data = snapshots.map((s) => ({ date: s.takenAt, gold: s.gold }));
   const lines = [{ key: "gold", color: C.gold }];
   return (
-    <Card>
-      <CardHeader className="px-4 pb-0 pt-4">
+    <Card className="analytics-panel h-full overflow-hidden">
+      <CardHeader className="border-b border-border/60 px-5 py-3.5">
         <div className="flex items-center justify-between">
-          <CardTitle className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+          <CardTitle className="flex items-center gap-2 text-sm font-semibold">
             <Coins size={14} className="text-muted-foreground" /> Gold
           </CardTitle>
           <FullscreenChart title="Gold">
@@ -1764,13 +1771,13 @@ function GoldChartCard({
           </FullscreenChart>
         </div>
       </CardHeader>
-      <CardContent className="px-4 pb-4 pt-2">
+      <CardContent className="px-4 pb-4 pt-3">
         <SnapshotLineChart
           data={data}
           lines={lines}
           config={goldConfig}
           valueFormatter={(v) => `${goldUnits(v).toLocaleString(DISPLAY_LOCALE)}g`}
-          className="h-[150px]"
+          className="h-[210px]"
           yScaleOptions={GOLD_SCALE}
           timeFrame={timeFrame}
         />
@@ -1804,13 +1811,13 @@ function SecondaryStatsChartCard({
     { key: "versatilityPercent", color: C.purple },
   ];
   return (
-    <Card className={className}>
-      <CardHeader className="px-4 pb-0 pt-4">
-        <CardTitle className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+    <Card className={cn("analytics-panel overflow-hidden", className)}>
+      <CardHeader className="border-b border-border/60 px-5 py-3.5">
+        <CardTitle className="flex items-center gap-2 text-sm font-semibold">
           <Zap size={14} className="text-muted-foreground" /> Secondary Stats
         </CardTitle>
       </CardHeader>
-      <CardContent className="px-4 pb-4 pt-2">
+      <CardContent className="px-4 pb-4 pt-3">
         <SnapshotLineChart
           data={data}
           lines={lines}
@@ -1843,18 +1850,18 @@ function CurrenciesChartCard({
     { key: "mythDawncrest", color: C.red },
   ];
   return (
-    <Card className={className}>
-      <CardHeader className="px-4 pb-0 pt-4">
-        <CardTitle className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+    <Card className={cn("analytics-panel overflow-hidden", className)}>
+      <CardHeader className="border-b border-border/60 px-5 py-3.5">
+        <CardTitle className="flex items-center gap-2 text-sm font-semibold">
           <Gem size={14} className="text-muted-foreground" /> Currencies
         </CardTitle>
       </CardHeader>
-      <CardContent className="px-4 pb-4 pt-2">
+      <CardContent className="px-4 pb-4 pt-3">
         <SnapshotLineChart
           data={data}
           lines={lines}
           config={currenciesConfig}
-          className="h-[150px]"
+          className="h-[210px]"
           showLegend
           lineEmphasis="equal"
           yScaleOptions={CURRENCIES_SCALE}
@@ -1880,13 +1887,13 @@ function PlaytimeChartCard({
   }));
   const lines = [{ key: "playtimeHours", color: C.purple }];
   return (
-    <Card className={className}>
-      <CardHeader className="px-4 pb-0 pt-4">
-        <CardTitle className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+    <Card className={cn("analytics-panel overflow-hidden", className)}>
+      <CardHeader className="border-b border-border/60 px-5 py-3.5">
+        <CardTitle className="flex items-center gap-2 text-sm font-semibold">
           <Clock size={14} className="text-muted-foreground" /> Playtime
         </CardTitle>
       </CardHeader>
-      <CardContent className="px-4 pb-4 pt-2">
+      <CardContent className="px-4 pb-4 pt-3">
         <SnapshotLineChart
           data={data}
           lines={lines}
@@ -2533,21 +2540,20 @@ function OverviewLayout({
   characterRealm,
   characterRegion,
   timeFrame,
-  setTimeFrame,
 }: LayoutProps) {
   return (
     <div className="flex flex-col gap-3">
-      <div className="grid items-start gap-3 lg:grid-cols-[16rem_minmax(0,1fr)]">
+      <div className="grid items-start gap-4 lg:grid-cols-[18rem_minmax(0,1fr)]">
         {/* Sidebar */}
         <div className="flex w-full flex-col gap-3 lg:sticky lg:top-4">
-          <Card>
-            <CardHeader className="border-b px-4 pb-2 pt-4">
-              <CardTitle className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-                <Zap size={14} className="text-muted-foreground" /> Combat Stats
+          <Card className="analytics-panel overflow-hidden">
+            <CardHeader className="border-b border-border/60 px-4 py-3.5">
+              <CardTitle className="flex items-center gap-2 text-sm font-semibold">
+                <Zap size={14} className="text-muted-foreground" /> Combat Profile
               </CardTitle>
             </CardHeader>
             <CardContent className="px-4 pb-4 pt-2">
-              <RadarPanel snapshot={latest} />
+              <CombatStatsPanel snapshot={latest} />
             </CardContent>
           </Card>
           <CurrentSnapshotCard snapshot={latest} />
@@ -2555,19 +2561,16 @@ function OverviewLayout({
         </div>
 
         {/* Main charts */}
-        <div className="flex min-w-0 flex-col gap-3">
-          <div className="flex items-center justify-between flex-wrap gap-2">
-            <TimeFramePicker value={timeFrame} onChange={setTimeFrame} />
-            <span className="text-muted-foreground text-xs">
-              {coreSnapshots.length} point{coreSnapshots.length !== 1 ? "s" : ""}
-            </span>
-          </div>
-
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="flex min-w-0 flex-col gap-4">
+          <div className="grid grid-cols-1 items-stretch gap-4 xl:grid-cols-2">
             <IlvlChartCard snapshots={coreSnapshots} timeFrame={timeFrame} />
             <MplusChartCard snapshots={coreSnapshots} timeFrame={timeFrame} />
             <GoldChartCard snapshots={coreSnapshots} timeFrame={timeFrame} />
-            <CurrenciesChartCard snapshots={coreSnapshots} timeFrame={timeFrame} />
+            <CurrenciesChartCard
+              snapshots={coreSnapshots}
+              timeFrame={timeFrame}
+              className="h-full"
+            />
           </div>
 
           <Suspense fallback={<MythicPlusSectionFallback />}>
@@ -2800,7 +2803,6 @@ function FocusLayout({
   statsSnapshots,
   currencySnapshots,
   timeFrame,
-  setTimeFrame,
   metric,
   setMetric,
 }: LayoutProps & {
@@ -2808,66 +2810,58 @@ function FocusLayout({
   setMetric: (metric: FocusMetric) => void;
 }) {
   return (
-    <div className="flex flex-col lg:flex-row gap-4 items-start">
+    <div className="grid items-stretch gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
       {/* Main chart area */}
-      <div className="flex min-w-0 flex-1 flex-col gap-4">
-        {/* Metric selector */}
-        <ToggleGroup
-          type="single"
-          value={metric}
-          onValueChange={(nextValue) => {
-            if (isFocusMetric(nextValue)) {
-              setMetric(nextValue);
-            }
-          }}
-          variant="outline"
-          size="sm"
-          aria-label="Focused metric"
-          className="flex flex-wrap justify-start"
-        >
-          {FOCUS_METRICS.map(({ value, label, Icon }) => (
-            <ToggleGroupItem key={value} value={value} aria-label={label} className="px-3">
-              <Icon data-icon="inline-start" aria-hidden="true" />
-              {label}
-            </ToggleGroupItem>
-          ))}
-        </ToggleGroup>
+      <Card className="analytics-panel h-full min-w-0 overflow-hidden">
+        <CardHeader className="border-b border-border/60 px-5 py-4">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+            <ToggleGroup
+              type="single"
+              value={metric}
+              onValueChange={(nextValue) => {
+                if (isFocusMetric(nextValue)) {
+                  setMetric(nextValue);
+                }
+              }}
+              variant="outline"
+              size="sm"
+              aria-label="Focused metric"
+              className="flex flex-wrap justify-start gap-1"
+            >
+              {FOCUS_METRICS.map(({ value, label, Icon }) => (
+                <ToggleGroupItem key={value} value={value} aria-label={label} className="px-3">
+                  <Icon data-icon="inline-start" aria-hidden="true" />
+                  {label}
+                </ToggleGroupItem>
+              ))}
+            </ToggleGroup>
 
-        {/* Current value spotlight */}
-        <div className="min-h-[2.5rem] flex items-center">
-          <FocusCurrentValue metric={metric} snapshot={latest} />
-        </div>
-
-        {/* Time picker + chart */}
-        <div className="flex items-center justify-between flex-wrap gap-2">
-          <TimeFramePicker value={timeFrame} onChange={setTimeFrame} />
-          <span className="text-muted-foreground text-xs">
-            {coreSnapshots.length} point{coreSnapshots.length !== 1 ? "s" : ""}
-          </span>
-        </div>
-        <Card>
-          <CardContent className="pt-4">
-            <FocusChart
-              metric={metric}
-              coreSnapshots={coreSnapshots}
-              statsSnapshots={statsSnapshots}
-              currencySnapshots={currencySnapshots}
-              timeFrame={timeFrame}
-            />
-          </CardContent>
-        </Card>
-      </div>
+            <div className="flex min-h-10 items-center xl:justify-end">
+              <FocusCurrentValue metric={metric} snapshot={latest} />
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="px-4 py-4">
+          <FocusChart
+            metric={metric}
+            coreSnapshots={coreSnapshots}
+            statsSnapshots={statsSnapshots}
+            currencySnapshots={currencySnapshots}
+            timeFrame={timeFrame}
+          />
+        </CardContent>
+      </Card>
 
       {/* Right sidebar */}
-      <div className="flex w-full shrink-0 flex-col gap-4 lg:sticky lg:top-4 lg:w-64">
-        <Card>
-          <CardHeader className="border-b pb-3">
-            <CardTitle className="text-sm font-medium flex items-center gap-1.5">
-              <Zap size={14} className="text-muted-foreground" /> Combat Stats
+      <div className="flex h-full w-full flex-col gap-4">
+        <Card className="analytics-panel overflow-hidden">
+          <CardHeader className="border-b border-border/60 px-4 py-3.5">
+            <CardTitle className="flex items-center gap-2 text-sm font-semibold">
+              <Zap size={14} className="text-muted-foreground" /> Combat Profile
             </CardTitle>
           </CardHeader>
           <CardContent className="pt-3">
-            <RadarPanel snapshot={latest} />
+            <CombatStatsPanel snapshot={latest} />
           </CardContent>
         </Card>
         <Card>
@@ -2911,22 +2905,12 @@ function TimelineLayout({
   statsSnapshots,
   currencySnapshots,
   timeFrame,
-  setTimeFrame,
 }: LayoutProps) {
-  const chartH = "h-[260px]";
+  const chartH = "h-[320px]";
 
   return (
     <div className="flex flex-col gap-4">
-      {/* Time picker — prominent at top */}
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <TimeFramePicker value={timeFrame} onChange={setTimeFrame} />
-        <span className="text-muted-foreground text-xs">
-          {coreSnapshots.length} point{coreSnapshots.length !== 1 ? "s" : ""}
-        </span>
-      </div>
-
-      {/* Radar strip */}
-      <RadarStrip snapshot={latest} />
+      <CombatStatsStrip snapshot={latest} />
 
       {/* Stacked charts */}
       <Card>
@@ -3122,7 +3106,6 @@ type CharacterPageContentProps = {
   characterRegion: string;
   currentMythicPlusScore: number | null;
   timeFrame: TimeFrame;
-  onTimeFrameChange: (timeFrame: TimeFrame) => void;
   layoutMode: LayoutMode;
   focusMetric: FocusMetric;
   onFocusMetricChange: (metric: FocusMetric) => void;
@@ -3148,7 +3131,6 @@ const CharacterPageContent = memo(function CharacterPageContent({
   characterRegion,
   currentMythicPlusScore,
   timeFrame,
-  onTimeFrameChange,
   layoutMode,
   focusMetric,
   onFocusMetricChange,
@@ -3173,7 +3155,6 @@ const CharacterPageContent = memo(function CharacterPageContent({
     characterRegion,
     currentMythicPlusScore,
     timeFrame,
-    setTimeFrame: onTimeFrameChange,
   };
 
   return (
@@ -3215,7 +3196,7 @@ function CharacterPageState({
   isLoading?: boolean;
 }) {
   return (
-    <div className="analytics-shell w-full px-4 py-6 sm:px-6 lg:px-8">
+    <div className="analytics-shell mx-auto w-full max-w-[1920px] px-4 py-6 sm:px-6 lg:px-8">
       <Card className="analytics-panel">
         <CardContent className="flex flex-col gap-4 px-6 py-6">
           {isLoading ? (
@@ -3833,12 +3814,12 @@ function RouteComponent() {
   }
 
   return (
-    <div className="analytics-shell flex w-full flex-col gap-4 px-4 py-6 sm:px-6 lg:px-8">
+    <div className="analytics-shell mx-auto flex w-full max-w-[1920px] flex-col gap-5 px-4 py-6 sm:px-6 lg:px-8">
       {/* Character header */}
       <Card className="analytics-hero">
-        <CardHeader className="relative z-10 border-b border-border/60 bg-transparent pb-4">
+        <CardHeader className="relative z-10 border-b border-border/60 bg-transparent px-6 py-5">
           <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-            <div className="flex flex-col gap-4">
+            <div className="flex min-w-0 flex-col gap-3">
               {latest && (
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge
@@ -3856,7 +3837,7 @@ function RouteComponent() {
                 </div>
               )}
               <CardTitle
-                className={`text-3xl font-bold tracking-tight sm:text-4xl ${classColor(character.class)}`}
+                className={`text-pretty text-4xl font-bold tracking-tight sm:text-5xl ${classColor(character.class)}`}
               >
                 {character.name}
               </CardTitle>
@@ -3892,39 +3873,36 @@ function RouteComponent() {
               </div>
             </div>
             <div className="flex w-full max-w-lg flex-col gap-2 self-start xl:items-end">
-              <div className="flex w-full flex-wrap items-center justify-between gap-2">
-                <LayoutSwitcher value={layoutMode} onChange={handleLayoutChange} />
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    onClick={() => togglePinnedCharacter(resolvedCharacterId)}
-                    className={
-                      isPinnedToQuickAccess
-                        ? "border-yellow-400/40 bg-yellow-400/10 text-yellow-300 hover:bg-yellow-400/15 hover:text-yellow-200"
-                        : "border-border/60 bg-card text-muted-foreground hover:text-foreground"
-                    }
-                  >
-                    <Star
-                      data-icon="inline-start"
-                      aria-hidden="true"
-                      className={isPinnedToQuickAccess ? "fill-current text-yellow-400" : ""}
-                    />
-                    {isPinnedToQuickAccess ? "Pinned" : "Pin"}
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    onClick={handleCopyCharacterLink}
-                    disabled={character.visibility === "private"}
-                    className="border-border/60 bg-card text-muted-foreground hover:text-foreground"
-                  >
-                    <Copy data-icon="inline-start" aria-hidden="true" />
-                    {character.visibility === "private" ? "Private" : "Copy Link"}
-                  </Button>
-                </div>
+              <div className="flex w-full flex-wrap items-center gap-2 xl:justify-end">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => togglePinnedCharacter(resolvedCharacterId)}
+                  className={
+                    isPinnedToQuickAccess
+                      ? "border-yellow-400/40 bg-yellow-400/10 text-yellow-300 hover:bg-yellow-400/15 hover:text-yellow-200"
+                      : "border-border/60 bg-card text-muted-foreground hover:text-foreground"
+                  }
+                >
+                  <Star
+                    data-icon="inline-start"
+                    aria-hidden="true"
+                    className={isPinnedToQuickAccess ? "fill-current text-yellow-400" : ""}
+                  />
+                  {isPinnedToQuickAccess ? "Pinned" : "Pin"}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={handleCopyCharacterLink}
+                  disabled={character.visibility === "private"}
+                  className="border-border/60 bg-card text-muted-foreground hover:text-foreground"
+                >
+                  <Copy data-icon="inline-start" aria-hidden="true" />
+                  {character.visibility === "private" ? "Private" : "Copy Link"}
+                </Button>
                 {canEditCharacter && (
                   <div className="flex w-full flex-col gap-2 rounded-md border border-border/60 bg-background/60 p-2">
                     <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -4065,8 +4043,8 @@ function RouteComponent() {
         </CardHeader>
 
         {latest && (
-          <CardContent className="relative z-10 px-6 pb-5 pt-4">
-            <div className="grid gap-3 xl:grid-cols-4">
+          <CardContent className="relative z-10 px-6 py-5">
+            <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-4">
               <TopMetricCard
                 label="Item level"
                 meta="Equipped"
@@ -4130,48 +4108,36 @@ function RouteComponent() {
               />
             </div>
 
-            <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-              <div className="analytics-panel rounded-md border px-4 py-3">
-                <div className="analytics-kicker text-[10px]">Character</div>
-                <div className="mt-3 flex flex-col gap-2">
-                  <StatRow label="Race" value={character.race} />
-                  <StatRow label="Class" value={character.class} />
-                </div>
-              </div>
-              <div className="analytics-panel rounded-md border px-4 py-3">
-                <div className="analytics-kicker text-[10px]">Server</div>
-                <div className="mt-3 flex flex-col gap-2">
-                  <StatRow label="Server" value={character.realm} />
-                  <StatRow label="Region" value={character.region.toUpperCase()} />
-                </div>
-              </div>
-              <div className="analytics-panel rounded-md border px-4 py-3">
-                <div className="analytics-kicker text-[10px]">Tracking</div>
-                <div className="mt-3 flex flex-col gap-2">
-                  <StatRow label="Since" value={formatDate(firstSnapshotAt ?? latest.takenAt)} />
-                  <StatRow label={trackingCountLabel} value={trackingCountValue} />
-                </div>
-              </div>
-              <div className="analytics-panel rounded-md border px-4 py-3">
-                <div className="analytics-kicker text-[10px]">Activity</div>
-                <div className="mt-3 flex flex-col gap-2">
-                  <StatRow label="Last Snapshot" value={formatCardDateTime(latest.takenAt)} />
-                  <StatRow
-                    label="Last M+ Run"
-                    value={
-                      mythicPlusData === undefined
-                        ? "Loading…"
-                        : lastMythicPlusRunAt
-                          ? formatCardDateTime(lastMythicPlusRunAt)
-                          : "No runs"
-                    }
-                  />
-                </div>
-              </div>
+            <div className="mt-4 grid gap-x-8 gap-y-3 rounded-lg border border-border/60 bg-muted/10 px-5 py-4 sm:grid-cols-2 xl:grid-cols-4">
+              <HeroMetaItem
+                label="Tracking Since"
+                value={formatDate(firstSnapshotAt ?? latest.takenAt)}
+              />
+              <HeroMetaItem label={trackingCountLabel} value={trackingCountValue} />
+              <HeroMetaItem label="Last Snapshot" value={formatCardDateTime(latest.takenAt)} />
+              <HeroMetaItem
+                label="Last M+ Run"
+                value={
+                  mythicPlusData === undefined
+                    ? "Loading…"
+                    : lastMythicPlusRunAt
+                      ? formatCardDateTime(lastMythicPlusRunAt)
+                      : "No runs"
+                }
+              />
             </div>
           </CardContent>
         )}
       </Card>
+      {latest ? (
+        <CharacterViewToolbar
+          layoutMode={layoutMode}
+          onLayoutChange={handleLayoutChange}
+          timeFrame={timeFrame}
+          onTimeFrameChange={handleTimeFrameChange}
+          pointCount={coreSnapshots.length}
+        />
+      ) : null}
       {/* Active layout */}
       {latest && coreSnapshots.length > 0 ? (
         <CharacterPageContent
@@ -4201,21 +4167,49 @@ function RouteComponent() {
             mythicPlusData?.summary.currentScore ?? latest?.mythicPlusScore ?? null
           }
           timeFrame={timeFrame}
-          onTimeFrameChange={handleTimeFrameChange}
           layoutMode={layoutMode}
           focusMetric={focusMetric}
           onFocusMetricChange={handleFocusMetricChange}
         />
+      ) : latest ? (
+        <Card className="analytics-panel">
+          <CardHeader className="border-b border-border/60 px-6 py-5">
+            <CardTitle className="text-lg font-semibold tracking-tight">
+              No snapshots in {getTimeFrameOptionLabel(timeFrame)}
+            </CardTitle>
+            <CardDescription className="max-w-2xl">
+              This character has no timeline data in the selected history range. Choose another
+              range above or return to the complete history.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-wrap gap-2 px-6 py-5">
+            {timeFrame !== "all" ? (
+              <Button type="button" onClick={() => handleTimeFrameChange("all")}>
+                <History data-icon="inline-start" aria-hidden="true" />
+                Show All History
+              </Button>
+            ) : null}
+            {timeFrame !== DEFAULT_TIME_FRAME ? (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => handleTimeFrameChange(DEFAULT_TIME_FRAME)}
+              >
+                Show Current Season
+              </Button>
+            ) : null}
+          </CardContent>
+        </Card>
       ) : (
         <Card className="analytics-panel">
-          <CardContent className="px-6 py-6">
+          <CardHeader className="px-6 py-6">
             <CardTitle className="text-lg font-semibold tracking-tight">
               No snapshots available
             </CardTitle>
-            <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
+            <CardDescription className="max-w-2xl">
               This character exists, but there is no timeline data to chart yet.
-            </p>
-          </CardContent>
+            </CardDescription>
+          </CardHeader>
         </Card>
       )}
     </div>

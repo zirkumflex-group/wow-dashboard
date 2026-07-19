@@ -639,7 +639,7 @@ function RecentRunPlayedAt({ run }: { run: MythicPlusRun }) {
   const playedAt = getRunPlayedAt(run);
 
   return (
-    <div className="space-y-0.5" title={formatRunDateTime(playedAt)}>
+    <div className="flex flex-col gap-0.5" title={formatRunDateTime(playedAt)}>
       <div>{formatRunDate(playedAt)}</div>
       <div className="text-xs text-muted-foreground/70">{formatRunTime(playedAt)}</div>
     </div>
@@ -679,19 +679,16 @@ function RecentRunPartyMembers({
   }
 
   return (
-    <div className="mt-1 flex min-w-0 max-w-full flex-nowrap items-center gap-x-0.5 overflow-x-clip overflow-y-visible whitespace-nowrap text-[11px] leading-tight">
-      {allMembers.map((member, index) => {
+    <div className="mt-1.5 flex min-w-0 max-w-full flex-wrap items-center gap-x-2 gap-y-1 text-xs leading-tight">
+      {allMembers.map((member) => {
         const key = getMemberKey(member, characterRealm);
         const isHidden = hiddenKeys.has(key);
 
         if (isHidden) {
           return (
-            <span key={key} className="inline-flex min-w-0 shrink items-center whitespace-nowrap">
-              {index > 0 ? (
-                <span className="shrink-0 px-0.5 text-muted-foreground/25">/</span>
-              ) : null}
+            <span key={key} className="inline-flex min-w-0 items-center">
               <span
-                className="inline-block h-[0.65em] w-10 shrink-0 rounded-sm bg-muted-foreground/25 blur-[5px]"
+                className="inline-block h-3 w-12 shrink-0 rounded-sm bg-muted-foreground/20 blur-[4px]"
                 aria-hidden="true"
               />
             </span>
@@ -704,19 +701,23 @@ function RecentRunPartyMembers({
         return (
           <span
             key={key}
-            className="group/member relative inline-flex min-w-0 shrink items-center whitespace-nowrap after:absolute after:left-0 after:right-0 after:top-full after:h-2 after:content-['']"
+            className="group/member inline-flex min-w-0 max-w-full items-center gap-1"
           >
-            {index > 0 ? <span className="shrink-0 px-0.5 text-muted-foreground/25">/</span> : null}
             <a
               href={url}
               target="_blank"
               rel="noreferrer"
-              className={`inline-flex min-w-0 max-w-full whitespace-nowrap font-medium decoration-current/40 underline-offset-2 hover:underline ${classColor(member.classTag ?? "")}`}
+              className={cn(
+                "inline-flex min-w-0 max-w-44 truncate font-medium decoration-current/40 underline-offset-2 hover:underline",
+                classColor(member.classTag ?? ""),
+              )}
               title={`View ${fullMemberName} on Raider.IO`}
               tabIndex={disableActions ? -1 : undefined}
             >
-              <span className="shrink-0">{member.name}</span>
-              {realmSuffix ? <span className="min-w-0 truncate">-{realmSuffix}</span> : null}
+              <span className="truncate">
+                {member.name}
+                {realmSuffix ? `-${realmSuffix}` : ""}
+              </span>
             </a>
             <button
               type="button"
@@ -726,11 +727,11 @@ function RecentRunPartyMembers({
                   onHide(key);
                 }
               }}
-              className="pointer-events-none absolute left-1/2 top-[calc(100%+1px)] z-10 -translate-x-1/2 rounded-sm border border-border/70 bg-background/95 p-1 text-muted-foreground/55 opacity-0 shadow-sm transition-opacity duration-150 group-hover/member:pointer-events-auto group-hover/member:opacity-100 group-focus-within/member:pointer-events-auto group-focus-within/member:opacity-100 hover:text-foreground"
+              className="inline-flex size-4 shrink-0 items-center justify-center rounded-sm text-muted-foreground opacity-0 transition-opacity duration-150 hover:bg-muted hover:text-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring group-hover/member:opacity-100 group-focus-within/member:opacity-100"
               title={`Hide ${member.name}`}
               aria-label={`Hide ${member.name}`}
             >
-              <EyeOff size={9} className="shrink-0" />
+              <EyeOff size={10} aria-hidden="true" />
             </button>
           </span>
         );
@@ -765,7 +766,7 @@ function HiddenPlayersControl({
       <button
         type="button"
         onClick={() => setOpen((current) => !current)}
-        className={`flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] transition-colors ${
+        className={`flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] transition-colors focus-visible:ring-2 focus-visible:ring-ring ${
           isActive
             ? "border-border/70 bg-muted/45 text-foreground hover:bg-muted/60"
             : "border-border/60 bg-muted/30 text-muted-foreground hover:bg-muted/50 hover:text-foreground"
@@ -792,7 +793,7 @@ function HiddenPlayersControl({
           <button
             type="button"
             onClick={onToggleHideAllNames}
-            className="flex w-full items-center justify-between gap-3 rounded-md border border-border/60 bg-muted/20 px-2 py-2 text-left text-xs transition-colors hover:bg-muted/35"
+            className="flex w-full items-center justify-between gap-3 rounded-md border border-border/60 bg-muted/20 px-2 py-2 text-left text-xs transition-colors hover:bg-muted/35 focus-visible:ring-2 focus-visible:ring-ring"
           >
             <span className="flex items-center gap-2 text-foreground/90">
               {hideAllNames ? <Eye size={12} /> : <EyeOff size={12} />}
@@ -806,7 +807,7 @@ function HiddenPlayersControl({
           <button
             type="button"
             onClick={onToggleHideServerNames}
-            className="mt-1.5 flex w-full items-center justify-between gap-3 rounded-md border border-border/60 bg-muted/20 px-2 py-2 text-left text-xs transition-colors hover:bg-muted/35"
+            className="mt-1.5 flex w-full items-center justify-between gap-3 rounded-md border border-border/60 bg-muted/20 px-2 py-2 text-left text-xs transition-colors hover:bg-muted/35 focus-visible:ring-2 focus-visible:ring-ring"
           >
             <span className="flex items-center gap-2 text-foreground/90">
               {hideServerNames ? <Eye size={12} /> : <EyeOff size={12} />}
@@ -829,7 +830,7 @@ function HiddenPlayersControl({
                     onUnhideAll();
                     setOpen(false);
                   }}
-                  className="text-[10px] text-muted-foreground transition-colors hover:text-foreground"
+                  className="rounded-sm text-[10px] text-muted-foreground transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   Show all
                 </button>
@@ -840,7 +841,7 @@ function HiddenPlayersControl({
                 No individually hidden players.
               </div>
             ) : (
-              <div className="space-y-0.5">
+              <div className="flex flex-col gap-0.5">
                 {keys.map((key) => {
                   const [name] = key.split("|");
                   return (
@@ -852,7 +853,7 @@ function HiddenPlayersControl({
                       <button
                         type="button"
                         onClick={() => onUnhide(key)}
-                        className="shrink-0 rounded p-0.5 text-muted-foreground/50 transition-colors hover:text-foreground"
+                        className="shrink-0 rounded p-0.5 text-muted-foreground/50 transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
                         title="Show player"
                       >
                         <Eye size={12} />
@@ -881,7 +882,7 @@ function DungeonIcon({
 
   if (!dungeonMeta?.iconUrl) {
     return (
-      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-border/60 bg-muted/30 text-[10px] font-semibold text-muted-foreground">
+      <span className="flex size-6 shrink-0 items-center justify-center rounded-md border border-border/60 bg-muted/30 text-[10px] font-semibold text-muted-foreground">
         {fallbackLabel}
       </span>
     );
@@ -891,10 +892,12 @@ function DungeonIcon({
     <img
       src={dungeonMeta.iconUrl}
       alt=""
+      width={24}
+      height={24}
       loading="lazy"
       decoding="async"
       referrerPolicy="no-referrer"
-      className="h-6 w-6 shrink-0 rounded-md border border-border/60 object-cover"
+      className="size-6 shrink-0 rounded-md border border-border/60 object-cover"
     />
   );
 }
@@ -1328,7 +1331,7 @@ function RunSessionCard({
                   id={`boost-session-id-${session.id}`}
                   value={externalIdDraft}
                   onChange={(event) => setExternalIdDraft(event.target.value)}
-                  placeholder="Optional ID"
+                  placeholder="Optional ID…"
                   maxLength={64}
                   className="mt-2 h-8 font-mono text-xs"
                   disabled={isMutating}
@@ -1502,8 +1505,6 @@ export function MythicPlusSection({
     toggleHideAllNames,
     toggleHideServerNames,
   } = useHiddenPlayers();
-  const [summaryCardHeight, setSummaryCardHeight] = useState<number | null>(null);
-  const summaryCardRef = useRef<HTMLDivElement | null>(null);
   const [isSelectingRuns, setIsSelectingRuns] = useState(false);
   const [selectedRunIds, setSelectedRunIds] = useState<string[]>([]);
   const [lastSelectedRunId, setLastSelectedRunId] = useState<string | null>(null);
@@ -1519,23 +1520,6 @@ export function MythicPlusSection({
     setSelectedRunIds([]);
     setLastSelectedRunId(null);
     setNewSessionExternalId("");
-  }, [recentRunsResetKey]);
-
-  useEffect(() => {
-    const summaryElement = summaryCardRef.current;
-    if (!summaryElement || typeof ResizeObserver === "undefined") {
-      return;
-    }
-
-    const updateHeight = () => {
-      setSummaryCardHeight(Math.ceil(summaryElement.getBoundingClientRect().height));
-    };
-
-    updateHeight();
-
-    const resizeObserver = new ResizeObserver(updateHeight);
-    resizeObserver.observe(summaryElement);
-    return () => resizeObserver.disconnect();
   }, [recentRunsResetKey]);
 
   if (data === undefined) {
@@ -1563,7 +1547,7 @@ export function MythicPlusSection({
   const { summary, runs } = data;
   if (runs.length === 0) {
     return (
-      <div className="space-y-4 [contain-intrinsic-size:720px] [content-visibility:auto]">
+      <div className="flex flex-col gap-4 [contain-intrinsic-size:720px] [content-visibility:auto]">
         <Card>
           <CardHeader className="border-b pb-3">
             <CardTitle className="flex items-center gap-2 text-lg">
@@ -1685,45 +1669,40 @@ export function MythicPlusSection({
   }
 
   return (
-    <div className="space-y-4 [contain-intrinsic-size:1200px] [content-visibility:auto]">
-      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
-        <div ref={summaryCardRef}>
-          <Card className="overflow-hidden">
-            <CardHeader className="border-b bg-muted/10 px-4 py-3">
-              <div className="flex items-center justify-between gap-3">
-                <CardTitle className="flex items-center gap-2 text-lg">
-                  <History size={16} className="text-muted-foreground" />
-                  Mythic+ Summary
-                </CardTitle>
-                {formatSeasonLabel(summary.latestSeasonID) ? (
-                  <Badge variant="outline">{formatSeasonLabel(summary.latestSeasonID)}</Badge>
-                ) : null}
-              </div>
-            </CardHeader>
-            <CardContent className="grid gap-3 px-4 py-4">
-              {currentSeason ? (
-                <>
-                  <div className="flex items-center gap-2">
-                    <Flame size={14} className="text-muted-foreground" />
-                    <h3 className="text-sm font-semibold">Current Season</h3>
-                  </div>
-                  <MythicPlusSeasonHero summary={summary} currentSeason={currentSeason} />
-                  <MythicPlusKeyProfile currentSeason={currentSeason} />
-                </>
+    <div className="flex flex-col gap-5 [contain-intrinsic-size:1200px] [content-visibility:auto]">
+      <div className="grid items-stretch gap-4 2xl:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
+        <Card className="analytics-panel flex flex-col overflow-hidden 2xl:h-[42rem]">
+          <CardHeader className="min-h-14 border-b bg-muted/10 px-4 py-3">
+            <div className="flex items-center justify-between gap-3">
+              <CardTitle className="flex items-center gap-2 text-lg">
+                <History size={16} className="text-muted-foreground" />
+                Mythic+ Summary
+              </CardTitle>
+              {formatSeasonLabel(summary.latestSeasonID) ? (
+                <Badge variant="outline">{formatSeasonLabel(summary.latestSeasonID)}</Badge>
               ) : null}
-              <MythicPlusDungeonBestList
-                dungeons={summary.currentSeasonDungeons}
-                currentScore={summary.currentScore}
-              />
-            </CardContent>
-          </Card>
-        </div>
+            </div>
+          </CardHeader>
+          <CardContent className="dark-scrollbar grid min-h-0 flex-1 gap-3 overflow-y-auto px-4 py-4">
+            {currentSeason ? (
+              <>
+                <div className="flex items-center gap-2">
+                  <Flame size={14} className="text-muted-foreground" />
+                  <h3 className="text-sm font-semibold">Current Season</h3>
+                </div>
+                <MythicPlusSeasonHero summary={summary} currentSeason={currentSeason} />
+                <MythicPlusKeyProfile currentSeason={currentSeason} />
+              </>
+            ) : null}
+            <MythicPlusDungeonBestList
+              dungeons={summary.currentSeasonDungeons}
+              currentScore={summary.currentScore}
+            />
+          </CardContent>
+        </Card>
 
-        <Card
-          className="flex flex-col overflow-hidden"
-          style={summaryCardHeight === null ? undefined : { height: `${summaryCardHeight}px` }}
-        >
-          <CardHeader className="border-b bg-muted/10 px-4 py-3">
+        <Card className="analytics-panel flex min-h-[36rem] flex-col overflow-hidden 2xl:h-[42rem] 2xl:min-h-0">
+          <CardHeader className="min-h-14 border-b bg-muted/10 px-4 py-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <CardTitle className="flex items-center gap-2 text-lg">
                 <Clock size={16} className="text-muted-foreground" />
@@ -1740,7 +1719,7 @@ export function MythicPlusSection({
                         aria-label="New boost session ID"
                         value={newSessionExternalId}
                         onChange={(event) => setNewSessionExternalId(event.target.value)}
-                        placeholder="Session ID"
+                        placeholder="Session ID…"
                         maxLength={64}
                         disabled={isMutatingSession}
                         className="h-8 w-36 font-mono text-xs"
@@ -1796,14 +1775,14 @@ export function MythicPlusSection({
           </CardHeader>
           <CardContent className="flex min-h-0 flex-1 flex-col p-4">
             <div className="dark-scrollbar min-h-0 flex-1 overflow-auto rounded-md border border-border/60">
-              <table className="w-full min-w-[700px] table-fixed text-sm">
+              <table className="w-full min-w-[760px] table-fixed text-sm">
                 <colgroup>
-                  <col className="w-[6.25rem]" />
-                  <col />
-                  <col className="w-[4rem]" />
-                  <col className="w-[8rem]" />
-                  <col className="w-[5rem]" />
                   <col className="w-[7rem]" />
+                  <col />
+                  <col className="w-[4.5rem]" />
+                  <col className="w-[7rem]" />
+                  <col className="w-[6rem]" />
+                  <col className="w-[8.5rem]" />
                 </colgroup>
                 <thead className="sticky top-0 z-10 bg-muted/40 text-[11px] uppercase tracking-wider text-muted-foreground">
                   <tr>
@@ -1812,7 +1791,7 @@ export function MythicPlusSection({
                     <th className="px-3 py-2 text-right font-medium">Key</th>
                     <th className="px-3 py-2 text-left font-medium">Result</th>
                     <th className="px-3 py-2 text-right font-medium">Score</th>
-                    <th className="w-[7rem] whitespace-nowrap px-3 py-2 text-right font-medium">
+                    <th className="w-[8.5rem] whitespace-nowrap px-3 py-2 text-right font-medium">
                       Time
                     </th>
                   </tr>
@@ -1872,7 +1851,7 @@ export function MythicPlusSection({
                             }
                           }}
                         >
-                          <td className="px-3 py-2 align-top text-muted-foreground">
+                          <td className="px-3 py-3 align-top text-muted-foreground">
                             <div className="flex items-start gap-2">
                               {isSelectingRuns ? (
                                 <RecentRunSelectionMark selected={isSelected} />
@@ -1880,7 +1859,7 @@ export function MythicPlusSection({
                               <RecentRunPlayedAt run={run} />
                             </div>
                           </td>
-                          <td className="min-w-0 px-3 py-2 align-top">
+                          <td className="min-w-0 px-3 py-3 align-top">
                             <div className="flex min-w-0 items-center gap-2">
                               <DungeonIcon
                                 mapChallengeModeID={run.mapChallengeModeID}
@@ -1904,13 +1883,13 @@ export function MythicPlusSection({
                               onHide={hidePlayer}
                             />
                           </td>
-                          <td className="px-3 py-2 align-top text-right">
+                          <td className="px-3 py-3 align-top text-right">
                             <RecentRunKeyCell run={run} />
                           </td>
-                          <td className="px-3 py-2 align-top">
+                          <td className="px-3 py-3 align-top">
                             <MythicPlusResultBadge run={run} />
                           </td>
-                          <td className="px-3 py-2 align-top text-right">
+                          <td className="px-3 py-3 align-top text-right">
                             <div className="flex items-center justify-end gap-1.5 tabular-nums">
                               <span
                                 className={cn(
@@ -1927,7 +1906,7 @@ export function MythicPlusSection({
                               ) : null}
                             </div>
                           </td>
-                          <td className="w-[7rem] whitespace-nowrap px-3 py-2 align-top text-right tabular-nums text-muted-foreground">
+                          <td className="w-[8.5rem] whitespace-nowrap px-3 py-3 align-top text-right tabular-nums text-muted-foreground">
                             {formatRunTimeComparison(run)}
                           </td>
                         </tr>

@@ -103,7 +103,7 @@ function HomeComponent() {
                 Live Snapshot
               </span>
             </div>
-            <div className="my-6 dither-divider" />
+            <div className="section-divider my-6" />
             <div className="grid grid-cols-2 gap-3">
               {SAMPLE_METRICS.map(({ label, value, detail }) => (
                 <div key={label} className="analytics-panel rounded-md border p-3.5">

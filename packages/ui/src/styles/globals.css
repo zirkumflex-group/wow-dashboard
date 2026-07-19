@@ -270,21 +270,16 @@
     min-height: 100svh;
     background-image:
       radial-gradient(
-        circle at 1px 1px,
-        color-mix(in oklab, var(--foreground) 7%, transparent) 1px,
-        transparent 0
+        circle at 14% -12%,
+        color-mix(in oklab, var(--primary) 9%, transparent),
+        transparent 38rem
       ),
       radial-gradient(
-        circle at 18% -10%,
-        color-mix(in oklab, var(--primary) 8%, transparent),
-        transparent 34rem
+        circle at 92% 4%,
+        color-mix(in oklab, var(--chart-1) 5%, transparent),
+        transparent 32rem
       );
-    background-position:
-      0 0,
-      center top;
-    background-size:
-      22px 22px,
-      auto;
+    background-attachment: fixed;
   }
   html {
     @apply font-sans;
@@ -312,50 +307,84 @@
     isolation: isolate;
   }
 
-  .analytics-shell::before {
-    position: fixed;
-    inset: 0;
-    z-index: -1;
-    pointer-events: none;
-    content: "";
-    background: linear-gradient(
-      180deg,
-      color-mix(in oklab, var(--primary) 4%, transparent),
-      transparent 24rem
-    );
-  }
-
   .analytics-hero {
     position: relative;
     overflow: hidden;
-    border-color: color-mix(in oklab, var(--primary) 22%, var(--border));
-    background:
-      linear-gradient(120deg, color-mix(in oklab, var(--primary) 8%, var(--card)), var(--card) 44%),
-      var(--card);
+    border-color: color-mix(in oklab, var(--primary) 18%, var(--border));
+    background: color-mix(in oklab, var(--card) 98%, var(--primary));
     box-shadow:
       0 1px 0 color-mix(in oklab, var(--foreground) 6%, transparent) inset,
-      0 18px 60px color-mix(in oklab, black 18%, transparent);
-  }
-
-  .analytics-hero::after {
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    content: "";
-    opacity: 0.28;
-    background-image: radial-gradient(
-      circle at 1px 1px,
-      color-mix(in oklab, var(--primary) 40%, transparent) 0.75px,
-      transparent 0.8px
-    );
-    background-size: 5px 5px;
-    mask-image: linear-gradient(90deg, transparent 28%, black 100%);
+      0 20px 52px color-mix(in oklab, black 14%, transparent);
   }
 
   .analytics-panel {
     border-color: color-mix(in oklab, var(--foreground) 10%, var(--border));
     background: color-mix(in oklab, var(--card) 96%, transparent);
     box-shadow: 0 1px 0 color-mix(in oklab, var(--foreground) 5%, transparent) inset;
+  }
+
+  .analytics-trend-chart {
+    --trend-color: var(--chart-1);
+    isolation: isolate;
+    overflow: hidden;
+    border-radius: calc(var(--radius) + 0.125rem);
+    background:
+      radial-gradient(
+        ellipse 64% 72% at 82% 8%,
+        color-mix(in oklab, var(--trend-color) 8%, transparent),
+        transparent 72%
+      ),
+      linear-gradient(
+        180deg,
+        color-mix(in oklab, var(--foreground) 2.5%, transparent),
+        transparent 52%
+      );
+    box-shadow:
+      0 1px 0 color-mix(in oklab, var(--foreground) 4%, transparent) inset,
+      0 0 0 1px color-mix(in oklab, var(--foreground) 5%, transparent) inset;
+  }
+
+  .analytics-trend-chart::before {
+    position: absolute;
+    z-index: 0;
+    inset: 0;
+    border-radius: inherit;
+    background: linear-gradient(
+      90deg,
+      color-mix(in oklab, var(--trend-color) 34%, transparent),
+      color-mix(in oklab, var(--trend-color) 6%, transparent) 22%,
+      transparent 58%
+    );
+    block-size: 1px;
+    content: "";
+    pointer-events: none;
+  }
+
+  .analytics-trend-chart > * {
+    z-index: 1;
+  }
+
+  .analytics-current-value {
+    border: 1px solid color-mix(in oklab, var(--trend-color) 22%, var(--border));
+    background: color-mix(in oklab, var(--card) 90%, transparent);
+    box-shadow:
+      0 1px 0 color-mix(in oklab, var(--foreground) 7%, transparent) inset,
+      0 8px 24px color-mix(in oklab, black 18%, transparent);
+    backdrop-filter: blur(12px);
+  }
+
+  .analytics-chart-tooltip {
+    min-inline-size: 10rem;
+    border-color: color-mix(in oklab, var(--foreground) 12%, var(--border));
+    background: color-mix(in oklab, var(--popover) 94%, transparent);
+    box-shadow:
+      0 1px 0 color-mix(in oklab, var(--foreground) 7%, transparent) inset,
+      0 16px 40px color-mix(in oklab, black 28%, transparent);
+    backdrop-filter: blur(16px);
+  }
+
+  .analytics-chart-legend {
+    font-variant-numeric: tabular-nums;
   }
 
   .analytics-kicker {
@@ -374,13 +403,15 @@
     letter-spacing: -0.04em;
   }
 
-  .dither-divider {
+  .section-divider {
     height: 1px;
     border: 0;
-    background-image: repeating-linear-gradient(
+    background: linear-gradient(
       90deg,
-      color-mix(in oklab, var(--foreground) 22%, transparent) 0 2px,
-      transparent 2px 5px
+      transparent,
+      color-mix(in oklab, var(--foreground) 18%, transparent) 14%,
+      color-mix(in oklab, var(--foreground) 18%, transparent) 86%,
+      transparent
     );
   }
 }
