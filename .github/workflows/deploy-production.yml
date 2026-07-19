@@ -1,31 +1,6 @@
 name: Deploy Production
 
 on:
-  push:
-    branches:
-      - master
-    paths:
-      - "apps/api/**"
-      - "apps/worker/**"
-      - "apps/web/**"
-      - "packages/api-client/**"
-      - "packages/api-schema/**"
-      - "packages/battlenet/**"
-      - "packages/config/**"
-      - "packages/db/**"
-      - "packages/env/**"
-      - "packages/mythic-plus/**"
-      - "packages/observability/**"
-      - "packages/ui/**"
-      - "deploy/Caddyfile"
-      - "deploy/Dockerfile.*"
-      - "deploy/docker-compose.prod.yml"
-      - "deploy/update-server.sh"
-      - ".dockerignore"
-      - "package.json"
-      - "pnpm-lock.yaml"
-      - "pnpm-workspace.yaml"
-      - "turbo.json"
   workflow_dispatch:
 
 concurrency:
@@ -41,7 +16,6 @@ jobs:
 
   deploy:
     needs: verify
-    if: github.event_name == 'workflow_dispatch' || vars.PRODUCTION_AUTO_DEPLOY == 'true'
     runs-on: ubuntu-latest
     environment: production
 
