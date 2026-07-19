@@ -88,12 +88,13 @@ C_DateAndTime = {
 
 local requestMapInfoCalls = 0
 local runHistoryCalls = {}
+local currentSeason = 17
 C_MythicPlus = {
     RequestMapInfo = function()
         requestMapInfoCalls = requestMapInfoCalls + 1
     end,
     GetCurrentSeason = function()
-        return 17
+        return currentSeason
     end,
     GetRunHistory = function(...)
         runHistoryCalls[#runHistoryCalls + 1] = { ... }
@@ -248,6 +249,24 @@ assertEqual(runHistoryCalls[1][1], true, "history includes previous weeks")
 assertEqual(runHistoryCalls[1][2], true, "history includes incomplete runs")
 assertEqual(runHistoryCalls[1][3], true, "history is current-season only")
 assertEqual(requestMapInfoCalls, 1, "map info should only be requested once")
+
+currentSeason = 18
+eventHandler(nil, "CHALLENGE_MODE_MAPS_UPDATE")
+C_MythicPlus.GetRunHistory = function()
+    return {
+        {
+            mapChallengeModeID = 505,
+            level = 11,
+            completed = true,
+            durationSec = 700,
+            completionDate = completionCalendar,
+        },
+    }
+end
+local rolloverHistory = hooks.CollectMythicPlusHistory()
+assertEqual(rolloverHistory[1].seasonID, 18, "map updates must invalidate the cached season")
+currentSeason = 17
+eventHandler(nil, "CHALLENGE_MODE_MAPS_UPDATE")
 
 local snapshots = {}
 for index = 1, 300 do
