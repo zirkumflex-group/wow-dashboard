@@ -100,7 +100,7 @@ pnpm verify
   release automation as part of an ordinary code change.
 - Production deploy is manual-only. Before using it on the replacement server, update the GitHub
   environment secrets and host key, verify an off-server backup and restore, then dispatch it from
-  `master`.
+  `main`.
 - `api` and `worker` run as bundled CommonJS under plain Node.js; the `migrate` image target is in
   `deploy/Dockerfile.api`.
 - The historical importer command in the API container is:

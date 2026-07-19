@@ -99,7 +99,7 @@ FORCE_CLEAN_BUILD=1 bash deploy/update-server.sh
 
 Automatic push deployment is intentionally paused while the production server is being replaced.
 `.github/workflows/deploy-production.yml` has only a `workflow_dispatch` trigger and must be run from
-`master`. Pushing to `master` does not deploy production.
+`main`. Pushing to `main` does not deploy production.
 
 The manual workflow:
 
@@ -156,7 +156,7 @@ Before switching production to a new host:
 2. install the repository at `~/wow-dashboard` and create `deploy/.env.production`
 3. update the production environment's SSH host, user, private key, and known-host entry
 4. run `deploy/update-server.sh` on the new host and verify both API and worker health
-5. run the manual GitHub deployment from `master`
+5. run the manual GitHub deployment from `main`
 6. switch DNS only after application, OAuth, addon ingest, and desktop smoke tests pass
 7. keep automatic push deployment disabled until the user explicitly asks to re-enable it
 
@@ -275,7 +275,7 @@ cd ~/wow-dashboard
 git log --oneline -10
 git checkout <known-good-commit>
 SKIP_GIT_PULL=1 bash deploy/update-server.sh
-git switch master
+git switch main
 ```
 
 `SKIP_GIT_PULL=1` is only for emergency rollback deploys from a checked-out commit. Normal deploys

@@ -116,9 +116,9 @@ Repository documentation:
 - [`packages/db/README.md`](packages/db/README.md): schema and migration workflow
 - [`deploy/README.md`](deploy/README.md): active production operations
 
-Pull requests and pushes to `master` run the reusable verification workflow. Changes to the desktop
-or addon release surfaces can also trigger release automation after they reach `master`. Production
-deployment is manual-only while the server is being replaced; pushing to `master` does not deploy
+Pull requests and pushes to `main` run the reusable verification workflow. Changes to the desktop
+or addon release surfaces can also trigger release automation after they reach `main`. Production
+deployment is manual-only while the server is being replaced; pushing to `main` does not deploy
 the VPS.
 
 ## Troubleshooting

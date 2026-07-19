@@ -12,12 +12,12 @@ permissions:
 
 jobs:
   verify:
-    if: github.ref == 'refs/heads/master'
+    if: github.ref == 'refs/heads/main'
     uses: ./.github/workflows/verify.yml
 
   deploy:
     needs: verify
-    if: github.ref == 'refs/heads/master'
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment: production

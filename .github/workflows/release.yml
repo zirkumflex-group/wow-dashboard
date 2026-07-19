@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     branches:
-      - master
+      - main
     paths:
       - "apps/app/**"
       - "apps/addon/**"
@@ -14,7 +14,7 @@ on:
       - "pnpm-workspace.yaml"
 
 concurrency:
-  group: wow-dashboard-release-master
+  group: wow-dashboard-release-main
   cancel-in-progress: false
 
 permissions:
@@ -153,7 +153,7 @@ jobs:
           git add apps/app/package.json apps/addon/wow-dashboard.toc
           if ! git diff --staged --quiet; then
             git commit -m "chore: bump versions [skip ci]"
-            git push origin HEAD:master
+            git push origin HEAD:main
           fi
 
       - name: Capture immutable release revision
