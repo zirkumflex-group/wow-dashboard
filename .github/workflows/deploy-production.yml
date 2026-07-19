@@ -12,11 +12,14 @@ permissions:
 
 jobs:
   verify:
+    if: github.ref == 'refs/heads/master'
     uses: ./.github/workflows/verify.yml
 
   deploy:
     needs: verify
+    if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     environment: production
 
     env:
@@ -58,4 +61,15 @@ jobs:
             'cd ~/wow-dashboard && bash deploy/update-server.sh'
 
       - name: Check production health
-        run: curl -fsS "$HEALTH_URL"
+        run: |
+          for attempt in {1..12}; do
+            if curl --fail-with-body --silent --show-error "$HEALTH_URL"; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 12 ]; then
+              echo "Production is not ready yet; retrying in 5 seconds (${attempt}/12)."
+              sleep 5
+            fi
+          done
+          echo "Production readiness check failed after 12 attempts." >&2
+          exit 1

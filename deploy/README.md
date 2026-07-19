@@ -95,25 +95,25 @@ FORCE_FULL_DEPLOY=1 bash deploy/update-server.sh
 FORCE_CLEAN_BUILD=1 bash deploy/update-server.sh
 ```
 
-## CI Auto Deploy
+## Manual GitHub Actions Deploy
 
-Production can be deployed automatically from GitHub Actions through
-`.github/workflows/deploy-production.yml`.
+Automatic push deployment is intentionally paused while the production server is being replaced.
+`.github/workflows/deploy-production.yml` has only a `workflow_dispatch` trigger and must be run from
+`master`. Pushing to `master` does not deploy production.
 
-The workflow runs on pushes to `master` that touch server, web, production shared package, or
-production deploy files. It:
+The manual workflow:
 
-1. installs dependencies
-2. runs `pnpm run check-types`
+1. runs the reusable full verification workflow
+2. validates the deployment secrets
 3. SSHes into the VPS
 4. runs `cd ~/wow-dashboard && bash deploy/update-server.sh`
-5. checks `https://wow.zirkumflex.io/readyz`
+5. retries the public readiness check at `https://wow.zirkumflex.io/readyz`
 
 Configure these GitHub repository secrets:
 
 ```text
 PRODUCTION_SSH_HOST=<server-host-or-ip>
-PRODUCTION_SSH_USER=Tristan
+PRODUCTION_SSH_USER=<server-user>
 PRODUCTION_SSH_PORT=22
 PRODUCTION_SSH_PRIVATE_KEY=<private deploy key>
 PRODUCTION_SSH_KNOWN_HOSTS=<output from ssh-keyscan>
@@ -121,14 +121,9 @@ PRODUCTION_SSH_KNOWN_HOSTS=<output from ssh-keyscan>
 
 `PRODUCTION_SSH_PORT` is optional and defaults to `22`.
 
-To enable automatic deploys on pushes to `master`, set this GitHub repository variable:
-
-```text
-PRODUCTION_AUTO_DEPLOY=true
-```
-
-Without that variable, the workflow still exists and can be run manually with `workflow_dispatch`,
-but push-triggered deploys are skipped after verification.
+The old `PRODUCTION_AUTO_DEPLOY` variable is no longer read. Re-enabling automatic deploys requires
+an explicit workflow change after the replacement server, secrets, host key, backup, restore, and
+rollback paths have been verified.
 
 Generate a dedicated deploy key on your local machine:
 
@@ -139,7 +134,7 @@ ssh-keygen -t ed25519 -f ~/.ssh/wow-dashboard-production-deploy -C "wow-dashboar
 Install the public key on the VPS:
 
 ```bash
-ssh-copy-id -i ~/.ssh/wow-dashboard-production-deploy.pub Tristan@<server-host>
+ssh-copy-id -i ~/.ssh/wow-dashboard-production-deploy.pub <server-user>@<server-host>
 ```
 
 Store the private key content as `PRODUCTION_SSH_PRIVATE_KEY`.
@@ -150,8 +145,20 @@ Store the server host key as `PRODUCTION_SSH_KNOWN_HOSTS`:
 ssh-keyscan -H <server-host>
 ```
 
-For extra control, put the deploy job in a GitHub `production` environment and require manual
-approval before the SSH step.
+The deploy job already uses the GitHub `production` environment. Configure required reviewers or
+other environment protection rules in repository settings if a second approval is desired.
+
+## Replacement Server Checklist
+
+Before switching production to a new host:
+
+1. create an off-server Postgres backup and pass the restore test below
+2. install the repository at `~/wow-dashboard` and create `deploy/.env.production`
+3. update the production environment's SSH host, user, private key, and known-host entry
+4. run `deploy/update-server.sh` on the new host and verify both API and worker health
+5. run the manual GitHub deployment from `master`
+6. switch DNS only after application, OAuth, addon ingest, and desktop smoke tests pass
+7. keep automatic push deployment disabled until the user explicitly asks to re-enable it
 
 ## Health Checks
 
@@ -209,10 +216,10 @@ REMOTE_BACKUP_TARGET='backup-user@backup-host:/srv/backups/wow-dashboard/postgre
 Daily cron example:
 
 ```cron
-15 3 * * * cd /home/Tristan/wow-dashboard && REMOTE_BACKUP_TARGET='backup-user@backup-host:/srv/backups/wow-dashboard/postgres/' bash deploy/backup-postgres.sh >> /home/Tristan/wow-dashboard-backups/postgres/backup.log 2>&1
+15 3 * * * cd "$HOME/wow-dashboard" && REMOTE_BACKUP_TARGET='backup-user@backup-host:/srv/backups/wow-dashboard/postgres/' bash deploy/backup-postgres.sh >> "$HOME/wow-dashboard-backups/postgres/backup.log" 2>&1
 ```
 
-Adjust the username/path if the VPS checkout is not under `/home/Tristan/wow-dashboard`.
+Adjust the checkout and backup paths if the repository is not under the deploy user's home directory.
 
 ## Restore Test
 

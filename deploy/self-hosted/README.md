@@ -1,6 +1,8 @@
 # Historical Self-Hosted Convex Setup
 
-This document is historical and does not describe the active production stack.
+> **Archive only.** This document does not describe the active production stack. Paths such as
+> `packages/backend` no longer exist in the current application, and the commands below are not
+> maintained or validated for new deployments.
 
 The live production stack uses `apps/api` + `apps/worker` + Postgres + Redis and is documented in
 [`deploy/README.md`](../README.md).
@@ -9,7 +11,7 @@ The live production stack uses `apps/api` + `apps/worker` + Postgres + Redis and
 
 # Self-Hosted Debian VPS Setup
 
-This deploy bundle is designed for the current app shape:
+This deploy bundle was designed for the application shape at the time:
 
 - TanStack Start web app served by Nitro
 - self-hosted Convex backend and dashboard

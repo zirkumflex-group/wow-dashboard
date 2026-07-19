@@ -76,6 +76,51 @@ The desktop app also checks for addon releases and can install or update the WoW
 Windows release signing uses the `WIN_CSC_LINK` and `WIN_CSC_KEY_PASSWORD` repository secrets. When
 both are configured, the release workflow requires a valid Authenticode signature before publishing.
 
+## Development
+
+Local development requires Node.js 24, pnpm 10 (the exact version is declared in `package.json`),
+and Docker Desktop or Docker Engine with Compose. Lua 5.4 is also required for addon lint and tests.
+
+On PowerShell 7 for Windows:
+
+```powershell
+Copy-Item .env.example .env.local
+pnpm install --frozen-lockfile
+pnpm dev
+```
+
+`pnpm dev` starts local Postgres and Redis, waits for them to become healthy, applies migrations,
+then starts the API, worker, web app, and Electron client. Stop the foreground processes with
+Ctrl+C. If local containers remain running, stop them with:
+
+```powershell
+pnpm dev:stop
+```
+
+Useful checks:
+
+```powershell
+pnpm check
+pnpm -F @wow-dashboard/addon test
+pnpm -F app test
+```
+
+The DB-backed API suite requires a disposable database whose name ends in `_test`; see
+[`apps/api/README.md`](apps/api/README.md). CI runs the broader `pnpm verify` command with Postgres
+and Redis test services.
+
+Repository documentation:
+
+- [`AGENTS.md`](AGENTS.md): architecture, safety invariants, and verification expectations
+- [`apps/api/README.md`](apps/api/README.md): local OAuth and API test setup
+- [`packages/db/README.md`](packages/db/README.md): schema and migration workflow
+- [`deploy/README.md`](deploy/README.md): active production operations
+
+Pull requests and pushes to `master` run the reusable verification workflow. Changes to the desktop
+or addon release surfaces can also trigger release automation after they reach `master`. Production
+deployment is manual-only while the server is being replaced; pushing to `master` does not deploy
+the VPS.
+
 ## Troubleshooting
 
 - **The app says the WoW folder is invalid:** choose the folder that ends with `_retail_`.
