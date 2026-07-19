@@ -10,8 +10,12 @@ on:
       prerelease:
         description: "Mark as pre-release"
         required: false
-        default: "false"
+        default: false
         type: boolean
+
+concurrency:
+  group: wow-dashboard-release-master
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -27,42 +31,32 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Resolve version
+      - name: Resolve and validate version
         id: version
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
         run: |
-          if [ -n "${{ github.event.inputs.version }}" ]; then
-            VERSION="${{ github.event.inputs.version }}"
+          if [ -n "$REQUESTED_VERSION" ]; then
+            VERSION="$REQUESTED_VERSION"
           else
             VERSION=$(grep "^## Version:" apps/addon/wow-dashboard.toc | awk '{print $3}')
+          fi
+          if ! [[ "$VERSION" =~ ^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$ ]]; then
+            echo "Version must be a three-part numeric semantic version" >&2
+            exit 1
+          fi
+          if git rev-parse "refs/tags/addon-v${VERSION}" >/dev/null 2>&1; then
+            echo "Tag addon-v${VERSION} already exists" >&2
+            exit 1
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Using addon version: ${VERSION}"
 
       - name: Update .toc version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
           sed -i "s/^## Version:.*$/## Version: ${VERSION}/" apps/addon/wow-dashboard.toc
-
-      - name: Commit and tag version
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          TAG="addon-v${VERSION}"
-
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          git add apps/addon/wow-dashboard.toc
-          if ! git diff --staged --quiet; then
-            git commit -m "chore: bump addon to ${VERSION} [skip ci]"
-            git push origin HEAD:master
-          fi
-
-          if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "Tag $TAG already exists, skipping tag creation"
-          else
-            git tag "$TAG"
-            git push origin "$TAG"
-          fi
 
       - name: Package addon
         run: |
@@ -70,44 +64,66 @@ jobs:
           OUT_DIR="apps/addon/dist/${ADDON_NAME}"
           mkdir -p "${OUT_DIR}"
           cp "apps/addon/${ADDON_NAME}.toc" "${OUT_DIR}/"
-          cp apps/addon/*.lua "${OUT_DIR}/"
+          while IFS= read -r file; do
+            normalized="${file//\\//}"
+            if [[ "$normalized" =~ ^[A-Za-z]: ]] || [[ "/$normalized/" == *"/../"* ]] || [[ "/$normalized/" == *"/./"* ]]; then
+              echo "Unsafe addon file listed in TOC: ${file}" >&2
+              exit 1
+            fi
+            source_file="apps/addon/${normalized}"
+            target_file="${OUT_DIR}/${normalized}"
+            if [ ! -f "$source_file" ]; then
+              echo "Missing addon file listed in TOC: ${file}" >&2
+              exit 1
+            fi
+            mkdir -p "$(dirname "$target_file")"
+            cp "$source_file" "$target_file"
+          done < <(awk 'NF && $1 !~ /^#/ { sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, ""); print }' "apps/addon/${ADDON_NAME}.toc")
           for dir in Art Fonts; do
             if [ -d "apps/addon/${dir}" ]; then
               cp -r "apps/addon/${dir}" "${OUT_DIR}/${dir}"
             fi
           done
-          toc_lua_files="$(mktemp)"
-          awk 'NF && $1 !~ /^##/ && $1 ~ /\.lua$/ { print $1 }' "${OUT_DIR}/${ADDON_NAME}.toc" > "${toc_lua_files}"
-          while IFS= read -r file; do
-            if [ ! -f "${OUT_DIR}/${file}" ]; then
-              echo "Missing addon file listed in TOC: ${file}" >&2
-              exit 1
-            fi
-          done < "${toc_lua_files}"
-          rm -f "${toc_lua_files}"
           cd apps/addon/dist
           zip -r "${ADDON_NAME}.zip" "${ADDON_NAME}/"
           sha256sum "${ADDON_NAME}.zip" > "${ADDON_NAME}.zip.sha256"
-          echo "ZIP=apps/addon/dist/${ADDON_NAME}.zip" >> $GITHUB_ENV
-          echo "CHECKSUM=apps/addon/dist/${ADDON_NAME}.zip.sha256" >> $GITHUB_ENV
+
+      - name: Commit version
+        id: release_commit
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add apps/addon/wow-dashboard.toc
+          if ! git diff --staged --quiet; then
+            git commit -m "chore: bump addon to ${VERSION} [skip ci]"
+            git push origin HEAD:master
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: addon-v${{ steps.version.outputs.version }}
           name: Addon v${{ steps.version.outputs.version }}
-          prerelease: ${{ github.event.inputs.prerelease }}
+          target_commitish: ${{ steps.release_commit.outputs.sha }}
+          prerelease: ${{ inputs.prerelease }}
           make_latest: false
+          fail_on_unmatched_files: true
           files: |
-            ${{ env.ZIP }}
-            ${{ env.CHECKSUM }}
+            apps/addon/dist/wow-dashboard.zip
+            apps/addon/dist/wow-dashboard.zip.sha256
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Notify Discord
+        if: ${{ env.DISCORD_WEBHOOK_URL != '' }}
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL_ADDON }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
           RELEASE_URL="https://github.com/${{ github.repository }}/releases/tag/addon-v${VERSION}"
-          curl -s -X POST "${{ secrets.DISCORD_WEBHOOK_URL_ADDON }}" \
+          curl --fail-with-body --silent --show-error -X POST "$DISCORD_WEBHOOK_URL" \
             -H "Content-Type: application/json" \
-            -d "{\"content\": \"**WoW Dashboard Addon v${VERSION}** has been released! :tada:\n${RELEASE_URL}\"}"
+            -d "{\"content\": \"**WoW Dashboard Addon v${VERSION}** has been released! :tada:\\n${RELEASE_URL}\"}"

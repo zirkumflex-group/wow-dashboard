@@ -67,11 +67,14 @@ Characters are public by default. Character owners can change visibility from th
 
 ## Updates
 
-The desktop app checks GitHub releases for new app versions. When an update is downloaded, install it
-from the update prompt or close/reopen the app when prompted.
+The desktop app checks GitHub releases for new app versions. When an update is downloaded, use
+**Install update & restart** or fully quit the app from its tray menu so the update can be installed.
 
 The desktop app also checks for addon releases and can install or update the WoW addon after your
 `_retail_` folder is selected.
+
+Windows release signing uses the `WIN_CSC_LINK` and `WIN_CSC_KEY_PASSWORD` repository secrets. When
+both are configured, the release workflow requires a valid Authenticode signature before publishing.
 
 ## Troubleshooting
 

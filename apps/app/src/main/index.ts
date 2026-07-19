@@ -1,5 +1,6 @@
 import {
   app,
+  autoUpdater as nativeAutoUpdater,
   BrowserWindow,
   dialog,
   ipcMain,
@@ -28,7 +29,7 @@ import * as path from "path";
 import { join, resolve, sep } from "path";
 import * as crypto from "crypto";
 import * as os from "os";
-import { Transform } from "node:stream";
+import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import type {
@@ -39,6 +40,16 @@ import type {
   AppUpdateState,
 } from "../shared/update";
 import { replaceDirectoryAtomically } from "./atomicAddonInstall";
+import {
+  compareVersionStrings,
+  parseAddonReleaseTags,
+  parseAddonTocManifest,
+  parseLatestAddonRelease,
+  parseStagedAddonUpdate,
+  validateAddonDownloadRedirect,
+  type AddonReleaseInfo,
+  type StagedAddonUpdate,
+} from "./addonUpdateValidation";
 import { LuaParser } from "./luaParser";
 import { resolveDesktopAuthSessionState, type DesktopAuthSessionState } from "../shared/auth";
 import { desktopConfig } from "../shared/config";
@@ -106,6 +117,7 @@ const MAX_ADDON_CHECKSUM_BYTES = 64 * 1024;
 const MAX_ADDON_ARCHIVE_ENTRIES = 1_000;
 const MAX_ADDON_EXTRACTED_BYTES = 100 * 1024 * 1024;
 const MAX_ADDON_SAVED_VARIABLES_BYTES = 64 * 1024 * 1024;
+const MAX_ADDON_DOWNLOAD_REDIRECTS = 5;
 
 if (!app.isPackaged) {
   app.setName("WoW Dashboard Dev");
@@ -516,7 +528,7 @@ function installDownloadedAppUpdate(): AppInstallUpdateResult {
     error: null,
   });
   isInstallingAppUpdate = true;
-  isQuitting = true;
+  prepareForQuit();
   setImmediate(() => {
     updater.quitAndInstall(true, true);
   });
@@ -3292,18 +3304,6 @@ ipcMain.handle("wow:unwatchAddonFile", () => {
 // Addon installation
 const GITHUB_REPO = "zirkumflex-group/wow-dashboard";
 
-interface AddonReleaseInfo {
-  url: string;
-  checksumUrl: string;
-  version: string;
-}
-
-interface StagedAddonUpdate {
-  version: string;
-  checksumUrl: string;
-  downloadedAt: number;
-}
-
 interface ExposedAddonReleaseInfo {
   version: string;
 }
@@ -3332,72 +3332,100 @@ function getStagedAddonMetaPath(): string {
   return join(getAddonUpdateStageDir(), "staged.json");
 }
 
-function parseVersionParts(version: string): number[] | null {
-  if (!/^\d+(?:\.\d+)*$/.test(version)) return null;
-  return version.split(".").map(Number);
-}
-
-function compareVersionStrings(left: string, right: string): number {
-  const a = parseVersionParts(left);
-  const b = parseVersionParts(right);
-  if (!a || !b) return left.localeCompare(right);
-  for (let i = 0; i < Math.max(a.length, b.length); i++) {
-    const ai = a[i] ?? 0;
-    const bi = b[i] ?? 0;
-    if (ai < bi) return -1;
-    if (ai > bi) return 1;
-  }
-  return 0;
-}
-
 function isOutdatedVersion(installed: string, latest: string): boolean {
   return compareVersionStrings(installed, latest) < 0;
 }
 
-function downloadFile(url: string, destPath: string, maximumBytes: number): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    const request = net.request({ url, useSessionCookies: false });
-    const writeStream = fs.createWriteStream(destPath);
-    let settled = false;
-    const settle = (error?: Error) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      if (error) {
-        request.abort();
-        writeStream.destroy();
-        void fs.promises.rm(destPath, { force: true }).catch(() => {});
-        reject(error);
-        return;
-      }
-      resolve();
-    };
-    const timeout = setTimeout(() => {
-      settle(new Error(`Download timed out after ${NETWORK_DOWNLOAD_TIMEOUT_MS}ms`));
-    }, NETWORK_DOWNLOAD_TIMEOUT_MS);
+async function getAddonDownloadResponse(url: string, signal: AbortSignal): Promise<Response> {
+  let currentUrl = url;
+  for (let redirectCount = 0; redirectCount <= MAX_ADDON_DOWNLOAD_REDIRECTS; redirectCount += 1) {
+    validateAddonDownloadRedirect(currentUrl);
+    const response = await net.fetch(currentUrl, {
+      credentials: "omit",
+      redirect: "manual",
+      signal,
+      headers: { Accept: "application/octet-stream" },
+    });
+    if (![301, 302, 303, 307, 308].includes(response.status)) return response;
 
-    request.on("response", (response) => {
-      if (response.statusCode !== 200) {
-        settle(new Error(`Download failed with status ${response.statusCode}`));
-        return;
+    const location = response.headers.get("location");
+    await response.body?.cancel();
+    if (!location) throw new Error("Addon download redirect did not include a location");
+    if (redirectCount === MAX_ADDON_DOWNLOAD_REDIRECTS) {
+      throw new Error(`Addon download exceeded ${MAX_ADDON_DOWNLOAD_REDIRECTS} redirects`);
+    }
+
+    const nextUrl = new URL(location, currentUrl).toString();
+    validateAddonDownloadRedirect(nextUrl);
+    currentUrl = nextUrl;
+  }
+  throw new Error(`Addon download exceeded ${MAX_ADDON_DOWNLOAD_REDIRECTS} redirects`);
+}
+
+async function downloadFile(
+  url: string,
+  destPath: string,
+  maximumBytes: number,
+  expectedBytes: number,
+): Promise<void> {
+  if (!Number.isSafeInteger(expectedBytes) || expectedBytes <= 0 || expectedBytes > maximumBytes) {
+    throw new Error("Invalid expected addon asset size");
+  }
+
+  const controller = new AbortController();
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, NETWORK_DOWNLOAD_TIMEOUT_MS);
+
+  try {
+    const response = await getAddonDownloadResponse(url, controller.signal);
+    if (response.status !== 200) {
+      await response.body?.cancel();
+      throw new Error(`Download failed with status ${response.status}`);
+    }
+    if (!response.body) throw new Error("Addon download response did not include a body");
+
+    const contentLengthHeader = response.headers.get("content-length");
+    if (contentLengthHeader) {
+      const contentLength = Number(contentLengthHeader);
+      if (!Number.isSafeInteger(contentLength) || contentLength !== expectedBytes) {
+        await response.body.cancel();
+        throw new Error("Addon download size did not match GitHub release metadata");
       }
-      let downloadedBytes = 0;
-      response.on("data", (chunk: Buffer) => {
-        downloadedBytes += chunk.length;
+    }
+
+    let downloadedBytes = 0;
+    const byteLimiter = new Transform({
+      transform(chunk, _encoding, callback) {
+        downloadedBytes += Buffer.byteLength(chunk);
         if (downloadedBytes > maximumBytes) {
-          settle(new Error(`Download exceeded the ${maximumBytes}-byte size limit`));
+          callback(new Error(`Download exceeded the ${maximumBytes}-byte size limit`));
           return;
         }
-
-        writeStream.write(chunk);
-      });
-      response.on("end", () => writeStream.end(() => settle()));
-      response.on("error", (error: Error) => settle(error));
+        callback(null, chunk);
+      },
     });
-    request.on("error", (error: Error) => settle(error));
-    writeStream.on("error", (error) => settle(error));
-    request.end();
-  });
+    await pipeline(
+      Readable.fromWeb(response.body),
+      byteLimiter,
+      fs.createWriteStream(destPath, { flags: "wx" }),
+    );
+    if (downloadedBytes !== expectedBytes) {
+      throw new Error("Addon download size did not match GitHub release metadata");
+    }
+  } catch (error) {
+    await fs.promises.rm(destPath, { force: true }).catch(() => {});
+    if (timedOut) {
+      throw new Error(`Download timed out after ${NETWORK_DOWNLOAD_TIMEOUT_MS}ms`, {
+        cause: error,
+      });
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function extractZip(zipPath: string, destDir: string): Promise<void> {
@@ -3456,30 +3484,6 @@ async function getInstalledAddonVersionForRetailPath(retailPath: string): Promis
   }
 }
 
-function validateOfficialAddonReleaseUrl(url: string, tagName: string, assetName: string): void {
-  let parsedUrl: URL;
-  try {
-    parsedUrl = new URL(url);
-  } catch {
-    throw new Error("Invalid URL");
-  }
-
-  const [repoOwner, repoName] = GITHUB_REPO.split("/");
-  if (!repoOwner || !repoName) {
-    throw new Error("Invalid GitHub repository configuration");
-  }
-  const pathSegments = parsedUrl.pathname.split("/").map((segment) => decodeURIComponent(segment));
-  const expectedSegments = ["", repoOwner, repoName, "releases", "download", tagName, assetName];
-  if (
-    parsedUrl.protocol !== "https:" ||
-    parsedUrl.hostname !== "github.com" ||
-    pathSegments.length !== expectedSegments.length ||
-    pathSegments.some((segment, index) => segment !== expectedSegments[index])
-  ) {
-    throw new Error(`Untrusted addon release asset URL: ${url}`);
-  }
-}
-
 async function computeFileSha256(filePath: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const hash = crypto.createHash("sha256");
@@ -3490,7 +3494,11 @@ async function computeFileSha256(filePath: string): Promise<string> {
   });
 }
 
-async function verifyAddonPackage(zipPath: string, checksumPath: string): Promise<void> {
+async function verifyAddonPackage(
+  zipPath: string,
+  checksumPath: string,
+  expectedDigest: string | null,
+): Promise<void> {
   const checksumContent = await fs.promises.readFile(checksumPath, "utf-8");
   const expectedHash = checksumContent.trim().split(/\s+/)[0] ?? "";
   if (!/^[a-f0-9]{64}$/i.test(expectedHash)) {
@@ -3498,27 +3506,85 @@ async function verifyAddonPackage(zipPath: string, checksumPath: string): Promis
   }
   const actualHash = await computeFileSha256(zipPath);
   if (actualHash.toLowerCase() !== expectedHash.toLowerCase()) {
-    throw new Error(
-      `Checksum mismatch - addon package may be corrupted or tampered with.\nExpected: ${expectedHash}\nGot: ${actualHash}`,
-    );
+    throw new Error("Checksum mismatch - addon package may be corrupted or tampered with");
+  }
+  if (expectedDigest && expectedDigest !== `sha256:${actualHash.toLowerCase()}`) {
+    throw new Error("Addon package digest did not match GitHub release metadata");
   }
 }
 
 async function downloadAddonPackage(
-  downloadUrl: string,
-  checksumUrl: string,
+  release: AddonReleaseInfo,
   zipPath: string,
   checksumPath: string,
 ): Promise<void> {
   await fs.promises.mkdir(path.dirname(zipPath), { recursive: true });
-  await downloadFile(downloadUrl, zipPath, MAX_ADDON_ARCHIVE_BYTES);
-
-  await downloadFile(checksumUrl, checksumPath, MAX_ADDON_CHECKSUM_BYTES);
-  await verifyAddonPackage(zipPath, checksumPath);
+  await downloadFile(release.url, zipPath, MAX_ADDON_ARCHIVE_BYTES, release.archiveSize);
+  await downloadFile(
+    release.checksumUrl,
+    checksumPath,
+    MAX_ADDON_CHECKSUM_BYTES,
+    release.checksumSize,
+  );
+  await verifyAddonPackage(zipPath, checksumPath, release.archiveDigest);
 }
 
-async function installAddonFromPackage(retailPath: string, zipPath: string, checksumPath: string) {
-  await verifyAddonPackage(zipPath, checksumPath);
+async function resolveExtractedAddonSource(extractDir: string): Promise<string> {
+  const entries = await fs.promises.readdir(extractDir, { withFileTypes: true });
+  const dirs = entries.filter((entry) => entry.isDirectory());
+  if (dirs.length !== 1) return extractDir;
+
+  const directory = dirs[0];
+  if (!directory) return extractDir;
+  const candidate = resolve(extractDir, directory.name);
+  if (!candidate.startsWith(resolve(extractDir) + sep)) {
+    throw new Error("Path traversal detected in zip archive");
+  }
+  return candidate;
+}
+
+async function validateExtractedAddonSource(
+  addonSource: string,
+  expectedVersion: string,
+): Promise<void> {
+  const tocPath = join(addonSource, "wow-dashboard.toc");
+  const tocContent = await fs.promises.readFile(tocPath, "utf-8");
+  const manifestFiles = parseAddonTocManifest(tocContent, expectedVersion);
+
+  await Promise.all(
+    manifestFiles.map(async (manifestPath) => {
+      const filePath = resolve(addonSource, ...manifestPath.split("/"));
+      const relativePath = path.relative(resolve(addonSource), filePath);
+      if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+        throw new Error(`Addon TOC path escapes the archive: ${manifestPath}`);
+      }
+      const stats = await fs.promises.stat(filePath);
+      if (!stats.isFile()) throw new Error(`Addon TOC entry is not a file: ${manifestPath}`);
+    }),
+  );
+}
+
+async function validateAddonArchive(zipPath: string, expectedVersion: string): Promise<void> {
+  const extractDir = await fs.promises.mkdtemp(join(os.tmpdir(), "wow-dashboard-addon-validate-"));
+  try {
+    await extractZip(zipPath, extractDir);
+    await validateExtractedAddonSource(
+      await resolveExtractedAddonSource(extractDir),
+      expectedVersion,
+    );
+  } finally {
+    await fs.promises.rm(extractDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function installAddonFromPackage(
+  retailPath: string,
+  zipPath: string,
+  checksumPath: string,
+  expectedVersion: string,
+  expectedDigest: string | null,
+) {
+  await verifyAddonPackage(zipPath, checksumPath, expectedDigest);
 
   const extractDir = await fs.promises.mkdtemp(join(os.tmpdir(), "wow-dashboard-addon-extract-"));
   const addonsDir = join(retailPath, "Interface", "AddOns");
@@ -3529,26 +3595,8 @@ async function installAddonFromPackage(retailPath: string, zipPath: string, chec
 
   try {
     await extractZip(zipPath, extractDir);
-
-    const entries = await fs.promises.readdir(extractDir, { withFileTypes: true });
-    const dirs = entries.filter((entry) => entry.isDirectory());
-    const addonSrc =
-      dirs.length === 1
-        ? (() => {
-            const dir = dirs[0];
-            if (!dir) return extractDir;
-            const candidate = resolve(extractDir, dir.name);
-            if (!candidate.startsWith(resolve(extractDir) + sep)) {
-              throw new Error("Path traversal detected in zip archive");
-            }
-            return candidate;
-          })()
-        : extractDir;
-
-    await Promise.all([
-      fs.promises.access(join(addonSrc, "wow-dashboard.toc"), fs.constants.R_OK),
-      fs.promises.access(join(addonSrc, "wow-dashboard.lua"), fs.constants.R_OK),
-    ]);
+    const addonSrc = await resolveExtractedAddonSource(extractDir);
+    await validateExtractedAddonSource(addonSrc, expectedVersion);
 
     await fs.promises.mkdir(addonsDir, { recursive: true });
     await fs.promises.cp(addonSrc, stagedDest, { recursive: true });
@@ -3568,54 +3616,45 @@ async function installAddonFromPackage(retailPath: string, zipPath: string, chec
 }
 
 async function fetchLatestAddonRelease(): Promise<AddonReleaseInfo> {
-  const res = await net.fetch(
-    `https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=100`,
-    withNetworkTimeout({
-      headers: { Accept: "application/vnd.github+json" },
-    }),
-  );
-  if (!res.ok) throw new Error(`GitHub API error: ${res.status}`);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const releases = (await res.json()) as any[];
-  const addonReleases = releases.filter(
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (release: any) =>
-      typeof release.tag_name === "string" &&
-      /^addon-v\d+(?:\.\d+)*$/.test(release.tag_name) &&
-      !release.draft &&
-      !release.prerelease,
-  );
-  const addonRelease = addonReleases.reduce(
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (latest: any | null, release: any) => {
-      if (!latest) return release;
-      const version = (release.tag_name as string).replace("addon-v", "");
-      const latestVersion = (latest.tag_name as string).replace("addon-v", "");
-      return compareVersionStrings(version, latestVersion) > 0 ? release : latest;
+  const requestOptions = withNetworkTimeout({
+    headers: {
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
     },
-    null,
+  });
+  const refsResponse = await net.fetch(
+    `https://api.github.com/repos/${GITHUB_REPO}/git/matching-refs/tags/addon-v`,
+    requestOptions,
   );
-  if (!addonRelease) throw new Error("No addon release found on GitHub");
-  const tagName = addonRelease.tag_name as string;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const asset = addonRelease.assets.find((asset: any) => asset.name === "wow-dashboard.zip");
-  if (!asset) throw new Error("No wow-dashboard.zip asset found in latest addon release");
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const checksumAsset = addonRelease.assets.find(
-    (asset: any) => asset.name === "wow-dashboard.zip.sha256",
-  );
-  if (!checksumAsset) {
-    throw new Error("No wow-dashboard.zip.sha256 asset found in latest addon release");
+  if (!refsResponse.ok) throw new Error(`GitHub API error: ${refsResponse.status}`);
+  const releaseTags = parseAddonReleaseTags(await refsResponse.json());
+  if (releaseTags.length === 0) throw new Error("No addon release tag found on GitHub");
+
+  for (const tagName of releaseTags.slice(0, 10)) {
+    const releaseResponse = await net.fetch(
+      `https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${encodeURIComponent(tagName)}`,
+      withNetworkTimeout({
+        headers: {
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+      }),
+    );
+    if (releaseResponse.status === 404) {
+      await releaseResponse.body?.cancel();
+      continue;
+    }
+    if (!releaseResponse.ok) {
+      await releaseResponse.body?.cancel();
+      throw new Error(`GitHub API error: ${releaseResponse.status}`);
+    }
+    return parseLatestAddonRelease([await releaseResponse.json()], GITHUB_REPO, {
+      archiveBytes: MAX_ADDON_ARCHIVE_BYTES,
+      checksumBytes: MAX_ADDON_CHECKSUM_BYTES,
+    });
   }
-  const url = asset.browser_download_url as string;
-  const checksumUrl = checksumAsset.browser_download_url as string;
-  validateOfficialAddonReleaseUrl(url, tagName, "wow-dashboard.zip");
-  validateOfficialAddonReleaseUrl(checksumUrl, tagName, "wow-dashboard.zip.sha256");
-  return {
-    url,
-    checksumUrl,
-    version: tagName.replace("addon-v", ""),
-  };
+
+  throw new Error("No published addon release found for the newest addon tags");
 }
 
 function exposeAddonReleaseInfo(release: AddonReleaseInfo): ExposedAddonReleaseInfo {
@@ -3627,22 +3666,10 @@ function exposeAddonReleaseInfo(release: AddonReleaseInfo): ExposedAddonReleaseI
 async function readStagedAddonUpdate(): Promise<StagedAddonUpdate | null> {
   try {
     const raw = await fs.promises.readFile(getStagedAddonMetaPath(), "utf-8");
-    const parsed = JSON.parse(raw) as Partial<StagedAddonUpdate>;
-    if (typeof parsed.version !== "string") return null;
-    if (typeof parsed.checksumUrl !== "string") return null;
-    return {
-      version: parsed.version,
-      checksumUrl: parsed.checksumUrl,
-      downloadedAt: typeof parsed.downloadedAt === "number" ? parsed.downloadedAt : 0,
-    };
+    return parseStagedAddonUpdate(JSON.parse(raw), GITHUB_REPO);
   } catch {
     return null;
   }
-}
-
-async function writeStagedAddonUpdate(update: StagedAddonUpdate): Promise<void> {
-  await fs.promises.mkdir(getAddonUpdateStageDir(), { recursive: true });
-  await fs.promises.writeFile(getStagedAddonMetaPath(), JSON.stringify(update, null, 2), "utf-8");
 }
 
 async function clearStagedAddonUpdate(): Promise<void> {
@@ -3651,11 +3678,60 @@ async function clearStagedAddonUpdate(): Promise<void> {
 
 async function stagedAddonPayloadExists(): Promise<boolean> {
   try {
-    await fs.promises.access(getStagedAddonZipPath(), fs.constants.F_OK);
-    await fs.promises.access(getStagedAddonChecksumPath(), fs.constants.F_OK);
+    await Promise.all([
+      fs.promises.access(getStagedAddonZipPath(), fs.constants.F_OK),
+      fs.promises.access(getStagedAddonChecksumPath(), fs.constants.F_OK),
+    ]);
     return true;
   } catch {
     return false;
+  }
+}
+
+async function stagedAddonDirectoryExists(): Promise<boolean> {
+  try {
+    await fs.promises.access(getAddonUpdateStageDir(), fs.constants.F_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function stageAddonRelease(release: AddonReleaseInfo): Promise<void> {
+  const userDataDirectory = app.getPath("userData");
+  await fs.promises.mkdir(userDataDirectory, { recursive: true });
+  const stageId = `${process.pid}-${crypto.randomUUID()}`;
+  const stagedDirectory = join(userDataDirectory, `.addon-update-install-${stageId}`);
+  const backupDirectory = join(userDataDirectory, `.addon-update-backup-${stageId}`);
+  const zipPath = join(stagedDirectory, "wow-dashboard.zip");
+  const checksumPath = join(stagedDirectory, "wow-dashboard.zip.sha256");
+
+  await fs.promises.mkdir(stagedDirectory);
+  try {
+    await downloadAddonPackage(release, zipPath, checksumPath);
+    await validateAddonArchive(zipPath, release.version);
+    const metadata: StagedAddonUpdate = {
+      version: release.version,
+      checksumUrl: release.checksumUrl,
+      downloadedAt: Date.now(),
+      archiveDigest: release.archiveDigest,
+    };
+    await fs.promises.writeFile(
+      join(stagedDirectory, "staged.json"),
+      JSON.stringify(metadata, null, 2),
+      "utf-8",
+    );
+    await replaceDirectoryAtomically({
+      rootDirectory: userDataDirectory,
+      targetDirectory: getAddonUpdateStageDir(),
+      stagedDirectory,
+      backupDirectory,
+      onCleanupError: (error) => {
+        console.warn("[wow-dashboard] Staged addon update but could not clean up:", error);
+      },
+    });
+  } finally {
+    await fs.promises.rm(stagedDirectory, { recursive: true, force: true }).catch(() => {});
   }
 }
 
@@ -3667,8 +3743,14 @@ async function downloadAndInstallAddonRelease(
   const zipPath = join(downloadDir, "wow-dashboard.zip");
   const checksumPath = join(downloadDir, "wow-dashboard.zip.sha256");
   try {
-    await downloadAddonPackage(release.url, release.checksumUrl, zipPath, checksumPath);
-    await installAddonFromPackage(retailPath, zipPath, checksumPath);
+    await downloadAddonPackage(release, zipPath, checksumPath);
+    await installAddonFromPackage(
+      retailPath,
+      zipPath,
+      checksumPath,
+      release.version,
+      release.archiveDigest,
+    );
   } finally {
     await fs.promises.rm(downloadDir, { recursive: true, force: true }).catch(() => {});
   }
@@ -3676,7 +3758,13 @@ async function downloadAndInstallAddonRelease(
 
 async function getUsableStagedAddonUpdate(): Promise<StagedAddonUpdate | null> {
   const staged = await readStagedAddonUpdate();
-  if (!staged) return null;
+  if (!staged) {
+    if (await stagedAddonDirectoryExists()) {
+      await clearStagedAddonUpdate();
+      updateAddonUpdateState({ stagedVersion: null });
+    }
+    return null;
+  }
   if (await stagedAddonPayloadExists()) {
     return staged;
   }
@@ -3759,6 +3847,8 @@ async function applyStagedAddonUpdateIfReady(): Promise<AddonApplyStagedResult> 
         validatedRetailPath,
         getStagedAddonZipPath(),
         getStagedAddonChecksumPath(),
+        staged.version,
+        staged.archiveDigest,
       );
       await clearStagedAddonUpdate();
       broadcastToRenderers("wow:addonUpdateApplied", staged.version);
@@ -3913,7 +4003,8 @@ async function stageLatestAddonUpdate(): Promise<AddonUpdateCheckResult> {
         if (
           staged &&
           staged.version === latestRelease.version &&
-          staged.checksumUrl === latestRelease.checksumUrl
+          staged.checksumUrl === latestRelease.checksumUrl &&
+          staged.archiveDigest === latestRelease.archiveDigest
         ) {
           updateAddonUpdateState({
             status: "staged",
@@ -3921,17 +4012,7 @@ async function stageLatestAddonUpdate(): Promise<AddonUpdateCheckResult> {
             error: null,
           });
         } else {
-          await downloadAddonPackage(
-            latestRelease.url,
-            latestRelease.checksumUrl,
-            getStagedAddonZipPath(),
-            getStagedAddonChecksumPath(),
-          );
-          await writeStagedAddonUpdate({
-            version: latestRelease.version,
-            checksumUrl: latestRelease.checksumUrl,
-            downloadedAt: Date.now(),
-          });
+          await stageAddonRelease(latestRelease);
           broadcastToRenderers("wow:addonUpdateStaged", latestRelease.version);
           updateAddonUpdateState({
             status: "staged",
@@ -4113,6 +4194,8 @@ function registerAppUpdaterListeners(): Promise<void> {
 
     autoUpdater.autoDownload = true;
     autoUpdater.autoInstallOnAppQuit = true;
+    autoUpdater.allowPrerelease = false;
+    autoUpdater.allowDowngrade = false;
 
     autoUpdater.on("checking-for-update", () => {
       updateAppUpdateState({
@@ -4462,6 +4545,10 @@ app.whenReady().then(async () => {
 });
 
 app.on("before-quit", () => {
+  prepareForQuit();
+});
+
+nativeAutoUpdater.on("before-quit-for-update", () => {
   prepareForQuit();
 });
 

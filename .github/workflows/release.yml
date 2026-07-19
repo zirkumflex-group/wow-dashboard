@@ -7,14 +7,15 @@ on:
     paths:
       - "apps/app/**"
       - "apps/addon/**"
-      - "packages/api-client/**"
-      - "packages/api-schema/**"
       - "packages/config/**"
-      - "packages/env/**"
-      - "packages/ui/**"
+      - "packages/mythic-plus/**"
       - "package.json"
       - "pnpm-lock.yaml"
       - "pnpm-workspace.yaml"
+
+concurrency:
+  group: wow-dashboard-release-master
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -42,6 +43,9 @@ jobs:
       - name: Run check
         run: pnpm run check
 
+      - name: Run desktop updater tests
+        run: pnpm --filter app test
+
   changes:
     runs-on: ubuntu-latest
     outputs:
@@ -55,11 +59,8 @@ jobs:
           filters: |
             app:
               - 'apps/app/**'
-              - 'packages/api-client/**'
-              - 'packages/api-schema/**'
               - 'packages/config/**'
-              - 'packages/env/**'
-              - 'packages/ui/**'
+              - 'packages/mythic-plus/**'
               - 'package.json'
               - 'pnpm-lock.yaml'
               - 'pnpm-workspace.yaml'
@@ -73,9 +74,10 @@ jobs:
     outputs:
       app_version: ${{ steps.bump.outputs.app_version }}
       addon_version: ${{ steps.bump.outputs.addon_version }}
+      release_sha: ${{ steps.release_commit.outputs.sha }}
 
     steps:
-      - name: Checkout
+      - name: Checkout triggering revision
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -92,8 +94,8 @@ jobs:
 
           bump_semver() {
             local CURRENT=$1
-            local SCOPE=$2   # e.g. "apps/app/ packages/"
-            local TAG_PATTERN=$3  # e.g. "app-v*"
+            local SCOPE=$2
+            local TAG_PATTERN=$3
 
             IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
             LAST_TAG=$(git describe --tags --match "$TAG_PATTERN" --abbrev=0 2>/dev/null || echo "")
@@ -116,14 +118,13 @@ jobs:
 
           if [ "$APP_CHANGED" = "true" ]; then
             CURRENT=$(node -p "require('./apps/app/package.json').version")
-            APP_VERSION=$(bump_semver "$CURRENT" "apps/app/ packages/api-client/ packages/api-schema/ packages/config/ packages/env/ packages/ui/ package.json pnpm-lock.yaml pnpm-workspace.yaml" "app-v*")
-            # Update package.json version
-            node -e "
-              const fs = require('fs');
-              const pkg = JSON.parse(fs.readFileSync('./apps/app/package.json', 'utf8'));
-              pkg.version = '${APP_VERSION}';
-              fs.writeFileSync('./apps/app/package.json', JSON.stringify(pkg, null, 2) + '\n');
-            "
+            APP_VERSION=$(bump_semver "$CURRENT" "apps/app/ packages/config/ packages/mythic-plus/ package.json pnpm-lock.yaml pnpm-workspace.yaml" "app-v*")
+            APP_VERSION="$APP_VERSION" node -e '
+              const fs = require("fs");
+              const pkg = JSON.parse(fs.readFileSync("./apps/app/package.json", "utf8"));
+              pkg.version = process.env.APP_VERSION;
+              fs.writeFileSync("./apps/app/package.json", JSON.stringify(pkg, null, 2) + "\n");
+            '
             echo "app_version=${APP_VERSION}" >> "$GITHUB_OUTPUT"
             echo "Bumped app to ${APP_VERSION}"
           fi
@@ -136,21 +137,15 @@ jobs:
             echo "Bumped addon to ${ADDON_VERSION}"
           fi
 
-          # Commit only if there are staged changes
-          git add apps/app/package.json apps/addon/wow-dashboard.toc 2>/dev/null || true
+          git add apps/app/package.json apps/addon/wow-dashboard.toc
           if ! git diff --staged --quiet; then
             git commit -m "chore: bump versions [skip ci]"
             git push origin HEAD:master
           fi
 
-          # Push version tags
-          if [ -n "$APP_VERSION" ]; then
-            git tag "app-v${APP_VERSION}"
-          fi
-          if [ -n "$ADDON_VERSION" ]; then
-            git tag "addon-v${ADDON_VERSION}"
-          fi
-          git push --tags
+      - name: Capture immutable release revision
+        id: release_commit
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
   release-app:
     needs: [bump-versions, changes]
@@ -158,10 +153,10 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout immutable release revision
         uses: actions/checkout@v4
         with:
-          ref: master
+          ref: ${{ needs.bump-versions.outputs.release_sha }}
           fetch-depth: 0
 
       - name: Setup pnpm
@@ -186,45 +181,88 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --force
 
-      - name: Create .env file
-        shell: bash
+      - name: Create app environment
+        shell: pwsh
+        env:
+          SITE_URL: ${{ secrets.VITE_SITE_URL }}
         run: |
-          SITE_URL="${{ secrets.VITE_SITE_URL }}"
-          SITE_URL="${SITE_URL%/}"
-          {
-            echo "VITE_SITE_URL=${SITE_URL}"
-            echo "VITE_API_URL=${SITE_URL}/api"
-          } > apps/app/.env
+          $siteUrl = $env:SITE_URL.TrimEnd('/')
+          @(
+            "VITE_SITE_URL=$siteUrl"
+            "VITE_API_URL=$siteUrl/api"
+          ) | Set-Content -Path apps/app/.env -Encoding utf8
 
-      - name: Build app (electron-vite)
+      - name: Check Windows signing configuration
+        id: signing
+        shell: pwsh
+        env:
+          CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: |
+          $hasCertificate = -not [string]::IsNullOrWhiteSpace($env:CSC_LINK)
+          $hasPassword = -not [string]::IsNullOrWhiteSpace($env:CSC_KEY_PASSWORD)
+          if ($hasCertificate -xor $hasPassword) {
+            throw "WIN_CSC_LINK and WIN_CSC_KEY_PASSWORD must be configured together"
+          }
+          if ($hasCertificate) {
+            "enabled=true" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Warning "Authenticode secrets are not configured; publishing an unsigned installer"
+            "enabled=false" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Build app
         run: pnpm --filter app build
 
-      - name: Package app (electron-builder)
-        run: pnpm --filter app package
+      - name: Package app
+        shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: |
+          if ('${{ steps.signing.outputs.enabled }}' -eq 'true') {
+            pnpm --filter app exec electron-builder --win --config.forceCodeSigning=true
+          } else {
+            pnpm --filter app exec electron-builder --win
+          }
+
+      - name: Verify signed installer
+        if: steps.signing.outputs.enabled == 'true'
+        shell: pwsh
+        run: |
+          $signature = Get-AuthenticodeSignature apps/app/dist/wow-dashboard.exe
+          if ($signature.Status -ne 'Valid') {
+            throw "Installer signature is not valid: $($signature.Status)"
+          }
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: app-v${{ needs.bump-versions.outputs.app_version }}
           name: App v${{ needs.bump-versions.outputs.app_version }}
+          target_commitish: ${{ needs.bump-versions.outputs.release_sha }}
           prerelease: false
           make_latest: true
+          fail_on_unmatched_files: true
           files: |
             apps/app/dist/wow-dashboard.exe
+            apps/app/dist/wow-dashboard.exe.blockmap
             apps/app/dist/latest.yml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Notify Discord
+        if: ${{ env.DISCORD_WEBHOOK_URL != '' }}
         shell: bash
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL_APP }}
+          VERSION: ${{ needs.bump-versions.outputs.app_version }}
         run: |
-          VERSION="${{ needs.bump-versions.outputs.app_version }}"
           RELEASE_URL="https://github.com/${{ github.repository }}/releases/tag/app-v${VERSION}"
-          curl -s -X POST "${{ secrets.DISCORD_WEBHOOK_URL_APP }}" \
+          curl --fail-with-body --silent --show-error -X POST "$DISCORD_WEBHOOK_URL" \
             -H "Content-Type: application/json" \
-            -d "{\"content\": \"**WoW Dashboard App v${VERSION}** has been released! :tada:\n${RELEASE_URL}\"}"
+            -d "{\"content\": \"**WoW Dashboard App v${VERSION}** has been released! :tada:\\n${RELEASE_URL}\"}"
 
   release-addon:
     needs: [bump-versions, changes]
@@ -232,10 +270,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout immutable release revision
         uses: actions/checkout@v4
         with:
-          ref: master
+          ref: ${{ needs.bump-versions.outputs.release_sha }}
 
       - name: Package addon
         run: |
@@ -243,36 +281,52 @@ jobs:
           OUT_DIR="apps/addon/dist/${ADDON_NAME}"
           mkdir -p "${OUT_DIR}"
           cp "apps/addon/${ADDON_NAME}.toc" "${OUT_DIR}/"
-          cp apps/addon/*.lua "${OUT_DIR}/"
+          while IFS= read -r file; do
+            normalized="${file//\\//}"
+            if [[ "$normalized" =~ ^[A-Za-z]: ]] || [[ "/$normalized/" == *"/../"* ]] || [[ "/$normalized/" == *"/./"* ]]; then
+              echo "Unsafe addon file listed in TOC: ${file}" >&2
+              exit 1
+            fi
+            source_file="apps/addon/${normalized}"
+            target_file="${OUT_DIR}/${normalized}"
+            if [ ! -f "$source_file" ]; then
+              echo "Missing addon file listed in TOC: ${file}" >&2
+              exit 1
+            fi
+            mkdir -p "$(dirname "$target_file")"
+            cp "$source_file" "$target_file"
+          done < <(awk 'NF && $1 !~ /^#/ { sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, ""); print }' "apps/addon/${ADDON_NAME}.toc")
           for dir in Art Fonts; do
             if [ -d "apps/addon/${dir}" ]; then
               cp -r "apps/addon/${dir}" "${OUT_DIR}/${dir}"
             fi
           done
-          toc_lua_files="$(mktemp)"
-          awk 'NF && $1 !~ /^##/ && $1 ~ /\.lua$/ { print $1 }' "${OUT_DIR}/${ADDON_NAME}.toc" > "${toc_lua_files}"
-          while IFS= read -r file; do
-            if [ ! -f "${OUT_DIR}/${file}" ]; then
-              echo "Missing addon file listed in TOC: ${file}" >&2
-              exit 1
-            fi
-          done < "${toc_lua_files}"
-          rm -f "${toc_lua_files}"
           cd apps/addon/dist
           zip -r "${ADDON_NAME}.zip" "${ADDON_NAME}/"
           sha256sum "${ADDON_NAME}.zip" > "${ADDON_NAME}.zip.sha256"
-          echo "ZIP=apps/addon/dist/${ADDON_NAME}.zip" >> $GITHUB_ENV
-          echo "CHECKSUM=apps/addon/dist/${ADDON_NAME}.zip.sha256" >> $GITHUB_ENV
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: addon-v${{ needs.bump-versions.outputs.addon_version }}
           name: Addon v${{ needs.bump-versions.outputs.addon_version }}
+          target_commitish: ${{ needs.bump-versions.outputs.release_sha }}
           prerelease: false
           make_latest: false
+          fail_on_unmatched_files: true
           files: |
-            ${{ env.ZIP }}
-            ${{ env.CHECKSUM }}
+            apps/addon/dist/wow-dashboard.zip
+            apps/addon/dist/wow-dashboard.zip.sha256
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Notify Discord
+        if: ${{ env.DISCORD_WEBHOOK_URL != '' }}
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL_ADDON }}
+          VERSION: ${{ needs.bump-versions.outputs.addon_version }}
+        run: |
+          RELEASE_URL="https://github.com/${{ github.repository }}/releases/tag/addon-v${VERSION}"
+          curl --fail-with-body --silent --show-error -X POST "$DISCORD_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d "{\"content\": \"**WoW Dashboard Addon v${VERSION}** has been released! :tada:\\n${RELEASE_URL}\"}"
