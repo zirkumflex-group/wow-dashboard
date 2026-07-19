@@ -4,9 +4,10 @@ import { betterAuth } from "better-auth";
 import { bearer } from "better-auth/plugins/bearer";
 import { genericOAuth } from "better-auth/plugins/generic-oauth";
 import { players, schema } from "@wow-dashboard/db";
-import { env } from "@wow-dashboard/env/server";
+import { env } from "@wow-dashboard/env/api";
 import { db } from "./db";
 import { insertAuditEvent } from "./lib/audit";
+import { authSecondaryStorage } from "./lib/authStorage";
 import { enqueueSyncCharactersJob } from "./lib/queue";
 
 type BattleNetProfile = Record<string, string | undefined>;
@@ -114,7 +115,6 @@ async function queueCharacterSync(account: BattleNetAccountHook) {
   try {
     await enqueueSyncCharactersJob({
       userId: account.userId,
-      accessToken: account.accessToken,
     });
 
     return { queued: true as const, error: undefined };
@@ -135,6 +135,21 @@ export const auth = betterAuth({
     provider: "pg",
     schema,
   }),
+  secondaryStorage: authSecondaryStorage,
+  session: {
+    storeSessionInDatabase: true,
+  },
+  rateLimit: {
+    enabled: true,
+    storage: "secondary-storage",
+    window: 60,
+    max: 100,
+    customRules: {
+      "/sign-in/oauth2": { window: 60, max: 10 },
+      "/sign-in/social": { window: 60, max: 10 },
+      "/get-session": { window: 60, max: 120 },
+    },
+  },
   emailAndPassword: {
     enabled: false,
   },

@@ -321,6 +321,10 @@ export const playerRouteParamsSchema = z.object({
   id: z.string().uuid(),
 });
 
+export const dashboardSessionRouteParamsSchema = z.object({
+  id: z.string().trim().min(1).max(255),
+});
+
 export type CharacterRouteSlugParts = {
   name: string;
   realm: string;
@@ -439,9 +443,15 @@ export const updateMythicPlusRunSessionExternalIdBodySchema = z.object({
   externalId: nullableMythicPlusRunSessionExternalIdSchema,
 });
 
-export const updatePlayerDiscordBodySchema = z.object({
-  discordUserId: z.string().nullable(),
-});
+export const updatePlayerDiscordBodySchema = z
+  .object({
+    discordUserId: z.string().nullable().optional(),
+    shareDiscordInBoosterExport: z.boolean().optional(),
+  })
+  .refine(
+    (body) => body.discordUserId !== undefined || body.shareDiscordInBoosterExport !== undefined,
+    { message: "At least one Discord setting must be provided." },
+  );
 
 export const updateCharacterBoosterBodySchema = z.object({
   isBooster: z.boolean(),
@@ -461,6 +471,7 @@ export const addonIngestBodySchema = z.object({
 
 export type CharactersLatestQuery = z.infer<typeof charactersLatestQuerySchema>;
 export type PlayerRouteParams = z.infer<typeof playerRouteParamsSchema>;
+export type DashboardSessionRouteParams = z.infer<typeof dashboardSessionRouteParamsSchema>;
 export type CharacterRouteParams = z.infer<typeof characterRouteParamsSchema>;
 export type CharacterPageQuery = z.infer<typeof characterPageQuerySchema>;
 export type CharacterDetailTimelineQuery = z.infer<typeof characterDetailTimelineQuerySchema>;

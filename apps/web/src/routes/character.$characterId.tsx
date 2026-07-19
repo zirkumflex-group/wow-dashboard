@@ -43,29 +43,27 @@ import {
   TooltipTrigger,
 } from "@wow-dashboard/ui/components/tooltip";
 import { cn } from "@wow-dashboard/ui/lib/utils";
-import {
-  CheckCircle2,
-  Clock,
-  Coins,
-  ChevronDown,
-  Columns,
-  Copy,
-  ExternalLink,
-  Flame,
-  Gem,
-  Globe2,
-  History,
-  LayoutGrid,
-  LayoutList,
-  Lock,
-  Link2,
-  Maximize2,
-  Star,
-  Sword,
-  Trophy,
-  X,
-  Zap,
-} from "lucide-react";
+import CheckCircle2 from "lucide-react/dist/esm/icons/check-circle-2.mjs";
+import ChevronDown from "lucide-react/dist/esm/icons/chevron-down.mjs";
+import Clock from "lucide-react/dist/esm/icons/clock.mjs";
+import Coins from "lucide-react/dist/esm/icons/coins.mjs";
+import Columns from "lucide-react/dist/esm/icons/columns.mjs";
+import Copy from "lucide-react/dist/esm/icons/copy.mjs";
+import ExternalLink from "lucide-react/dist/esm/icons/external-link.mjs";
+import Flame from "lucide-react/dist/esm/icons/flame.mjs";
+import Gem from "lucide-react/dist/esm/icons/gem.mjs";
+import Globe2 from "lucide-react/dist/esm/icons/globe-2.mjs";
+import History from "lucide-react/dist/esm/icons/history.mjs";
+import LayoutGrid from "lucide-react/dist/esm/icons/layout-grid.mjs";
+import LayoutList from "lucide-react/dist/esm/icons/layout-list.mjs";
+import Link2 from "lucide-react/dist/esm/icons/link-2.mjs";
+import Lock from "lucide-react/dist/esm/icons/lock.mjs";
+import Maximize2 from "lucide-react/dist/esm/icons/maximize-2.mjs";
+import Star from "lucide-react/dist/esm/icons/star.mjs";
+import Sword from "lucide-react/dist/esm/icons/sword.mjs";
+import Trophy from "lucide-react/dist/esm/icons/trophy.mjs";
+import X from "lucide-react/dist/esm/icons/x.mjs";
+import Zap from "lucide-react/dist/esm/icons/zap.mjs";
 import {
   Suspense,
   lazy,

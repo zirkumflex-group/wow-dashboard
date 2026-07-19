@@ -1,13 +1,19 @@
 import Redis from "ioredis";
-import { env } from "@wow-dashboard/env/server";
+import { env } from "@wow-dashboard/env/api";
+import { logger } from "./logger";
 
 let redisClient: Redis | null = null;
 
 function createRedisClient(): Redis {
-  return new Redis(env.REDIS_URL, {
+  const redis = new Redis(env.REDIS_URL, {
     lazyConnect: true,
-    maxRetriesPerRequest: null,
+    connectTimeout: 10_000,
+    commandTimeout: 5_000,
+    maxRetriesPerRequest: 2,
+    retryStrategy: (attempt) => Math.min(attempt * 250, 5_000),
   });
+  redis.on("error", (error) => logger.error("redis.error", { error }));
+  return redis;
 }
 
 export function getRedis(): Redis {

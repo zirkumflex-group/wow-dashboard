@@ -1,4 +1,9 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
+import {
+  BattleNetRequestError,
+  fetchBattleNetCharactersForRegion,
+  type BattleNetCharacter,
+} from "@wow-dashboard/battlenet";
 import {
   mythicPlusPreviewRunLimit,
   type AddonCharacterInput,
@@ -121,30 +126,6 @@ type ExistingRunLookups = {
   byId: Map<string, StoredMythicPlusRunDocument>;
 };
 
-type BattleNetProfileCharacter = {
-  name?: unknown;
-  realm?: {
-    name?: unknown;
-    slug?: unknown;
-  };
-  playable_class?: {
-    name?: unknown;
-  };
-  playable_race?: {
-    name?: unknown;
-  };
-  faction?: {
-    type?: unknown;
-  };
-  level?: unknown;
-};
-
-type BattleNetWowProfileResponse = {
-  wow_accounts?: Array<{
-    characters?: BattleNetProfileCharacter[];
-  }>;
-};
-
 type VerifiedBattleNetCharacter = {
   name: string;
   realm: string;
@@ -202,14 +183,14 @@ function readBattleNetCharacterLevel(value: unknown): number | null {
 
 function readBattleNetProfileCharacter(
   region: CharacterRegion,
-  character: BattleNetProfileCharacter,
+  character: BattleNetCharacter,
 ): VerifiedBattleNetCharacter | null {
   const name = readNonEmptyString(character.name);
-  const realmSlug = readNonEmptyString(character.realm?.slug);
-  const realm = readNonEmptyString(character.realm?.name) ?? realmSlug;
-  const className = readNonEmptyString(character.playable_class?.name);
-  const race = readNonEmptyString(character.playable_race?.name);
-  const faction = normalizeBattleNetFaction(character.faction?.type);
+  const realmSlug = readNonEmptyString(character.realm.slug);
+  const realm = readNonEmptyString(character.realm.name) ?? realmSlug;
+  const className = readNonEmptyString(character.playable_class.name);
+  const race = readNonEmptyString(character.playable_race.name);
+  const faction = normalizeBattleNetFaction(character.faction.type);
   const level = readBattleNetCharacterLevel(character.level);
 
   if (!name || !realm || !className || !race || !faction) {
@@ -232,54 +213,23 @@ async function fetchBattleNetProfileCharacters(
   region: CharacterRegion,
   accessToken: string,
 ): Promise<VerifiedBattleNetCharacter[]> {
-  const url = `https://${region}.api.blizzard.com/profile/user/wow?namespace=profile-${region}&locale=en_US`;
-  let response: Response;
-
   try {
-    response = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
-    });
-  } catch {
+    return (await fetchBattleNetCharactersForRegion(accessToken, region))
+      .map((character) => readBattleNetProfileCharacter(region, character))
+      .filter((character): character is VerifiedBattleNetCharacter => character !== null);
+  } catch (error) {
+    if (error instanceof BattleNetRequestError && (error.status === 401 || error.status === 403)) {
+      throw new AddonIngestServiceError(
+        "Battle.net character verification failed. Reconnect Battle.net and try again.",
+        403,
+      );
+    }
+
     throw new AddonIngestServiceError(
       "Battle.net character verification is temporarily unavailable. Try again shortly.",
       503,
     );
   }
-
-  if (response.status === 404) {
-    return [];
-  }
-
-  if (response.status === 401 || response.status === 403) {
-    throw new AddonIngestServiceError(
-      "Battle.net character verification failed. Reconnect Battle.net and try again.",
-      403,
-    );
-  }
-
-  if (!response.ok) {
-    throw new AddonIngestServiceError(
-      "Battle.net character verification is temporarily unavailable. Try again shortly.",
-      503,
-    );
-  }
-
-  let body: BattleNetWowProfileResponse;
-  try {
-    body = (await response.json()) as BattleNetWowProfileResponse;
-  } catch {
-    throw new AddonIngestServiceError(
-      "Battle.net character verification returned invalid data. Try again shortly.",
-      503,
-    );
-  }
-
-  return (body.wow_accounts ?? [])
-    .flatMap((account) => account.characters ?? [])
-    .map((character) => readBattleNetProfileCharacter(region, character))
-    .filter((character): character is VerifiedBattleNetCharacter => character !== null);
 }
 
 async function verifyAddonCharacterOwnership(
@@ -1414,6 +1364,7 @@ async function collapseDuplicateMythicPlusRunsForCharacter(tx: DbExecutor, chara
   }
 
   let collapsedCount = 0;
+  const duplicateRunIds: string[] = [];
   for (const cluster of clusters) {
     if (cluster.runIds.length <= 1 || !cluster.representative._id) {
       continue;
@@ -1428,9 +1379,13 @@ async function collapseDuplicateMythicPlusRunsForCharacter(tx: DbExecutor, chara
 
     for (const runId of cluster.runIds) {
       if (runId === representativeId) continue;
-      await tx.delete(mythicPlusRuns).where(eq(mythicPlusRuns.id, runId));
+      duplicateRunIds.push(runId);
       collapsedCount += 1;
     }
+  }
+
+  if (duplicateRunIds.length > 0) {
+    await tx.delete(mythicPlusRuns).where(inArray(mythicPlusRuns.id, duplicateRunIds));
   }
 
   return collapsedCount;
@@ -1917,7 +1872,12 @@ export async function ingestAddonData(userId: string, inputCharacters: AddonChar
           .where(eq(characters.id, characterId));
       }
 
-      collapsedMythicPlusRuns += await collapseDuplicateMythicPlusRunsForCharacter(tx, characterId);
+      if (dedupedRuns.length < currentCharacterRuns.size) {
+        collapsedMythicPlusRuns += await collapseDuplicateMythicPlusRunsForCharacter(
+          tx,
+          characterId,
+        );
+      }
     }
 
     return {

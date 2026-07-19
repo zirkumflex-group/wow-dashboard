@@ -2,7 +2,8 @@
 
 .dark-scrollbar {
   scrollbar-width: thin;
-  scrollbar-color: color-mix(in oklab, var(--border) 70%, transparent) color-mix(in oklab, var(--background) 85%, black 15%);
+  scrollbar-color: color-mix(in oklab, var(--border) 70%, transparent)
+    color-mix(in oklab, var(--background) 85%, black 15%);
 }
 
 .dark-scrollbar::-webkit-scrollbar {

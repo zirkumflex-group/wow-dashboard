@@ -20,7 +20,8 @@ export const CURRENT_SEASON_DUNGEONS: MythicPlusDungeonMeta[] = [
     mapChallengeModeID: 402,
     name: "Algeth'ar Academy",
     shortName: "AA",
-    iconUrl: "https://cdn.raiderio.net/images/wow/icons/large/achievement_dungeon_dragonacademy.jpg",
+    iconUrl:
+      "https://cdn.raiderio.net/images/wow/icons/large/achievement_dungeon_dragonacademy.jpg",
     timerMs: 30 * 60 * 1000,
     easeRank: 5,
     easeTier: "A",
@@ -29,7 +30,8 @@ export const CURRENT_SEASON_DUNGEONS: MythicPlusDungeonMeta[] = [
     mapChallengeModeID: 558,
     name: "Magisters' Terrace",
     shortName: "MT",
-    iconUrl: "https://cdn.raiderio.net/images/wow/icons/large/inv_achievement_dungeon_magistersterrace.jpg",
+    iconUrl:
+      "https://cdn.raiderio.net/images/wow/icons/large/inv_achievement_dungeon_magistersterrace.jpg",
     timerMs: 34 * 60 * 1000,
     easeRank: 6,
     easeTier: "B",
@@ -38,7 +40,8 @@ export const CURRENT_SEASON_DUNGEONS: MythicPlusDungeonMeta[] = [
     mapChallengeModeID: 560,
     name: "Maisara Caverns",
     shortName: "MC",
-    iconUrl: "https://cdn.raiderio.net/images/wow/icons/large/inv_achievement_dungeon_maisarahills.jpg",
+    iconUrl:
+      "https://cdn.raiderio.net/images/wow/icons/large/inv_achievement_dungeon_maisarahills.jpg",
     timerMs: 33 * 60 * 1000,
     easeRank: 8,
     easeTier: "C",
@@ -47,7 +50,8 @@ export const CURRENT_SEASON_DUNGEONS: MythicPlusDungeonMeta[] = [
     mapChallengeModeID: 559,
     name: "Nexus-Point Xenas",
     shortName: "NPX",
-    iconUrl: "https://cdn.raiderio.net/images/wow/icons/large/inv_achievement_dungeon_voidscararena.jpg",
+    iconUrl:
+      "https://cdn.raiderio.net/images/wow/icons/large/inv_achievement_dungeon_voidscararena.jpg",
     timerMs: 30 * 60 * 1000,
     easeRank: 7,
     easeTier: "B",
@@ -56,7 +60,8 @@ export const CURRENT_SEASON_DUNGEONS: MythicPlusDungeonMeta[] = [
     mapChallengeModeID: 556,
     name: "Pit of Saron",
     shortName: "POS",
-    iconUrl: "https://cdn.raiderio.net/images/wow/icons/large/achievement_dungeon_icecrown_pitofsaron.jpg",
+    iconUrl:
+      "https://cdn.raiderio.net/images/wow/icons/large/achievement_dungeon_icecrown_pitofsaron.jpg",
     timerMs: 30 * 60 * 1000,
     easeRank: 1,
     easeTier: "S",
@@ -65,7 +70,8 @@ export const CURRENT_SEASON_DUNGEONS: MythicPlusDungeonMeta[] = [
     mapChallengeModeID: 239,
     name: "Seat of the Triumvirate",
     shortName: "SEAT",
-    iconUrl: "https://cdn.raiderio.net/images/wow/icons/large/achievement_boss_triumvirate_darknaaru.jpg",
+    iconUrl:
+      "https://cdn.raiderio.net/images/wow/icons/large/achievement_boss_triumvirate_darknaaru.jpg",
     timerMs: 34 * 60 * 1000,
     easeRank: 2,
     easeTier: "A",
@@ -74,7 +80,8 @@ export const CURRENT_SEASON_DUNGEONS: MythicPlusDungeonMeta[] = [
     mapChallengeModeID: 161,
     name: "Skyreach",
     shortName: "SR",
-    iconUrl: "https://cdn.raiderio.net/images/wow/icons/large/achievement_dungeon_arakkoaspires.jpg",
+    iconUrl:
+      "https://cdn.raiderio.net/images/wow/icons/large/achievement_dungeon_arakkoaspires.jpg",
     timerMs: 28 * 60 * 1000,
     easeRank: 3,
     easeTier: "A",
@@ -83,7 +90,8 @@ export const CURRENT_SEASON_DUNGEONS: MythicPlusDungeonMeta[] = [
     mapChallengeModeID: 557,
     name: "Windrunner Spire",
     shortName: "WS",
-    iconUrl: "https://cdn.raiderio.net/images/wow/icons/large/inv_achievement_dungeon_windrunnerspire.jpg",
+    iconUrl:
+      "https://cdn.raiderio.net/images/wow/icons/large/inv_achievement_dungeon_windrunnerspire.jpg",
     timerMs: 33.5 * 60 * 1000,
     easeRank: 4,
     easeTier: "A",
@@ -129,7 +137,10 @@ export function getMythicPlusDungeonEaseRank(
   mapChallengeModeID?: number | null,
   mapName?: string | null,
 ) {
-  return getMythicPlusDungeonMeta(mapChallengeModeID, mapName)?.easeRank ?? CURRENT_SEASON_DUNGEONS.length;
+  return (
+    getMythicPlusDungeonMeta(mapChallengeModeID, mapName)?.easeRank ??
+    CURRENT_SEASON_DUNGEONS.length
+  );
 }
 
 function getRaiderIoScoreTier(score?: number | null) {

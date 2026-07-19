@@ -52,9 +52,7 @@ export function PlaytimeBreakdown({
           )}
         >
           <span className="uppercase tracking-[0.18em]">This lvl</span>
-          <span className="tabular-nums font-medium text-muted-foreground">
-            {levelValue}
-          </span>
+          <span className="tabular-nums font-medium text-muted-foreground">{levelValue}</span>
         </span>
       </span>
     );
@@ -105,11 +103,7 @@ export function PlaytimeBreakdown({
           align === "end" && "text-right",
         )}
       >
-        <span
-          className={cn(
-            "tabular-nums text-4xl font-bold leading-none text-foreground",
-          )}
-        >
+        <span className={cn("tabular-nums text-4xl font-bold leading-none text-foreground")}>
           {totalValue}
         </span>
       </span>
@@ -122,20 +116,10 @@ export function PlaytimeBreakdown({
           "min-w-[8rem] gap-1 pl-4",
         )}
       >
-        <span
-          className={cn(
-            "text-[10px] uppercase tracking-[0.18em] text-muted-foreground/75",
-          )}
-        >
+        <span className={cn("text-[10px] uppercase tracking-[0.18em] text-muted-foreground/75")}>
           This level
         </span>
-        <span
-          className={cn(
-            "tabular-nums text-lg font-semibold leading-none",
-          )}
-        >
-          {levelValue}
-        </span>
+        <span className={cn("tabular-nums text-lg font-semibold leading-none")}>{levelValue}</span>
       </span>
     </div>
   );

@@ -26,27 +26,16 @@ contextBridge.exposeInMainWorld("electron", {
   version: process.versions.electron,
   auth: {
     login: () => ipcRenderer.invoke("auth:login"),
-    getSession: () =>
-      ipcRenderer.invoke("auth:getSession") as Promise<DesktopAuthSessionState>,
+    getSession: () => ipcRenderer.invoke("auth:getSession") as Promise<DesktopAuthSessionState>,
     logout: () => ipcRenderer.invoke("auth:logout"),
   },
   api: {
-    fetch: (request: {
-      url: string;
-      method?: string;
-      headers?: Array<[string, string]>;
-      body?: string;
-    }) =>
-      ipcRenderer.invoke("api:fetch", request) as Promise<{
-        status: number;
-        statusText: string;
-        headers: Array<[string, string]>;
-        body: string;
-      }>,
+    getCharacterCount: () => ipcRenderer.invoke("api:getCharacterCount") as Promise<number>,
   },
   wow: {
     getRetailPath: () => ipcRenderer.invoke("wow:getRetailPath") as Promise<string | null>,
-    selectRetailFolder: () => ipcRenderer.invoke("wow:selectRetailFolder") as Promise<string | null>,
+    selectRetailFolder: () =>
+      ipcRenderer.invoke("wow:selectRetailFolder") as Promise<string | null>,
     getAddonFileState: (sinceTs: number) =>
       ipcRenderer.invoke("wow:getAddonFileState", sinceTs) as Promise<AddonFileState | null>,
     syncAddonData: () => ipcRenderer.invoke("wow:syncAddonData") as Promise<AddonSyncResult>,

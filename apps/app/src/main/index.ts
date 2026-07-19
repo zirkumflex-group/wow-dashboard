@@ -11,15 +11,25 @@ import {
   Menu,
   nativeImage,
 } from "electron";
-import { autoUpdater } from "electron-updater";
-import { env as appEnv } from "@wow-dashboard/env/app";
+import {
+  buildCanonicalMythicPlusRunFingerprint as buildSharedCanonicalMythicPlusRunFingerprint,
+  canUseMythicPlusRunCompatibilityAliasMatch as canUseSharedMythicPlusRunCompatibilityAliasMatch,
+  getMythicPlusRunAttemptId as getSharedMythicPlusRunAttemptId,
+  getMythicPlusRunCanonicalKey as getSharedMythicPlusRunCanonicalKey,
+  getMythicPlusRunCompatibilityLookupAliases as getSharedMythicPlusRunCompatibilityLookupAliases,
+  getMythicPlusRunLifecycleStatus as getSharedMythicPlusRunLifecycleStatus,
+  mergeMythicPlusRunMembers as mergeSharedMythicPlusRunMembers,
+  pickMergedMythicPlusSeasonID,
+  shouldReplaceMythicPlusRun as shouldReplaceSharedMythicPlusRun,
+} from "@wow-dashboard/mythic-plus";
 import { execFile } from "node:child_process";
 import * as fs from "fs";
 import * as path from "path";
 import { join, resolve, sep } from "path";
 import * as crypto from "crypto";
 import * as os from "os";
-import * as unzipper from "unzipper";
+import { Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import type {
   AddonApplyStagedResult,
@@ -28,7 +38,10 @@ import type {
   AppInstallUpdateResult,
   AppUpdateState,
 } from "../shared/update";
+import { replaceDirectoryAtomically } from "./atomicAddonInstall";
+import { LuaParser } from "./luaParser";
 import { resolveDesktopAuthSessionState, type DesktopAuthSessionState } from "../shared/auth";
+import { desktopConfig } from "../shared/config";
 import type {
   AddonFileState,
   AddonFileStats,
@@ -62,9 +75,14 @@ let appUpdaterListenersRegistered = false;
 let addonUpdateCheckTimer: ReturnType<typeof setInterval> | null = null;
 let addonUpdateApplyTimer: ReturnType<typeof setInterval> | null = null;
 let appUpdateCheckTimer: ReturnType<typeof setInterval> | null = null;
+let appUpdateStartupTimer: ReturnType<typeof setTimeout> | null = null;
 let addonSyncTimer: ReturnType<typeof setInterval> | null = null;
 let addonSyncInFlight: Promise<AddonSyncResult> | null = null;
 let addonSyncRerunAfterInFlight = false;
+type DesktopAutoUpdater = (typeof import("electron-updater"))["autoUpdater"];
+let desktopAutoUpdater: DesktopAutoUpdater | null = null;
+let desktopAutoUpdaterLoad: Promise<DesktopAutoUpdater> | null = null;
+let appUpdaterRegistration: Promise<void> | null = null;
 
 const DEFAULT_APP_UPDATE_CHECK_INTERVAL_MINUTES = 60;
 const DEFAULT_ADDON_UPDATE_CHECK_INTERVAL_MINUTES = 60;
@@ -72,6 +90,7 @@ const DEFAULT_ADDON_UPDATE_APPLY_INTERVAL_MINUTES = 1;
 const DEFAULT_ADDON_SYNC_INTERVAL_MINUTES = 15;
 const ADDON_FILE_SYNC_DEBOUNCE_MS = 5_000;
 const ADDON_STARTUP_SYNC_DELAY_MS = 3_000;
+const APP_UPDATE_STARTUP_DELAY_MS = 5_000;
 const MYTHIC_PLUS_UPLOAD_LOOKBACK_SECONDS = 2 * 60 * 60;
 const MYTHIC_PLUS_MEMBER_UPLOAD_LOOKBACK_SECONDS = 48 * 60 * 60;
 const MYTHIC_PLUS_MISSING_SCORE_UPLOAD_LOOKBACK_SECONDS = 48 * 60 * 60;
@@ -80,6 +99,13 @@ const ADDON_UPLOAD_SNAPSHOTS_PER_CHARACTER = 100;
 const ADDON_UPLOAD_RUNS_PER_CHARACTER = 150;
 const ADDON_UPLOAD_MAX_BATCH_BODY_BYTES = 768 * 1024;
 const MAX_MYTHIC_PLUS_RUN_MEMBERS = 5;
+const NETWORK_REQUEST_TIMEOUT_MS = 15_000;
+const NETWORK_DOWNLOAD_TIMEOUT_MS = 2 * 60 * 1000;
+const MAX_ADDON_ARCHIVE_BYTES = 25 * 1024 * 1024;
+const MAX_ADDON_CHECKSUM_BYTES = 64 * 1024;
+const MAX_ADDON_ARCHIVE_ENTRIES = 1_000;
+const MAX_ADDON_EXTRACTED_BYTES = 100 * 1024 * 1024;
+const MAX_ADDON_SAVED_VARIABLES_BYTES = 64 * 1024 * 1024;
 
 if (!app.isPackaged) {
   app.setName("WoW Dashboard Dev");
@@ -105,13 +131,24 @@ const addonUpdateState: AddonUpdateState = {
   error: null,
   lastCheckedAt: null,
 };
-const SITE_URL = appEnv.VITE_SITE_URL;
-const API_URL = appEnv.VITE_API_URL;
+const SITE_URL = desktopConfig.siteUrl;
+const API_URL = desktopConfig.apiUrl;
 const DESKTOP_CLIENT_HEADER = "X-Wow-Dashboard-Client";
 const DESKTOP_CLIENT_HEADER_VALUE = "desktop";
 const RENDERER_DEV_URL = process.env["ELECTRON_RENDERER_URL"] ?? null;
 const RENDERER_FILE_PATH = join(__dirname, "../renderer/index.html");
 const RENDERER_DIR = resolve(__dirname, "../renderer");
+
+function withNetworkTimeout(
+  init: RequestInit = {},
+  timeoutMs = NETWORK_REQUEST_TIMEOUT_MS,
+): RequestInit {
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  return {
+    ...init,
+    signal: init.signal ? AbortSignal.any([init.signal, timeoutSignal]) : timeoutSignal,
+  };
+}
 
 function isHttpUrl(url: URL): boolean {
   return url.protocol === "https:" || url.protocol === "http:";
@@ -163,34 +200,6 @@ function handleBlockedRendererNavigation(rawUrl: string): void {
     void openUrlInExternalBrowser(rawUrl).catch((error) => {
       console.warn("[wow-dashboard] Failed to open blocked renderer navigation externally:", error);
     });
-  }
-}
-
-type MainApiFetchRequest = {
-  url: string;
-  method?: string;
-  headers?: Array<[string, string]>;
-  body?: string;
-};
-
-type MainApiFetchResponse = {
-  status: number;
-  statusText: string;
-  headers: Array<[string, string]>;
-  body: string;
-};
-
-function isTrustedApiUrl(rawUrl: string): boolean {
-  try {
-    const parsedUrl = new URL(rawUrl);
-    const apiBaseUrl = new URL(API_URL.endsWith("/") ? API_URL : `${API_URL}/`);
-    return (
-      parsedUrl.origin === apiBaseUrl.origin &&
-      (parsedUrl.pathname === apiBaseUrl.pathname.slice(0, -1) ||
-        parsedUrl.pathname.startsWith(apiBaseUrl.pathname))
-    );
-  } catch {
-    return false;
   }
 }
 
@@ -407,6 +416,10 @@ function clearBackgroundTimers(): void {
     clearInterval(appUpdateCheckTimer);
     appUpdateCheckTimer = null;
   }
+  if (appUpdateStartupTimer) {
+    clearTimeout(appUpdateStartupTimer);
+    appUpdateStartupTimer = null;
+  }
   if (addonSyncTimer) {
     clearInterval(addonSyncTimer);
     addonSyncTimer = null;
@@ -422,7 +435,9 @@ function prepareForQuit(options?: { windowsSessionEnding?: boolean }): void {
 
   if (options?.windowsSessionEnding) {
     isEndingWindowsSession = true;
-    autoUpdater.autoInstallOnAppQuit = false;
+    if (desktopAutoUpdater) {
+      desktopAutoUpdater.autoInstallOnAppQuit = false;
+    }
   }
 
   clearBackgroundTimers();
@@ -487,6 +502,14 @@ function installDownloadedAppUpdate(): AppInstallUpdateResult {
       message: "No downloaded desktop update is ready to install.",
     };
   }
+  if (!desktopAutoUpdater) {
+    return {
+      ok: false,
+      status: "notDownloaded",
+      message: "The downloaded update is not available in this app session.",
+    };
+  }
+  const updater = desktopAutoUpdater;
 
   updateAppUpdateState({
     status: "installing",
@@ -495,7 +518,7 @@ function installDownloadedAppUpdate(): AppInstallUpdateResult {
   isInstallingAppUpdate = true;
   isQuitting = true;
   setImmediate(() => {
-    autoUpdater.quitAndInstall(true, true);
+    updater.quitAndInstall(true, true);
   });
 
   return {
@@ -561,142 +584,51 @@ function settingsPath(): string {
   return join(app.getPath("userData"), "wow-dashboard-settings.json");
 }
 
+let settingsCache: Record<string, unknown> | null = null;
+let settingsLoadInFlight: Promise<Record<string, unknown>> | null = null;
+let settingsWriteChain: Promise<void> = Promise.resolve();
+
 async function getSettings(): Promise<Record<string, unknown>> {
-  try {
-    const raw = await fs.promises.readFile(settingsPath(), "utf-8");
-    return JSON.parse(raw) as Record<string, unknown>;
-  } catch {
-    return {};
+  if (settingsCache) {
+    return settingsCache;
   }
+
+  settingsLoadInFlight ??= (async () => {
+    let loaded: Record<string, unknown>;
+    try {
+      const raw = await fs.promises.readFile(settingsPath(), "utf-8");
+      const parsed: unknown = JSON.parse(raw);
+      loaded =
+        parsed && typeof parsed === "object" && !Array.isArray(parsed)
+          ? (parsed as Record<string, unknown>)
+          : {};
+    } catch {
+      loaded = {};
+    }
+
+    settingsCache = loaded;
+    return loaded;
+  })();
+
+  return settingsLoadInFlight;
 }
 
 async function saveSettings(data: Record<string, unknown>): Promise<void> {
-  await fs.promises.writeFile(settingsPath(), JSON.stringify(data, null, 2), "utf-8");
-}
-
-// ─── Lua parser ───────────────────────────────────────────────────────────────
-// Parses the WoW SavedVariables file format (a Lua table literal assignment).
-
-class LuaParser {
-  private src: string;
-  private pos: number;
-
-  constructor(src: string) {
-    this.src = src;
-    this.pos = 0;
-  }
-
-  parseFile(): Record<string, unknown> | null {
-    const m = this.src.match(/WowDashboardDB\s*=\s*/);
-    if (!m || m.index === undefined) return null;
-    this.pos = m.index + m[0].length;
-    const val = this.parseValue();
-    return val as Record<string, unknown>;
-  }
-
-  private skip(): void {
-    while (this.pos < this.src.length) {
-      const current = this.src[this.pos] ?? "";
-      if (/\s/.test(current)) {
-        this.pos++;
-      } else if (current === "-" && this.src[this.pos + 1] === "-") {
-        while (this.pos < this.src.length && this.src[this.pos] !== "\n") this.pos++;
-      } else {
-        break;
-      }
+  settingsCache = data;
+  const targetPath = settingsPath();
+  const temporaryPath = `${targetPath}.${process.pid}.tmp`;
+  const serialized = JSON.stringify(data, null, 2);
+  const write = settingsWriteChain.then(async () => {
+    try {
+      await fs.promises.writeFile(temporaryPath, serialized, "utf-8");
+      await fs.promises.rename(temporaryPath, targetPath);
+    } catch (error) {
+      await fs.promises.rm(temporaryPath, { force: true }).catch(() => {});
+      throw error;
     }
-  }
-
-  private parseValue(): unknown {
-    this.skip();
-    const ch = this.src[this.pos] ?? "";
-    if (ch === "{") return this.parseTable();
-    if (ch === '"') return this.parseString();
-    if (ch === "-" || /\d/.test(ch)) return this.parseNumber();
-    if (this.src.startsWith("true", this.pos)) {
-      this.pos += 4;
-      return true;
-    }
-    if (this.src.startsWith("false", this.pos)) {
-      this.pos += 5;
-      return false;
-    }
-    if (this.src.startsWith("nil", this.pos)) {
-      this.pos += 3;
-      return null;
-    }
-    throw new Error(
-      `Unexpected token at ${this.pos}: "${this.src.slice(this.pos, this.pos + 30)}"`,
-    );
-  }
-
-  private parseTable(): unknown[] | Record<string, unknown> {
-    this.pos++; // skip '{'
-    const dict: Record<string, unknown> = {};
-    const arr: unknown[] = [];
-    let isDict = false;
-
-    while (true) {
-      this.skip();
-      if (this.src[this.pos] === "}") {
-        this.pos++;
-        break;
-      }
-      if (this.src[this.pos] === ",") {
-        this.pos++;
-        continue;
-      }
-
-      if (this.src[this.pos] === "[" && this.src[this.pos + 1] === '"') {
-        // ["string key"] = value
-        isDict = true;
-        this.pos += 2; // skip ["
-        const end = this.src.indexOf('"', this.pos);
-        const key = this.src.slice(this.pos, end);
-        this.pos = end + 1; // skip closing "
-        this.skip();
-        this.pos++; // skip ]
-        this.skip();
-        this.pos++; // skip =
-        dict[key] = this.parseValue();
-      } else {
-        // Positional (array) value
-        arr.push(this.parseValue());
-      }
-    }
-
-    return isDict ? dict : arr;
-  }
-
-  private parseString(): string {
-    this.pos++; // skip opening "
-    let result = "";
-    while (this.pos < this.src.length) {
-      const ch = this.src[this.pos];
-      if (ch === '"') {
-        this.pos++;
-        break;
-      }
-      if (ch === "\\") {
-        this.pos++;
-        const esc = this.src[this.pos++];
-        if (esc === "n") result += "\n";
-        else if (esc === "t") result += "\t";
-        else result += esc;
-      } else {
-        result += ch;
-        this.pos++;
-      }
-    }
-    return result;
-  }
-
-  private parseNumber(): number {
-    const m = this.src.slice(this.pos).match(/^-?\d+\.?\d*/);
-    if (!m) throw new Error(`Expected number at ${this.pos}`);
-    this.pos += m[0].length;
-    return parseFloat(m[0]);
-  }
+  });
+  settingsWriteChain = write.catch(() => {});
+  await write;
 }
 
 // ─── Addon data extraction ────────────────────────────────────────────────────
@@ -1235,43 +1167,10 @@ function isTemporaryAttemptFingerprint(value: unknown): boolean {
   return typeof value === "string" && value.startsWith("attempt|");
 }
 
-function hasRunCompletionEvidence(run: Partial<MythicPlusRunData>): boolean {
-  return (
-    run.completed === true ||
-    getSanitizedRunDurationMs(run) !== undefined ||
-    run.runScore !== undefined ||
-    run.completedAt !== undefined
-  );
-}
-
-function hasRunAbandonmentEvidence(run: Partial<MythicPlusRunData>): boolean {
-  return (
-    run.abandonedAt !== undefined ||
-    run.abandonReason !== undefined ||
-    (run.endedAt !== undefined && !hasRunCompletionEvidence(run))
-  );
-}
-
 function getMythicPlusRunStatus(
   run: Partial<MythicPlusRunData>,
 ): MythicPlusRunData["status"] | undefined {
-  if (run.status === "active" || run.status === "completed" || run.status === "abandoned") {
-    return run.status;
-  }
-  if (hasRunCompletionEvidence(run)) {
-    return "completed";
-  }
-  if (hasRunAbandonmentEvidence(run)) {
-    return "abandoned";
-  }
-  return undefined;
-}
-
-function getMythicPlusRunStatusPriority(status: MythicPlusRunData["status"] | undefined): number {
-  if (status === "completed") return 3;
-  if (status === "abandoned") return 2;
-  if (status === "active") return 1;
-  return 0;
+  return getSharedMythicPlusRunLifecycleStatus(run);
 }
 
 function normalizeRunMemberRole(value: unknown): Role | undefined {
@@ -1389,96 +1288,13 @@ function normalizeMythicPlusRunMembers(value: unknown): MythicPlusRunMemberData[
   return members.length > 0 ? members : undefined;
 }
 
-function getNormalizedRunMemberName(member: MythicPlusRunMemberData) {
-  return member.name.trim().toLowerCase();
-}
-
-function getNormalizedRunMemberRealm(member: MythicPlusRunMemberData) {
-  return member.realm?.trim().toLowerCase() ?? "";
-}
-
-function findMergeableRunMemberIndex(
-  members: MythicPlusRunMemberData[],
-  candidateMember: MythicPlusRunMemberData,
-) {
-  const candidateName = getNormalizedRunMemberName(candidateMember);
-  const candidateRealm = getNormalizedRunMemberRealm(candidateMember);
-  let exactIndex: number | undefined;
-  let unresolvedIndex: number | undefined;
-  let unresolvedCount = 0;
-  let sameNameIndex: number | undefined;
-  let sameNameCount = 0;
-
-  for (let index = 0; index < members.length; index += 1) {
-    const currentMember = members[index]!;
-    if (getNormalizedRunMemberName(currentMember) !== candidateName) {
-      continue;
-    }
-
-    sameNameCount += 1;
-    sameNameIndex ??= index;
-    const currentRealm = getNormalizedRunMemberRealm(currentMember);
-    if (currentRealm === candidateRealm) {
-      exactIndex = index;
-      break;
-    }
-    if (currentRealm === "") {
-      unresolvedIndex = index;
-      unresolvedCount += 1;
-    }
-  }
-
-  if (exactIndex !== undefined) {
-    return exactIndex;
-  }
-  if (candidateRealm === "") {
-    return sameNameCount === 1 ? (unresolvedIndex ?? sameNameIndex) : undefined;
-  }
-
-  return unresolvedCount === 1 ? unresolvedIndex : undefined;
-}
-
-function mergeMythicPlusRunMember(
-  currentMember: MythicPlusRunMemberData | undefined,
-  candidateMember: MythicPlusRunMemberData,
-): MythicPlusRunMemberData {
-  return {
-    name: candidateMember.name,
-    realm: candidateMember.realm ?? currentMember?.realm,
-    classTag: candidateMember.classTag ?? currentMember?.classTag,
-    role: candidateMember.role ?? currentMember?.role,
-  };
-}
-
 function mergeMythicPlusRunMembers(
   currentMembers: MythicPlusRunMemberData[] | undefined,
   candidateMembers: MythicPlusRunMemberData[] | undefined,
 ) {
-  if (
-    (!currentMembers || currentMembers.length === 0) &&
-    (!candidateMembers || candidateMembers.length === 0)
-  ) {
-    return undefined;
-  }
-
-  const mergedMembers: MythicPlusRunMemberData[] = [];
-
-  for (const members of [candidateMembers, currentMembers]) {
-    for (const member of members ?? []) {
-      const mergedIndex = findMergeableRunMemberIndex(mergedMembers, member);
-      if (mergedIndex === undefined) {
-        if (mergedMembers.length >= MAX_MYTHIC_PLUS_RUN_MEMBERS) {
-          continue;
-        }
-        mergedMembers.push(member);
-        continue;
-      }
-
-      mergedMembers[mergedIndex] = mergeMythicPlusRunMember(mergedMembers[mergedIndex], member);
-    }
-  }
-
-  return mergedMembers.length > 0 ? mergedMembers : undefined;
+  return mergeSharedMythicPlusRunMembers(currentMembers, candidateMembers) as
+    | MythicPlusRunMemberData[]
+    | undefined;
 }
 
 function getMythicPlusRunMemberCompletenessScore(
@@ -1602,52 +1418,8 @@ function normalizeCanonicalKey(value: unknown): string | undefined {
   return normalized;
 }
 
-function normalizeLifecycleTimestamp(value: number | null | undefined): number | undefined {
-  if (value === null || value === undefined || !Number.isFinite(value) || value <= 0) {
-    return undefined;
-  }
-  return Math.floor(value);
-}
-
-function buildRunAttemptIdFromStartDate(run: Partial<MythicPlusRunData>): string | undefined {
-  const mapToken = getRunMapFingerprintToken(run);
-  const startDate = run.startDate;
-  if (
-    mapToken === "" ||
-    run.level === undefined ||
-    startDate === undefined ||
-    !Number.isFinite(startDate) ||
-    startDate <= 0
-  ) {
-    return undefined;
-  }
-
-  return [
-    "attempt",
-    toFingerprintToken(run.seasonID),
-    mapToken,
-    toFingerprintToken(run.level),
-    toFingerprintToken(Math.floor(startDate)),
-  ].join("|");
-}
-
 function getRunAttemptId(run: Partial<MythicPlusRunData>): string | undefined {
-  const explicitAttemptId = normalizeAttemptId(run.attemptId);
-  if (explicitAttemptId) {
-    return explicitAttemptId;
-  }
-
-  const fingerprintAttemptId = normalizeAttemptId(run.fingerprint);
-  if (fingerprintAttemptId && isTemporaryAttemptFingerprint(fingerprintAttemptId)) {
-    return fingerprintAttemptId;
-  }
-
-  return buildRunAttemptIdFromStartDate(run);
-}
-
-function getRunSeasonTokens(run: Partial<MythicPlusRunData>): string[] {
-  const seasonToken = run.seasonID !== undefined ? toFingerprintToken(run.seasonID) : "";
-  return seasonToken === "" ? [""] : [seasonToken, ""];
+  return getSharedMythicPlusRunAttemptId(run) ?? undefined;
 }
 
 const MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS = 4 * 60 * 60 * 1000;
@@ -1674,33 +1446,6 @@ function getSanitizedRunDurationMs(run: Partial<MythicPlusRunData>): number | un
     }
   }
 
-  return undefined;
-}
-
-function getRunDurationSeconds(run: Partial<MythicPlusRunData>): number | undefined {
-  const durationMs = getSanitizedRunDurationMs(run);
-  if (durationMs === undefined) return undefined;
-  return Math.floor(durationMs / 1000 + 0.5);
-}
-
-function getRunDerivedStartTimestamp(run: Partial<MythicPlusRunData>): number | undefined {
-  if (run.startDate !== undefined) return run.startDate;
-  const durationSeconds = getRunDurationSeconds(run);
-  const endAt = run.completedAt ?? run.endedAt ?? run.abandonedAt;
-  if (durationSeconds !== undefined && endAt !== undefined) {
-    return endAt - durationSeconds;
-  }
-  return undefined;
-}
-
-function getRunDerivedEndTimestamp(run: Partial<MythicPlusRunData>): number | undefined {
-  if (run.completedAt !== undefined) return run.completedAt;
-  if (run.endedAt !== undefined) return run.endedAt;
-  if (run.abandonedAt !== undefined) return run.abandonedAt;
-  const durationSeconds = getRunDurationSeconds(run);
-  if (durationSeconds !== undefined && run.startDate !== undefined) {
-    return run.startDate + durationSeconds;
-  }
   return undefined;
 }
 
@@ -1734,44 +1479,6 @@ function shouldApplyLegacyHistoryDstForwardShift(run: Partial<MythicPlusRunData>
   return true;
 }
 
-function getRunIdentityCandidates(run: Partial<MythicPlusRunData>): number[] {
-  const candidates: number[] = [];
-  const seen = new Set<number>();
-
-  const pushCandidate = (value: number | null | undefined) => {
-    if (value === null || value === undefined || !Number.isFinite(value) || value <= 0) return;
-    const normalized = Math.floor(value);
-    if (seen.has(normalized)) return;
-    seen.add(normalized);
-    candidates.push(normalized);
-  };
-
-  const derivedStart = getRunDerivedStartTimestamp(run);
-  const derivedEnd = getRunDerivedEndTimestamp(run);
-  pushCandidate(run.startDate);
-  pushCandidate(run.completedAt);
-  pushCandidate(run.endedAt);
-  pushCandidate(run.abandonedAt);
-  pushCandidate(derivedStart);
-  pushCandidate(derivedEnd);
-  const likelyPlayedAt = getLikelyPlayedAtTimestamp(run);
-  pushCandidate(likelyPlayedAt);
-  if (likelyPlayedAt > 0) {
-    pushCandidate(Math.floor(likelyPlayedAt / 60) * 60);
-  }
-
-  if (run.startDate === undefined && hasStrongCompletedRunIdentitySignature(run)) {
-    const shiftSources = [run.completedAt, run.endedAt, run.abandonedAt, derivedEnd];
-    for (const source of shiftSources) {
-      if (source === undefined || source === null) continue;
-      pushCandidate(source - LEGACY_DST_SHIFT_SECONDS);
-      pushCandidate(source + LEGACY_DST_SHIFT_SECONDS);
-    }
-  }
-
-  return candidates;
-}
-
 function getLikelyPlayedAtTimestamp(run: Partial<MythicPlusRunData>): number {
   const primaryTimestamp = run.endedAt ?? run.abandonedAt ?? run.completedAt ?? run.startDate;
   if (primaryTimestamp === undefined) {
@@ -1799,89 +1506,14 @@ function getLikelyPlayedAtTimestamp(run: Partial<MythicPlusRunData>): number {
   return primaryTimestamp;
 }
 
-function buildRunFingerprintWithIdentity(
-  run: Partial<MythicPlusRunData>,
-  identityTimestamp: number,
-  options?: {
-    seasonToken?: string;
-    mapToken?: string;
-  },
-): string | undefined {
-  const mapToken = options?.mapToken ?? getRunMapFingerprintToken(run);
-  if (mapToken === "" || run.level === undefined) {
-    return undefined;
-  }
-
-  const seasonToken = options?.seasonToken ?? toFingerprintToken(run.seasonID);
-  return [
-    seasonToken,
-    mapToken,
-    toFingerprintToken(run.level),
-    toFingerprintToken(identityTimestamp),
-  ].join("|");
-}
-
-function getRunCanonicalEventTimestamp(run: Partial<MythicPlusRunData>): number | undefined {
-  const explicitTimestamps = [run.startDate, run.completedAt, run.endedAt, run.abandonedAt];
-  for (const timestamp of explicitTimestamps) {
-    const normalized = normalizeLifecycleTimestamp(timestamp);
-    if (normalized !== undefined) {
-      return normalized;
-    }
-  }
-
-  const derivedCandidates = [getRunDerivedStartTimestamp(run), getRunDerivedEndTimestamp(run)];
-  for (const timestamp of derivedCandidates) {
-    const normalized = normalizeLifecycleTimestamp(timestamp);
-    if (normalized !== undefined) {
-      return normalized;
-    }
-  }
-
-  return undefined;
-}
-
-function buildRunCanonicalKeyWithIdentityTimestamp(
-  run: Partial<MythicPlusRunData>,
-  identityTimestamp: number,
-): string | undefined {
-  const mapToken = getRunMapFingerprintToken(run);
-  if (mapToken === "" || run.level === undefined) {
-    return undefined;
-  }
-
-  return [
-    "run",
-    toFingerprintToken(run.seasonID),
-    mapToken,
-    toFingerprintToken(run.level),
-    toFingerprintToken(identityTimestamp),
-  ].join("|");
-}
-
 function getMythicPlusRunCanonicalKey(run: Partial<MythicPlusRunData>): string | undefined {
-  const explicitCanonicalKey = normalizeCanonicalKey(run.canonicalKey);
-  if (explicitCanonicalKey !== undefined) {
-    return explicitCanonicalKey;
-  }
-
-  const attemptId = getRunAttemptId(run);
-  if (attemptId) {
-    return `aid|${attemptId}`;
-  }
-
-  const identityTimestamp = getRunCanonicalEventTimestamp(run);
-  if (identityTimestamp === undefined) {
-    return undefined;
-  }
-
-  return buildRunCanonicalKeyWithIdentityTimestamp(run, identityTimestamp);
+  return getSharedMythicPlusRunCanonicalKey(run) ?? undefined;
 }
 
 function buildCanonicalMythicPlusRunFingerprint(
   run: Partial<MythicPlusRunData>,
 ): string | undefined {
-  return getMythicPlusRunCanonicalKey(run);
+  return buildSharedCanonicalMythicPlusRunFingerprint(run) ?? undefined;
 }
 
 function buildRunFingerprint(run: Partial<MythicPlusRunData>): string {
@@ -1903,83 +1535,8 @@ function buildRunFingerprint(run: Partial<MythicPlusRunData>): string {
   ].join("|");
 }
 
-function getRunLegacyFingerprintAliasesForTimestamp(
-  run: Partial<MythicPlusRunData>,
-  identityTimestamp: number,
-): string[] {
-  const aliases: string[] = [];
-  const seen = new Set<string>();
-  const mapTokens = getRunMapFingerprintTokens(run);
-  const seasonTokens = getRunSeasonTokens(run);
-  const pushAlias = (value: string | undefined) => {
-    if (!value || seen.has(value)) return;
-    seen.add(value);
-    aliases.push(value);
-  };
-
-  pushAlias(buildRunFingerprintWithIdentity(run, identityTimestamp));
-  for (const mapToken of mapTokens) {
-    for (const seasonToken of seasonTokens) {
-      pushAlias(buildRunFingerprintWithIdentity(run, identityTimestamp, { seasonToken, mapToken }));
-    }
-  }
-
-  return aliases;
-}
-
-function getRunLegacyDstShiftCompatibilityTimestamps(run: Partial<MythicPlusRunData>): number[] {
-  if (run.startDate !== undefined || !hasStrongCompletedRunIdentitySignature(run)) {
-    return [];
-  }
-
-  const derivedEnd = getRunDerivedEndTimestamp(run);
-  const shiftSources = [run.completedAt, run.endedAt, run.abandonedAt, derivedEnd];
-  const shiftedTimestamps: number[] = [];
-  const seen = new Set<number>();
-  for (const source of shiftSources) {
-    const normalizedSource = normalizeLifecycleTimestamp(source);
-    if (normalizedSource === undefined) {
-      continue;
-    }
-    for (const shiftedTimestamp of [
-      normalizedSource - LEGACY_DST_SHIFT_SECONDS,
-      normalizedSource + LEGACY_DST_SHIFT_SECONDS,
-    ]) {
-      const normalizedShifted = normalizeLifecycleTimestamp(shiftedTimestamp);
-      if (normalizedShifted === undefined || seen.has(normalizedShifted)) {
-        continue;
-      }
-      seen.add(normalizedShifted);
-      shiftedTimestamps.push(normalizedShifted);
-    }
-  }
-
-  return shiftedTimestamps;
-}
-
 function getMythicPlusRunCompatibilityLookupAliases(run: Partial<MythicPlusRunData>): string[] {
-  const aliases: string[] = [];
-  const seen = new Set<string>();
-  const pushAlias = (value: string | undefined) => {
-    if (!value || seen.has(value)) return;
-    seen.add(value);
-    aliases.push(value);
-  };
-
-  for (const timestamp of getRunIdentityCandidates(run)) {
-    for (const alias of getRunLegacyFingerprintAliasesForTimestamp(run, timestamp)) {
-      pushAlias(alias);
-    }
-  }
-
-  for (const timestamp of getRunLegacyDstShiftCompatibilityTimestamps(run)) {
-    for (const alias of getRunLegacyFingerprintAliasesForTimestamp(run, timestamp)) {
-      pushAlias(alias);
-    }
-  }
-
-  pushAlias(run.fingerprint);
-  return aliases;
+  return getSharedMythicPlusRunCompatibilityLookupAliases(run);
 }
 
 function getMythicPlusRunDedupKeys(run: Partial<MythicPlusRunData>): string[] {
@@ -2011,134 +1568,11 @@ function getMythicPlusRunDedupKey(run: Partial<MythicPlusRunData>): string {
   );
 }
 
-function getRunStrictEventTimestamps(run: Partial<MythicPlusRunData>): number[] {
-  const timestamps: number[] = [];
-  const seen = new Set<number>();
-  const pushTimestamp = (value: number | null | undefined) => {
-    const normalized = normalizeLifecycleTimestamp(value);
-    if (normalized === undefined || seen.has(normalized)) {
-      return;
-    }
-    seen.add(normalized);
-    timestamps.push(normalized);
-  };
-
-  pushTimestamp(run.startDate);
-  pushTimestamp(run.completedAt);
-  pushTimestamp(run.endedAt);
-  pushTimestamp(run.abandonedAt);
-
-  if (run.startDate === undefined) {
-    pushTimestamp(getRunDerivedStartTimestamp(run));
-  }
-  if (run.completedAt === undefined && run.endedAt === undefined && run.abandonedAt === undefined) {
-    pushTimestamp(getRunDerivedEndTimestamp(run));
-  }
-
-  return timestamps;
-}
-
-function areRunCoreIdentityFieldsCompatible(
-  leftRun: Partial<MythicPlusRunData>,
-  rightRun: Partial<MythicPlusRunData>,
-): boolean {
-  const leftMapToken = getRunMapFingerprintToken(leftRun);
-  const rightMapToken = getRunMapFingerprintToken(rightRun);
-  if (leftMapToken === "" || rightMapToken === "" || leftMapToken !== rightMapToken) {
-    return false;
-  }
-
-  if (
-    leftRun.level === undefined ||
-    rightRun.level === undefined ||
-    leftRun.level !== rightRun.level
-  ) {
-    return false;
-  }
-
-  const leftSeasonToken = toFingerprintToken(leftRun.seasonID);
-  const rightSeasonToken = toFingerprintToken(rightRun.seasonID);
-  if (leftSeasonToken !== "" && rightSeasonToken !== "" && leftSeasonToken !== rightSeasonToken) {
-    return false;
-  }
-
-  return true;
-}
-
-function hasSharedStrictCompatibilityTimestamp(
-  leftRun: Partial<MythicPlusRunData>,
-  rightRun: Partial<MythicPlusRunData>,
-): boolean {
-  const leftTimestamps = new Set(getRunStrictEventTimestamps(leftRun));
-  for (const timestamp of getRunStrictEventTimestamps(rightRun)) {
-    if (leftTimestamps.has(timestamp)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function hasCompatibleLegacyDstShift(
-  leftRun: Partial<MythicPlusRunData>,
-  rightRun: Partial<MythicPlusRunData>,
-): boolean {
-  if (
-    !hasStrongCompletedRunIdentitySignature(leftRun) ||
-    !hasStrongCompletedRunIdentitySignature(rightRun)
-  ) {
-    return false;
-  }
-
-  const leftTimestamps = getRunStrictEventTimestamps(leftRun);
-  const rightTimestamps = getRunStrictEventTimestamps(rightRun);
-  if (leftTimestamps.length === 0 || rightTimestamps.length === 0) {
-    return false;
-  }
-
-  const leftDuration = getSanitizedRunDurationMs(leftRun);
-  const rightDuration = getSanitizedRunDurationMs(rightRun);
-  if (leftDuration !== undefined && rightDuration !== undefined && leftDuration !== rightDuration) {
-    return false;
-  }
-
-  if (
-    leftRun.runScore !== undefined &&
-    rightRun.runScore !== undefined &&
-    leftRun.runScore !== rightRun.runScore
-  ) {
-    return false;
-  }
-
-  for (const leftTimestamp of leftTimestamps) {
-    for (const rightTimestamp of rightTimestamps) {
-      if (Math.abs(leftTimestamp - rightTimestamp) === LEGACY_DST_SHIFT_SECONDS) {
-        return true;
-      }
-    }
-  }
-
-  return false;
-}
-
 function canUseMythicPlusRunCompatibilityAliasMatch(
   existingRun: Partial<MythicPlusRunData>,
   candidateRun: Partial<MythicPlusRunData>,
 ): boolean {
-  const existingAttemptId = getRunAttemptId(existingRun);
-  const candidateAttemptId = getRunAttemptId(candidateRun);
-  if (existingAttemptId !== undefined && candidateAttemptId !== undefined) {
-    return existingAttemptId === candidateAttemptId;
-  }
-
-  if (!areRunCoreIdentityFieldsCompatible(existingRun, candidateRun)) {
-    return false;
-  }
-
-  if (hasSharedStrictCompatibilityTimestamp(existingRun, candidateRun)) {
-    return true;
-  }
-
-  return hasCompatibleLegacyDstShift(existingRun, candidateRun);
+  return canUseSharedMythicPlusRunCompatibilityAliasMatch(existingRun, candidateRun);
 }
 
 type MythicPlusRunLookups = {
@@ -2271,78 +1705,11 @@ function mergeLifecycleTimestamp(
   return preferredValue;
 }
 
-function getMythicPlusRunCompletenessScore(run: Partial<MythicPlusRunData>): number {
-  let score = 0;
-  const status = getMythicPlusRunStatus(run);
-  const durationMs = getSanitizedRunDurationMs(run);
-
-  if (run.seasonID !== undefined) score += 1;
-  if (run.mapChallengeModeID !== undefined) score += 3;
-  if (typeof run.mapName === "string" && run.mapName.trim() !== "") score += 1;
-  if (run.level !== undefined) score += 2;
-  if (getRunAttemptId(run) !== undefined) score += 4;
-  if (getMythicPlusRunCanonicalKey(run) !== undefined) score += 4;
-  if (status === "active") score += 2;
-  if (status === "abandoned") score += 3;
-  if (status === "completed") score += 4;
-  if (run.startDate !== undefined) score += 4;
-  if (run.completedAt !== undefined) score += 4;
-  if (run.endedAt !== undefined) score += 3;
-  if (run.abandonedAt !== undefined) score += 2;
-  if (run.abandonReason !== undefined) score += 1;
-  if (durationMs !== undefined) score += 3;
-  if (run.runScore !== undefined) score += 3;
-  if (run.completedInTime !== undefined) score += 2;
-  if (run.completed !== undefined) score += 1;
-  if (run.thisWeek !== undefined) score += 1;
-  if ((run.members?.length ?? 0) > 0) score += 3;
-
-  return score;
-}
-
 function shouldReplaceMythicPlusRun(
   currentRun: MythicPlusRunData | undefined,
   candidateRun: MythicPlusRunData,
 ): boolean {
-  if (!currentRun) {
-    return true;
-  }
-
-  const currentStatus = getMythicPlusRunStatus(currentRun);
-  const candidateStatus = getMythicPlusRunStatus(candidateRun);
-  const currentStatusPriority = getMythicPlusRunStatusPriority(currentStatus);
-  const candidateStatusPriority = getMythicPlusRunStatusPriority(candidateStatus);
-  if (candidateStatusPriority !== currentStatusPriority) {
-    return candidateStatusPriority > currentStatusPriority;
-  }
-
-  const currentCanonicalFingerprint = buildCanonicalMythicPlusRunFingerprint(currentRun);
-  const candidateCanonicalFingerprint = buildCanonicalMythicPlusRunFingerprint(candidateRun);
-  if (
-    currentCanonicalFingerprint &&
-    candidateCanonicalFingerprint &&
-    currentCanonicalFingerprint === candidateCanonicalFingerprint
-  ) {
-    const currentIsTemporary = isTemporaryAttemptFingerprint(currentRun.fingerprint);
-    const candidateIsTemporary = isTemporaryAttemptFingerprint(candidateRun.fingerprint);
-    if (currentIsTemporary !== candidateIsTemporary) {
-      return !candidateIsTemporary;
-    }
-  }
-
-  const currentScore = getMythicPlusRunCompletenessScore(currentRun);
-  const candidateScore = getMythicPlusRunCompletenessScore(candidateRun);
-  if (candidateScore !== currentScore) {
-    return candidateScore > currentScore;
-  }
-
-  const currentSortValue = getMythicPlusRunSortValue(currentRun);
-  const candidateSortValue = getMythicPlusRunSortValue(candidateRun);
-  if (candidateSortValue !== currentSortValue) {
-    return candidateSortValue > currentSortValue;
-  }
-
-  return (candidateRun.observedAt ?? 0) > (currentRun.observedAt ?? 0);
+  return shouldReplaceSharedMythicPlusRun(currentRun, candidateRun);
 }
 
 function mergeMythicPlusRunData(
@@ -2400,7 +1767,7 @@ function mergeMythicPlusRunData(
     canonicalKey:
       getMythicPlusRunCanonicalKey(preferredRun) ?? getMythicPlusRunCanonicalKey(fallbackRun),
     observedAt: mergedObservedAt,
-    seasonID: preferredRun.seasonID ?? fallbackRun.seasonID,
+    seasonID: pickMergedMythicPlusSeasonID(preferredRun, fallbackRun),
     mapChallengeModeID: preferredRun.mapChallengeModeID ?? fallbackRun.mapChallengeModeID,
     mapName: preferredRun.mapName ?? fallbackRun.mapName,
     level: preferredRun.level ?? fallbackRun.level,
@@ -2999,11 +2366,120 @@ function extractCharacters(db: Record<string, unknown>): CharacterData[] {
   return result;
 }
 
-async function findAndParseAddonData(retailPath: string): Promise<{
+type ParsedAddonData = {
   characters: CharacterData[];
   accountsFound: string[];
   fileStats: AddonFileStats | null;
-}> {
+};
+
+type AddonFileCandidate = {
+  account: string;
+  luaPath: string;
+  stats: fs.Stats;
+};
+
+let parsedAddonDataCache: { signature: string; value: ParsedAddonData } | null = null;
+let parsedAddonDataInFlight: { signature: string; promise: Promise<ParsedAddonData> } | null = null;
+
+function mergeParsedCharacter(allCharacters: Map<string, CharacterData>, character: CharacterData) {
+  const key = getCharacterMergeKey(character);
+  const existing = allCharacters.get(key);
+  if (!existing) {
+    allCharacters.set(key, character);
+    return;
+  }
+
+  const snapshotsByTime = new Map(
+    existing.snapshots.map((snapshot) => [snapshot.takenAt, snapshot]),
+  );
+  for (const snapshot of character.snapshots) {
+    const current = snapshotsByTime.get(snapshot.takenAt);
+    if (!current) {
+      existing.snapshots.push(snapshot);
+      snapshotsByTime.set(snapshot.takenAt, snapshot);
+      continue;
+    }
+
+    Object.assign(current, mergeSnapshotData(current, snapshot));
+  }
+
+  const existingRunLookups = buildMythicPlusRunLookups(existing.mythicPlusRuns);
+  for (const run of character.mythicPlusRuns) {
+    upsertMythicPlusRunByIdentity(existing.mythicPlusRuns, existingRunLookups, run);
+  }
+  sortMythicPlusRunsInPlace(existing.mythicPlusRuns);
+}
+
+async function parseAddonFileCandidates(
+  candidates: AddonFileCandidate[],
+): Promise<{ value: ParsedAddonData; cacheable: boolean }> {
+  let cacheable = true;
+  const files = await Promise.all(
+    candidates.map(async (candidate) => {
+      if (candidate.stats.size > MAX_ADDON_SAVED_VARIABLES_BYTES) {
+        console.warn(
+          `[wow-dashboard] Skipping oversized SavedVariables file (${candidate.stats.size} bytes): ${candidate.luaPath}`,
+        );
+        return null;
+      }
+
+      try {
+        return {
+          ...candidate,
+          content: await fs.promises.readFile(candidate.luaPath, "utf-8"),
+        };
+      } catch (error) {
+        cacheable = false;
+        console.warn(`[wow-dashboard] Failed to read ${candidate.luaPath}:`, error);
+        return null;
+      }
+    }),
+  );
+
+  const accountsFound: string[] = [];
+  const allCharacters = new Map<string, CharacterData>();
+  let totalBytes = 0;
+  let createdAt = Infinity;
+  let modifiedAt = 0;
+
+  for (const file of files) {
+    if (!file) continue;
+    accountsFound.push(file.account);
+    totalBytes += file.stats.size;
+    createdAt = Math.min(createdAt, file.stats.birthtimeMs);
+    modifiedAt = Math.max(modifiedAt, file.stats.mtimeMs);
+
+    let parsed: Record<string, unknown> | null = null;
+    try {
+      parsed = new LuaParser(file.content).parseFile();
+    } catch (error) {
+      console.error(`[wow-dashboard] Lua parse error for ${file.luaPath}:`, error);
+    }
+    if (!parsed) continue;
+
+    for (const character of extractCharacters(parsed)) {
+      mergeParsedCharacter(allCharacters, character);
+    }
+  }
+
+  const characters = Array.from(allCharacters.values());
+  const totalSnapshots = characters.reduce((sum, character) => sum + character.snapshots.length, 0);
+  const totalMythicPlusRuns = characters.reduce(
+    (sum, character) => sum + character.mythicPlusRuns.length,
+    0,
+  );
+  const fileStats =
+    accountsFound.length > 0
+      ? { totalBytes, createdAt, modifiedAt, totalSnapshots, totalMythicPlusRuns }
+      : null;
+
+  return {
+    value: { characters, accountsFound, fileStats },
+    cacheable,
+  };
+}
+
+async function findAndParseAddonData(retailPath: string): Promise<ParsedAddonData> {
   const wtfAccountPath = join(retailPath, "WTF", "Account");
   let accounts: string[];
   try {
@@ -3012,80 +2488,52 @@ async function findAndParseAddonData(retailPath: string): Promise<{
     return { characters: [], accountsFound: [], fileStats: null };
   }
 
-  const accountsFound: string[] = [];
-  const allChars = new Map<string, CharacterData>();
-  let totalBytes = 0;
-  let createdAt = Infinity;
-  let modifiedAt = 0;
-
-  for (const account of accounts) {
-    const luaPath = join(wtfAccountPath, account, "SavedVariables", "wow-dashboard.lua");
-    let content: string;
-    try {
-      content = await fs.promises.readFile(luaPath, "utf-8");
-    } catch {
-      continue;
-    }
-
-    accountsFound.push(account);
-
-    try {
-      const stat = await fs.promises.stat(luaPath);
-      totalBytes += stat.size;
-      createdAt = Math.min(createdAt, stat.birthtimeMs);
-      modifiedAt = Math.max(modifiedAt, stat.mtimeMs);
-    } catch {
-      // ignore stat errors
-    }
-
-    let db: Record<string, unknown> | null = null;
-    try {
-      db = new LuaParser(content).parseFile();
-    } catch (e) {
-      console.error(`[wow-dashboard] Lua parse error for ${luaPath}:`, e);
-    }
-    if (!db) continue;
-
-    const chars = extractCharacters(db);
-    for (const char of chars) {
-      const key = getCharacterMergeKey(char);
-      const existing = allChars.get(key);
-      if (!existing) {
-        allChars.set(key, char);
-      } else {
-        const snapshotsByTime = new Map(
-          existing.snapshots.map((snapshot) => [snapshot.takenAt, snapshot]),
-        );
-        for (const snap of char.snapshots) {
-          const current = snapshotsByTime.get(snap.takenAt);
-          if (!current) {
-            existing.snapshots.push(snap);
-            snapshotsByTime.set(snap.takenAt, snap);
-            continue;
+  const candidates = (
+    await Promise.all(
+      accounts
+        .sort((left, right) => left.localeCompare(right))
+        .map(async (account): Promise<AddonFileCandidate | null> => {
+          const luaPath = join(wtfAccountPath, account, "SavedVariables", "wow-dashboard.lua");
+          try {
+            return { account, luaPath, stats: await fs.promises.stat(luaPath) };
+          } catch {
+            return null;
           }
+        }),
+    )
+  ).filter((candidate): candidate is AddonFileCandidate => candidate !== null);
 
-          const mergedSnapshot = mergeSnapshotData(current, snap);
-          Object.assign(current, mergedSnapshot);
-        }
+  const signature = JSON.stringify([
+    resolve(retailPath),
+    ...candidates.map((candidate) => [
+      candidate.account,
+      candidate.stats.size,
+      candidate.stats.mtimeMs,
+    ]),
+  ]);
 
-        const existingRunLookups = buildMythicPlusRunLookups(existing.mythicPlusRuns);
-        for (const run of char.mythicPlusRuns) {
-          upsertMythicPlusRunByIdentity(existing.mythicPlusRuns, existingRunLookups, run);
-        }
-        sortMythicPlusRunsInPlace(existing.mythicPlusRuns);
-      }
-    }
+  if (parsedAddonDataCache?.signature === signature) {
+    return parsedAddonDataCache.value;
+  }
+  if (parsedAddonDataInFlight?.signature === signature) {
+    return parsedAddonDataInFlight.promise;
   }
 
-  const characters = Array.from(allChars.values());
-  const totalSnapshots = characters.reduce((sum, c) => sum + c.snapshots.length, 0);
-  const totalMythicPlusRuns = characters.reduce((sum, c) => sum + c.mythicPlusRuns.length, 0);
-  const fileStats =
-    accountsFound.length > 0
-      ? { totalBytes, createdAt, modifiedAt, totalSnapshots, totalMythicPlusRuns }
-      : null;
+  const parsePromise = parseAddonFileCandidates(candidates).then(({ value, cacheable }) => {
+    if (cacheable) {
+      parsedAddonDataCache = { signature, value };
+    }
+    return value;
+  });
+  parsedAddonDataInFlight = { signature, promise: parsePromise };
 
-  return { characters, accountsFound, fileStats };
+  try {
+    return await parsePromise;
+  } finally {
+    if (parsedAddonDataInFlight?.promise === parsePromise) {
+      parsedAddonDataInFlight = null;
+    }
+  }
 }
 
 function hasUploadableSnapshotSpec(spec: string) {
@@ -3255,7 +2703,7 @@ function createAddonUploadBatches(characters: CharacterData[]): CharacterData[][
 }
 
 async function requestAuthenticatedJson<T>(
-  method: "POST",
+  method: "GET" | "POST",
   pathname: string,
   body?: unknown,
 ): Promise<T> {
@@ -3268,11 +2716,14 @@ async function requestAuthenticatedJson<T>(
     headers.push(["Content-Type", "application/json"]);
   }
 
-  const response = await session.defaultSession.fetch(getApiAuthUrl(pathname), {
-    method,
-    headers: buildApiProxyHeaders(headers),
-    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-  });
+  const response = await session.defaultSession.fetch(
+    getApiAuthUrl(pathname),
+    withNetworkTimeout({
+      method,
+      headers: buildApiProxyHeaders(headers),
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    }),
+  );
   const responseText = await response.text();
   if (!response.ok) {
     if (response.status === 401) {
@@ -3356,9 +2807,8 @@ async function syncAddonData(): Promise<AddonSyncResult> {
     lastSyncedAt = Math.floor(Date.now() / 1000);
     settings.lastSyncedAt = lastSyncedAt;
     await saveSettings(settings);
+    await resyncCharacters();
   }
-
-  await resyncCharacters();
 
   return {
     status: "success",
@@ -3429,6 +2879,13 @@ function scheduleBackgroundAddonSync(reason: string, delayMs = ADDON_FILE_SYNC_D
   }, delayMs);
 }
 
+function configureDefaultSessionSecurity(): void {
+  session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => {
+    callback(false);
+  });
+  session.defaultSession.setPermissionCheckHandler(() => false);
+}
+
 function createWindow(): void {
   mainWindowReady = false;
   mainWindow = new BrowserWindow({
@@ -3443,6 +2900,8 @@ function createWindow(): void {
       sandbox: true,
       nodeIntegration: false,
       webSecurity: true,
+      webviewTag: false,
+      navigateOnDragDrop: false,
     },
   });
 
@@ -3523,11 +2982,14 @@ function handleDeepLink(url: string): void {
 
         // Exchange the one-time code for the long-lived API bearer token.
         net
-          .fetch(getApiAuthUrl("/auth/redeem-code"), {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ code }),
-          })
+          .fetch(
+            getApiAuthUrl("/auth/redeem-code"),
+            withNetworkTimeout({
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ code }),
+            }),
+          )
           .then(async (resp) => {
             if (!resp.ok) throw new Error(`Code exchange failed: ${resp.status}`);
             const data = (await resp.json()) as { token?: string; error?: string };
@@ -3612,13 +3074,16 @@ ipcMain.handle("auth:getSession", async () => {
   }
 
   try {
-    const resp = await session.defaultSession.fetch(getApiAuthUrl("/auth/get-session"), {
-      headers: {
-        Origin: SITE_URL,
-        [DESKTOP_CLIENT_HEADER]: DESKTOP_CLIENT_HEADER_VALUE,
-        ...(storedSessionToken ? { Authorization: `Bearer ${storedSessionToken}` } : {}),
-      },
-    });
+    const resp = await session.defaultSession.fetch(
+      getApiAuthUrl("/auth/get-session"),
+      withNetworkTimeout({
+        headers: {
+          Origin: SITE_URL,
+          [DESKTOP_CLIENT_HEADER]: DESKTOP_CLIENT_HEADER_VALUE,
+          ...(storedSessionToken ? { Authorization: `Bearer ${storedSessionToken}` } : {}),
+        },
+      }),
+    );
     const responseText = await resp.text();
     if (!resp.ok) {
       if (resp.status === 401) {
@@ -3656,52 +3121,32 @@ ipcMain.handle("auth:logout", async () => {
   storedSessionToken = null;
   saveSessionToken(null);
   try {
-    await session.defaultSession.fetch(getApiAuthUrl("/auth/sign-out"), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Origin: SITE_URL,
-        [DESKTOP_CLIENT_HEADER]: DESKTOP_CLIENT_HEADER_VALUE,
-        ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
-      },
-      body: JSON.stringify({}),
-    });
+    await session.defaultSession.fetch(
+      getApiAuthUrl("/auth/sign-out"),
+      withNetworkTimeout({
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Origin: SITE_URL,
+          [DESKTOP_CLIENT_HEADER]: DESKTOP_CLIENT_HEADER_VALUE,
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
+        },
+        body: JSON.stringify({}),
+      }),
+    );
     return true;
   } catch {
     return false;
   }
 });
 
-ipcMain.handle(
-  "api:fetch",
-  async (_, request: MainApiFetchRequest): Promise<MainApiFetchResponse> => {
-    if (!request || typeof request.url !== "string" || !isTrustedApiUrl(request.url)) {
-      throw new Error("Blocked untrusted API request");
-    }
-
-    const method = (request.method ?? "GET").toUpperCase();
-    if (method !== "GET" && method !== "POST" && method !== "PATCH") {
-      throw new Error(`Blocked unsupported API method: ${method}`);
-    }
-
-    const response = await session.defaultSession.fetch(request.url, {
-      method,
-      headers: buildApiProxyHeaders(request.headers),
-      ...(method !== "GET" && request.body !== undefined ? { body: request.body } : {}),
-    });
-    const body = await response.text();
-    if (response.status === 401) {
-      saveSessionToken(null);
-    }
-
-    return {
-      status: response.status,
-      statusText: response.statusText,
-      headers: Array.from(response.headers.entries()),
-      body,
-    };
-  },
-);
+ipcMain.handle("api:getCharacterCount", async () => {
+  const response = await requestAuthenticatedJson<{ count?: unknown }>("GET", "/characters/count");
+  if (!Number.isSafeInteger(response.count) || Number(response.count) < 0) {
+    throw new Error("API returned an invalid character count");
+  }
+  return Number(response.count);
+});
 
 // WoW addon data
 function getStoredRetailPath(settings: Record<string, unknown>): string | null {
@@ -3909,34 +3354,61 @@ function isOutdatedVersion(installed: string, latest: string): boolean {
   return compareVersionStrings(installed, latest) < 0;
 }
 
-function downloadFile(url: string, destPath: string): Promise<void> {
+function downloadFile(url: string, destPath: string, maximumBytes: number): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const request = net.request({ url, useSessionCookies: false });
     const writeStream = fs.createWriteStream(destPath);
-    request.on("response", (response) => {
-      if (response.statusCode !== 200) {
+    let settled = false;
+    const settle = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (error) {
+        request.abort();
         writeStream.destroy();
-        reject(new Error(`Download failed with status ${response.statusCode}`));
+        void fs.promises.rm(destPath, { force: true }).catch(() => {});
+        reject(error);
         return;
       }
-      response.on("data", (chunk: Buffer) => writeStream.write(chunk));
-      response.on("end", () => writeStream.end(() => resolve()));
-      response.on("error", (err: Error) => {
-        writeStream.destroy();
-        reject(err);
+      resolve();
+    };
+    const timeout = setTimeout(() => {
+      settle(new Error(`Download timed out after ${NETWORK_DOWNLOAD_TIMEOUT_MS}ms`));
+    }, NETWORK_DOWNLOAD_TIMEOUT_MS);
+
+    request.on("response", (response) => {
+      if (response.statusCode !== 200) {
+        settle(new Error(`Download failed with status ${response.statusCode}`));
+        return;
+      }
+      let downloadedBytes = 0;
+      response.on("data", (chunk: Buffer) => {
+        downloadedBytes += chunk.length;
+        if (downloadedBytes > maximumBytes) {
+          settle(new Error(`Download exceeded the ${maximumBytes}-byte size limit`));
+          return;
+        }
+
+        writeStream.write(chunk);
       });
+      response.on("end", () => writeStream.end(() => settle()));
+      response.on("error", (error: Error) => settle(error));
     });
-    request.on("error", (err: Error) => {
-      writeStream.destroy();
-      reject(err);
-    });
+    request.on("error", (error: Error) => settle(error));
+    writeStream.on("error", (error) => settle(error));
     request.end();
   });
 }
 
 async function extractZip(zipPath: string, destDir: string): Promise<void> {
+  const unzipper = await import("unzipper");
   const resolvedDest = resolve(destDir);
   const directory = await unzipper.Open.file(zipPath);
+  if (directory.files.length > MAX_ADDON_ARCHIVE_ENTRIES) {
+    throw new Error(`Addon archive contains more than ${MAX_ADDON_ARCHIVE_ENTRIES} entries`);
+  }
+
+  let extractedBytes = 0;
   for (const file of directory.files) {
     const outPath = resolve(resolvedDest, file.path);
     // Reject any entry whose resolved path escapes destDir.
@@ -3948,9 +3420,19 @@ async function extractZip(zipPath: string, destDir: string): Promise<void> {
       await fs.promises.mkdir(outPath, { recursive: true });
     } else {
       await fs.promises.mkdir(path.dirname(outPath), { recursive: true });
-      await new Promise<void>((res, rej) =>
-        file.stream().pipe(fs.createWriteStream(outPath)).on("finish", res).on("error", rej),
-      );
+      const byteLimiter = new Transform({
+        transform(chunk, _encoding, callback) {
+          extractedBytes += Buffer.byteLength(chunk);
+          if (extractedBytes > MAX_ADDON_EXTRACTED_BYTES) {
+            callback(
+              new Error(`Addon archive expands beyond the ${MAX_ADDON_EXTRACTED_BYTES}-byte limit`),
+            );
+            return;
+          }
+          callback(null, chunk);
+        },
+      });
+      await pipeline(file.stream(), byteLimiter, fs.createWriteStream(outPath, { flags: "wx" }));
     }
   }
 }
@@ -4029,9 +3511,9 @@ async function downloadAddonPackage(
   checksumPath: string,
 ): Promise<void> {
   await fs.promises.mkdir(path.dirname(zipPath), { recursive: true });
-  await downloadFile(downloadUrl, zipPath);
+  await downloadFile(downloadUrl, zipPath, MAX_ADDON_ARCHIVE_BYTES);
 
-  await downloadFile(checksumUrl, checksumPath);
+  await downloadFile(checksumUrl, checksumPath, MAX_ADDON_CHECKSUM_BYTES);
   await verifyAddonPackage(zipPath, checksumPath);
 }
 
@@ -4041,6 +3523,9 @@ async function installAddonFromPackage(retailPath: string, zipPath: string, chec
   const extractDir = await fs.promises.mkdtemp(join(os.tmpdir(), "wow-dashboard-addon-extract-"));
   const addonsDir = join(retailPath, "Interface", "AddOns");
   const addonDest = join(addonsDir, "wow-dashboard");
+  const installId = `${process.pid}-${crypto.randomUUID()}`;
+  const stagedDest = join(addonsDir, `.wow-dashboard-install-${installId}`);
+  const backupDest = join(addonsDir, `.wow-dashboard-backup-${installId}`);
 
   try {
     await extractZip(zipPath, extractDir);
@@ -4060,18 +3545,35 @@ async function installAddonFromPackage(retailPath: string, zipPath: string, chec
           })()
         : extractDir;
 
+    await Promise.all([
+      fs.promises.access(join(addonSrc, "wow-dashboard.toc"), fs.constants.R_OK),
+      fs.promises.access(join(addonSrc, "wow-dashboard.lua"), fs.constants.R_OK),
+    ]);
+
     await fs.promises.mkdir(addonsDir, { recursive: true });
-    await fs.promises.rm(addonDest, { recursive: true, force: true });
-    await fs.promises.cp(addonSrc, addonDest, { recursive: true });
+    await fs.promises.cp(addonSrc, stagedDest, { recursive: true });
+    await replaceDirectoryAtomically({
+      rootDirectory: addonsDir,
+      targetDirectory: addonDest,
+      stagedDirectory: stagedDest,
+      backupDirectory: backupDest,
+      onCleanupError: (error) => {
+        console.warn("[wow-dashboard] Installed addon but could not clean up:", error);
+      },
+    });
   } finally {
+    await fs.promises.rm(stagedDest, { recursive: true, force: true }).catch(() => {});
     await fs.promises.rm(extractDir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
 async function fetchLatestAddonRelease(): Promise<AddonReleaseInfo> {
-  const res = await net.fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=100`, {
-    headers: { Accept: "application/vnd.github+json" },
-  });
+  const res = await net.fetch(
+    `https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=100`,
+    withNetworkTimeout({
+      headers: { Accept: "application/vnd.github+json" },
+    }),
+  );
   if (!res.ok) throw new Error(`GitHub API error: ${res.status}`);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const releases = (await res.json()) as any[];
@@ -4588,74 +4090,97 @@ ipcMain.handle("wow:triggerAddonUpdateCheck", async () => {
   return stageLatestAddonUpdate();
 });
 
-function registerAppUpdaterListeners(): void {
-  if (appUpdaterListenersRegistered) return;
-  appUpdaterListenersRegistered = true;
-
-  autoUpdater.autoDownload = true;
-  autoUpdater.autoInstallOnAppQuit = true;
-
-  autoUpdater.on("checking-for-update", () => {
-    updateAppUpdateState({
-      status: "checking",
-      error: null,
-      progressPercent: null,
-      lastCheckedAt: Date.now(),
+async function getDesktopAutoUpdater(): Promise<DesktopAutoUpdater> {
+  desktopAutoUpdaterLoad ??= import("electron-updater")
+    .then(({ autoUpdater }) => {
+      desktopAutoUpdater = autoUpdater;
+      return autoUpdater;
+    })
+    .catch((error) => {
+      desktopAutoUpdaterLoad = null;
+      throw error;
     });
+  return desktopAutoUpdaterLoad;
+}
+
+function registerAppUpdaterListeners(): Promise<void> {
+  if (appUpdaterRegistration) return appUpdaterRegistration;
+
+  appUpdaterRegistration = (async () => {
+    const autoUpdater = await getDesktopAutoUpdater();
+    if (appUpdaterListenersRegistered) return;
+    appUpdaterListenersRegistered = true;
+
+    autoUpdater.autoDownload = true;
+    autoUpdater.autoInstallOnAppQuit = true;
+
+    autoUpdater.on("checking-for-update", () => {
+      updateAppUpdateState({
+        status: "checking",
+        error: null,
+        progressPercent: null,
+        lastCheckedAt: Date.now(),
+      });
+    });
+
+    autoUpdater.on("update-available", (info: { version: string }) => {
+      updateAppUpdateState({
+        status: "available",
+        availableVersion: info.version,
+        downloadedVersion: null,
+        progressPercent: 0,
+        error: null,
+        lastCheckedAt: Date.now(),
+      });
+      broadcastToRenderers("app:updateAvailable", info.version);
+    });
+
+    autoUpdater.on("download-progress", (progress: { percent: number }) => {
+      updateAppUpdateState({
+        status: "downloading",
+        progressPercent: progress.percent,
+        error: null,
+      });
+    });
+
+    autoUpdater.on("update-downloaded", (info: { version: string }) => {
+      updateAppUpdateState({
+        status: "downloaded",
+        availableVersion: info.version,
+        downloadedVersion: info.version,
+        progressPercent: 100,
+        error: null,
+        lastCheckedAt: Date.now(),
+      });
+      broadcastToRenderers("app:updateDownloaded", info.version);
+    });
+
+    autoUpdater.on("update-not-available", () => {
+      updateAppUpdateState({
+        status: "upToDate",
+        availableVersion: null,
+        downloadedVersion: null,
+        progressPercent: null,
+        error: null,
+        lastCheckedAt: Date.now(),
+      });
+      broadcastToRenderers("app:updateNotAvailable");
+    });
+
+    autoUpdater.on("error", (error: Error) => {
+      updateAppUpdateState({
+        status: "error",
+        progressPercent: null,
+        error: error.message,
+        lastCheckedAt: Date.now(),
+      });
+    });
+  })().catch((error) => {
+    appUpdaterRegistration = null;
+    throw error;
   });
 
-  autoUpdater.on("update-available", (info: { version: string }) => {
-    updateAppUpdateState({
-      status: "available",
-      availableVersion: info.version,
-      downloadedVersion: null,
-      progressPercent: 0,
-      error: null,
-      lastCheckedAt: Date.now(),
-    });
-    broadcastToRenderers("app:updateAvailable", info.version);
-  });
-
-  autoUpdater.on("download-progress", (progress: { percent: number }) => {
-    updateAppUpdateState({
-      status: "downloading",
-      progressPercent: progress.percent,
-      error: null,
-    });
-  });
-
-  autoUpdater.on("update-downloaded", (info: { version: string }) => {
-    updateAppUpdateState({
-      status: "downloaded",
-      availableVersion: info.version,
-      downloadedVersion: info.version,
-      progressPercent: 100,
-      error: null,
-      lastCheckedAt: Date.now(),
-    });
-    broadcastToRenderers("app:updateDownloaded", info.version);
-  });
-
-  autoUpdater.on("update-not-available", () => {
-    updateAppUpdateState({
-      status: "upToDate",
-      availableVersion: null,
-      downloadedVersion: null,
-      progressPercent: null,
-      error: null,
-      lastCheckedAt: Date.now(),
-    });
-    broadcastToRenderers("app:updateNotAvailable");
-  });
-
-  autoUpdater.on("error", (error: Error) => {
-    updateAppUpdateState({
-      status: "error",
-      progressPercent: null,
-      error: error.message,
-      lastCheckedAt: Date.now(),
-    });
-  });
+  return appUpdaterRegistration;
 }
 
 async function triggerAppUpdateCheck(): Promise<void> {
@@ -4671,7 +4196,19 @@ async function triggerAppUpdateCheck(): Promise<void> {
     return;
   }
 
-  registerAppUpdaterListeners();
+  let autoUpdater: DesktopAutoUpdater;
+  try {
+    await registerAppUpdaterListeners();
+    autoUpdater = await getDesktopAutoUpdater();
+  } catch (error) {
+    updateAppUpdateState({
+      status: "error",
+      progressPercent: null,
+      error: error instanceof Error ? error.message : String(error),
+      lastCheckedAt: Date.now(),
+    });
+    throw error;
+  }
 
   if (appUpdateCheckInFlight) {
     return appUpdateCheckInFlight;
@@ -4771,7 +4308,93 @@ ipcMain.handle("settings:setLastSyncedAt", async (_, value: number) => {
   await saveSettings(s);
 });
 
+async function initializeAddonRuntime(): Promise<void> {
+  const [{ retailPath, validatedRetailPath, error: retailPathError }, stagedAddon] =
+    await Promise.all([resolveRetailPathFromSettings(), getUsableStagedAddonUpdate()]);
+  const installedAddonVersion = validatedRetailPath
+    ? await getInstalledAddonVersionForRetailPath(validatedRetailPath)
+    : null;
+  updateAddonUpdateState({
+    status: validatedRetailPath
+      ? installedAddonVersion
+        ? "idle"
+        : "notInstalled"
+      : getAddonRetailPathStatus(retailPath ? "invalid" : "missing"),
+    installedVersion: installedAddonVersion,
+    stagedVersion: stagedAddon?.version ?? null,
+    error: retailPathError,
+    lastCheckedAt: addonUpdateState.lastCheckedAt,
+  });
+
+  await applyStagedAddonUpdateIfReady().catch((error) => {
+    console.warn("[wow-dashboard] Failed to apply staged addon update on launch:", error);
+  });
+  if (isQuitting) return;
+
+  void startAddonWatcher().catch((error) => {
+    console.warn("[wow-dashboard] Failed to start addon watcher:", error);
+  });
+  scheduleBackgroundAddonSync("startup catch-up", ADDON_STARTUP_SYNC_DELAY_MS);
+
+  void stageLatestAddonUpdate().catch((error) => {
+    console.warn("[wow-dashboard] Failed to stage addon update:", error);
+  });
+  addonUpdateCheckTimer = setInterval(() => {
+    void stageLatestAddonUpdate().catch((error) => {
+      console.warn("[wow-dashboard] Failed to stage addon update:", error);
+    });
+  }, getConfiguredAddonUpdateCheckIntervalMs());
+  addonUpdateApplyTimer = setInterval(() => {
+    void applyStagedAddonUpdateIfReady().catch((error) => {
+      console.warn("[wow-dashboard] Failed to apply staged addon update:", error);
+    });
+  }, getConfiguredAddonStagedApplyIntervalMs());
+  addonSyncTimer = setInterval(() => {
+    triggerBackgroundAddonSync("fallback interval");
+  }, getConfiguredAddonSyncIntervalMs());
+}
+
+function initializeAppUpdateRuntime(): void {
+  if (!app.isPackaged) {
+    updateAppUpdateState({
+      status: "unsupported",
+      availableVersion: null,
+      downloadedVersion: null,
+      progressPercent: null,
+      error: null,
+    });
+    return;
+  }
+
+  updateAppUpdateState({
+    status: "idle",
+    availableVersion: null,
+    downloadedVersion: null,
+    progressPercent: null,
+    error: null,
+  });
+
+  appUpdateStartupTimer = setTimeout(() => {
+    appUpdateStartupTimer = null;
+    if (isQuitting) return;
+    void triggerAppUpdateCheck().catch((error) => {
+      console.warn("[wow-dashboard] Failed to check for app updates:", error);
+    });
+  }, APP_UPDATE_STARTUP_DELAY_MS);
+  appUpdateCheckTimer = setInterval(() => {
+    void triggerAppUpdateCheck().catch((error) => {
+      console.warn("[wow-dashboard] Failed to check for app updates:", error);
+    });
+  }, getConfiguredAppUpdateCheckIntervalMs());
+}
+
 // ─── App lifecycle ────────────────────────────────────────────────────────────
+
+app.on("web-contents-created", (_event, contents) => {
+  contents.on("will-attach-webview", (event) => {
+    event.preventDefault();
+  });
+});
 
 // macOS: deep-links arrive via open-url before the app is fully ready.
 app.on("open-url", (event, url) => {
@@ -4795,6 +4418,8 @@ if (!gotTheLock) {
 }
 
 app.whenReady().then(async () => {
+  Menu.setApplicationMenu(null);
+  configureDefaultSessionSecurity();
   // In dev mode on Windows the app isn't packaged, so we must supply the Electron
   // executable path and the app path explicitly for the registry entry to work.
   if (!app.isPackaged) {
@@ -4819,46 +4444,6 @@ app.whenReady().then(async () => {
     }
   }
 
-  const [{ retailPath, validatedRetailPath, error: retailPathError }, stagedAddon] =
-    await Promise.all([resolveRetailPathFromSettings(), getUsableStagedAddonUpdate()]);
-  const installedAddonVersion = validatedRetailPath
-    ? await getInstalledAddonVersionForRetailPath(validatedRetailPath)
-    : null;
-  updateAddonUpdateState({
-    status: validatedRetailPath
-      ? installedAddonVersion
-        ? "idle"
-        : "notInstalled"
-      : getAddonRetailPathStatus(retailPath ? "invalid" : "missing"),
-    installedVersion: installedAddonVersion,
-    stagedVersion: stagedAddon?.version ?? null,
-    error: retailPathError,
-    lastCheckedAt: addonUpdateState.lastCheckedAt,
-  });
-
-  if (app.isPackaged) {
-    registerAppUpdaterListeners();
-    updateAppUpdateState({
-      status: "idle",
-      availableVersion: null,
-      downloadedVersion: null,
-      progressPercent: null,
-      error: null,
-    });
-  } else {
-    updateAppUpdateState({
-      status: "unsupported",
-      availableVersion: null,
-      downloadedVersion: null,
-      progressPercent: null,
-      error: null,
-    });
-  }
-
-  await applyStagedAddonUpdateIfReady().catch((error) => {
-    console.warn("[wow-dashboard] Failed to apply staged addon update on launch:", error);
-  });
-
   if (process.platform !== "win32" || !launchMinimizedCache) {
     pendingWindowReveal = true;
     createWindow();
@@ -4866,36 +4451,10 @@ app.whenReady().then(async () => {
   void createTray().catch((error) => {
     console.warn("[wow-dashboard] Failed to create tray:", error);
   });
-  void startAddonWatcher().catch((error) => {
-    console.warn("[wow-dashboard] Failed to start addon watcher:", error);
+  initializeAppUpdateRuntime();
+  void initializeAddonRuntime().catch((error) => {
+    console.warn("[wow-dashboard] Failed to initialize addon runtime:", error);
   });
-  scheduleBackgroundAddonSync("startup catch-up", ADDON_STARTUP_SYNC_DELAY_MS);
-
-  void stageLatestAddonUpdate().catch((error) => {
-    console.warn("[wow-dashboard] Failed to stage addon update:", error);
-  });
-  addonUpdateCheckTimer = setInterval(() => {
-    void stageLatestAddonUpdate().catch((error) => {
-      console.warn("[wow-dashboard] Failed to stage addon update:", error);
-    });
-  }, getConfiguredAddonUpdateCheckIntervalMs());
-  addonUpdateApplyTimer = setInterval(() => {
-    void applyStagedAddonUpdateIfReady().catch((error) => {
-      console.warn("[wow-dashboard] Failed to apply staged addon update:", error);
-    });
-  }, getConfiguredAddonStagedApplyIntervalMs());
-
-  void triggerAppUpdateCheck().catch((error) => {
-    console.warn("[wow-dashboard] Failed to check for app updates:", error);
-  });
-  appUpdateCheckTimer = setInterval(() => {
-    void triggerAppUpdateCheck().catch((error) => {
-      console.warn("[wow-dashboard] Failed to check for app updates:", error);
-    });
-  }, getConfiguredAppUpdateCheckIntervalMs());
-  addonSyncTimer = setInterval(() => {
-    triggerBackgroundAddonSync("fallback interval");
-  }, getConfiguredAddonSyncIntervalMs());
 
   app.on("activate", () => {
     showWindow();

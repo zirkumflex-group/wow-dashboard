@@ -1,0 +1,1 @@
+ALTER TABLE "players" ADD COLUMN "share_discord_in_booster_export" boolean DEFAULT false NOT NULL;

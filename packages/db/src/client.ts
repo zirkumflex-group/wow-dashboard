@@ -20,6 +20,16 @@ export function createDatabaseConnection(connectionString = getDatabaseUrl()): D
   const client = postgres(connectionString, {
     max: 10,
     prepare: false,
+    connect_timeout: 10,
+    idle_timeout: 30,
+    max_lifetime: 30 * 60,
+    keep_alive: 30,
+    connection: {
+      application_name: "wow-dashboard",
+      statement_timeout: 15_000,
+      lock_timeout: 5_000,
+      idle_in_transaction_session_timeout: 30_000,
+    },
   });
 
   return {

@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { env } from "@wow-dashboard/env/app";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { DesktopAuthSessionState } from "../../shared/auth";
+import { desktopConfig } from "../../shared/config";
 import type {
   AddonFileStats,
   AddonSyncError,
@@ -14,7 +13,6 @@ import type {
   AppInstallUpdateResult,
   AppUpdateState,
 } from "../../shared/update";
-import { apiQueryKeys, apiQueryOptions } from "./lib/api-client";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -60,24 +58,12 @@ declare global {
         logout: () => Promise<boolean>;
       };
       api: {
-        fetch: (request: {
-          url: string;
-          method?: string;
-          headers?: Array<[string, string]>;
-          body?: string;
-        }) => Promise<{
-          status: number;
-          statusText: string;
-          headers: Array<[string, string]>;
-          body: string;
-        }>;
+        getCharacterCount: () => Promise<number>;
       };
       wow: {
         getRetailPath: () => Promise<string | null>;
         selectRetailFolder: () => Promise<string | null>;
-        getAddonFileState: (
-          sinceTs: number,
-        ) => Promise<{
+        getAddonFileState: (sinceTs: number) => Promise<{
           pendingUploadCounts: PendingUploadCounts;
           fileStats: AddonFileStats | null;
           accountsFound: string[];
@@ -133,6 +119,13 @@ function _notify() {
   _listeners.forEach((fn) => fn());
 }
 
+function _subscribe(listener: () => void) {
+  _listeners.add(listener);
+  return () => {
+    _listeners.delete(listener);
+  };
+}
+
 async function _clearToken(): Promise<void> {
   try {
     await window.electron.auth.logout();
@@ -167,23 +160,16 @@ async function _fetchToken(): Promise<string | null> {
 _fetchToken();
 
 function useElectronAuth() {
-  const [, forceUpdate] = useState(0);
-
-  useEffect(() => {
-    const update = () => forceUpdate((n) => n + 1);
-    _listeners.add(update);
-    return () => {
-      _listeners.delete(update);
-    };
-  }, []);
-
-  return useMemo(
-    () => ({
-      isLoading: _token === undefined,
-      isAuthenticated: _token !== null && _token !== undefined,
-    }),
-    [_token],
+  const token = useSyncExternalStore(
+    _subscribe,
+    () => _token,
+    () => _token,
   );
+
+  return {
+    isLoading: token === undefined,
+    isAuthenticated: token !== null && token !== undefined,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -263,7 +249,7 @@ function LoadingScreen() {
 function LoginScreen({ onLogin }: { onLogin: () => Promise<void> }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const loginUrl = new URL("/auth/electron-login", env.VITE_SITE_URL).toString();
+  const loginUrl = new URL("/auth/electron-login", desktopConfig.siteUrl).toString();
 
   async function handleLogin() {
     setLoading(true);
@@ -306,7 +292,9 @@ function LoginScreen({ onLogin }: { onLogin: () => Promise<void> }) {
           </div>
         )}
 
-        <p className="text-xs text-gray-600">Requires the web app running on {env.VITE_SITE_URL}</p>
+        <p className="text-xs text-gray-600">
+          Requires the web app running on {desktopConfig.siteUrl}
+        </p>
       </div>
     </div>
   );
@@ -346,10 +334,8 @@ function Dashboard({
   onLogout: () => Promise<void>;
   onReconnectBattleNet: () => Promise<void>;
 }) {
-  const queryClient = useQueryClient();
-  const characters = useQuery(apiQueryOptions.myCharacters()).data;
-
   const [syncing, setSyncing] = useState(false);
+  const [characterCount, setCharacterCount] = useState<number | null>(null);
   const [retailPath, setRetailPath] = useState<string | null>(null);
   const [closeBehavior, setCloseBehavior] = useState<"tray" | "exit">("tray");
   const [autostart, setAutostart] = useState(false);
@@ -393,12 +379,23 @@ function Dashboard({
       setAddonVersion(null);
     }
   }, []);
-  const applyAddonFileState = useCallback((state: {
-    pendingUploadCounts: PendingUploadCounts;
-    fileStats: AddonFileStats | null;
-  }) => {
-    setPendingUploadCounts(state.pendingUploadCounts);
-    setAddonFileStats(state.fileStats);
+  const applyAddonFileState = useCallback(
+    (state: { pendingUploadCounts: PendingUploadCounts; fileStats: AddonFileStats | null }) => {
+      setPendingUploadCounts(state.pendingUploadCounts);
+      setAddonFileStats(state.fileStats);
+    },
+    [],
+  );
+  const refreshCharacterCount = useCallback(async () => {
+    try {
+      setCharacterCount(await window.electron.api.getCharacterCount());
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("401")) {
+        await _clearToken();
+        return;
+      }
+      console.warn("[wow-dashboard] Failed to refresh character count:", error);
+    }
   }, []);
   const refreshAddonFileState = useCallback(async () => {
     if (!retailPath) {
@@ -423,32 +420,26 @@ function Dashboard({
       setAddonFileStats(null);
     }
   }, [applyAddonFileState, retailPath]);
-  const handleSyncError = useCallback(
-    async (message: string) => {
-      setUploadWarn(null);
-      if (message.includes("401")) {
-        setUploadNeedsBattleNetReconnect(false);
-        await _clearToken();
-        queryClient.clear();
-        setUploadError("Session expired - please sign in again.");
-        return;
-      }
+  const handleSyncError = useCallback(async (message: string) => {
+    setUploadWarn(null);
+    if (message.includes("401")) {
+      setUploadNeedsBattleNetReconnect(false);
+      await _clearToken();
+      setUploadError("Session expired - please sign in again.");
+      return;
+    }
 
-      if (isBattleNetReconnectRequired(message)) {
-        setUploadNeedsBattleNetReconnect(true);
-        setUploadError(
-          "Battle.net verification needs to be refreshed before addon data can upload.",
-        );
-      } else if (message.includes("RateLimited") || message.includes("Too many")) {
-        setUploadNeedsBattleNetReconnect(false);
-        setUploadError("Too many requests - please wait a moment before trying again.");
-      } else {
-        setUploadNeedsBattleNetReconnect(false);
-        setUploadError(`Upload failed: ${message}`);
-      }
-    },
-    [queryClient],
-  );
+    if (isBattleNetReconnectRequired(message)) {
+      setUploadNeedsBattleNetReconnect(true);
+      setUploadError("Battle.net verification needs to be refreshed before addon data can upload.");
+    } else if (message.includes("RateLimited") || message.includes("Too many")) {
+      setUploadNeedsBattleNetReconnect(false);
+      setUploadError("Too many requests - please wait a moment before trying again.");
+    } else {
+      setUploadNeedsBattleNetReconnect(false);
+      setUploadError(`Upload failed: ${message}`);
+    }
+  }, []);
   const applyAddonSyncResult = useCallback(
     (result: AddonSyncResult) => {
       applyAddonFileState(result);
@@ -458,11 +449,9 @@ function Dashboard({
       setUploadError(null);
       setUploadWarn(result.status === "warning" ? result.message : null);
       setUploadNeedsBattleNetReconnect(false);
-      void queryClient.invalidateQueries({
-        queryKey: apiQueryKeys.myCharacters(),
-      });
+      void refreshCharacterCount();
     },
-    [applyAddonFileState, queryClient],
+    [applyAddonFileState, refreshCharacterCount],
   );
 
   // Load persisted settings on mount
@@ -519,6 +508,8 @@ function Dashboard({
         void handleSyncError(error.message);
       }),
     ];
+
+    void refreshCharacterCount();
 
     void Promise.allSettled([
       window.electron.getVersion(),
@@ -580,7 +571,7 @@ function Dashboard({
       cancelled = true;
       cleanupFns.forEach((cleanup) => cleanup());
     };
-  }, [applyAddonSyncResult, applyAddonUpdateSnapshot, handleSyncError]);
+  }, [applyAddonSyncResult, applyAddonUpdateSnapshot, handleSyncError, refreshCharacterCount]);
 
   // Check addon and read file snapshot count whenever retailPath changes
   useEffect(() => {
@@ -1117,11 +1108,11 @@ function Dashboard({
         </div>
 
         {/* Character count */}
-        {characters !== undefined && (
+        {characterCount !== null && (
           <p className="text-sm text-gray-500">
-            {characters === null || characters.length === 0
+            {characterCount === 0
               ? "No characters found."
-              : `${characters.length} character${characters.length !== 1 ? "s" : ""} tracked.`}
+              : `${characterCount} character${characterCount !== 1 ? "s" : ""} tracked.`}
           </p>
         )}
 
@@ -1145,17 +1136,13 @@ function Dashboard({
 // Root App
 // ---------------------------------------------------------------------------
 export default function App() {
-  const queryClient = useQueryClient();
-
   async function handleLogin() {
     await window.electron.auth.login();
     await _fetchToken();
-    await queryClient.invalidateQueries();
   }
 
   async function handleLogout() {
     await _clearToken();
-    queryClient.clear();
   }
 
   const authState = useElectronAuth();

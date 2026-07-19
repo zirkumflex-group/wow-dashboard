@@ -3,8 +3,7 @@ import { useCallback, useMemo, useSyncExternalStore } from "react";
 const PINNED_CHARACTERS_KEY = "wow_dashboard_quick_access_pins";
 const PINNED_CHARACTERS_EVENT = "wow-dashboard:pinned-characters";
 const EMPTY_PINNED_CHARACTER_IDS: string[] = [];
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 let cachedPinnedCharacterIds: string[] = EMPTY_PINNED_CHARACTER_IDS;
 let cachedPinnedCharacterIdsRaw = "";
@@ -18,11 +17,7 @@ function normalizePinnedCharacterIds(value: unknown): string[] {
   for (const item of value) {
     if (typeof item !== "string") continue;
     const trimmedItem = item.trim();
-    if (
-      trimmedItem === "" ||
-      !UUID_PATTERN.test(trimmedItem) ||
-      seen.has(trimmedItem)
-    ) {
+    if (trimmedItem === "" || !UUID_PATTERN.test(trimmedItem) || seen.has(trimmedItem)) {
       continue;
     }
     seen.add(trimmedItem);
@@ -67,7 +62,9 @@ function writePinnedCharacterIds(pinnedCharacterIds: string[]) {
 
   cachedPinnedCharacterIdsRaw = nextRawValue;
   cachedPinnedCharacterIds =
-    normalizedPinnedCharacterIds.length > 0 ? normalizedPinnedCharacterIds : EMPTY_PINNED_CHARACTER_IDS;
+    normalizedPinnedCharacterIds.length > 0
+      ? normalizedPinnedCharacterIds
+      : EMPTY_PINNED_CHARACTER_IDS;
 
   window.localStorage.setItem(PINNED_CHARACTERS_KEY, nextRawValue);
   window.dispatchEvent(new Event(PINNED_CHARACTERS_EVENT));
@@ -119,10 +116,7 @@ export function usePinnedCharacters() {
     () => [],
   );
 
-  const pinnedCharacterIdSet = useMemo(
-    () => new Set(pinnedCharacterIds),
-    [pinnedCharacterIds],
-  );
+  const pinnedCharacterIdSet = useMemo(() => new Set(pinnedCharacterIds), [pinnedCharacterIds]);
 
   const togglePinnedCharacter = useCallback((characterId: string) => {
     const currentPinnedCharacterIds = readPinnedCharacterIds();
@@ -133,22 +127,19 @@ export function usePinnedCharacters() {
     writePinnedCharacterIds(nextPinnedCharacterIds);
   }, []);
 
-  const movePinnedCharacter = useCallback(
-    (characterId: string, direction: "up" | "down") => {
-      const currentPinnedCharacterIds = readPinnedCharacterIds();
-      const currentIndex = currentPinnedCharacterIds.indexOf(characterId);
-      if (currentIndex < 0) return;
+  const movePinnedCharacter = useCallback((characterId: string, direction: "up" | "down") => {
+    const currentPinnedCharacterIds = readPinnedCharacterIds();
+    const currentIndex = currentPinnedCharacterIds.indexOf(characterId);
+    if (currentIndex < 0) return;
 
-      const targetIndex =
-        direction === "up"
-          ? Math.max(0, currentIndex - 1)
-          : Math.min(currentPinnedCharacterIds.length - 1, currentIndex + 1);
-      if (targetIndex === currentIndex) return;
+    const targetIndex =
+      direction === "up"
+        ? Math.max(0, currentIndex - 1)
+        : Math.min(currentPinnedCharacterIds.length - 1, currentIndex + 1);
+    if (targetIndex === currentIndex) return;
 
-      writePinnedCharacterIds(moveArrayItem(currentPinnedCharacterIds, currentIndex, targetIndex));
-    },
-    [],
-  );
+    writePinnedCharacterIds(moveArrayItem(currentPinnedCharacterIds, currentIndex, targetIndex));
+  }, []);
 
   return {
     pinnedCharacterIds,

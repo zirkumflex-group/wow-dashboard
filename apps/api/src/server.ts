@@ -1,6 +1,8 @@
 import { serve } from "@hono/node-server";
+import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { Hono, type Context } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import {
   addonIngestBodySchema,
   addonIngestLimits,
@@ -11,6 +13,7 @@ import {
   characterSnapshotTimelineQuerySchema,
   charactersLatestQuerySchema,
   createMythicPlusRunSessionBodySchema,
+  dashboardSessionRouteParamsSchema,
   loginCodeTtlSeconds,
   playerRouteParamsSchema,
   updateMythicPlusRunSessionExternalIdBodySchema,
@@ -21,7 +24,7 @@ import {
   updatePlayerDiscordBodySchema,
 } from "@wow-dashboard/api-schema";
 import { players } from "@wow-dashboard/db";
-import { env } from "@wow-dashboard/env/server";
+import { env } from "@wow-dashboard/env/api";
 import { auth, type ApiAuthSession, type ApiAuthUser } from "./auth";
 import { db } from "./db";
 import {
@@ -32,8 +35,10 @@ import {
   ensureElectronSessionLifetime,
   redeemLoginCode,
 } from "./lib/loginCodes";
+import { checkQueueHealth } from "./lib/queue";
 import { limitPublicHeavyRead, limitPublicRead } from "./lib/rateLimit";
 import { ensureRedis } from "./lib/redis";
+import { logger } from "./lib/logger";
 import { AddonIngestServiceError, ingestAddonData } from "./services/addonIngest";
 import {
   readBoosterCharactersForExport,
@@ -44,6 +49,7 @@ import {
   readCharactersWithLatestSnapshot,
   createMythicPlusRunSession,
   deleteMythicPlusRunSession,
+  readMyCharacterCount,
   readMyCharactersWithSnapshot,
   readPlayerScoreboard,
   readPlayerCharacters,
@@ -55,18 +61,62 @@ import {
   updateMythicPlusRunSessionExternalId,
   updateMythicPlusRunSessionPaidStatus,
 } from "./services/characters";
-import { updatePlayerDiscordUserId } from "./services/players";
+import { updatePlayerDiscordSettings } from "./services/players";
+import { readActiveSessions, revokeOwnedSession } from "./services/sessions";
 
 type AppBindings = {
   Variables: {
     session: ApiAuthSession | null;
     user: ApiAuthUser | null;
+    requestId: string;
   };
 };
 
 export const app = new Hono<AppBindings>();
 const desktopClientHeader = "x-wow-dashboard-client";
 const desktopClientHeaderValue = "desktop";
+
+function getRequestId(c: Context<AppBindings>): string {
+  const candidate = c.req.header("x-request-id")?.trim();
+  return candidate && /^[A-Za-z0-9._:-]{8,128}$/.test(candidate) ? candidate : randomUUID();
+}
+
+app.use("*", async (c, next) => {
+  const requestId = getRequestId(c);
+  const startedAt = performance.now();
+  c.set("requestId", requestId);
+  c.header("X-Request-Id", requestId);
+
+  try {
+    await next();
+    logger.info("http.request.completed", {
+      requestId,
+      method: c.req.method,
+      path: c.req.path,
+      status: c.res.status,
+      durationMs: Math.round((performance.now() - startedAt) * 100) / 100,
+      userId: c.get("user")?.id,
+    });
+  } catch (error) {
+    logger.error("http.request.failed", {
+      requestId,
+      method: c.req.method,
+      path: c.req.path,
+      durationMs: Math.round((performance.now() - startedAt) * 100) / 100,
+      userId: c.get("user")?.id,
+      error,
+    });
+    throw error;
+  }
+});
+
+app.onError((_error, c) => {
+  c.header("Cache-Control", "no-store");
+  if (c.req.path.startsWith("/api/")) {
+    return c.json({ error: "Internal server error", requestId: c.get("requestId") }, 500);
+  }
+  return c.text("Internal server error", 500);
+});
 
 function isAllowedApiOrigin(origin: string) {
   if (!origin) {
@@ -441,19 +491,34 @@ function formatValidationError(issues: { message: string }[]): string {
 }
 
 function parseBooleanQueryValue(value: string | null) {
+  if (value === null) return undefined;
   if (value === "true") return true;
   if (value === "false") return false;
   return value;
 }
 
+async function withDeadline<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error(`Operation exceeded ${timeoutMs} milliseconds`)),
+          timeoutMs,
+        );
+        timeout.unref();
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
 function getClientRateLimitKey(c: Context<AppBindings>): string {
   const forwardedFor = c.req.header("x-forwarded-for")?.split(",")[0]?.trim();
   const candidate =
-    c.req.header("cf-connecting-ip") ??
-    c.req.header("x-real-ip") ??
-    forwardedFor ??
-    c.req.header("user-agent") ??
-    "unknown";
+    c.req.header("x-real-ip") ?? forwardedFor ?? c.req.header("user-agent") ?? "unknown";
   return candidate.slice(0, 128);
 }
 
@@ -543,7 +608,7 @@ app.use("/api/*", async (c, next) => {
 
   if (c.req.method === "OPTIONS") {
     c.header("Access-Control-Max-Age", "600");
-    c.header("Access-Control-Allow-Methods", "GET,POST,PATCH,OPTIONS");
+    c.header("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS");
 
     const requestHeaders = c.req.header("Access-Control-Request-Headers");
     if (requestHeaders) {
@@ -565,6 +630,14 @@ app.use("/api/*", async (c, next) => {
   appendVaryHeader(c.res.headers, "Origin");
 });
 
+app.use(
+  "/api/*",
+  bodyLimit({
+    maxSize: addonIngestLimits.maxBodyBytes,
+    onError: (c) => c.json({ error: "Request body is too large" }, 413),
+  }),
+);
+
 app.use("/api/*", async (c, next) => {
   const session = await auth.api.getSession({
     headers: c.req.raw.headers,
@@ -578,7 +651,11 @@ app.use("/api/*", async (c, next) => {
         await ensureDesktopSessionLifetime(session.session);
       }
     } catch (error) {
-      console.warn("[api] failed to extend desktop session lifetime", error);
+      logger.warn("auth.desktop_session_extension.failed", {
+        requestId: c.get("requestId"),
+        userId: session.user.id,
+        error,
+      });
     }
   }
 
@@ -592,14 +669,20 @@ app.get("/healthz", (c) => c.json({ ok: true }));
 app.get("/readyz", async (c) => {
   try {
     const redis = await ensureRedis();
-    const [, redisStatus] = await Promise.all([db.execute(sql`select 1`), redis.ping()]);
+    const readinessChecks = Promise.all([
+      db.execute(sql`select 1`),
+      redis.ping(),
+      checkQueueHealth(),
+    ]);
+    const [, redisStatus] = await withDeadline(readinessChecks, 4_000);
 
     if (redisStatus !== "PONG") {
       throw new Error("Redis ping failed");
     }
 
     return c.json({ ok: true });
-  } catch {
+  } catch (error) {
+    logger.warn("health.ready_failed", { error });
     return c.json({ ok: false }, 503);
   }
 });
@@ -728,13 +811,14 @@ app.get("/api/dev/session", async (c) => {
           battlenetAccountId: player.battlenetAccountId,
           battleTag: player.battleTag,
           discordUserId: player.discordUserId,
+          shareDiscordInBoosterExport: player.shareDiscordInBoosterExport,
           legacyConvexId: player.legacyConvexId,
         }
       : null,
   });
 });
 
-app.get("/api/me", (c) => {
+app.get("/api/me", async (c) => {
   const session = c.get("session");
   const user = c.get("user");
 
@@ -745,7 +829,47 @@ app.get("/api/me", (c) => {
   return c.json({
     session: serializeSession(session),
     user: serializeUser(user),
+    player: await readPlayerBinding(user.id).then((player) =>
+      player
+        ? {
+            id: player.id,
+            battleTag: player.battleTag,
+            discordUserId: player.discordUserId,
+            shareDiscordInBoosterExport: player.shareDiscordInBoosterExport,
+          }
+        : null,
+    ),
   });
+});
+
+app.get("/api/sessions", async (c) => {
+  const session = c.get("session");
+  const user = c.get("user");
+  if (!session || !user) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  return c.json(await readActiveSessions(user.id, session.id));
+});
+
+app.post("/api/sessions/:id/revoke", async (c) => {
+  const session = c.get("session");
+  const user = c.get("user");
+  if (!session || !user) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const parsedParams = dashboardSessionRouteParamsSchema.safeParse(c.req.param());
+  if (!parsedParams.success) {
+    return c.json({ error: formatValidationError(parsedParams.error.issues) }, 400);
+  }
+
+  const result = await revokeOwnedSession(user.id, parsedParams.data.id);
+  if (!result) {
+    return c.json({ error: "Session not found." }, 404);
+  }
+
+  return c.json(result);
 });
 
 app.get("/api/characters/latest", async (c) => {
@@ -778,6 +902,17 @@ app.get("/api/characters", async (c) => {
   return c.json(await readMyCharactersWithSnapshot(user.id));
 });
 
+app.get("/api/characters/count", async (c) => {
+  const session = c.get("session");
+  const user = c.get("user");
+
+  if (!session || !user) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  return c.json({ count: await readMyCharacterCount(user.id) });
+});
+
 app.get("/api/characters/:id/page", async (c) => {
   const rateLimitResponse = await enforcePublicReadRateLimit(c, true);
   if (rateLimitResponse) return rateLimitResponse;
@@ -789,7 +924,7 @@ app.get("/api/characters/:id/page", async (c) => {
 
   const searchParams = new URL(c.req.url).searchParams;
   const parsedQuery = characterPageQuerySchema.safeParse({
-    timeFrame: searchParams.get("timeFrame"),
+    timeFrame: searchParams.get("timeFrame") ?? "all",
     includeStats: parseBooleanQueryValue(searchParams.get("includeStats")),
   });
   if (!parsedQuery.success) {
@@ -1086,7 +1221,7 @@ app.get("/api/characters/boosters/export", async (c) => {
     return c.json({ error: "Unauthorized" }, 401);
   }
 
-  return c.json(await readBoosterCharactersForExport());
+  return c.json(await readBoosterCharactersForExport(user.id));
 });
 
 app.post("/api/characters/resync", async (c) => {
@@ -1133,8 +1268,12 @@ app.post("/api/addon/ingest", async (c) => {
       );
     }
 
-    console.error("[api] addon ingest failed", error);
-    return c.json({ error: "Internal server error" }, 500);
+    logger.error("addon.ingest.failed", {
+      requestId: c.get("requestId"),
+      userId: user.id,
+      error,
+    });
+    return c.json({ error: "Internal server error", requestId: c.get("requestId") }, 500);
   }
 });
 
@@ -1177,10 +1316,10 @@ app.patch("/api/players/:id/discord", async (c) => {
   }
 
   try {
-    const result = await updatePlayerDiscordUserId(
+    const result = await updatePlayerDiscordSettings(
       parsedParams.data.id,
       user.id,
-      parsedBody.data.discordUserId,
+      parsedBody.data,
     );
 
     if (!result) {
@@ -1312,25 +1451,21 @@ app.patch("/api/characters/:id/visibility", async (c) => {
   return c.json(result);
 });
 
-function getPort() {
-  const parsedPort = Number.parseInt(env.PORT, 10);
-  return Number.isFinite(parsedPort) ? parsedPort : 3000;
-}
-
 function getHost() {
   const host = process.env.HOST?.trim();
   return host && host.length > 0 ? host : "0.0.0.0";
 }
 
 export function startApi() {
-  const port = getPort();
+  const port = env.PORT;
   const host = getHost();
 
-  serve({
+  const server = serve({
     fetch: app.fetch,
     port,
     hostname: host,
   });
 
-  console.log(`[api] listening on http://${host}:${port}`);
+  logger.info("server.listening", { host, port });
+  return server;
 }

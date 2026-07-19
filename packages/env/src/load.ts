@@ -22,12 +22,9 @@ function findRepoRoot(startDir: string) {
 const repoRoot = findRepoRoot(process.env.INIT_CWD ?? process.cwd());
 const nodeEnv = process.env.NODE_ENV ?? "development";
 
-const envFiles = [
-  `.env.${nodeEnv}.local`,
-  ".env.local",
-  `.env.${nodeEnv}`,
-  ".env",
-].map((fileName) => resolve(repoRoot, fileName));
+const envFiles = [`.env.${nodeEnv}.local`, ".env.local", `.env.${nodeEnv}`, ".env"].map(
+  (fileName) => resolve(repoRoot, fileName),
+);
 
 for (const path of envFiles) {
   if (!existsSync(path)) continue;

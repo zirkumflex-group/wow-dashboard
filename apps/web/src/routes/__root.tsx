@@ -50,10 +50,7 @@ async function getCachedAuthState() {
     return await getAuthSession();
   }
 
-  if (
-    cachedAuthState &&
-    Date.now() - cachedAuthState.fetchedAt < AUTH_CACHE_TTL_MS
-  ) {
+  if (cachedAuthState && Date.now() - cachedAuthState.fetchedAt < AUTH_CACHE_TTL_MS) {
     return cachedAuthState.sessionData;
   }
 

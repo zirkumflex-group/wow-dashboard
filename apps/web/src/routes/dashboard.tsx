@@ -7,7 +7,11 @@ import { Card, CardContent, CardHeader, CardTitle } from "@wow-dashboard/ui/comp
 import { Checkbox } from "@wow-dashboard/ui/components/checkbox";
 import { Input } from "@wow-dashboard/ui/components/input";
 import { Skeleton } from "@wow-dashboard/ui/components/skeleton";
-import { HeartPulse, RefreshCw, Shield, Star, Swords } from "lucide-react";
+import HeartPulse from "lucide-react/dist/esm/icons/heart-pulse.mjs";
+import RefreshCw from "lucide-react/dist/esm/icons/refresh-cw.mjs";
+import Shield from "lucide-react/dist/esm/icons/shield.mjs";
+import Star from "lucide-react/dist/esm/icons/star.mjs";
+import Swords from "lucide-react/dist/esm/icons/swords.mjs";
 import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createCharacterRouteId } from "@wow-dashboard/api-schema";

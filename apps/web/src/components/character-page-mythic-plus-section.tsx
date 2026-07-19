@@ -3,20 +3,18 @@ import { Button } from "@wow-dashboard/ui/components/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@wow-dashboard/ui/components/card";
 import { Input } from "@wow-dashboard/ui/components/input";
 import { cn } from "@wow-dashboard/ui/lib/utils";
-import {
-  CheckCircle2,
-  CircleDollarSign,
-  Clock,
-  Eye,
-  EyeOff,
-  Flame,
-  History,
-  Layers3,
-  ReceiptText,
-  Sword,
-  Trash2,
-  X,
-} from "lucide-react";
+import CheckCircle2 from "lucide-react/dist/esm/icons/check-circle-2.mjs";
+import CircleDollarSign from "lucide-react/dist/esm/icons/circle-dollar-sign.mjs";
+import Clock from "lucide-react/dist/esm/icons/clock.mjs";
+import Eye from "lucide-react/dist/esm/icons/eye.mjs";
+import EyeOff from "lucide-react/dist/esm/icons/eye-off.mjs";
+import Flame from "lucide-react/dist/esm/icons/flame.mjs";
+import History from "lucide-react/dist/esm/icons/history.mjs";
+import Layers3 from "lucide-react/dist/esm/icons/layers-3.mjs";
+import ReceiptText from "lucide-react/dist/esm/icons/receipt-text.mjs";
+import Sword from "lucide-react/dist/esm/icons/sword.mjs";
+import Trash2 from "lucide-react/dist/esm/icons/trash-2.mjs";
+import X from "lucide-react/dist/esm/icons/x.mjs";
 import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   getRaiderIoDungeonScoreColor,

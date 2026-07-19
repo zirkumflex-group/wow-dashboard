@@ -1,10 +1,13 @@
 import { PgBoss } from "pg-boss";
 import {
   queueNames,
+  syncCharactersDeadLetterQueueOptions,
   syncCharactersJobPayloadSchema,
+  syncCharactersQueueOptions,
   type SyncCharactersJobPayload,
 } from "@wow-dashboard/api-schema";
-import { env } from "@wow-dashboard/env/server";
+import { env } from "@wow-dashboard/env/api";
+import { logger } from "./logger";
 
 let queuePromise: Promise<PgBoss> | null = null;
 let queueIsClosing = false;
@@ -30,25 +33,38 @@ function attachQueueErrorHandler(queue: PgBoss) {
       return;
     }
 
-    console.error("[api] pg-boss error", error);
+    logger.error("queue.error", { error });
   });
 }
 
-async function ensureQueue(queue: PgBoss, name: string): Promise<void> {
+async function ensureQueue(
+  queue: PgBoss,
+  name: string,
+  options: Parameters<PgBoss["createQueue"]>[1],
+): Promise<void> {
   const existingQueue = await queue.getQueue(name);
   if (!existingQueue) {
-    await queue.createQueue(name);
+    await queue.createQueue(name, options);
+    return;
   }
+
+  await queue.updateQueue(name, options);
 }
 
 async function createQueue(): Promise<PgBoss> {
   const queue = new PgBoss({
     connectionString: env.DATABASE_URL,
+    connectionTimeoutMillis: 3_000,
   });
   attachQueueErrorHandler(queue);
 
   await queue.start();
-  await ensureQueue(queue, queueNames.syncCharacters);
+  await ensureQueue(
+    queue,
+    queueNames.syncCharactersDeadLetter,
+    syncCharactersDeadLetterQueueOptions,
+  );
+  await ensureQueue(queue, queueNames.syncCharacters, syncCharactersQueueOptions);
   return queue;
 }
 
@@ -63,10 +79,26 @@ async function getQueue(): Promise<PgBoss> {
   return queuePromise;
 }
 
-export async function enqueueSyncCharactersJob(payload: SyncCharactersJobPayload): Promise<void> {
+export async function enqueueSyncCharactersJob(payload: SyncCharactersJobPayload) {
   const queue = await getQueue();
   const data = syncCharactersJobPayloadSchema.parse(payload);
-  await queue.send(queueNames.syncCharacters, data);
+  const result = await queue.upsert(queueNames.syncCharacters, data, {
+    singletonKey: data.userId,
+  });
+
+  return {
+    jobId: result.jobs[0] ?? null,
+    inserted: result.inserted === 1,
+    deduplicated: result.updated > 0,
+  };
+}
+
+export async function checkQueueHealth(): Promise<void> {
+  const queue = await getQueue();
+  const [stats] = await queue.getQueueStats(queueNames.syncCharacters, { force: true });
+  if (!stats) {
+    throw new Error(`Queue ${queueNames.syncCharacters} is unavailable`);
+  }
 }
 
 export async function closeQueue(): Promise<void> {
@@ -79,7 +111,7 @@ export async function closeQueue(): Promise<void> {
     queueIsClosing = true;
 
     try {
-      await queue.stop();
+      await queue.stop({ close: true, graceful: true, timeout: 10_000 });
     } finally {
       queueIsClosing = false;
     }

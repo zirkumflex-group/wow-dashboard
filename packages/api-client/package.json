@@ -8,7 +8,10 @@
   },
   "scripts": {
     "build": "tsc --project tsconfig.json",
-    "check-types": "tsc --noEmit --project tsconfig.json"
+    "check-types": "tsc --noEmit --project tsconfig.json",
+    "lint": "oxlint .",
+    "format:check": "oxfmt --check .",
+    "test": "tsx --test src/client.test.ts"
   },
   "dependencies": {
     "@wow-dashboard/api-schema": "workspace:*",
@@ -17,6 +20,7 @@
   "devDependencies": {
     "@types/node": "^24.12.2",
     "@wow-dashboard/config": "workspace:*",
+    "tsx": "^4.21.0",
     "typescript": "^6.0.3"
   }
 }

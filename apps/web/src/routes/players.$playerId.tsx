@@ -10,7 +10,7 @@ import {
   TableHeader,
   TableRow,
 } from "@wow-dashboard/ui/components/table";
-import { ArrowLeft } from "lucide-react";
+import ArrowLeft from "lucide-react/dist/esm/icons/arrow-left.mjs";
 import { useEffect } from "react";
 import { createCharacterRouteId } from "@wow-dashboard/api-schema";
 import { apiQueryOptions } from "@/lib/api-client";

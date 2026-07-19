@@ -1,5 +1,9 @@
 {
   "name": "@wow-dashboard/config",
   "version": "0.0.0",
-  "private": true
+  "private": true,
+  "scripts": {
+    "lint": "pnpm --dir ../.. exec oxlint scripts",
+    "format:check": "pnpm --dir ../.. exec oxfmt --check scripts"
+  }
 }

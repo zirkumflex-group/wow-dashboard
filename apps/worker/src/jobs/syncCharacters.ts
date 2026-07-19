@@ -1,38 +1,27 @@
 import { and, eq, sql } from "drizzle-orm";
+import {
+  battleNetRegions,
+  fetchBattleNetCharactersForRegion,
+  type BattleNetCharacter,
+  type BattleNetRegion,
+} from "@wow-dashboard/battlenet";
 import { characters, players } from "@wow-dashboard/db";
 import type { SyncCharactersJobPayload } from "@wow-dashboard/api-schema";
+import { resolveBattleNetAccessTokenForUser } from "../battleNetTokens";
 import { db } from "../db";
 
-interface BattleNetWowAccount {
-  characters?: BattleNetCharacter[];
-}
-
-interface BattleNetCharacter {
+type NormalizedBattleNetCharacter = {
   name: string;
-  realm: { name: string; slug: string };
-  playable_class: { name: string };
-  playable_race: { name: string };
-  faction: { type: string };
+  realm: string;
+  realmSlug: string | null;
+  class: string;
+  race: string;
+  faction: "alliance" | "horde";
   level: number;
-}
-
-interface BattleNetWowProfileResponse {
-  wow_accounts?: BattleNetWowAccount[];
-}
-
-const battleNetRegions = ["us", "eu", "kr", "tw"] as const;
-type BattleNetRegion = (typeof battleNetRegions)[number];
+};
 
 function battleNetVerificationFields(
-  character: {
-    name: string;
-    realm: string;
-    realmSlug: string | null;
-    class: string;
-    race: string;
-    faction: "alliance" | "horde";
-    level: number | null;
-  },
+  character: NormalizedBattleNetCharacter,
   region: BattleNetRegion,
   verifiedAt: Date,
 ) {
@@ -52,59 +41,75 @@ function battleNetVerificationFields(
   };
 }
 
-async function fetchCharactersForRegion(
-  accessToken: string,
-  region: BattleNetRegion,
-): Promise<{ region: BattleNetRegion; characters: BattleNetCharacter[] } | null> {
-  try {
-    const url = `https://${region}.api.blizzard.com/profile/user/wow?namespace=profile-${region}&locale=en_US`;
-    const response = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
-    });
+function normalizeBattleNetCharacter(
+  character: BattleNetCharacter,
+): NormalizedBattleNetCharacter | null {
+  if (character.level < 10) return null;
 
-    if (!response.ok) {
-      if (response.status !== 404) {
-        console.error(
-          `[worker] Battle.net WoW profile API error for region ${region}: ${response.status} ${response.statusText}`,
-        );
-      }
-
-      return null;
-    }
-
-    const data = (await response.json()) as BattleNetWowProfileResponse;
-    return {
-      region,
-      characters: (data.wow_accounts ?? []).flatMap((account) => account.characters ?? []),
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(
-      `[worker] Battle.net WoW profile request failed for region ${region}: ${message}`,
-    );
+  const faction = character.faction.type.trim().toLowerCase();
+  if (faction !== "alliance" && faction !== "horde") {
     return null;
   }
+
+  return {
+    name: character.name,
+    realm: character.realm.name,
+    realmSlug: character.realm.slug || null,
+    class: character.playable_class.name,
+    race: character.playable_race.name,
+    faction,
+    level: character.level,
+  };
 }
 
-export async function syncCharacters(payload: SyncCharactersJobPayload) {
+function characterNaturalKey(character: { name: string; realm: string }): string {
+  return `${character.realm.toLocaleLowerCase("en-US")}\u0000${character.name.toLocaleLowerCase(
+    "en-US",
+  )}`;
+}
+
+export async function syncCharacters(
+  payload: SyncCharactersJobPayload,
+  options: { signal?: AbortSignal } = {},
+) {
   const player = await db.query.players.findFirst({
     where: eq(players.userId, payload.userId),
   });
 
   if (!player) {
-    console.warn(`[worker] syncCharacters skipped: no player bound to user ${payload.userId}`);
     return {
       inserted: 0,
       updated: 0,
       scanned: 0,
       skipped: true,
+      skipReason: "missing_player" as const,
+      tokenRefreshed: false,
+    };
+  }
+
+  const token = await resolveBattleNetAccessTokenForUser(payload.userId, options.signal);
+  if (!token.ok) {
+    if (token.reason === "refresh_failed") {
+      throw new Error("Battle.net access token refresh failed");
+    }
+
+    return {
+      inserted: 0,
+      updated: 0,
+      scanned: 0,
+      skipped: true,
+      skipReason: token.reason,
+      tokenRefreshed: false,
     };
   }
 
   const results = await Promise.all(
-    battleNetRegions.map((region) => fetchCharactersForRegion(payload.accessToken, region)),
+    battleNetRegions.map(async (region) => ({
+      region,
+      characters: await fetchBattleNetCharactersForRegion(token.accessToken, region, {
+        signal: options.signal,
+      }),
+    })),
   );
 
   let inserted = 0;
@@ -112,64 +117,68 @@ export async function syncCharacters(payload: SyncCharactersJobPayload) {
   let scanned = 0;
 
   for (const result of results) {
-    if (!result || result.characters.length === 0) continue;
-
-    const filteredCharacters = result.characters
-      .filter((character) => character.level >= 10)
-      .map((character) => ({
-        name: character.name,
-        realm: character.realm.name,
-        realmSlug: character.realm.slug || null,
-        class: character.playable_class.name,
-        race: character.playable_race.name,
-        faction: character.faction.type.toLowerCase() as "alliance" | "horde",
-        level: character.level,
-      }));
-
-    scanned += filteredCharacters.length;
-
-    for (const character of filteredCharacters) {
-      const verifiedAt = new Date();
-      const verifiedCharacterPatch = battleNetVerificationFields(
-        character,
-        result.region,
-        verifiedAt,
-      );
-      const existingCharacter = await db.query.characters.findFirst({
-        where: and(
-          eq(characters.playerId, player.id),
-          eq(characters.region, result.region),
-          sql`${characters.normalizedRealm} = lower(${character.realm})`,
-          sql`${characters.normalizedName} = lower(${character.name})`,
-        ),
-      });
-
-      if (!existingCharacter) {
-        await db
-          .insert(characters)
-          .values({
-            playerId: player.id,
-            ...verifiedCharacterPatch,
-          })
-          .onConflictDoUpdate({
-            target: [
-              characters.playerId,
-              characters.region,
-              characters.normalizedRealm,
-              characters.normalizedName,
-            ],
-            set: verifiedCharacterPatch,
-          });
-        inserted += 1;
-        continue;
-      }
-
-      await db
-        .update(characters)
-        .set(verifiedCharacterPatch)
-        .where(eq(characters.id, existingCharacter.id));
-      updated += 1;
+    const normalizedByNaturalKey = new Map<string, NormalizedBattleNetCharacter>();
+    for (const character of result.characters) {
+      const normalized = normalizeBattleNetCharacter(character);
+      if (!normalized) continue;
+      scanned += 1;
+      normalizedByNaturalKey.set(characterNaturalKey(normalized), normalized);
     }
+    const normalizedCharacters = Array.from(normalizedByNaturalKey.values());
+
+    if (normalizedCharacters.length === 0) continue;
+
+    const existingCharacters = await db.query.characters.findMany({
+      columns: {
+        normalizedRealm: true,
+        normalizedName: true,
+      },
+      where: and(eq(characters.playerId, player.id), eq(characters.region, result.region)),
+    });
+    const existingNaturalKeys = new Set(
+      existingCharacters.map(
+        (character) => `${character.normalizedRealm}\u0000${character.normalizedName}`,
+      ),
+    );
+
+    for (const character of normalizedCharacters) {
+      if (existingNaturalKeys.has(characterNaturalKey(character))) {
+        updated += 1;
+      } else {
+        inserted += 1;
+      }
+    }
+
+    const verifiedAt = new Date();
+    await db
+      .insert(characters)
+      .values(
+        normalizedCharacters.map((character) => ({
+          playerId: player.id,
+          ...battleNetVerificationFields(character, result.region, verifiedAt),
+        })),
+      )
+      .onConflictDoUpdate({
+        target: [
+          characters.playerId,
+          characters.region,
+          characters.normalizedRealm,
+          characters.normalizedName,
+        ],
+        set: {
+          name: sql`excluded."name"`,
+          realm: sql`excluded."realm"`,
+          class: sql`excluded."class"`,
+          race: sql`excluded."race"`,
+          faction: sql`excluded."faction"`,
+          battleNetVerificationStatus: "verified",
+          battleNetVerifiedAt: verifiedAt,
+          battleNetLastCheckedAt: verifiedAt,
+          battleNetRealmSlug: sql`excluded."battle_net_realm_slug"`,
+          battleNetLevel: sql`excluded."battle_net_level"`,
+          battleNetVerificationError: null,
+        },
+      });
   }
 
   return {
@@ -177,5 +186,7 @@ export async function syncCharacters(payload: SyncCharactersJobPayload) {
     updated,
     scanned,
     skipped: false,
+    skipReason: null,
+    tokenRefreshed: token.refreshed,
   };
 }

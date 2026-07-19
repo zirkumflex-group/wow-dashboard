@@ -130,12 +130,8 @@
           "name": "account_userId_user_id_fk",
           "tableFrom": "account",
           "tableTo": "user",
-          "columnsFrom": [
-            "userId"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["userId"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -221,12 +217,8 @@
           "name": "session_userId_user_id_fk",
           "tableFrom": "session",
           "tableTo": "user",
-          "columnsFrom": [
-            "userId"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["userId"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -236,9 +228,7 @@
         "session_token_unique": {
           "name": "session_token_unique",
           "nullsNotDistinct": false,
-          "columns": [
-            "token"
-          ]
+          "columns": ["token"]
         }
       },
       "policies": {},
@@ -299,9 +289,7 @@
         "user_email_unique": {
           "name": "user_email_unique",
           "nullsNotDistinct": false,
-          "columns": [
-            "email"
-          ]
+          "columns": ["email"]
         }
       },
       "policies": {},
@@ -644,12 +632,8 @@
           "name": "character_daily_snapshots_character_id_characters_id_fk",
           "tableFrom": "character_daily_snapshots",
           "tableTo": "characters",
-          "columnsFrom": [
-            "character_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["character_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -974,12 +958,8 @@
           "name": "characters_player_id_players_id_fk",
           "tableFrom": "characters",
           "tableTo": "players",
-          "columnsFrom": [
-            "player_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["player_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -1081,12 +1061,8 @@
           "name": "mythic_plus_run_session_runs_session_id_mythic_plus_run_sessions_id_fk",
           "tableFrom": "mythic_plus_run_session_runs",
           "tableTo": "mythic_plus_run_sessions",
-          "columnsFrom": [
-            "session_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["session_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -1094,12 +1070,8 @@
           "name": "mythic_plus_run_session_runs_run_id_mythic_plus_runs_id_fk",
           "tableFrom": "mythic_plus_run_session_runs",
           "tableTo": "mythic_plus_runs",
-          "columnsFrom": [
-            "run_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["run_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -1107,10 +1079,7 @@
       "compositePrimaryKeys": {
         "mythic_plus_run_session_runs_pk": {
           "name": "mythic_plus_run_session_runs_pk",
-          "columns": [
-            "session_id",
-            "run_id"
-          ]
+          "columns": ["session_id", "run_id"]
         }
       },
       "uniqueConstraints": {},
@@ -1185,12 +1154,8 @@
           "name": "mythic_plus_run_sessions_character_id_characters_id_fk",
           "tableFrom": "mythic_plus_run_sessions",
           "tableTo": "characters",
-          "columnsFrom": [
-            "character_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["character_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -1505,12 +1470,8 @@
           "name": "mythic_plus_runs_character_id_characters_id_fk",
           "tableFrom": "mythic_plus_runs",
           "tableTo": "characters",
-          "columnsFrom": [
-            "character_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["character_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -1629,12 +1590,8 @@
           "name": "players_user_id_user_id_fk",
           "tableFrom": "players",
           "tableTo": "user",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         }
@@ -1920,12 +1877,8 @@
           "name": "snapshots_character_id_characters_id_fk",
           "tableFrom": "snapshots",
           "tableTo": "characters",
-          "columnsFrom": [
-            "character_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["character_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }

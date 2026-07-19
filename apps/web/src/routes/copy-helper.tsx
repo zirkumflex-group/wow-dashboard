@@ -15,7 +15,10 @@ import {
   SheetTrigger,
 } from "@wow-dashboard/ui/components/sheet";
 import { Skeleton } from "@wow-dashboard/ui/components/skeleton";
-import { Check, Copy, Users, Zap } from "lucide-react";
+import Check from "lucide-react/dist/esm/icons/check.mjs";
+import Copy from "lucide-react/dist/esm/icons/copy.mjs";
+import Users from "lucide-react/dist/esm/icons/users.mjs";
+import Zap from "lucide-react/dist/esm/icons/zap.mjs";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
@@ -129,7 +132,10 @@ const EXPORT_SPEC_LABELS: Record<string, string> = {
 };
 
 function getExportSpecLabel(specName: string) {
-  const normalizedSpecToken = specName.trim().toLowerCase().replace(/[\s_-]/g, "");
+  const normalizedSpecToken = specName
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]/g, "");
   return EXPORT_SPEC_LABELS[normalizedSpecToken] ?? specName.trim();
 }
 
@@ -140,32 +146,38 @@ function getExportRoleIcon(role: string) {
 }
 
 function getExportClassIcon(className: string) {
-  const normalizedClassToken = className.trim().toLowerCase().replace(/[\s_-]/g, "");
+  const normalizedClassToken = className
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]/g, "");
   return `:${normalizedClassToken}:`;
 }
 
-function buildExportLine(character: {
-  class: string;
-  nonTradeableSlots: TradeSlotKey[];
-  ownerDiscordUserId: string | null;
-  snapshot: {
-    spec: string;
-    role: string;
-    mythicPlusScore: number;
-    itemLevel: number;
-    ownedKeystone: {
-      level: number;
-      mapChallengeModeID?: number;
-      mapName?: string;
-    } | null;
-  };
-}, options: {
-  includeIcons: boolean;
-  includeItemLevel: boolean;
-  includeKey: boolean;
-  includeTradeLocks: boolean;
-  includeDiscordId: boolean;
-}) {
+function buildExportLine(
+  character: {
+    class: string;
+    nonTradeableSlots: TradeSlotKey[];
+    ownerDiscordUserId: string | null;
+    snapshot: {
+      spec: string;
+      role: string;
+      mythicPlusScore: number;
+      itemLevel: number;
+      ownedKeystone: {
+        level: number;
+        mapChallengeModeID?: number;
+        mapName?: string;
+      } | null;
+    };
+  },
+  options: {
+    includeIcons: boolean;
+    includeItemLevel: boolean;
+    includeKey: boolean;
+    includeTradeLocks: boolean;
+    includeDiscordId: boolean;
+  },
+) {
   const discordMention = character.ownerDiscordUserId
     ? `<@${character.ownerDiscordUserId}>`
     : "[missing-discord-id]";
@@ -175,10 +187,7 @@ function buildExportLine(character: {
         getExportClassIcon(character.class),
         `${getExportSpecLabel(character.snapshot.spec)} ${getExportClassLabel(character.class)}`,
       ]
-    : [
-        getExportRoleLabel(character.snapshot.role),
-        getExportClassLabel(character.class),
-      ];
+    : [getExportRoleLabel(character.snapshot.role), getExportClassLabel(character.class)];
   const detailSegments: string[] = [];
 
   detailSegments.push(
@@ -256,13 +265,11 @@ function hasSnapshot(character: BoosterCharacter): character is ReadyBoosterChar
 }
 
 function getEquippedKeystoneLabel(
-  keystone:
-    | {
-        level: number;
-        mapChallengeModeID?: number;
-        mapName?: string;
-      }
-    | null,
+  keystone: {
+    level: number;
+    mapChallengeModeID?: number;
+    mapName?: string;
+  } | null,
 ) {
   if (!keystone) {
     return "No keystone";
@@ -280,13 +287,11 @@ function getEquippedKeystoneLabel(
 }
 
 function getEquippedKeystoneExportLabel(
-  keystone:
-    | {
-        level: number;
-        mapChallengeModeID?: number;
-        mapName?: string;
-      }
-    | null,
+  keystone: {
+    level: number;
+    mapChallengeModeID?: number;
+    mapName?: string;
+  } | null,
   includeIcons: boolean,
 ) {
   if (!keystone) {
@@ -301,7 +306,9 @@ function getEquippedKeystoneExportLabel(
       ? `Dungeon ${keystone.mapChallengeModeID}`
       : "Unknown");
 
-  return includeIcons ? `${dungeonLabel} +${keystone.level} :Keystone:` : `${dungeonLabel} +${keystone.level}`;
+  return includeIcons
+    ? `${dungeonLabel} +${keystone.level} :Keystone:`
+    : `${dungeonLabel} +${keystone.level}`;
 }
 
 function RouteComponent() {
@@ -351,16 +358,16 @@ function RouteComponent() {
     );
     setTradeLockDrafts((currentDrafts) =>
       Object.fromEntries(
-        Object.entries(currentDrafts).filter(([characterId]) => boosterCharacterIds.has(characterId)),
+        Object.entries(currentDrafts).filter(([characterId]) =>
+          boosterCharacterIds.has(characterId),
+        ),
       ),
     );
   }, [boosterCharacters]);
 
   const selectableCharacters = useMemo<ReadyBoosterCharacter[]>(
     () =>
-      (boosterCharacters ?? []).flatMap((character) =>
-        hasSnapshot(character) ? [character] : [],
-      ),
+      (boosterCharacters ?? []).flatMap((character) => (hasSnapshot(character) ? [character] : [])),
     [boosterCharacters],
   );
   const selectedCharacterIdSet = useMemo(
@@ -369,9 +376,7 @@ function RouteComponent() {
   );
   const selectedCharacters = useMemo<ReadyBoosterCharacter[]>(
     () =>
-      selectableCharacters.filter((character) =>
-        selectedCharacterIdSet.has(String(character._id)),
-      ),
+      selectableCharacters.filter((character) => selectedCharacterIdSet.has(String(character._id))),
     [selectableCharacters, selectedCharacterIdSet],
   );
   const missingDiscordCharacters = useMemo(
@@ -387,7 +392,8 @@ function RouteComponent() {
     setIncludeDiscordId(selectedCharacters.length !== 1);
   }, [hasAdjustedDiscordIdToggle, selectedCharacters.length]);
 
-  const exportHeadline = customHeadline.trim() || getDefaultExportHeadline(selectedCharacters.length);
+  const exportHeadline =
+    customHeadline.trim() || getDefaultExportHeadline(selectedCharacters.length);
   const exportText = useMemo(() => {
     if (selectedCharacters.length === 0) {
       return "";
@@ -580,7 +586,10 @@ function RouteComponent() {
                   <span>iLvl</span>
                 </label>
                 <label className="flex items-center gap-2 rounded-md border border-border/60 px-2.5 py-1.5 text-xs text-muted-foreground">
-                  <Checkbox checked={includeKey} onCheckedChange={(value) => setIncludeKey(!!value)} />
+                  <Checkbox
+                    checked={includeKey}
+                    onCheckedChange={(value) => setIncludeKey(!!value)}
+                  />
                   <span>Key</span>
                 </label>
                 <label className="flex items-center gap-2 rounded-md border border-border/60 px-2.5 py-1.5 text-xs text-muted-foreground">
@@ -699,22 +708,34 @@ function RouteComponent() {
                         <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
                           {character.snapshot ? (
                             <>
-                              <Badge variant="outline" className="border-border/60 bg-background/80">
+                              <Badge
+                                variant="outline"
+                                className="border-border/60 bg-background/80"
+                              >
                                 Score {formatExportScore(character.snapshot.mythicPlusScore)}
                               </Badge>
                               {includeItemLevel && (
-                                <Badge variant="outline" className="border-border/60 bg-background/80">
+                                <Badge
+                                  variant="outline"
+                                  className="border-border/60 bg-background/80"
+                                >
                                   iLvl {character.snapshot.itemLevel.toFixed(1)}
                                 </Badge>
                               )}
                               {includeKey && (
-                                <Badge variant="outline" className="border-border/60 bg-background/80">
+                                <Badge
+                                  variant="outline"
+                                  className="border-border/60 bg-background/80"
+                                >
                                   {getEquippedKeystoneLabel(character.snapshot.ownedKeystone)}
                                 </Badge>
                               )}
                             </>
                           ) : (
-                            <Badge variant="outline" className="border-orange-500/40 bg-orange-500/10 text-orange-300">
+                            <Badge
+                              variant="outline"
+                              className="border-orange-500/40 bg-orange-500/10 text-orange-300"
+                            >
                               Missing snapshot
                             </Badge>
                           )}
@@ -751,7 +772,8 @@ function RouteComponent() {
                               <SheetHeader>
                                 <SheetTitle>{character.name} Trade Locks</SheetTitle>
                                 <SheetDescription>
-                                  Mark the slots this character cannot trade. Changes are stored globally.
+                                  Mark the slots this character cannot trade. Changes are stored
+                                  globally.
                                 </SheetDescription>
                               </SheetHeader>
                               <div className="mt-6 space-y-5">
@@ -762,11 +784,17 @@ function RouteComponent() {
                                       className="flex cursor-pointer items-start gap-3 rounded-lg border border-border/60 bg-card/50 p-3"
                                     >
                                       <Checkbox
-                                        checked={slot.slotKeys.every((slotKey) => tradeLockDraft.includes(slotKey))}
-                                        onCheckedChange={() => toggleTradeLockSlot(character, slot.slotKeys)}
+                                        checked={slot.slotKeys.every((slotKey) =>
+                                          tradeLockDraft.includes(slotKey),
+                                        )}
+                                        onCheckedChange={() =>
+                                          toggleTradeLockSlot(character, slot.slotKeys)
+                                        }
                                       />
                                       <div>
-                                        <p className="text-sm font-medium text-foreground">{slot.label}</p>
+                                        <p className="text-sm font-medium text-foreground">
+                                          {slot.label}
+                                        </p>
                                         <p className="text-xs text-muted-foreground">
                                           Drop in this slot stays bound.
                                         </p>
@@ -776,11 +804,13 @@ function RouteComponent() {
                                 </div>
                                 {tradeLockDraft.length === 0 ? (
                                   <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-200">
-                                    No locked slots. This character is marked as able to trade all tracked slots.
+                                    No locked slots. This character is marked as able to trade all
+                                    tracked slots.
                                   </div>
                                 ) : (
                                   <div className="rounded-xl border border-orange-500/30 bg-orange-500/10 p-3 text-sm text-orange-200">
-                                    Locked slots: {getTradeSlotExportLabels(tradeLockDraft).join(", ")}
+                                    Locked slots:{" "}
+                                    {getTradeSlotExportLabels(tradeLockDraft).join(", ")}
                                   </div>
                                 )}
                                 <div className="flex flex-wrap gap-2">
@@ -820,7 +850,8 @@ function RouteComponent() {
               Export Preview
             </CardTitle>
             <p className="text-sm text-muted-foreground">
-              Uses the selected format for role, class, score, item level, key, trade locks, and Discord ID.
+              Uses the selected format for role, class, score, item level, key, trade locks, and
+              Discord ID.
             </p>
           </CardHeader>
           <CardContent className="space-y-4 p-6">
@@ -834,9 +865,7 @@ function RouteComponent() {
                 onChange={(event) => setCustomHeadline(event.target.value)}
                 placeholder={getDefaultExportHeadline(selectedCharacters.length)}
               />
-              <p className="text-xs text-muted-foreground">
-                Leave empty to auto-generate.
-              </p>
+              <p className="text-xs text-muted-foreground">Leave empty to auto-generate.</p>
             </div>
 
             <div className="space-y-2">

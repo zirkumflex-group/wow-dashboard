@@ -4,15 +4,19 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "esbuild src/start.ts --bundle --platform=node --target=node24 --format=cjs --outdir=dist --outbase=src --entry-names=[name] --out-extension:.js=.cjs --sourcemap --alias:@wow-dashboard/api-schema=../../packages/api-schema/src/index.ts --alias:@wow-dashboard/db=../../packages/db/src/index.ts --alias:@wow-dashboard/env/server=../../packages/env/src/server.ts",
+    "build": "esbuild src/start.ts --bundle --platform=node --target=node24 --format=cjs --outdir=dist --outbase=src --entry-names=[name] --out-extension:.js=.cjs --sourcemap --alias:@wow-dashboard/api-schema=../../packages/api-schema/src/index.ts --alias:@wow-dashboard/db=../../packages/db/src/index.ts --alias:@wow-dashboard/env/worker=../../packages/env/src/worker.ts",
     "check-types": "tsc --noEmit --project tsconfig.json",
+    "lint": "oxlint .",
+    "format:check": "oxfmt --check .",
     "dev": "tsx watch src/start.ts",
     "start": "node dist/start.cjs"
   },
   "dependencies": {
     "@wow-dashboard/api-schema": "workspace:*",
+    "@wow-dashboard/battlenet": "workspace:*",
     "@wow-dashboard/db": "workspace:*",
     "@wow-dashboard/env": "workspace:*",
+    "@wow-dashboard/observability": "workspace:*",
     "drizzle-orm": "catalog:",
     "pg-boss": "catalog:"
   },

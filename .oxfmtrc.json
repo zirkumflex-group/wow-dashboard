@@ -1,4 +1,9 @@
 {
   "include": ["**/*.{ts,tsx,js,jsx,mjs,cjs}"],
-  "ignorePatterns": ["**/node_modules/**", "**/dist/**", "**/.turbo/**"]
+  "ignorePatterns": [
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/.turbo/**",
+    "**/routeTree.gen.ts"
+  ]
 }

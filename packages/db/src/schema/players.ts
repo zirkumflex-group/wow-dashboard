@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { boolean, pgTable, text, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { user } from "./auth";
 
 export const players = pgTable(
@@ -11,6 +11,9 @@ export const players = pgTable(
     userId: text("user_id").references(() => user.id, { onDelete: "set null" }),
     battleTag: text("battle_tag").notNull(),
     discordUserId: text("discord_user_id"),
+    shareDiscordInBoosterExport: boolean("share_discord_in_booster_export")
+      .default(false)
+      .notNull(),
   },
   (table) => ({
     legacyConvexIdIdx: uniqueIndex("players_legacy_convex_id_uidx").on(table.legacyConvexId),

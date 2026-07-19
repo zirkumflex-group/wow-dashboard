@@ -14,7 +14,11 @@ import {
   TableRow,
 } from "@wow-dashboard/ui/components/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@wow-dashboard/ui/components/tabs";
-import { ArrowDown, ArrowUp, ArrowUpDown, Trophy, Users } from "lucide-react";
+import ArrowDown from "lucide-react/dist/esm/icons/arrow-down.mjs";
+import ArrowUp from "lucide-react/dist/esm/icons/arrow-up.mjs";
+import ArrowUpDown from "lucide-react/dist/esm/icons/arrow-up-down.mjs";
+import Trophy from "lucide-react/dist/esm/icons/trophy.mjs";
+import Users from "lucide-react/dist/esm/icons/users.mjs";
 import { useEffect, useState } from "react";
 import { createCharacterRouteId } from "@wow-dashboard/api-schema";
 import { apiQueryOptions } from "@/lib/api-client";

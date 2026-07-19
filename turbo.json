@@ -2,16 +2,31 @@
   "$schema": "https://turbo.build/schema.json",
   "ui": "stream",
   "tasks": {
+    "transit": {
+      "dependsOn": ["^transit"]
+    },
     "build": {
       "dependsOn": ["^build"],
-      "inputs": ["$TURBO_DEFAULT$", ".env*"],
+      "inputs": ["$TURBO_DEFAULT$", ".env*", "$TURBO_ROOT$/.env", "$TURBO_ROOT$/.env.*"],
+      "env": ["NODE_ENV", "VITE_API_URL", "VITE_SITE_URL", "SITE_URL", "API_URL"],
       "outputs": ["out/**", "dist/**", ".output/**"]
     },
     "lint": {
-      "dependsOn": ["^lint"]
+      "dependsOn": ["transit"],
+      "outputs": []
+    },
+    "format:check": {
+      "dependsOn": ["transit"],
+      "outputs": []
     },
     "check-types": {
-      "dependsOn": ["^check-types"]
+      "dependsOn": ["transit"],
+      "outputs": []
+    },
+    "test": {
+      "dependsOn": ["transit"],
+      "cache": false,
+      "env": ["NODE_ENV", "TEST_DATABASE_URL", "DATABASE_URL", "REDIS_URL"]
     },
     "dev": {
       "cache": false,

@@ -1,8 +1,6 @@
 {
   "extends": "@wow-dashboard/config/tsconfig.base.json",
-  "include": [
-    "src/**/*.ts"
-  ],
+  "include": ["src/**/*.ts"],
   "compilerOptions": {
     "declaration": true,
     "lib": ["ESNext", "DOM"],

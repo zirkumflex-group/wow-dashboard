@@ -1,0 +1,90 @@
+name: Verify
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/wow_dashboard_test
+      TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/wow_dashboard_test
+      REDIS_URL: redis://127.0.0.1:6379
+      SITE_URL: http://localhost:3001
+      API_URL: http://localhost:3000/api
+      BETTER_AUTH_URL: http://localhost:3000
+      BETTER_AUTH_SECRET: ci-better-auth-secret-with-at-least-32-characters
+      BATTLENET_CLIENT_ID: ci-client-id
+      BATTLENET_CLIENT_SECRET: ci-client-secret
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: wow_dashboard_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d wow_dashboard_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Apply test database migrations
+        run: pnpm -F @wow-dashboard/db migrate
+
+      - name: Verify workspace
+        run: pnpm run verify
+
+      - name: Audit all dependencies
+        run: pnpm audit --audit-level low
+
+      - name: Validate production Compose configuration
+        env:
+          SERVICE_ENV_FILE: .env.production.example
+        run: docker compose --env-file deploy/.env.production.example -f deploy/docker-compose.prod.yml config --quiet
+
+      - name: Validate Caddy configuration
+        env:
+          SERVICE_ENV_FILE: .env.production.example
+        run: docker compose --env-file deploy/.env.production.example -f deploy/docker-compose.prod.yml run --rm --no-deps caddy caddy validate --config /etc/caddy/Caddyfile
+
+      - name: Build production container targets
+        env:
+          SERVICE_ENV_FILE: .env.production.example
+        run: docker compose --env-file deploy/.env.production.example -f deploy/docker-compose.prod.yml build migrate api worker web

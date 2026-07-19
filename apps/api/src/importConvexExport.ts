@@ -22,7 +22,7 @@ import {
   type NonTradeableSlot,
   type OwnedKeystone,
 } from "@wow-dashboard/db";
-import { env } from "@wow-dashboard/env/server";
+import { env } from "@wow-dashboard/env/api";
 import { eq } from "drizzle-orm";
 
 type ConvexBetterAuthUser = {

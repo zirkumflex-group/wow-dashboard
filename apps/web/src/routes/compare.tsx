@@ -10,7 +10,7 @@ import {
   ChartTooltipContent,
   type ChartConfig,
 } from "@wow-dashboard/ui/components/chart";
-import { Scale } from "lucide-react";
+import Scale from "lucide-react/dist/esm/icons/scale.mjs";
 import { useEffect, useMemo, useState } from "react";
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
 import { apiQueryOptions } from "@/lib/api-client";

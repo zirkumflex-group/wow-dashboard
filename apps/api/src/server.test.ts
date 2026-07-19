@@ -37,7 +37,7 @@ import {
   type SnapshotSpec,
   user as authUsers,
 } from "@wow-dashboard/db";
-import { addonIngestLimits, createCharacterRouteSlug } from "@wow-dashboard/api-schema";
+import { addonIngestLimits, createCharacterRouteSlug, queueNames } from "@wow-dashboard/api-schema";
 
 const [{ app }, { databaseConnection, db }, { closeQueue }, { closeRedis, ensureRedis }] =
   await Promise.all([
@@ -518,6 +518,24 @@ function authHeaders(token: string): HeadersInit {
   };
 }
 
+const dayInMilliseconds = 24 * 60 * 60 * 1000;
+
+function recentAddonTimestamp(offsetSeconds = 0) {
+  return Math.floor(Date.now() / 1000) - 60 * 60 + offsetSeconds;
+}
+
+function assertBoundedDesktopSessionExpiry(expiresAt: Date) {
+  const remainingLifetime = expiresAt.getTime() - Date.now();
+  assert.ok(
+    remainingLifetime > 179 * dayInMilliseconds,
+    `Expected more than 179 days of desktop session lifetime, received ${remainingLifetime}ms.`,
+  );
+  assert.ok(
+    remainingLifetime <= 181 * dayInMilliseconds,
+    `Expected at most 181 days of desktop session lifetime, received ${remainingLifetime}ms.`,
+  );
+}
+
 describe("Phase 5 API routes", { concurrency: false }, () => {
   beforeEach(async () => {
     globalThis.fetch = originalFetch;
@@ -533,6 +551,19 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     await truncateTables();
     await closeRedis();
     await databaseConnection.client.end({ timeout: 1 });
+  });
+
+  it("reports ready only after Postgres, Redis, and the sync queue respond", async () => {
+    const response = await app.request("http://localhost/readyz");
+
+    assert.equal(response.status, 200, await response.clone().text());
+    assert.deepEqual(await response.json(), { ok: true });
+
+    const queues = await databaseConnection.client<Array<{ name: string }>>`
+      select name from pgboss.queue where name = ${queueNames.syncCharacters}
+    `;
+    assert.equal(queues.length, 1);
+    assert.equal(queues[0]?.name, queueNames.syncCharacters);
   });
 
   it("returns the authenticated session from /api/me", async () => {
@@ -562,6 +593,17 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
 
     assert.equal(codeResponse.status, 200);
     const codePayload = (await codeResponse.json()) as { code: string };
+
+    const sessionsBeforeRedeem = await db
+      .select({ id: authSessions.id })
+      .from(authSessions)
+      .where(
+        and(
+          eq(authSessions.userId, auth.userId),
+          eq(authSessions.userAgent, "wow-dashboard-desktop"),
+        ),
+      );
+    assert.equal(sessionsBeforeRedeem.length, 0);
 
     const redeemResponse = await app.request("http://localhost/api/auth/redeem-code", {
       method: "POST",
@@ -598,7 +640,32 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
 
     assert.ok(desktopSession);
     assert.equal(desktopSession.userAgent, "wow-dashboard-desktop");
-    assert.ok(desktopSession.expiresAt.getTime() > Date.now() + 9 * 365 * 24 * 60 * 60 * 1000);
+    assertBoundedDesktopSessionExpiry(desktopSession.expiresAt);
+  });
+
+  it("redeems an in-flight token-bearing login code created before the handoff change", async () => {
+    const auth = await seedAuthenticatedUser({ userAgent: "wow-dashboard-desktop" });
+    const code = `legacy-${randomUUID()}`;
+    const redis = await ensureRedis();
+    await redis.set(
+      `auth:login-code:${code}`,
+      JSON.stringify({
+        token: auth.token,
+        userId: auth.userId,
+        createdAt: new Date().toISOString(),
+      }),
+      "EX",
+      60,
+    );
+
+    const response = await app.request("http://localhost/api/auth/redeem-code", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ code }),
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { token: auth.token });
   });
 
   it("supports the legacy desktop login polling handoff", async () => {
@@ -621,6 +688,30 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     });
     assert.equal(completeResponse.status, 200);
 
+    const repeatedCompleteResponse = await app.request(
+      "http://localhost/api/auth/desktop-login/complete",
+      {
+        method: "POST",
+        headers: {
+          ...authHeaders(auth.token),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ attemptId }),
+      },
+    );
+    assert.equal(repeatedCompleteResponse.status, 200);
+
+    const sessionsBeforePoll = await db
+      .select({ id: authSessions.id })
+      .from(authSessions)
+      .where(
+        and(
+          eq(authSessions.userId, auth.userId),
+          eq(authSessions.userAgent, "wow-dashboard-desktop"),
+        ),
+      );
+    assert.equal(sessionsBeforePoll.length, 0);
+
     const pollResponse = await app.request(
       `http://localhost/api/auth/desktop-login?attemptId=${encodeURIComponent(attemptId)}`,
     );
@@ -629,6 +720,17 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     assert.equal(pollPayload.status, "complete");
     assert.ok(pollPayload.token);
     assert.notEqual(pollPayload.token, auth.token);
+
+    const sessionsAfterPoll = await db
+      .select({ id: authSessions.id })
+      .from(authSessions)
+      .where(
+        and(
+          eq(authSessions.userId, auth.userId),
+          eq(authSessions.userAgent, "wow-dashboard-desktop"),
+        ),
+      );
+    assert.equal(sessionsAfterPoll.length, 1);
 
     const desktopSessionResponse = await app.request("http://localhost/api/me", {
       headers: authHeaders(pollPayload.token),
@@ -662,7 +764,7 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
       .where(eq(authSessions.token, auth.token));
 
     assert.ok(desktopSession);
-    assert.ok(desktopSession.expiresAt.getTime() > Date.now() + 9 * 365 * 24 * 60 * 60 * 1000);
+    assertBoundedDesktopSessionExpiry(desktopSession.expiresAt);
   });
 
   it("promotes valid legacy Electron bearer sessions to long-lived desktop sessions", async () => {
@@ -690,7 +792,109 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
 
     assert.ok(desktopSession);
     assert.equal(desktopSession.userAgent, "wow-dashboard-desktop");
-    assert.ok(desktopSession.expiresAt.getTime() > Date.now() + 9 * 365 * 24 * 60 * 60 * 1000);
+    assertBoundedDesktopSessionExpiry(desktopSession.expiresAt);
+  });
+
+  it("clamps legacy desktop sessions with excessively long lifetimes", async () => {
+    const auth = await seedAuthenticatedUser({
+      expiresAt: new Date(Date.now() + 10 * 365 * dayInMilliseconds),
+      userAgent: "wow-dashboard-desktop",
+    });
+
+    const response = await app.request("http://localhost/api/me", {
+      headers: authHeaders(auth.token),
+    });
+
+    assert.equal(response.status, 200);
+
+    const [desktopSession] = await db
+      .select({ expiresAt: authSessions.expiresAt })
+      .from(authSessions)
+      .where(eq(authSessions.token, auth.token));
+
+    assert.ok(desktopSession);
+    assertBoundedDesktopSessionExpiry(desktopSession.expiresAt);
+  });
+
+  it("lists and revokes a separate desktop session", async () => {
+    const auth = await seedAuthenticatedUser();
+    const attacker = await seedAuthenticatedUser();
+    const codeResponse = await app.request("http://localhost/api/auth/login-code", {
+      method: "POST",
+      headers: authHeaders(auth.token),
+    });
+    assert.equal(codeResponse.status, 200, await codeResponse.clone().text());
+    const codePayload = (await codeResponse.json()) as { code: string };
+
+    const redeemResponse = await app.request("http://localhost/api/auth/redeem-code", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ code: codePayload.code }),
+    });
+    assert.equal(redeemResponse.status, 200, await redeemResponse.clone().text());
+    const { token: desktopToken } = (await redeemResponse.json()) as { token: string };
+    const desktopSession = await db.query.session.findFirst({
+      where: eq(authSessions.token, desktopToken),
+    });
+    assert.ok(desktopSession);
+    const desktopSessionId = desktopSession.id;
+
+    const redis = await ensureRedis();
+    assert.notEqual(await redis.get(`better-auth:${desktopToken}`), null);
+
+    const listResponse = await app.request("http://localhost/api/sessions", {
+      headers: authHeaders(auth.token),
+    });
+    assert.equal(listResponse.status, 200, await listResponse.clone().text());
+    const listedSessions = (await listResponse.json()) as Array<{
+      id: string;
+      isCurrent: boolean;
+      userAgent: string | null;
+    }>;
+    assert.equal(
+      listedSessions.some(
+        (session) =>
+          session.id === desktopSessionId &&
+          session.userAgent === "wow-dashboard-desktop" &&
+          !session.isCurrent,
+      ),
+      true,
+    );
+    assert.equal(JSON.stringify(listedSessions).includes(desktopToken), false);
+
+    const crossUserResponse = await app.request(
+      `http://localhost/api/sessions/${desktopSessionId}/revoke`,
+      {
+        method: "POST",
+        headers: authHeaders(attacker.token),
+      },
+    );
+    assert.equal(crossUserResponse.status, 404);
+
+    const revokeResponse = await app.request(
+      `http://localhost/api/sessions/${desktopSessionId}/revoke`,
+      {
+        method: "POST",
+        headers: authHeaders(auth.token),
+      },
+    );
+    assert.equal(revokeResponse.status, 200, await revokeResponse.clone().text());
+    assert.deepEqual(await revokeResponse.json(), {
+      sessionId: desktopSessionId,
+      revoked: true,
+    });
+
+    const revokedSession = await db.query.session.findFirst({
+      where: eq(authSessions.token, desktopToken),
+    });
+    assert.equal(revokedSession, undefined);
+    assert.equal(await redis.get(`better-auth:${desktopToken}`), null);
+
+    const revokeAudit = await db.query.auditLog.findFirst({
+      where: and(eq(auditLog.event, "auth.session.revoked"), eq(auditLog.userId, auth.userId)),
+    });
+    assert.ok(revokeAudit);
+    assert.deepEqual(revokeAudit.metadata, { sessionId: desktopSessionId });
   });
 
   it("does not promote non-desktop bearer sessions without the Electron client marker", async () => {
@@ -735,6 +939,12 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
       process.env.SITE_URL,
     );
     assert.equal(webPreflightResponse.headers.get("Access-Control-Allow-Credentials"), "true");
+    assert.ok(
+      webPreflightResponse.headers
+        .get("Access-Control-Allow-Methods")
+        ?.split(",")
+        .includes("DELETE"),
+    );
 
     const desktopPreflightResponse = await app.request("http://localhost/api/me", {
       method: "OPTIONS",
@@ -994,6 +1204,15 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
       role: "healer",
       spec: "Holy",
     });
+
+    const countResponse = await app.request("http://localhost/api/characters/count", {
+      headers: authHeaders(auth.token),
+    });
+    assert.equal(countResponse.status, 200);
+    assert.deepEqual(await countResponse.json(), { count: 1 });
+
+    const unauthorizedCountResponse = await app.request("http://localhost/api/characters/count");
+    assert.equal(unauthorizedCountResponse.status, 401);
   });
 
   it("returns a character page payload with header, core timeline, and mythic plus data", async () => {
@@ -1472,7 +1691,7 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     const publicPageResponse = await app.request(
       `http://localhost/api/characters/${characterId}/page`,
     );
-    assert.equal(publicPageResponse.status, 200);
+    assert.equal(publicPageResponse.status, 200, await publicPageResponse.clone().text());
     const publicPagePayload = (await publicPageResponse.json()) as {
       mythicPlus: {
         sessions: Array<{ id: string }>;
@@ -2070,6 +2289,16 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     assert.equal(rateLimitedPayload.ok, false);
     assert.ok(rateLimitedPayload.nextAllowedAt !== null);
     assert.ok((rateLimitedPayload.nextAllowedAt ?? 0) >= Date.now());
+
+    const queuedJobs = await databaseConnection.client<
+      Array<{ data: unknown; singletonKey: string | null }>
+    >`select data, singleton_key as "singletonKey"
+      from pgboss.job
+      where name = ${queueNames.syncCharacters}
+        and state in ('created', 'retry')`;
+    assert.equal(queuedJobs.length, 1);
+    assert.deepEqual(queuedJobs[0]?.data, { userId: auth.userId });
+    assert.equal(queuedJobs[0]?.singletonKey, auth.userId);
   });
 
   it("accepts recent legacy Battle.net access tokens without expiry metadata", async () => {
@@ -2260,7 +2489,10 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
 
     await db
       .update(players)
-      .set({ discordUserId: "111111111" })
+      .set({
+        discordUserId: "111111111",
+        shareDiscordInBoosterExport: true,
+      })
       .where(eq(players.id, firstPlayerId));
     await db
       .update(players)
@@ -2347,6 +2579,11 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
       },
     });
 
+    const unauthenticatedResponse = await app.request(
+      "http://localhost/api/characters/boosters/export",
+    );
+    assert.equal(unauthenticatedResponse.status, 401);
+
     const response = await app.request("http://localhost/api/characters/boosters/export", {
       headers: authHeaders(auth.token),
     });
@@ -2370,7 +2607,17 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     assert.equal(payload[0]?.snapshot?.role, "tank");
     assert.equal(payload[1]?.snapshot?.role, "dps");
     assert.equal(payload[1]?.snapshot?.mythicPlusScore, 3200);
+    assert.equal(payload[1]?.ownerDiscordUserId, null);
     assert.equal(payload[2]?.snapshot, null);
+
+    const exportAudit = await db.query.auditLog.findFirst({
+      where: and(eq(auditLog.event, "booster.export.read"), eq(auditLog.userId, auth.userId)),
+    });
+    assert.ok(exportAudit);
+    assert.deepEqual(exportAudit.metadata, {
+      characterCount: 3,
+      discordIdCount: 1,
+    });
   });
 
   it("ingests addon snapshots and mythic plus runs", async () => {
@@ -2388,8 +2635,8 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
       ],
       "Uploader#3333",
     );
-    const takenAt = 1_776_772_800;
-    const startDate = 1_776_771_000;
+    const takenAt = recentAddonTimestamp();
+    const startDate = takenAt - 30 * 60;
     const addonCharacter = {
       name: "Syncadin",
       realm: "Tarren Mill",
@@ -2436,7 +2683,7 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
       },
     };
     const runPayload = {
-      fingerprint: "attempt|13|375|15|1776771000",
+      fingerprint: `attempt|13|375|15|${startDate}`,
       observedAt: takenAt,
       seasonID: 13,
       mapChallengeModeID: 375,
@@ -2487,7 +2734,7 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
       }),
     });
 
-    assert.equal(response.status, 200);
+    assert.equal(response.status, 200, await response.clone().text());
     const payload = (await response.json()) as {
       newChars: number;
       newSnapshots: number;
@@ -2514,7 +2761,7 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     assert.ok(character.battleNetLastCheckedAt);
     assert.equal(character.snapshotCount, 1);
     assert.equal(character.mythicPlusRunCount, 1);
-    assert.equal(character.firstSnapshotAt?.toISOString(), "2026-04-21T12:00:00.000Z");
+    assert.equal(character.firstSnapshotAt?.toISOString(), new Date(takenAt * 1000).toISOString());
     assert.equal(character.latestSnapshot?.itemLevel, 724.6);
     assert.equal(character.latestSnapshotDetails?.currencies.radiantSparkDust, 6);
     assert.equal(character.mythicPlusSummary?.overall.totalRuns, 1);
@@ -2564,7 +2811,7 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
       faction: "alliance",
     };
     const signedSnapshot = {
-      takenAt: 1_776_772_800,
+      takenAt: recentAddonTimestamp(),
       level: 80,
       spec: "Holy",
       role: "healer",
@@ -3445,7 +3692,7 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
             faction: "horde",
             snapshots: [
               {
-                takenAt: 1_776_772_800,
+                takenAt: recentAddonTimestamp(),
                 level: 80,
                 spec: "Unholy",
                 role: "dps",
@@ -3520,11 +3767,11 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
             mythicPlusRuns: [
               {
                 fingerprint: "badkey-run",
-                observedAt: 1_776_772_900,
+                observedAt: recentAddonTimestamp(100),
                 status: "completed",
                 completed: true,
-                startDate: 1_776_772_800,
-                completedAt: 1_776_772_700,
+                startDate: recentAddonTimestamp(),
+                completedAt: recentAddonTimestamp(-100),
               },
             ],
           },
@@ -3668,7 +3915,7 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
       race: "Human",
       faction: "alliance",
     });
-    const takenAt = 1_776_772_800;
+    const takenAt = recentAddonTimestamp();
 
     const partialPayload = {
       characters: [
@@ -3814,7 +4061,7 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
       ],
       "Uploader#8888",
     );
-    const takenAt = 1_776_772_800;
+    const takenAt = recentAddonTimestamp();
 
     const payload = {
       characters: [
@@ -3936,6 +4183,7 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
       },
       body: JSON.stringify({
         discordUserId: "<@!123456789>",
+        shareDiscordInBoosterExport: true,
       }),
     });
 
@@ -3943,11 +4191,13 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     const payload = (await response.json()) as {
       playerId: string;
       discordUserId: string | null;
+      shareDiscordInBoosterExport: boolean;
     };
 
     assert.deepEqual(payload, {
       playerId,
       discordUserId: "123456789",
+      shareDiscordInBoosterExport: true,
     });
 
     const player = await db.query.players.findFirst({
@@ -3955,6 +4205,54 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     });
 
     assert.equal(player?.discordUserId, "123456789");
+    assert.equal(player?.shareDiscordInBoosterExport, true);
+
+    const meResponse = await app.request("http://localhost/api/me", {
+      headers: authHeaders(auth.token),
+    });
+    assert.equal(meResponse.status, 200);
+    const mePayload = (await meResponse.json()) as {
+      player: {
+        id: string;
+        discordUserId: string | null;
+        shareDiscordInBoosterExport: boolean;
+      } | null;
+    };
+    assert.deepEqual(mePayload.player, {
+      id: playerId,
+      battleTag: "Tester#1234",
+      discordUserId: "123456789",
+      shareDiscordInBoosterExport: true,
+    });
+
+    const settingsAudit = await db.query.auditLog.findFirst({
+      where: and(
+        eq(auditLog.event, "player.discord_settings.updated"),
+        eq(auditLog.userId, auth.userId),
+      ),
+    });
+    assert.ok(settingsAudit);
+    assert.deepEqual(settingsAudit.metadata, {
+      playerId,
+      hasDiscordUserId: true,
+      shareDiscordInBoosterExport: true,
+    });
+    assert.equal(JSON.stringify(settingsAudit.metadata).includes("123456789"), false);
+
+    const clearResponse = await app.request(`http://localhost/api/players/${playerId}/discord`, {
+      method: "PATCH",
+      headers: {
+        ...authHeaders(auth.token),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ discordUserId: null }),
+    });
+    assert.equal(clearResponse.status, 200);
+    assert.deepEqual(await clearResponse.json(), {
+      playerId,
+      discordUserId: null,
+      shareDiscordInBoosterExport: false,
+    });
   });
 
   it("rejects cross-user writes to player and character mutation endpoints", async () => {
@@ -3974,6 +4272,7 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
       .update(players)
       .set({
         discordUserId: "123456789",
+        shareDiscordInBoosterExport: true,
       })
       .where(eq(players.id, ownerPlayerId));
 
@@ -3994,6 +4293,7 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
         },
         body: JSON.stringify({
           discordUserId: "999999999",
+          shareDiscordInBoosterExport: false,
         }),
       }),
       app.request(`http://localhost/api/characters/${ownerCharacterId}/booster`, {
@@ -4032,6 +4332,7 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     ]);
 
     assert.equal(player?.discordUserId, "123456789");
+    assert.equal(player?.shareDiscordInBoosterExport, true);
     assert.equal(character?.isBooster, false);
     assert.deepEqual(character?.nonTradeableSlots, ["head"]);
   });

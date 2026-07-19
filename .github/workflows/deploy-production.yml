@@ -10,8 +10,12 @@ on:
       - "apps/web/**"
       - "packages/api-client/**"
       - "packages/api-schema/**"
+      - "packages/battlenet/**"
+      - "packages/config/**"
       - "packages/db/**"
       - "packages/env/**"
+      - "packages/mythic-plus/**"
+      - "packages/observability/**"
       - "packages/ui/**"
       - "deploy/Caddyfile"
       - "deploy/Dockerfile.*"
@@ -21,6 +25,7 @@ on:
       - "package.json"
       - "pnpm-lock.yaml"
       - "pnpm-workspace.yaml"
+      - "turbo.json"
   workflow_dispatch:
 
 concurrency:
@@ -32,27 +37,7 @@ permissions:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10.33.1
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Typecheck
-        run: pnpm run check-types
+    uses: ./.github/workflows/verify.yml
 
   deploy:
     needs: verify

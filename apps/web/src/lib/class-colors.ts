@@ -58,10 +58,10 @@ function getClassColorKey(cls: string) {
 
 export function getClassTextColor(cls: string) {
   const key = getClassColorKey(cls);
-  return key ? CLASS_TEXT_COLORS[key] ?? "text-foreground" : "text-foreground";
+  return key ? (CLASS_TEXT_COLORS[key] ?? "text-foreground") : "text-foreground";
 }
 
 export function getClassBgColor(cls: string) {
   const key = getClassColorKey(cls);
-  return key ? CLASS_BG_COLORS[key] ?? "bg-card border-border" : "bg-card border-border";
+  return key ? (CLASS_BG_COLORS[key] ?? "bg-card border-border") : "bg-card border-border";
 }

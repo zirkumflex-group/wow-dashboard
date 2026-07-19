@@ -24,17 +24,15 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@wow-dashboard/ui/components/dropdown-menu";
-import {
-  ArrowDown,
-  ArrowUp,
-  ChevronUp,
-  Copy,
-  LayoutDashboard,
-  Scale,
-  Settings,
-  Star,
-  Trophy,
-} from "lucide-react";
+import ArrowDown from "lucide-react/dist/esm/icons/arrow-down.mjs";
+import ArrowUp from "lucide-react/dist/esm/icons/arrow-up.mjs";
+import ChevronUp from "lucide-react/dist/esm/icons/chevron-up.mjs";
+import Copy from "lucide-react/dist/esm/icons/copy.mjs";
+import LayoutDashboard from "lucide-react/dist/esm/icons/layout-dashboard.mjs";
+import Scale from "lucide-react/dist/esm/icons/scale.mjs";
+import Settings from "lucide-react/dist/esm/icons/settings.mjs";
+import Star from "lucide-react/dist/esm/icons/star.mjs";
+import Trophy from "lucide-react/dist/esm/icons/trophy.mjs";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { useMemo } from "react";
 import { createCharacterRouteId } from "@wow-dashboard/api-schema";

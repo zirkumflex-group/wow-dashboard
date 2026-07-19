@@ -14,14 +14,12 @@ import type {
   SerializedDashboardCharacter,
   SerializedPinnedCharacter,
   MeResponse,
+  MyCharacterCountResponse,
   CharacterBoosterExportEntry,
 } from "@wow-dashboard/api-schema";
 import type { ApiClient } from "./client";
 
-export type ApiQueryOptions<
-  TData,
-  TQueryKey extends readonly unknown[] = readonly unknown[],
-> = {
+export type ApiQueryOptions<TData, TQueryKey extends readonly unknown[] = readonly unknown[]> = {
   queryKey: TQueryKey;
   queryFn: () => Promise<TData>;
 };
@@ -35,6 +33,7 @@ function normalizeCharacterIds(input: CharactersLatestQuery) {
 export const apiQueryKeys = {
   me: () => ["api", "me"] as const,
   myCharacters: () => ["api", "characters"] as const,
+  myCharacterCount: () => ["api", "characters", "count"] as const,
   charactersLatest: (input: CharactersLatestQuery) =>
     ["api", "characters", "latest", ...normalizeCharacterIds(input)] as const,
   scoreboardCharacters: () => ["api", "characters", "scoreboard"] as const,
@@ -80,6 +79,16 @@ export function createApiQueryOptions(client: ApiClient) {
       return {
         queryKey: apiQueryKeys.myCharacters(),
         queryFn: () => client.getMyCharacters(),
+      };
+    },
+
+    myCharacterCount(): ApiQueryOptions<
+      MyCharacterCountResponse,
+      ReturnType<typeof apiQueryKeys.myCharacterCount>
+    > {
+      return {
+        queryKey: apiQueryKeys.myCharacterCount(),
+        queryFn: () => client.getMyCharacterCount(),
       };
     },
 

@@ -6,9 +6,6 @@
     "packages/*"
   ],
   "type": "module",
-  "engines": {
-    "node": ">=24 <25"
-  },
   "scripts": {
     "dev": "node scripts/dev-stack.mjs",
     "dev:services": "turbo run dev --filter=@wow-dashboard/api --filter=@wow-dashboard/worker --filter=web --filter=app",
@@ -16,7 +13,11 @@
     "build": "turbo run build",
     "check-types": "turbo run check-types",
     "dev:web": "turbo run dev --filter=web",
-    "check": "oxlint && oxfmt --write ."
+    "lint": "turbo run lint",
+    "format:check": "turbo run format:check",
+    "test": "turbo run test",
+    "check": "turbo run lint format:check check-types",
+    "verify": "turbo run lint format:check check-types test build"
   },
   "dependencies": {
     "dotenv": "catalog:"
@@ -26,14 +27,29 @@
     "lefthook": "^2.1.6",
     "oxfmt": "^0.46.0",
     "oxlint": "^1.61.0",
-    "turbo": "^2.9.6",
+    "turbo": "^2.10.5",
     "typescript": "^6.0.3"
+  },
+  "engines": {
+    "node": ">=24 <25"
   },
   "packageManager": "pnpm@10.33.1",
   "pnpm": {
     "overrides": {
-      "tar": ">=7.5.11",
-      "@esbuild-kit/core-utils>esbuild": "0.25.12"
+      "@babel/core": "7.29.6",
+      "@types/node": "24.12.2",
+      "brace-expansion@>=5.0.0 <5.0.6": "5.0.7",
+      "esbuild": "0.28.1",
+      "fast-uri": "3.1.4",
+      "form-data": "4.0.6",
+      "hono": "4.12.31",
+      "ip-address": "10.2.0",
+      "js-yaml": "4.2.0",
+      "qs@>=6.11.1 <=6.15.1": "6.15.3",
+      "tar": "7.5.20",
+      "tmp": "0.2.7",
+      "undici": "6.27.0",
+      "zod": "4.3.6"
     }
   }
 }

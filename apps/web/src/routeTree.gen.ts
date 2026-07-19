@@ -9,35 +9,20 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as SettingsRouteImport } from './routes/settings'
-import { Route as ScoreboardRouteImport } from './routes/scoreboard'
-import { Route as DashboardRouteImport } from './routes/dashboard'
-import { Route as CopyHelperRouteImport } from './routes/copy-helper'
-import { Route as CompareRouteImport } from './routes/compare'
 import { Route as IndexRouteImport } from './routes/index'
-import { Route as PlayersPlayerIdRouteImport } from './routes/players.$playerId'
-import { Route as CharacterCharacterIdRouteImport } from './routes/character.$characterId'
-import { Route as AuthElectronLoginRouteImport } from './routes/auth/electron-login'
+import { Route as CompareRouteImport } from './routes/compare'
+import { Route as CopyHelperRouteImport } from './routes/copy-helper'
+import { Route as DashboardRouteImport } from './routes/dashboard'
+import { Route as ScoreboardRouteImport } from './routes/scoreboard'
+import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as AuthElectronCallbackRouteImport } from './routes/auth/electron-callback'
+import { Route as AuthElectronLoginRouteImport } from './routes/auth/electron-login'
+import { Route as CharacterCharacterIdRouteImport } from './routes/character.$characterId'
+import { Route as PlayersPlayerIdRouteImport } from './routes/players.$playerId'
 
-const SettingsRoute = SettingsRouteImport.update({
-  id: '/settings',
-  path: '/settings',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ScoreboardRoute = ScoreboardRouteImport.update({
-  id: '/scoreboard',
-  path: '/scoreboard',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const DashboardRoute = DashboardRouteImport.update({
-  id: '/dashboard',
-  path: '/dashboard',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const CopyHelperRoute = CopyHelperRouteImport.update({
-  id: '/copy-helper',
-  path: '/copy-helper',
+const IndexRoute = IndexRouteImport.update({
+  id: '/',
+  path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
 const CompareRoute = CompareRouteImport.update({
@@ -45,19 +30,29 @@ const CompareRoute = CompareRouteImport.update({
   path: '/compare',
   getParentRoute: () => rootRouteImport,
 } as any)
-const IndexRoute = IndexRouteImport.update({
-  id: '/',
-  path: '/',
+const CopyHelperRoute = CopyHelperRouteImport.update({
+  id: '/copy-helper',
+  path: '/copy-helper',
   getParentRoute: () => rootRouteImport,
 } as any)
-const PlayersPlayerIdRoute = PlayersPlayerIdRouteImport.update({
-  id: '/players/$playerId',
-  path: '/players/$playerId',
+const DashboardRoute = DashboardRouteImport.update({
+  id: '/dashboard',
+  path: '/dashboard',
   getParentRoute: () => rootRouteImport,
 } as any)
-const CharacterCharacterIdRoute = CharacterCharacterIdRouteImport.update({
-  id: '/character/$characterId',
-  path: '/character/$characterId',
+const ScoreboardRoute = ScoreboardRouteImport.update({
+  id: '/scoreboard',
+  path: '/scoreboard',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SettingsRoute = SettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AuthElectronCallbackRoute = AuthElectronCallbackRouteImport.update({
+  id: '/auth/electron-callback',
+  path: '/auth/electron-callback',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AuthElectronLoginRoute = AuthElectronLoginRouteImport.update({
@@ -65,9 +60,14 @@ const AuthElectronLoginRoute = AuthElectronLoginRouteImport.update({
   path: '/auth/electron-login',
   getParentRoute: () => rootRouteImport,
 } as any)
-const AuthElectronCallbackRoute = AuthElectronCallbackRouteImport.update({
-  id: '/auth/electron-callback',
-  path: '/auth/electron-callback',
+const CharacterCharacterIdRoute = CharacterCharacterIdRouteImport.update({
+  id: '/character/$characterId',
+  path: '/character/$characterId',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PlayersPlayerIdRoute = PlayersPlayerIdRouteImport.update({
+  id: '/players/$playerId',
+  path: '/players/$playerId',
   getParentRoute: () => rootRouteImport,
 } as any)
 
@@ -162,32 +162,11 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/settings': {
-      id: '/settings'
-      path: '/settings'
-      fullPath: '/settings'
-      preLoaderRoute: typeof SettingsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/scoreboard': {
-      id: '/scoreboard'
-      path: '/scoreboard'
-      fullPath: '/scoreboard'
-      preLoaderRoute: typeof ScoreboardRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/dashboard': {
-      id: '/dashboard'
-      path: '/dashboard'
-      fullPath: '/dashboard'
-      preLoaderRoute: typeof DashboardRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/copy-helper': {
-      id: '/copy-helper'
-      path: '/copy-helper'
-      fullPath: '/copy-helper'
-      preLoaderRoute: typeof CopyHelperRouteImport
+    '/': {
+      id: '/'
+      path: '/'
+      fullPath: '/'
+      preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/compare': {
@@ -197,25 +176,39 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof CompareRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/': {
-      id: '/'
-      path: '/'
-      fullPath: '/'
-      preLoaderRoute: typeof IndexRouteImport
+    '/copy-helper': {
+      id: '/copy-helper'
+      path: '/copy-helper'
+      fullPath: '/copy-helper'
+      preLoaderRoute: typeof CopyHelperRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/players/$playerId': {
-      id: '/players/$playerId'
-      path: '/players/$playerId'
-      fullPath: '/players/$playerId'
-      preLoaderRoute: typeof PlayersPlayerIdRouteImport
+    '/dashboard': {
+      id: '/dashboard'
+      path: '/dashboard'
+      fullPath: '/dashboard'
+      preLoaderRoute: typeof DashboardRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/character/$characterId': {
-      id: '/character/$characterId'
-      path: '/character/$characterId'
-      fullPath: '/character/$characterId'
-      preLoaderRoute: typeof CharacterCharacterIdRouteImport
+    '/scoreboard': {
+      id: '/scoreboard'
+      path: '/scoreboard'
+      fullPath: '/scoreboard'
+      preLoaderRoute: typeof ScoreboardRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/settings': {
+      id: '/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof SettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/auth/electron-callback': {
+      id: '/auth/electron-callback'
+      path: '/auth/electron-callback'
+      fullPath: '/auth/electron-callback'
+      preLoaderRoute: typeof AuthElectronCallbackRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/auth/electron-login': {
@@ -225,11 +218,18 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthElectronLoginRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/auth/electron-callback': {
-      id: '/auth/electron-callback'
-      path: '/auth/electron-callback'
-      fullPath: '/auth/electron-callback'
-      preLoaderRoute: typeof AuthElectronCallbackRouteImport
+    '/character/$characterId': {
+      id: '/character/$characterId'
+      path: '/character/$characterId'
+      fullPath: '/character/$characterId'
+      preLoaderRoute: typeof CharacterCharacterIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/players/$playerId': {
+      id: '/players/$playerId'
+      path: '/players/$playerId'
+      fullPath: '/players/$playerId'
+      preLoaderRoute: typeof PlayersPlayerIdRouteImport
       parentRoute: typeof rootRouteImport
     }
   }

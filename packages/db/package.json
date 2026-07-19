@@ -9,6 +9,8 @@
   "scripts": {
     "build": "tsc --project tsconfig.json",
     "check-types": "tsc --noEmit --project tsconfig.json",
+    "lint": "oxlint .",
+    "format:check": "oxfmt --check .",
     "generate": "drizzle-kit generate --config drizzle.config.ts --name init",
     "migrate": "node scripts/migrate.mjs"
   },

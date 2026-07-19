@@ -8,7 +8,9 @@
   },
   "scripts": {
     "build": "tsc --project tsconfig.json",
-    "check-types": "tsc --noEmit --project tsconfig.json"
+    "check-types": "tsc --noEmit --project tsconfig.json",
+    "lint": "oxlint .",
+    "format:check": "oxfmt --check ."
   },
   "dependencies": {
     "zod": "catalog:"

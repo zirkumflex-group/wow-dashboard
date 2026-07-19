@@ -1,4 +1,4 @@
-import { Loader2 } from "lucide-react";
+import Loader2 from "lucide-react/dist/esm/icons/loader-2.mjs";
 
 export default function Loader() {
   return (

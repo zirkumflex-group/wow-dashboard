@@ -46,6 +46,30 @@ export const authUserSchema = z.object({
 export const meResponseSchema = z.object({
   session: authSessionSchema,
   user: authUserSchema,
+  player: z
+    .object({
+      id: z.string().uuid(),
+      battleTag: z.string(),
+      discordUserId: z.string().nullable(),
+      shareDiscordInBoosterExport: z.boolean(),
+    })
+    .nullable(),
+});
+
+export const dashboardSessionSchema = z.object({
+  id: z.string(),
+  userAgent: z.string().nullable(),
+  createdAt: isoDateTimeSchema,
+  updatedAt: isoDateTimeSchema,
+  expiresAt: isoDateTimeSchema,
+  isCurrent: z.boolean(),
+});
+
+export const dashboardSessionsResponseSchema = z.array(dashboardSessionSchema);
+
+export const revokeDashboardSessionResponseSchema = z.object({
+  sessionId: z.string(),
+  revoked: z.literal(true),
 });
 
 export const loginCodeResponseSchema = z.object({
@@ -420,6 +444,7 @@ export const updateCharacterVisibilityResponseSchema = z.object({
 export const updatePlayerDiscordResponseSchema = z.object({
   playerId: z.string().uuid(),
   discordUserId: z.string().nullable(),
+  shareDiscordInBoosterExport: z.boolean(),
 });
 
 export const addonIngestResponseSchema = z.object({
@@ -431,6 +456,9 @@ export const addonIngestResponseSchema = z.object({
 
 export const charactersLatestResponseSchema = z.array(serializedPinnedCharacterSchema);
 export const myCharactersResponseSchema = z.array(serializedDashboardCharacterSchema).nullable();
+export const myCharacterCountResponseSchema = z.object({
+  count: z.number().int().nonnegative(),
+});
 export const charactersScoreboardResponseSchema = z.array(scoreboardCharacterEntrySchema);
 export const playerScoreboardResponseSchema = z.array(playerScoreboardEntrySchema);
 export const boosterCharactersExportResponseSchema = z.array(characterBoosterExportEntrySchema);
@@ -443,6 +471,9 @@ export const characterMythicPlusResultSchema = characterMythicPlusResponseSchema
 
 export type ApiErrorResponse = z.infer<typeof apiErrorResponseSchema>;
 export type MeResponse = z.infer<typeof meResponseSchema>;
+export type DashboardSession = z.infer<typeof dashboardSessionSchema>;
+export type DashboardSessionsResponse = z.infer<typeof dashboardSessionsResponseSchema>;
+export type RevokeDashboardSessionResponse = z.infer<typeof revokeDashboardSessionResponseSchema>;
 export type LoginCodeResponse = z.infer<typeof loginCodeResponseSchema>;
 export type RedeemLoginCodeBody = z.infer<typeof redeemLoginCodeBodySchema>;
 export type RedeemLoginCodeResponse = z.infer<typeof redeemLoginCodeResponseSchema>;
@@ -480,3 +511,4 @@ export type UpdateCharacterVisibilityResponse = z.infer<
 >;
 export type UpdatePlayerDiscordResponse = z.infer<typeof updatePlayerDiscordResponseSchema>;
 export type AddonIngestResponse = z.infer<typeof addonIngestResponseSchema>;
+export type MyCharacterCountResponse = z.infer<typeof myCharacterCountResponseSchema>;

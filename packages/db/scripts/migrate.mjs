@@ -28,6 +28,15 @@ const client = postgres(databaseUrl, {
   max: 1,
   onnotice: () => {},
   prepare: false,
+  connect_timeout: 10,
+  idle_timeout: 30,
+  max_lifetime: 10 * 60,
+  connection: {
+    application_name: "wow-dashboard-migrate",
+    statement_timeout: 10 * 60 * 1000,
+    lock_timeout: 30 * 1000,
+    idle_in_transaction_session_timeout: 60 * 1000,
+  },
 });
 
 try {

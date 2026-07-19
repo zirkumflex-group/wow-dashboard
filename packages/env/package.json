@@ -6,7 +6,14 @@
   "exports": {
     "./web": "./src/web.ts",
     "./app": "./src/app.ts",
+    "./api": "./src/api.ts",
+    "./worker": "./src/worker.ts",
     "./server": "./src/server.ts"
+  },
+  "scripts": {
+    "check-types": "tsc --noEmit --project tsconfig.json",
+    "lint": "oxlint .",
+    "format:check": "oxfmt --check ."
   },
   "dependencies": {
     "@t3-oss/env-core": "^0.13.11",
@@ -14,6 +21,7 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@types/node": "^24.12.2",
     "@wow-dashboard/config": "workspace:*",
     "typescript": "^6.0.3"
   }

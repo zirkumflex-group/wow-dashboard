@@ -165,6 +165,12 @@ docker compose --env-file deploy/.env.production -f deploy/docker-compose.prod.y
 
 Only Caddy publishes public ports. Postgres and Redis stay internal to Docker.
 
+`/readyz` is the API readiness contract and checks its database, Redis, and queue dependencies.
+The worker also serves private `/healthz` and `/readyz` endpoints on port `3002`; its Docker health
+check verifies database connectivity and pg-boss queue access. A healthy API does not by itself
+prove that background synchronization is running, so verify both `api` and `worker` are healthy in
+`docker compose ps` after every deploy.
+
 ## Backups
 
 Run an immediate backup:

@@ -34,11 +34,8 @@ services:
       dockerfile: deploy/Dockerfile.api
       target: migrate
     restart: "no"
-    env_file:
-      - ${SERVICE_ENV_FILE:-.env.production}
     environment:
       DATABASE_URL: postgres://wowdash:${POSTGRES_PASSWORD}@postgres:5432/wowdash
-      REDIS_URL: redis://redis:6379
     depends_on:
       postgres:
         condition: service_healthy
@@ -84,18 +81,31 @@ services:
       dockerfile: deploy/Dockerfile.api
       target: runtime-worker
     restart: unless-stopped
-    env_file:
-      - ${SERVICE_ENV_FILE:-.env.production}
     environment:
       DATABASE_URL: postgres://wowdash:${POSTGRES_PASSWORD}@postgres:5432/wowdash
-      REDIS_URL: redis://redis:6379
+      BATTLENET_CLIENT_ID: ${BATTLENET_CLIENT_ID}
+      BATTLENET_CLIENT_SECRET: ${BATTLENET_CLIENT_SECRET}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      WORKER_HEALTH_PORT: 3002
+    expose:
+      - "3002"
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
       migrate:
         condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:' + (process.env.WORKER_HEALTH_PORT ?? 3002) + '/readyz').then((res) => process.exit(res.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
 
   web:
     build:
@@ -128,8 +138,6 @@ services:
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
-    env_file:
-      - ${SERVICE_ENV_FILE:-.env.production}
     environment:
       SITE_HOST: ${SITE_HOST}
     depends_on:

@@ -17,9 +17,12 @@ import {
   charactersLatestResponseSchema,
   charactersScoreboardResponseSchema,
   createMythicPlusRunSessionBodySchema,
+  dashboardSessionRouteParamsSchema,
+  dashboardSessionsResponseSchema,
   loginCodeResponseSchema,
   meResponseSchema,
   mythicPlusRunSessionMutationResponseSchema,
+  myCharacterCountResponseSchema,
   myCharactersResponseSchema,
   playerCharactersResultSchema,
   playerRouteParamsSchema,
@@ -27,6 +30,7 @@ import {
   redeemLoginCodeBodySchema,
   redeemLoginCodeResponseSchema,
   resyncCharactersResponseSchema,
+  revokeDashboardSessionResponseSchema,
   updateMythicPlusRunSessionExternalIdBodySchema,
   updateMythicPlusRunSessionPaidBodySchema,
   updateCharacterBoosterBodySchema,
@@ -50,14 +54,17 @@ import {
   type CharacterSnapshotTimelineResponse,
   type CharactersLatestQuery,
   type CreateMythicPlusRunSessionBody,
+  type DashboardSessionsResponse,
   type LoginCodeResponse,
   type MeResponse,
   type MythicPlusRunSessionMutationResponse,
+  type MyCharacterCountResponse,
   type PlayerCharactersResponse,
   type PlayerScoreboardEntry,
   type RedeemLoginCodeBody,
   type RedeemLoginCodeResponse,
   type ResyncCharactersResponse,
+  type RevokeDashboardSessionResponse,
   type ScoreboardCharacterEntry,
   type SerializedDashboardCharacter,
   type SerializedPinnedCharacter,
@@ -89,6 +96,7 @@ export type ApiClientConfig = {
   credentials?: RequestCredentials;
   getAccessToken?: AccessTokenResolver;
   getHeaders?: HeadersResolver;
+  requestTimeoutMs?: number;
 };
 
 type JsonRequestOptions<TInput, TOutput> = {
@@ -216,6 +224,7 @@ function normalizeCharacterIds(input: CharactersLatestQuery) {
 export function createApiClient(config: ApiClientConfig) {
   const baseUrl = normalizeBaseUrl(config.baseUrl);
   const fetchImpl = config.fetch ?? globalThis.fetch;
+  const requestTimeoutMs = config.requestTimeoutMs ?? 15_000;
 
   if (typeof fetchImpl !== "function") {
     throw new Error("A fetch implementation is required to create the API client.");
@@ -245,6 +254,7 @@ export function createApiClient(config: ApiClientConfig) {
       method,
       headers,
       credentials: config.credentials ?? "include",
+      signal: AbortSignal.timeout(requestTimeoutMs),
     };
 
     if (parsedInput !== undefined) {
@@ -273,6 +283,23 @@ export function createApiClient(config: ApiClientConfig) {
         method: "GET",
         path: "/me",
         outputSchema: meResponseSchema,
+      });
+    },
+
+    getActiveSessions(): Promise<DashboardSessionsResponse> {
+      return requestJson({
+        method: "GET",
+        path: "/sessions",
+        outputSchema: dashboardSessionsResponseSchema,
+      });
+    },
+
+    revokeActiveSession(sessionId: string): Promise<RevokeDashboardSessionResponse> {
+      const { id } = dashboardSessionRouteParamsSchema.parse({ id: sessionId });
+      return requestJson({
+        method: "POST",
+        path: `/sessions/${encodePathSegment(id)}/revoke`,
+        outputSchema: revokeDashboardSessionResponseSchema,
       });
     },
 
@@ -312,6 +339,14 @@ export function createApiClient(config: ApiClientConfig) {
         method: "GET",
         path: "/characters",
         outputSchema: myCharactersResponseSchema,
+      });
+    },
+
+    getMyCharacterCount(): Promise<MyCharacterCountResponse> {
+      return requestJson({
+        method: "GET",
+        path: "/characters/count",
+        outputSchema: myCharacterCountResponseSchema,
       });
     },
 
