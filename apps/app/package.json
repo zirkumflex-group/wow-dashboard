@@ -17,25 +17,25 @@
     "package": "pnpm run build && electron-builder --win"
   },
   "dependencies": {
-    "electron-updater": "^6.8.3",
-    "unzipper": "^0.12.3"
+    "electron-updater": "^6.8.9",
+    "unzipper": "^0.12.5"
   },
   "devDependencies": {
-    "@tailwindcss/vite": "^4.2.4",
+    "@tailwindcss/vite": "catalog:",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
     "@types/unzipper": "^0.10.11",
     "@vitejs/plugin-react": "^5.2.0",
     "@wow-dashboard/config": "workspace:*",
     "@wow-dashboard/mythic-plus": "workspace:*",
-    "electron": "^41.3.0",
-    "electron-builder": "^26.8.1",
+    "electron": "^43.1.1",
+    "electron-builder": "^26.15.7",
     "electron-vite": "^5.0.0",
     "react": "catalog:",
     "react-dom": "catalog:",
     "tailwindcss": "catalog:",
-    "tsx": "^4.21.0",
-    "typescript": "^6.0.3",
+    "tsx": "catalog:",
+    "typescript": "catalog:",
     "vite": "^7.3.6"
   },
   "build": {

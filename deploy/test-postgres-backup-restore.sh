@@ -25,7 +25,7 @@ docker run -d \
   -e POSTGRES_DB=wowdash \
   -e POSTGRES_USER=wowdash \
   -e POSTGRES_PASSWORD=restore-test-password \
-  postgres:16-alpine >/dev/null
+  postgres:16.14-alpine >/dev/null
 
 ready=0
 for _ in $(seq 1 60); do

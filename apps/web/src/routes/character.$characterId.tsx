@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, stripSearchParams } from "@tanstack/react-router";
 import type { SearchSchemaInput } from "@tanstack/react-router";
 import { getMythicPlusDungeonMeta } from "../lib/mythic-plus-static";
 import { getClassTextColor } from "../lib/class-colors";
@@ -279,8 +279,11 @@ export const Route = createFileRoute("/character/$characterId")({
   validateSearch: validateCharacterPageSearch,
   search: {
     middlewares: [
-      ({ search, next }) =>
-        stripDefaultCharacterPageSearch(next(search as CharacterPageSearch) as CharacterPageSearch),
+      stripSearchParams({
+        timeFrame: DEFAULT_TIME_FRAME,
+        layoutMode: DEFAULT_LAYOUT_MODE,
+        focusMetric: DEFAULT_FOCUS_METRIC,
+      }),
     ],
   },
   loaderDeps: ({ search }) => ({ timeFrame: search.timeFrame }),

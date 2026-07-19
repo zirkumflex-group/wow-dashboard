@@ -16,8 +16,8 @@
     "zod": "catalog:"
   },
   "devDependencies": {
-    "@types/node": "^24.12.2",
+    "@types/node": "catalog:",
     "@wow-dashboard/config": "workspace:*",
-    "typescript": "^6.0.3"
+    "typescript": "catalog:"
   }
 }

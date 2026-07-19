@@ -230,7 +230,7 @@ cd ~/wow-dashboard
 bash deploy/test-postgres-backup-restore.sh ~/wow-dashboard-backups/postgres/latest.dump
 ```
 
-This starts a temporary `postgres:16-alpine` container, restores the dump, prints row counts for
+This starts a temporary `postgres:16.14-alpine` container, restores the dump, prints row counts for
 the key tables, and removes the test container.
 
 ## Historical Convex Import

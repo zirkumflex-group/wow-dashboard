@@ -14,10 +14,10 @@
     "test": "tsx --test src/index.test.ts"
   },
   "devDependencies": {
-    "@types/node": "^24.12.2",
+    "@types/node": "catalog:",
     "@wow-dashboard/config": "workspace:*",
     "@wow-dashboard/db": "workspace:*",
-    "tsx": "^4.21.0",
-    "typescript": "^6.0.3"
+    "tsx": "catalog:",
+    "typescript": "catalog:"
   }
 }
