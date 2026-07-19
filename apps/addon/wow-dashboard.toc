@@ -1,6 +1,6 @@
 ## X-Flavor: retail
 ## X-Expansion: Midnight
-## Interface: 120001
+## Interface: 120007
 ## Version: 1.2.16
 
 ## Title: WoW Dashboard

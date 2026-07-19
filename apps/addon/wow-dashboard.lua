@@ -15,9 +15,6 @@ local function GetAddonMetadata(fieldName, fallback)
     if type(C_AddOns) == "table" and type(C_AddOns.GetAddOnMetadata) == "function" then
         value = C_AddOns.GetAddOnMetadata(addonName, fieldName)
     end
-    if (value == nil or value == "") and type(GetAddOnMetadata) == "function" then
-        value = GetAddOnMetadata(addonName, fieldName)
-    end
 
     if value ~= nil and value ~= "" then
         return tostring(value)
@@ -26,8 +23,8 @@ local function GetAddonMetadata(fieldName, fallback)
     return fallback
 end
 
-local ADDON_VERSION   = GetAddonMetadata("Version", "1.2.9")
-local ADDON_INTERFACE = GetAddonMetadata("Interface", "120001")
+local ADDON_VERSION   = GetAddonMetadata("Version", "unknown")
+local ADDON_INTERFACE = GetAddonMetadata("Interface", "120007")
 local ADDON_EXPANSION = GetAddonMetadata("X-Expansion", "Midnight")
 
 local BG_R, BG_G, BG_B = 0.067, 0.040, 0.024
@@ -241,7 +238,7 @@ addon.uiHelpers = {
 --         realm            string?
 --         classTag         string?
 --         role             string?  -- "tank" | "healer" | "dps"
---     mythicPlusRunKeys table -- keyed by dedupe fingerprint/canonical key
+--     mythicPlusStorageVersion number -- lazy normalization/index migration marker
 --     snapshots    array
 --       takenAt           number  -- Unix timestamp
 --       level             number
@@ -340,7 +337,12 @@ addon.uiHelpers = {
 --     events                    array
 -- ============================================================
 
-local DB_VERSION            = 3
+local DB_VERSION            = 4
+local STORAGE_POLICY = {
+    mythicPlusVersion = 1,
+    snapshotEventMinInterval = 5 * 60,
+    mythicPlusDebugRetention = 30 * 24 * 60 * 60,
+}
 local ADDON_SIGNATURE_ALGORITHM = "wd-djb2-32-v1"
 local ADDON_SIGNATURE_SEPARATOR = "\31"
 local SNAPSHOT_INTERVAL     = 15 * 60  -- seconds
@@ -362,8 +364,8 @@ local MPLUS_SCORE_BACKFILL_RETRY_DELAYS = { 5, 45, 120, 300, 900 }
 local MPLUS_SCORE_BACKFILL_PERIODIC_DELAY = 15 * 60
 local MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS = 4 * 60 * 60 * 1000
 local MYTHIC_PLUS_DEBUG_EVENT_LIMIT = 30
-local MAX_SNAPSHOTS_PER_CHARACTER = 500
-local MAX_MYTHIC_PLUS_RUNS_PER_CHARACTER = 5000
+local MAX_SNAPSHOTS_PER_CHARACTER = 256
+local MAX_MYTHIC_PLUS_RUNS_PER_CHARACTER = 1000
 local MAX_MYTHIC_PLUS_RUN_MEMBERS = 5
 local MAX_LOG_ENTRIES = 200
 
@@ -421,9 +423,62 @@ local lastMPlusSyncAt      = 0
 local pendingCompletedRunMembers = nil
 local pendingActiveAttemptReconcile = false
 local pendingMPlusScoreBackfillSync = false
+local runtimeState = {
+    snapshotDeferredForCombat = false,
+    mythicPlusMapInfoRequested = false,
+    cachedCurrentMythicPlusSeasonID = nil,
+    challengeModeMapNameCache = {},
+}
 
 local StartSnapshotTicker = nil
 local ScheduleNextMythicPlusScoreBackfill = nil
+
+local function IsSecretValue(value)
+    if type(issecretvalue) ~= "function" then
+        return false
+    end
+
+    local ok, secret = pcall(issecretvalue, value)
+    return ok and secret == true
+end
+
+local function ToSafeNumber(value)
+    if IsSecretValue(value) or value == nil then
+        return nil
+    end
+
+    local ok, numeric = pcall(tonumber, value)
+    if not ok or numeric == nil or numeric ~= numeric or numeric == math.huge or numeric == -math.huge then
+        return nil
+    end
+
+    return numeric
+end
+
+local function ToSafeText(value)
+    if IsSecretValue(value) or value == nil then
+        return nil
+    end
+
+    local ok, result = pcall(tostring, value)
+    if not ok or result == "" then
+        return nil
+    end
+    return result
+end
+
+local function CallSafeNumber(apiFunc, ...)
+    if type(apiFunc) ~= "function" then
+        return nil
+    end
+
+    local ok, value = pcall(apiFunc, ...)
+    if not ok then
+        return nil
+    end
+
+    return ToSafeNumber(value)
+end
 
 local function GetCharKey()
     local name, realm = UnitFullName("player")
@@ -432,16 +487,39 @@ local function GetCharKey()
 end
 
 local function GetRegion()
-    if GetCurrentRegionName then
-        local region = GetCurrentRegionName()
-        if type(region) == "string" and region ~= "" then
-            region = string.lower(region)
-            if region == "us" or region == "eu" or region == "kr" or region == "tw" then
-                return region
+    if addon.cachedRegion then
+        return addon.cachedRegion
+    end
+
+    local regionByID = {
+        [1] = "us",
+        [2] = "kr",
+        [3] = "eu",
+        [4] = "tw",
+    }
+    local regionID = CallSafeNumber(GetCurrentRegion)
+    local region = regionID and regionByID[regionID] or nil
+
+    if region == nil and type(GetLocale) == "function" then
+        local ok, locale = pcall(GetLocale)
+        if ok then
+            if locale == "koKR" then
+                region = "kr"
+            elseif locale == "zhTW" then
+                region = "tw"
+            elseif locale == "enGB"
+                or locale == "deDE"
+                or locale == "frFR"
+                or locale == "itIT"
+                or locale == "ruRU"
+            then
+                region = "eu"
             end
         end
     end
-    return "us"
+
+    addon.cachedRegion = region or "us"
+    return addon.cachedRegion
 end
 addon.GetRegion = GetRegion
 
@@ -514,7 +592,7 @@ local function EnsureAddonSigning()
 end
 
 local function CanonicalText(value)
-    if value == nil then
+    if IsSecretValue(value) or value == nil then
         return ""
     end
 
@@ -526,8 +604,8 @@ local function CanonicalText(value)
 end
 
 local function CanonicalNumber(value)
-    local n = tonumber(value)
-    if n == nil or n ~= n or n == math.huge or n == -math.huge then
+    local n = ToSafeNumber(value)
+    if n == nil then
         return ""
     end
 
@@ -542,6 +620,9 @@ local function CanonicalNumber(value)
 end
 
 local function CanonicalBool(value)
+    if IsSecretValue(value) then
+        return ""
+    end
     if value == true then
         return "true"
     end
@@ -736,6 +817,67 @@ local function EnsureMythicPlusDebugStore()
     end
 
     return WowDashboardDB.mythicPlusDebug
+end
+
+local function IsExpiredTimestamp(timestamp, retentionSeconds, nowTimestamp)
+    local normalized = ToSafeNumber(timestamp)
+    if normalized == nil or normalized > nowTimestamp then
+        return normalized == nil
+    end
+
+    return (nowTimestamp - normalized) > retentionSeconds
+end
+
+local function CleanupTransientStores()
+    if type(WowDashboardDB) ~= "table" then
+        return
+    end
+
+    local nowTimestamp = time()
+    local pendingMembers = EnsurePendingMythicPlusMemberStore()
+    for characterKey, pending in pairs(pendingMembers) do
+        if type(pending) ~= "table"
+            or IsExpiredTimestamp(pending.capturedAt, PENDING_RUN_MEMBER_RETENTION, nowTimestamp)
+        then
+            pendingMembers[characterKey] = nil
+        end
+    end
+
+    local activeMembers = EnsureActiveMythicPlusMemberStore()
+    for characterKey, active in pairs(activeMembers) do
+        local updatedAt = type(active) == "table" and (active.updatedAt or active.startedAt) or nil
+        if type(active) ~= "table"
+            or IsExpiredTimestamp(updatedAt, ACTIVE_RUN_MEMBER_RETENTION, nowTimestamp)
+        then
+            activeMembers[characterKey] = nil
+        end
+    end
+
+    local scoreBackfills = EnsurePendingMythicPlusScoreBackfillStore()
+    for characterKey, state in pairs(scoreBackfills) do
+        if type(state) ~= "table"
+            or IsExpiredTimestamp(state.startedAt, MPLUS_SCORE_BACKFILL_WINDOW, nowTimestamp)
+        then
+            scoreBackfills[characterKey] = nil
+        end
+    end
+
+    local debugStore = EnsureMythicPlusDebugStore()
+    for characterKey, state in pairs(debugStore) do
+        local updatedAt = type(state) == "table"
+            and (state.lastEventAt or state.lastSyncAt or state.lastCaptureAt)
+            or nil
+        if type(state) ~= "table"
+            or IsExpiredTimestamp(updatedAt, STORAGE_POLICY.mythicPlusDebugRetention, nowTimestamp)
+        then
+            debugStore[characterKey] = nil
+        else
+            if type(state.events) ~= "table" then
+                state.events = {}
+            end
+            TrimArrayToNewest(state.events, MYTHIC_PLUS_DEBUG_EVENT_LIMIT)
+        end
+    end
 end
 
 local function GetMythicPlusDebugState(characterKey, create)
@@ -1002,10 +1144,12 @@ local function EnsureCharacterEntry(key, name, realm, charInfo)
             faction           = charInfo.faction,
             snapshots         = {},
             mythicPlusRuns    = {},
-            mythicPlusRunKeys = {},
+            mythicPlusStorageVersion = STORAGE_POLICY.mythicPlusVersion,
         }
         db.characters[key] = entry
     else
+        entry.name    = name
+        entry.realm   = realm
         entry.region  = charInfo.region
         entry.class   = charInfo.class
         entry.race    = charInfo.race
@@ -1016,10 +1160,8 @@ local function EnsureCharacterEntry(key, name, realm, charInfo)
         if type(entry.mythicPlusRuns) ~= "table" then
             entry.mythicPlusRuns = {}
         end
-        if type(entry.mythicPlusRunKeys) ~= "table" then
-            entry.mythicPlusRunKeys = {}
-        end
     end
+    entry.mythicPlusRunKeys = nil
     entry.mythicPlusDebug = nil
 
     -- Trim legacy oversized snapshot lists down to the cap (keeps newest)
@@ -1028,7 +1170,14 @@ local function EnsureCharacterEntry(key, name, realm, charInfo)
     return entry
 end
 
-local function NormalizeAndDeduplicateRuns(entry)
+local function NormalizeAndDeduplicateRuns(entry, force)
+    if type(entry) ~= "table" then
+        return false
+    end
+    if not force and entry.mythicPlusStorageVersion == STORAGE_POLICY.mythicPlusVersion then
+        return false
+    end
+
     local normalizedRuns = {}
     local normalizedRunsByDedupKey = {}
     for _, run in ipairs(entry.mythicPlusRuns) do
@@ -1052,37 +1201,63 @@ local function NormalizeAndDeduplicateRuns(entry)
         normalizedRuns[#normalizedRuns] = nil
     end
 
-    local normalizedKeys = {}
     for _, run in ipairs(normalizedRuns) do
-        local dedupKey = GetRunDedupKey(run)
-        if dedupKey then
-            normalizedKeys[dedupKey] = true
-        end
         SignMythicPlusRunPayload(entry, run)
     end
 
     entry.mythicPlusRuns = normalizedRuns
-    entry.mythicPlusRunKeys = normalizedKeys
+    entry.mythicPlusRunKeys = nil
+    entry.mythicPlusStorageVersion = STORAGE_POLICY.mythicPlusVersion
+    return true
 end
 
-local function IsSequentialArray(value)
-    if type(value) ~= "table" then
-        return false
+local function MigrateDatabase()
+    if type(WowDashboardDB) ~= "table" then
+        return
     end
 
-    local count = 0
-    local maxIndex = 0
-    for key in pairs(value) do
-        if type(key) ~= "number" or key < 1 or math.floor(key) ~= key then
-            return false
-        end
-        count = count + 1
-        if key > maxIndex then
-            maxIndex = key
+    local previousVersion = ToSafeNumber(WowDashboardDB.version) or 0
+    local currentRegion = GetRegion()
+    if type(WowDashboardDB.characters) ~= "table" then
+        WowDashboardDB.characters = {}
+    end
+
+    for _, entry in pairs(WowDashboardDB.characters) do
+        if type(entry) == "table" then
+            local regionChanged = entry.region ~= currentRegion
+            entry.region = currentRegion
+            -- This legacy index duplicated every run fingerprint in SavedVariables
+            -- but was never read. Runtime lookups now build a compact ephemeral index.
+            entry.mythicPlusRunKeys = nil
+
+            if type(entry.snapshots) ~= "table" then
+                entry.snapshots = {}
+            end
+            TrimArrayToNewest(entry.snapshots, MAX_SNAPSHOTS_PER_CHARACTER)
+            if regionChanged then
+                for _, snapshot in ipairs(entry.snapshots) do
+                    SignSnapshotPayload(entry, snapshot)
+                end
+            end
+
+            if type(entry.mythicPlusRuns) ~= "table" then
+                entry.mythicPlusRuns = {}
+            end
+            while #entry.mythicPlusRuns > MAX_MYTHIC_PLUS_RUNS_PER_CHARACTER do
+                entry.mythicPlusRuns[#entry.mythicPlusRuns] = nil
+            end
+            if previousVersion < 4 then
+                entry.mythicPlusStorageVersion = nil
+            end
+            NormalizeAndDeduplicateRuns(entry, previousVersion < 4 or regionChanged)
         end
     end
 
-    return maxIndex == count
+    -- Never lower a schema marker when an older addon is loaded after a
+    -- newer build. The current migration only performs backward-compatible
+    -- cleanup, so preserving the higher marker is the safest downgrade path.
+    WowDashboardDB.version = math.max(previousVersion, DB_VERSION)
+    CleanupTransientStores()
 end
 
 local function GetFirstField(record, fieldNames)
@@ -1092,7 +1267,7 @@ local function GetFirstField(record, fieldNames)
 
     for _, fieldName in ipairs(fieldNames) do
         local value = record[fieldName]
-        if value ~= nil then
+        if not IsSecretValue(value) and value ~= nil then
             return value
         end
     end
@@ -1101,7 +1276,7 @@ local function GetFirstField(record, fieldNames)
 end
 
 local function NormalizePartyRole(value)
-    if type(value) ~= "string" then
+    if IsSecretValue(value) or type(value) ~= "string" then
         return nil
     end
 
@@ -1120,7 +1295,7 @@ local function NormalizePartyRole(value)
 end
 
 local function NormalizeClassTag(value, classID)
-    if type(value) == "string" then
+    if not IsSecretValue(value) and type(value) == "string" then
         local normalized = strtrim(value)
         if normalized ~= "" then
             return string.upper(string.gsub(normalized, "[%s%-_]", ""))
@@ -1150,6 +1325,8 @@ local function NormalizeClassTag(value, classID)
 end
 
 local function NormalizeMemberIdentity(name, realm)
+    name = ToSafeText(name)
+    realm = ToSafeText(realm)
     if type(name) ~= "string" then
         return nil, nil
     end
@@ -1457,24 +1634,46 @@ local function AreMythicPlusMemberListsEqual(leftMembers, rightMembers)
 end
 
 local function BuildMythicPlusMemberFromUnit(unit)
-    if type(unit) ~= "string" or not UnitExists(unit) or not UnitIsPlayer(unit) then
+    if type(unit) ~= "string" then
         return nil
     end
 
-    local name, realm = NormalizeMemberIdentity(UnitFullName(unit))
+    local okExists, exists = pcall(UnitExists, unit)
+    local okPlayer, isPlayer = pcall(UnitIsPlayer, unit)
+    if not okExists or exists ~= true or not okPlayer or isPlayer ~= true then
+        return nil
+    end
+
+    local okName, rawName, rawRealm = pcall(UnitFullName, unit)
+    if not okName then
+        return nil
+    end
+
+    local name, realm = NormalizeMemberIdentity(ToSafeText(rawName), ToSafeText(rawRealm))
     if name == nil then
         return nil
     end
 
-    local _, classTag = UnitClass(unit)
+    local classTag = nil
+    if type(UnitClassBase) == "function" then
+        local okClass, rawClassTag = pcall(UnitClassBase, unit)
+        classTag = okClass and ToSafeText(rawClassTag) or nil
+    elseif type(UnitClass) == "function" then
+        local okClass, _, rawClassTag = pcall(UnitClass, unit)
+        classTag = okClass and ToSafeText(rawClassTag) or nil
+    end
     classTag = NormalizeClassTag(classTag)
 
-    local role = NormalizePartyRole(UnitGroupRolesAssigned(unit))
+    local role = nil
+    if type(UnitGroupRolesAssigned) == "function" then
+        local okRole, rawRole = pcall(UnitGroupRolesAssigned, unit)
+        role = okRole and NormalizePartyRole(ToSafeText(rawRole)) or nil
+    end
     if role == nil and unit == "player" then
-        local specIndex = GetSpecialization()
+        local specIndex = CallSafeNumber(GetSpecialization)
         if specIndex and specIndex > 0 then
-            local _, _, _, _, specRole = GetSpecializationInfo(specIndex)
-            role = NormalizePartyRole(specRole)
+            local okSpec, _, _, _, _, specRole = pcall(GetSpecializationInfo, specIndex)
+            role = okSpec and NormalizePartyRole(ToSafeText(specRole)) or nil
         end
     end
 
@@ -1566,8 +1765,11 @@ local function GetCurrentActiveMythicPlusRunContext(options)
 end
 
 local function IsInsideMythicPlusDungeonInstance()
-    local _, _, difficultyID = GetInstanceInfo()
-    return difficultyID == 8 or difficultyID == 23
+    if type(GetInstanceInfo) ~= "function" then
+        return false
+    end
+    local ok, _, _, difficultyID = pcall(GetInstanceInfo)
+    return ok and ToSafeNumber(difficultyID) == 8
 end
 
 local function ClearActiveMythicPlusMemberCache(characterKey, reason)
@@ -1703,89 +1905,52 @@ local function ReconcileActiveMythicPlusMemberCache(reason)
 end
 
 local function CaptureCompletionInfoMembers()
-    if type(C_ChallengeMode) ~= "table" then
+    local apiName = "GetChallengeCompletionInfo"
+    if type(C_ChallengeMode) ~= "table"
+        or type(C_ChallengeMode.GetChallengeCompletionInfo) ~= "function"
+    then
         return nil, { apiName = nil }
     end
 
-    local apiName = nil
-    local apiFunc = nil
-    if type(C_ChallengeMode.GetChallengeCompletionInfo) == "function" then
-        apiName = "GetChallengeCompletionInfo"
-        apiFunc = C_ChallengeMode.GetChallengeCompletionInfo
-    elseif type(C_ChallengeMode.GetCompletionInfo) == "function" then
-        apiName = "GetCompletionInfo"
-        apiFunc = C_ChallengeMode.GetCompletionInfo
-    end
-
-    if type(apiFunc) ~= "function" then
-        return nil, { apiName = nil }
-    end
-
-    local ok,
-        mapChallengeModeID,
-        level,
-        runTimeMs,
-        onTime,
-        keystoneUpgradeLevels,
-        _practiceRun,
-        _oldOverallDungeonScore,
-        _newOverallDungeonScore,
-        _isMapRecord,
-        _isAffixRecord,
-        _primaryAffix,
-        _isEligibleForScore,
-        members = pcall(apiFunc)
-    if not ok then
+    local ok, info = pcall(C_ChallengeMode.GetChallengeCompletionInfo)
+    if not ok or type(info) ~= "table" then
         return nil, { apiName = apiName, callFailed = true }
     end
 
-    if type(mapChallengeModeID) == "table" and level == nil and runTimeMs == nil then
-        local info = mapChallengeModeID
-        local infoMembers = GetFirstField(info, {
-            "members",
-            "partyMembers",
-            "groupMembers",
-            "roster",
-        })
+    local infoMembers = GetFirstField(info, {
+        "members",
+        "partyMembers",
+        "groupMembers",
+        "roster",
+    })
 
-        return NormalizeMythicPlusMembers(infoMembers), {
-            apiName = apiName,
-            mapChallengeModeID = tonumber(GetFirstField(info, {
-                "mapChallengeModeID",
-                "challengeModeID",
-                "mapID",
-            })),
-            level = tonumber(GetFirstField(info, {
-                "level",
-                "keystoneLevel",
-            })),
-            durationMs = tonumber(GetFirstField(info, {
-                "time",
-                "runTimeMs",
-                "runTime",
-                "durationMs",
-            })),
-            completedInTime = NormalizeOptionalBoolean(GetFirstField(info, {
-                "onTime",
-                "completedInTime",
-                "intime",
-            })),
-            keystoneUpgradeLevels = tonumber(GetFirstField(info, {
-                "keystoneUpgradeLevels",
-                "upgradeLevels",
-            })),
-            memberCount = type(infoMembers) == "table" and #infoMembers or 0,
-        }
-    end
-
-    return NormalizeMythicPlusMembers(members), {
+    return NormalizeMythicPlusMembers(infoMembers), {
         apiName = apiName,
-        mapChallengeModeID = tonumber(mapChallengeModeID),
-        level = tonumber(level),
-        durationMs = tonumber(runTimeMs),
-        completedInTime = NormalizeOptionalBoolean(onTime),
-        keystoneUpgradeLevels = tonumber(keystoneUpgradeLevels),
-        memberCount = type(members) == "table" and #members or 0,
+        mapChallengeModeID = ToSafeNumber(GetFirstField(info, {
+            "mapChallengeModeID",
+            "challengeModeID",
+            "mapID",
+        })),
+        level = ToSafeNumber(GetFirstField(info, {
+            "level",
+            "keystoneLevel",
+        })),
+        durationMs = ToSafeNumber(GetFirstField(info, {
+            "time",
+            "runTimeMs",
+            "runTime",
+            "durationMs",
+        })),
+        completedInTime = NormalizeOptionalBoolean(GetFirstField(info, {
+            "onTime",
+            "completedInTime",
+            "intime",
+        })),
+        keystoneUpgradeLevels = ToSafeNumber(GetFirstField(info, {
+            "keystoneUpgradeLevels",
+            "upgradeLevels",
+        })),
+        memberCount = type(infoMembers) == "table" and #infoMembers or 0,
     }
 end
 
@@ -1895,19 +2060,26 @@ local function GetRunTerminalTimestamp(run)
 end
 
 local function NormalizeCompletedRunStartDate(run)
-    if type(run) ~= "table" or GetRunStatus(run) ~= "completed" then
+    if type(run) ~= "table" then
+        return
+    end
+
+    local status = GetRunStatus(run)
+    if status ~= "completed" and status ~= "abandoned" then
         return
     end
 
     local startDate = NormalizeMythicPlusDate(run.startDate)
     local terminalAt = GetRunTerminalTimestamp(run)
     local durationMs = GetRunDurationMs(run)
-    if startDate == nil or terminalAt == nil or durationMs == nil then
+    if terminalAt == nil or durationMs == nil then
         return
     end
 
     local derivedStart = terminalAt - math.floor(durationMs / 1000 + 0.5)
-    if math.abs(startDate - derivedStart) <= COMPLETED_RUN_DERIVED_START_TOLERANCE_SECONDS then
+    if startDate ~= nil
+        and math.abs(startDate - derivedStart) <= COMPLETED_RUN_DERIVED_START_TOLERANCE_SECONDS
+    then
         return
     end
 
@@ -1922,6 +2094,10 @@ local function NormalizeCompletedRunStartDate(run)
 end
 
 NormalizeOptionalBoolean = function(value)
+    if IsSecretValue(value) then
+        return nil
+    end
+
     if type(value) == "boolean" then
         return value
     end
@@ -2229,6 +2405,9 @@ local function AttachPendingCompletedRunMembers(runs, characterKey)
 end
 
 NormalizeMythicPlusDate = function(value)
+    if IsSecretValue(value) then
+        return nil
+    end
     if type(value) == "number" then
         return value
     end
@@ -2237,39 +2416,68 @@ NormalizeMythicPlusDate = function(value)
         return nil
     end
 
-    local year = tonumber(value.year)
-    local month = tonumber(value.month)
-    local day = tonumber(value.day)
-    if not year or not month or not day then
-        return nil
+    local function CalendarToLocalEpoch(calendar)
+        if type(calendar) ~= "table" then
+            return nil
+        end
+
+        local year = ToSafeNumber(calendar.year)
+        local month = ToSafeNumber(calendar.month)
+        local currentMonthDay = ToSafeNumber(calendar.monthDay)
+        local legacyDay = ToSafeNumber(calendar.day)
+        local day = currentMonthDay or legacyDay
+        if not year or not month or not day then
+            return nil
+        end
+
+        if year < 100 then
+            year = 2000 + year
+        end
+
+        -- CalendarTime (the current API shape) is 1-based. Older history
+        -- payloads used day/month fields that this addon stored as 0-based.
+        if currentMonthDay == nil then
+            month = month + 1
+            day = day + 1
+        end
+        if month < 1 or month > 12 or day < 1 or day > 31 then
+            return nil
+        end
+
+        local ok, epoch = pcall(time, {
+            year = year,
+            month = month,
+            day = day,
+            hour = ToSafeNumber(calendar.hour) or 0,
+            min = ToSafeNumber(calendar.minute) or ToSafeNumber(calendar.min) or 0,
+            sec = ToSafeNumber(calendar.second) or ToSafeNumber(calendar.sec) or 0,
+        })
+        if not ok then
+            return nil
+        end
+        return ToSafeNumber(epoch)
     end
 
-    if year < 100 then
-        year = 2000 + year
-    end
-
-    local hour = tonumber(value.hour) or 0
-    local minute = tonumber(value.minute) or tonumber(value.min) or 0
-    local second = tonumber(value.second) or tonumber(value.sec) or 0
-
-    local localEpoch = time({
-        year = year,
-        month = month + 1,
-        day = day + 1,
-        hour = hour,
-        min = minute,
-        sec = second,
-    })
+    local localEpoch = CalendarToLocalEpoch(value)
     if localEpoch == nil then
         return nil
     end
 
-    local utcAsLocalEpoch = time(date("!*t", localEpoch))
-    if utcAsLocalEpoch == nil then
-        return localEpoch
+    -- Mythic+ completion dates are realm calendar times. Anchor them to the
+    -- current realm calendar so the operating-system time zone cannot shift
+    -- fingerprints for players whose machine and realm use different zones.
+    if type(C_DateAndTime) == "table"
+        and type(C_DateAndTime.GetCurrentCalendarTime) == "function"
+    then
+        local ok, currentCalendar = pcall(C_DateAndTime.GetCurrentCalendarTime)
+        local currentLocalEpoch = ok and CalendarToLocalEpoch(currentCalendar) or nil
+        local nowEpoch = ToSafeNumber(time())
+        if currentLocalEpoch ~= nil and nowEpoch ~= nil then
+            return nowEpoch + math.floor(difftime(localEpoch, currentLocalEpoch))
+        end
     end
 
-    return localEpoch + math.floor(difftime(localEpoch, utcAsLocalEpoch))
+    return localEpoch
 end
 
 GetRunSortValue = function(run)
@@ -2283,15 +2491,20 @@ GetRunSortValue = function(run)
 end
 
 local function GetChallengeModeMapName(mapChallengeModeID)
-    if not mapChallengeModeID then
+    local numericMapID = ToSafeNumber(mapChallengeModeID)
+    if not numericMapID then
         return nil
+    end
+    if runtimeState.challengeModeMapNameCache[numericMapID] ~= nil then
+        return runtimeState.challengeModeMapNameCache[numericMapID] or nil
     end
     if not C_ChallengeMode or type(C_ChallengeMode.GetMapUIInfo) ~= "function" then
         return nil
     end
 
-    local ok, mapName = pcall(C_ChallengeMode.GetMapUIInfo, mapChallengeModeID)
+    local ok, mapName = pcall(C_ChallengeMode.GetMapUIInfo, numericMapID)
     if ok and type(mapName) == "string" and mapName ~= "" then
+        runtimeState.challengeModeMapNameCache[numericMapID] = mapName
         return mapName
     end
 
@@ -2299,7 +2512,7 @@ local function GetChallengeModeMapName(mapChallengeModeID)
 end
 
 local function ToFingerprintToken(value)
-    if value == nil then
+    if IsSecretValue(value) or value == nil then
         return ""
     end
     if type(value) == "boolean" then
@@ -2343,6 +2556,10 @@ local function NormalizeAbandonReason(value)
 end
 
 local function HasRunCompletionEvidence(run)
+    if run.completed == false then
+        return false
+    end
+
     return run.completed == true
         or run.durationMs ~= nil
         or run.runScore ~= nil
@@ -2514,6 +2731,21 @@ local function NormalizeLifecycleTimestamp(value)
     return normalized
 end
 
+function runtimeState.RequestMythicPlusMapInfoOnce()
+    if runtimeState.mythicPlusMapInfoRequested then
+        return true
+    end
+    if type(C_MythicPlus) ~= "table" or type(C_MythicPlus.RequestMapInfo) ~= "function" then
+        return false
+    end
+
+    local ok = pcall(C_MythicPlus.RequestMapInfo)
+    if ok then
+        runtimeState.mythicPlusMapInfoRequested = true
+    end
+    return ok == true
+end
+
 local function GetCurrentMythicPlusSeasonID()
     local function NormalizeSeasonID(value)
         local seasonID = tonumber(value)
@@ -2524,18 +2756,21 @@ local function GetCurrentMythicPlusSeasonID()
         return nil
     end
 
+    if runtimeState.cachedCurrentMythicPlusSeasonID ~= nil then
+        return runtimeState.cachedCurrentMythicPlusSeasonID
+    end
+
     if type(C_MythicPlus) ~= "table" then
         return nil
     end
 
-    if type(C_MythicPlus.RequestMapInfo) == "function" then
-        pcall(C_MythicPlus.RequestMapInfo)
-    end
+    runtimeState.RequestMythicPlusMapInfoOnce()
 
     if type(C_MythicPlus.GetCurrentSeason) == "function" then
         local ok, seasonID = pcall(C_MythicPlus.GetCurrentSeason)
         local normalized = ok and NormalizeSeasonID(seasonID) or nil
         if normalized then
+            runtimeState.cachedCurrentMythicPlusSeasonID = normalized
             return normalized
         end
     end
@@ -2544,6 +2779,7 @@ local function GetCurrentMythicPlusSeasonID()
         local ok, seasonID = pcall(C_MythicPlus.GetCurrentUIDisplaySeason)
         local normalized = ok and NormalizeSeasonID(seasonID) or nil
         if normalized then
+            runtimeState.cachedCurrentMythicPlusSeasonID = normalized
             return normalized
         end
     end
@@ -2552,22 +2788,39 @@ local function GetCurrentMythicPlusSeasonID()
 end
 
 local function GetChallengeModeStartTimestamp()
-    local startDate = nil
     local nowTs = time()
     if type(C_ChallengeMode) == "table" and type(C_ChallengeMode.GetStartTime) == "function" then
         local ok, value = pcall(C_ChallengeMode.GetStartTime)
         if ok then
-            local normalized = NormalizeLifecycleTimestamp(value)
-            if normalized ~= nil
-                and normalized <= (nowTs + 5 * 60)
-                and normalized >= (nowTs - MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS / 1000)
-            then
-                startDate = normalized
+            local rawStart = ToSafeNumber(value)
+            if rawStart ~= nil then
+                local normalized = nil
+                if rawStart >= 1000000000 then
+                    normalized = NormalizeLifecycleTimestamp(rawStart)
+                elseif type(GetTime) == "function" then
+                    local okMonotonic, monotonicNow = pcall(GetTime)
+                    monotonicNow = okMonotonic and ToSafeNumber(monotonicNow) or nil
+                    if monotonicNow ~= nil then
+                        local elapsed = monotonicNow - rawStart
+                        if elapsed >= -5 * 60
+                            and elapsed <= (MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS / 1000)
+                        then
+                            normalized = nowTs - math.floor(elapsed + 0.5)
+                        end
+                    end
+                end
+
+                if normalized ~= nil
+                    and normalized <= (nowTs + 5 * 60)
+                    and normalized >= (nowTs - MAX_REASONABLE_MYTHIC_PLUS_DURATION_MS / 1000)
+                then
+                    return normalized
+                end
             end
         end
     end
 
-    return startDate or nowTs
+    return nowTs
 end
 
 local function BuildSyntheticAttemptFingerprint(run)
@@ -2592,18 +2845,102 @@ local function NormalizeRunIdentityString(value)
     return trimmed
 end
 
-local function FindExactMythicPlusRunIdentityIndex(runs, candidateRun)
+local runLookup = {}
+
+function runLookup.GetIdentityKeys(run)
+    if type(run) ~= "table" then
+        return {}
+    end
+
+    local keys = {}
+    local seen = {}
+    local function AddKey(prefix, value)
+        local normalized = NormalizeRunIdentityString(value)
+        if normalized == nil then
+            return
+        end
+        local key = prefix .. normalized
+        if not seen[key] then
+            seen[key] = true
+            keys[#keys + 1] = key
+        end
+    end
+
+    AddKey("attempt|", GetRunAttemptID(run))
+    AddKey("fingerprint|", run.fingerprint)
+    AddKey("dedup|", GetRunDedupKey(run))
+    return keys
+end
+
+function runLookup.GetMergeBucketKey(run)
+    if type(run) ~= "table" then
+        return nil
+    end
+
+    local mapToken = GetRunMapFingerprintToken(run)
+    local level = ToSafeNumber(run.level)
+    if mapToken == "" or level == nil then
+        return nil
+    end
+
+    return table.concat({
+        mapToken,
+        ToFingerprintToken(level),
+    }, "|")
+end
+
+function runLookup.Add(identityIndex, run, index)
+    if type(identityIndex) ~= "table" or type(run) ~= "table" or type(index) ~= "number" then
+        return
+    end
+
+    identityIndex.keys = identityIndex.keys or {}
+    for _, key in ipairs(runLookup.GetIdentityKeys(run)) do
+        if identityIndex.keys[key] == nil then
+            identityIndex.keys[key] = index
+        end
+    end
+
+    local bucketKey = runLookup.GetMergeBucketKey(run)
+    if bucketKey ~= nil then
+        identityIndex.buckets = identityIndex.buckets or {}
+        identityIndex.bucketSeen = identityIndex.bucketSeen or {}
+        identityIndex.buckets[bucketKey] = identityIndex.buckets[bucketKey] or {}
+        identityIndex.bucketSeen[bucketKey] = identityIndex.bucketSeen[bucketKey] or {}
+        if not identityIndex.bucketSeen[bucketKey][index] then
+            identityIndex.bucketSeen[bucketKey][index] = true
+            identityIndex.buckets[bucketKey][#identityIndex.buckets[bucketKey] + 1] = index
+        end
+    end
+end
+
+function runLookup.Build(runs)
+    local identityIndex = { keys = {}, buckets = {}, bucketSeen = {} }
+    if type(runs) == "table" then
+        for index, run in ipairs(runs) do
+            runLookup.Add(identityIndex, run, index)
+        end
+    end
+    return identityIndex
+end
+
+function runLookup.FindExact(runs, candidateRun, identityIndex)
     if type(runs) ~= "table" or type(candidateRun) ~= "table" then
         return nil
+    end
+
+    if type(identityIndex) == "table" and type(identityIndex.keys) == "table" then
+        for _, key in ipairs(runLookup.GetIdentityKeys(candidateRun)) do
+            local index = identityIndex.keys[key]
+            if type(index) == "number" and type(runs[index]) == "table" then
+                return index
+            end
+        end
     end
 
     local candidateAttemptID = GetRunAttemptID(candidateRun)
     local candidateFingerprint = NormalizeRunIdentityString(candidateRun.fingerprint)
     local candidateDedupKey = GetRunDedupKey(candidateRun)
-    if candidateAttemptID == nil and candidateFingerprint == nil and candidateDedupKey == nil then
-        return nil
-    end
-
     for index, currentRun in ipairs(runs) do
         if type(currentRun) == "table" then
             if candidateAttemptID ~= nil then
@@ -2629,8 +2966,76 @@ local function FindExactMythicPlusRunIdentityIndex(runs, candidateRun)
     return nil
 end
 
-local function FindMergeableMythicPlusRunIndex(runs, candidateRun)
-    return FindExactMythicPlusRunIdentityIndex(runs, candidateRun)
+function runLookup.FindMergeable(runs, candidateRun, identityIndex)
+    local exactIndex = runLookup.FindExact(runs, candidateRun, identityIndex)
+    if exactIndex ~= nil then
+        return exactIndex
+    end
+
+    local candidateStart = GetRunIdentityTimestamp(candidateRun)
+    if candidateStart == nil then
+        return nil
+    end
+
+    local candidateStatus = GetRunStatus(candidateRun)
+    local bucketKey = runLookup.GetMergeBucketKey(candidateRun)
+    local candidateIndexes = type(identityIndex) == "table"
+        and type(identityIndex.buckets) == "table"
+        and bucketKey ~= nil
+        and identityIndex.buckets[bucketKey]
+        or nil
+    local bestIndex = nil
+    local bestDifference = nil
+
+    local function Consider(index)
+        local currentRun = runs[index]
+        if type(currentRun) ~= "table" then
+            return
+        end
+
+        local currentSeason = ToSafeNumber(currentRun.seasonID)
+        local candidateSeason = ToSafeNumber(candidateRun.seasonID)
+        if currentSeason ~= nil and candidateSeason ~= nil and currentSeason ~= candidateSeason then
+            return
+        end
+        if GetRunMapFingerprintToken(currentRun) ~= GetRunMapFingerprintToken(candidateRun)
+            or ToSafeNumber(currentRun.level) ~= ToSafeNumber(candidateRun.level)
+        then
+            return
+        end
+
+        local currentStatus = GetRunStatus(currentRun)
+        if currentStatus ~= candidateStatus
+            and currentStatus ~= "active"
+            and candidateStatus ~= "active"
+        then
+            return
+        end
+
+        local currentStart = GetRunIdentityTimestamp(currentRun)
+        if currentStart == nil then
+            return
+        end
+        local difference = math.abs(currentStart - candidateStart)
+        if difference <= COMPLETED_RUN_DERIVED_START_TOLERANCE_SECONDS
+            and (bestDifference == nil or difference < bestDifference)
+        then
+            bestDifference = difference
+            bestIndex = index
+        end
+    end
+
+    if type(candidateIndexes) == "table" then
+        for _, index in ipairs(candidateIndexes) do
+            Consider(index)
+        end
+    else
+        for index in ipairs(runs) do
+            Consider(index)
+        end
+    end
+
+    return bestIndex
 end
 
 local function DidMythicPlusRunChange(currentRun, mergedRun)
@@ -2937,7 +3342,7 @@ NormalizeStoredMythicPlusRun = function(run)
         run.runScore = GetFirstField(run, { "score", "mythicRating" })
     end
 
-    if run.completed ~= true and (run.durationMs ~= nil or run.runScore ~= nil or run.completedAt ~= nil) then
+    if run.completed == nil and (run.durationMs ~= nil or run.runScore ~= nil or run.completedAt ~= nil) then
         run.completed = true
     end
 
@@ -2947,6 +3352,15 @@ NormalizeStoredMythicPlusRun = function(run)
     run.thisWeek = NormalizeOptionalBoolean(run.thisWeek)
     run.members = NormalizeMythicPlusMembers(rawMembers)
     run.raw = nil
+
+    if run.completed == false then
+        local terminalAt = run.endedAt or run.abandonedAt or run.completedAt
+        run.completedAt = nil
+        run.endedAt = terminalAt
+        run.abandonedAt = terminalAt
+        run.status = "abandoned"
+        run.abandonReason = run.abandonReason or "history_incomplete"
+    end
 
     local derivedStatus = GetRunStatus(run)
     if derivedStatus ~= nil then
@@ -2979,19 +3393,6 @@ NormalizeStoredMythicPlusRun = function(run)
     return run
 end
 
-local function CallAddonApi(apiFunc, ...)
-    if type(apiFunc) ~= "function" then
-        return nil
-    end
-
-    local packed = { pcall(apiFunc, ...) }
-    local ok = table.remove(packed, 1)
-    if not ok then
-        return nil
-    end
-    return packed
-end
-
 local function NormalizeMythicPlusRun(rawRun, seasonID)
     if type(rawRun) ~= "table" then
         return nil
@@ -3022,7 +3423,7 @@ local function NormalizeMythicPlusRun(rawRun, seasonID)
     end
 
     local mapChallengeModeID = GetFirstField(rawRun, { "mapChallengeModeID", "challengeModeID", "mapID" })
-    local completedAt = NormalizeMythicPlusDate(GetFirstField(rawRun, {
+    local terminalDate = NormalizeMythicPlusDate(GetFirstField(rawRun, {
         "completedAt",
         "completionDate",
         "completedDate",
@@ -3043,6 +3444,12 @@ local function NormalizeMythicPlusRun(rawRun, seasonID)
         "groupMembers",
         "roster",
     }))
+    local explicitCompleted = NormalizeOptionalBoolean(GetFirstField(rawRun, {
+        "completed",
+        "finishedSuccess",
+        "isCompleted",
+    }))
+    local rawSeasonID = ToSafeNumber(GetFirstField(rawRun, { "season", "seasonID" }))
 
     local run = {
         observedAt          = nil,
@@ -3054,30 +3461,35 @@ local function NormalizeMythicPlusRun(rawRun, seasonID)
             value = strtrim(value)
             return value ~= "" and value or nil
         end)(),
-        seasonID            = seasonID,
+        seasonID            = rawSeasonID or ToSafeNumber(seasonID),
         mapChallengeModeID  = mapChallengeModeID,
         mapName             = GetFirstField(rawRun, { "mapName", "name", "zoneName", "shortName" })
             or GetChallengeModeMapName(mapChallengeModeID),
         level               = GetFirstField(rawRun, { "level", "keystoneLevel" }),
-        completed           = GetFirstField(rawRun, { "completed", "finishedSuccess", "isCompleted" }),
+        completed           = explicitCompleted,
         completedInTime     = GetFirstField(rawRun, { "completedInTime", "intime", "onTime" }),
         durationMs          = durationMs,
         runScore            = GetFirstField(rawRun, { "runScore", "score", "mythicRating" }),
         status              = NormalizeRunStatusValue(GetFirstField(rawRun, { "status" })),
         startDate           = startDate,
-        completedAt         = completedAt,
-        endedAt             = endedAt,
-        abandonedAt         = abandonedAt,
+        completedAt         = terminalDate,
+        endedAt             = endedAt or terminalDate,
+        abandonedAt         = explicitCompleted == false and (abandonedAt or terminalDate) or abandonedAt,
         abandonReason       = NormalizeAbandonReason(GetFirstField(rawRun, { "abandonReason" })),
         thisWeek            = NormalizeOptionalBoolean(GetFirstField(rawRun, { "thisWeek", "isThisWeek" })),
         members             = members,
     }
 
-    run.completed = NormalizeOptionalBoolean(run.completed)
     run.completedInTime = NormalizeOptionalBoolean(run.completedInTime)
 
-    if run.completed ~= true and (run.durationMs ~= nil or run.runScore ~= nil or run.completedAt ~= nil) then
+    if run.completed == nil and (run.durationMs ~= nil or run.runScore ~= nil or run.completedAt ~= nil) then
         run.completed = true
+    end
+
+    if run.completed == false then
+        run.completedAt = nil
+        run.status = "abandoned"
+        run.abandonReason = run.abandonReason or "history_incomplete"
     end
 
     local derivedStatus = GetRunStatus(run)
@@ -3107,54 +3519,19 @@ local function NormalizeMythicPlusRun(rawRun, seasonID)
     return run
 end
 
-local function SelectBestRunHistory(calls)
-    local bestRuns = nil
-    local bestCount = -1
-
-    for _, results in ipairs(calls) do
-        if type(results) == "table" then
-            for _, value in ipairs(results) do
-                if type(value) == "table" and IsSequentialArray(value) then
-                    local count = #value
-                    local firstValue = value[1]
-                    if (count == 0 or type(firstValue) == "table") and count > bestCount then
-                        bestRuns = value
-                        bestCount = count
-                    end
-                end
-            end
-        end
-    end
-
-    return bestRuns or {}
-end
-
 local function CollectMythicPlusHistory()
-    local calls = {}
     local characterKey = GetCharKey()
-
-    local function AddCall(apiFunc, ...)
-        local results = CallAddonApi(apiFunc, ...)
-        if results then
-            calls[#calls + 1] = results
+    local seasonID = GetCurrentMythicPlusSeasonID()
+    local rawRuns = {}
+    if type(C_MythicPlus) == "table" and type(C_MythicPlus.GetRunHistory) == "function" then
+        -- Match Blizzard's current Challenges UI: retain incomplete attempts so
+        -- leavers are visible, while excluding historical seasons at the API.
+        local ok, result = pcall(C_MythicPlus.GetRunHistory, true, true, true)
+        if ok and type(result) == "table" then
+            rawRuns = result
         end
     end
 
-    local seasonID = nil
-    if C_MythicPlus and type(C_MythicPlus.GetCurrentSeason) == "function" then
-        local ok, result = pcall(C_MythicPlus.GetCurrentSeason)
-        if ok then
-            seasonID = result
-        end
-    end
-
-    AddCall(C_MythicPlus and C_MythicPlus.GetRunHistory)
-    AddCall(C_MythicPlus and C_MythicPlus.GetRunHistory, false, false)
-    AddCall(C_MythicPlus and C_MythicPlus.GetRunHistory, true, false)
-    AddCall(C_MythicPlus and C_MythicPlus.GetRunHistory, false, true)
-    AddCall(C_MythicPlus and C_MythicPlus.GetRunHistory, true, true)
-
-    local rawRuns = SelectBestRunHistory(calls)
     local normalizedRuns = {}
     for _, rawRun in ipairs(rawRuns) do
         local normalized = NormalizeMythicPlusRun(rawRun, seasonID)
@@ -3254,7 +3631,7 @@ local function FindLifecycleMythicPlusRunIndex(entry, run, options)
         end
     end
 
-    return FindMergeableMythicPlusRunIndex(entry.mythicPlusRuns, run)
+    return runLookup.FindMergeable(entry.mythicPlusRuns, run)
 end
 
 local function UpsertLifecycleMythicPlusRun(entry, candidateRun, options)
@@ -3275,16 +3652,20 @@ local function UpsertLifecycleMythicPlusRun(entry, candidateRun, options)
 
     if existingIndex == nil then
         entry.mythicPlusRuns[#entry.mythicPlusRuns + 1] = run
-        NormalizeAndDeduplicateRuns(entry)
+        NormalizeAndDeduplicateRuns(entry, true)
         return run, true
     end
 
     local existing = entry.mythicPlusRuns[existingIndex]
     local merged = MergeStoredMythicPlusRun(existing, run)
     local changed = DidMythicPlusRunChange(existing, merged)
+    if not changed then
+        return existing, false
+    end
+
     entry.mythicPlusRuns[existingIndex] = merged
-    NormalizeAndDeduplicateRuns(entry)
-    return merged, changed
+    NormalizeAndDeduplicateRuns(entry, true)
+    return merged, true
 end
 
 local function UpsertSyntheticActiveAttempt(reason, options)
@@ -3616,15 +3997,14 @@ local function SyncMythicPlusHistory(reason, options)
         return false
     end
 
-    if type(C_MythicPlus) == "table" and type(C_MythicPlus.RequestMapInfo) == "function" then
-        pcall(C_MythicPlus.RequestMapInfo)
-    end
+    runtimeState.RequestMythicPlusMapInfoOnce()
 
     local key, name, realm, charInfo = GetCharacterIdentity()
     local entry = EnsureCharacterEntry(key, name, realm, charInfo)
     NormalizeAndDeduplicateRuns(entry)
     local beforeCount = #entry.mythicPlusRuns
     local runs = CollectMythicPlusHistory()
+    local identityIndex = runLookup.Build(entry.mythicPlusRuns)
     local added = 0
     local updated = false
 
@@ -3635,9 +4015,18 @@ local function SyncMythicPlusHistory(reason, options)
                 normalizedRun.observedAt = time()
             end
 
-            local existingIndex = FindMergeableMythicPlusRunIndex(entry.mythicPlusRuns, normalizedRun)
+            local existingIndex = runLookup.FindMergeable(
+                entry.mythicPlusRuns,
+                normalizedRun,
+                identityIndex
+            )
             if existingIndex == nil then
                 entry.mythicPlusRuns[#entry.mythicPlusRuns + 1] = normalizedRun
+                runLookup.Add(
+                    identityIndex,
+                    normalizedRun,
+                    #entry.mythicPlusRuns
+                )
                 added = added + 1
             else
                 local existing = entry.mythicPlusRuns[existingIndex]
@@ -3646,12 +4035,13 @@ local function SyncMythicPlusHistory(reason, options)
                     entry.mythicPlusRuns[existingIndex] = merged
                     updated = true
                 end
+                runLookup.Add(identityIndex, merged, existingIndex)
             end
         end
     end
 
     if added > 0 or updated then
-        NormalizeAndDeduplicateRuns(entry)
+        NormalizeAndDeduplicateRuns(entry, true)
     end
 
     lastMPlusSyncAt = GetTime()
@@ -3838,33 +4228,54 @@ function addon.BuildEquipmentSnapshot()
 
     local equipment = {}
     for _, slot in ipairs(addon.SNAPSHOT_EQUIPMENT_SLOTS or {}) do
-        local slotID = GetInventorySlotInfo(slot.slotName)
+        local slotID = CallSafeNumber(GetInventorySlotInfo, slot.slotName)
         if slotID then
-            local itemID = type(GetInventoryItemID) == "function" and GetInventoryItemID("player", slotID) or nil
-            local itemLink = type(GetInventoryItemLink) == "function" and GetInventoryItemLink("player", slotID) or nil
+            local itemID = CallSafeNumber(GetInventoryItemID, "player", slotID)
+            local itemLink = nil
+            if type(GetInventoryItemLink) == "function" then
+                local ok, value = pcall(GetInventoryItemLink, "player", slotID)
+                itemLink = ok and ToSafeText(value) or nil
+            end
             if itemID or itemLink then
                 local itemName, itemQuality, itemLevel, iconFileID = nil, nil, nil, nil
-                if itemLink and type(GetItemInfo) == "function" then
-                    local ok, name, link, quality, level, _, _, _, _, icon = pcall(GetItemInfo, itemLink)
+                if itemLink and type(C_Item) == "table" and type(C_Item.GetItemInfo) == "function" then
+                    local ok, name, link, quality, level, _, _, _, _, icon = pcall(C_Item.GetItemInfo, itemLink)
                     if ok then
-                        itemName = name
-                        itemLink = link or itemLink
-                        itemQuality = tonumber(quality)
-                        itemLevel = tonumber(level)
-                        iconFileID = tonumber(icon)
+                        itemName = ToSafeText(name)
+                        itemLink = ToSafeText(link) or itemLink
+                        itemQuality = ToSafeNumber(quality)
+                        itemLevel = ToSafeNumber(level)
+                        iconFileID = ToSafeNumber(icon)
                     end
                 end
-                if itemLink and type(GetDetailedItemLevelInfo) == "function" then
-                    local ok, detailedLevel = pcall(GetDetailedItemLevelInfo, itemLink)
-                    if ok and tonumber(detailedLevel) then
-                        itemLevel = tonumber(detailedLevel)
+                if itemLink
+                    and type(C_Item) == "table"
+                    and type(C_Item.GetDetailedItemLevelInfo) == "function"
+                then
+                    local ok, detailedLevel = pcall(C_Item.GetDetailedItemLevelInfo, itemLink)
+                    if ok and ToSafeNumber(detailedLevel) then
+                        itemLevel = ToSafeNumber(detailedLevel)
                     end
+                end
+                if iconFileID == nil
+                    and itemID ~= nil
+                    and type(C_Item) == "table"
+                    and type(C_Item.GetItemIconByID) == "function"
+                then
+                    iconFileID = CallSafeNumber(C_Item.GetItemIconByID, itemID)
+                end
+                if itemName == nil
+                    and itemID ~= nil
+                    and type(C_Item) == "table"
+                    and type(C_Item.RequestLoadItemDataByID) == "function"
+                then
+                    pcall(C_Item.RequestLoadItemDataByID, itemID)
                 end
 
                 equipment[slot.key] = {
                     slot = slot.key,
                     slotID = slotID,
-                    itemID = tonumber(itemID),
+                    itemID = itemID,
                     itemName = itemName,
                     itemLink = itemLink,
                     itemLevel = itemLevel,
@@ -3984,9 +4395,12 @@ end
 local function BuildPendingSnapshot()
     local key, name, realm, charInfo = GetCharacterIdentity()
 
-    local specIndex      = GetSpecialization()
+    local specIndex = CallSafeNumber(GetSpecialization)
     if not specIndex or specIndex <= 0 then return nil end
-    local _, sName, _, _, sRole = GetSpecializationInfo(specIndex)
+    local okSpec, _, rawSpecName, _, _, rawSpecRole = pcall(GetSpecializationInfo, specIndex)
+    if not okSpec then return nil end
+    local sName = ToSafeText(rawSpecName)
+    local sRole = ToSafeText(rawSpecRole)
     if not sName then return nil end
     local specName = sName
     local role     = "dps"
@@ -3994,7 +4408,9 @@ local function BuildPendingSnapshot()
     elseif sRole == "HEALER" then role = "healer"
     end
 
-    local _, equippedIlvl = GetAverageItemLevel()
+    local okItemLevel, _, rawEquippedItemLevel = pcall(GetAverageItemLevel)
+    local equippedIlvl = okItemLevel and ToSafeNumber(rawEquippedItemLevel) or nil
+    if equippedIlvl == nil then return nil end
 
     local currencies = {}
     local currencyDetails = {}
@@ -4003,19 +4419,19 @@ local function BuildPendingSnapshot()
         if type(C_CurrencyInfo) == "table" and type(C_CurrencyInfo.GetCurrencyInfo) == "function" then
             local ok, info = pcall(C_CurrencyInfo.GetCurrencyInfo, currencyID)
             if ok and type(info) == "table" then
-                quantity = tonumber(info.quantity) or 0
+                quantity = ToSafeNumber(info.quantity) or 0
                 currencyDetails[fieldName] = {
                     currencyID = currencyID,
-                    name = info.name and tostring(info.name) or nil,
+                    name = ToSafeText(info.name),
                     quantity = quantity,
-                    iconFileID = tonumber(info.iconFileID),
-                    maxQuantity = tonumber(info.maxQuantity),
+                    iconFileID = ToSafeNumber(info.iconFileID),
+                    maxQuantity = ToSafeNumber(info.maxQuantity),
                     canEarnPerWeek = info.canEarnPerWeek == true,
-                    quantityEarnedThisWeek = tonumber(info.quantityEarnedThisWeek),
-                    maxWeeklyQuantity = tonumber(info.maxWeeklyQuantity),
-                    totalEarned = tonumber(info.totalEarned),
+                    quantityEarnedThisWeek = ToSafeNumber(info.quantityEarnedThisWeek),
+                    maxWeeklyQuantity = ToSafeNumber(info.maxWeeklyQuantity),
+                    totalEarned = ToSafeNumber(info.totalEarned),
                     discovered = info.discovered == true,
-                    quality = tonumber(info.quality),
+                    quality = ToSafeNumber(info.quality),
                     useTotalEarnedForMaxQty = info.useTotalEarnedForMaxQty == true,
                 }
             end
@@ -4023,57 +4439,71 @@ local function BuildPendingSnapshot()
         currencies[fieldName] = quantity
     end
 
-    local _, stamina = UnitStat("player", LE_UNIT_STAT_STAMINA)
-    local _, strength = UnitStat("player", LE_UNIT_STAT_STRENGTH)
-    local _, agility = UnitStat("player", LE_UNIT_STAT_AGILITY)
-    local _, intellect = UnitStat("player", LE_UNIT_STAT_INTELLECT)
+    local function GetSafeUnitStat(statIndex)
+        if type(UnitStat) ~= "function" or statIndex == nil then
+            return nil
+        end
+        local ok, _, effectiveStat = pcall(UnitStat, "player", statIndex)
+        return ok and ToSafeNumber(effectiveStat) or nil
+    end
+
+    local stamina = GetSafeUnitStat(LE_UNIT_STAT_STAMINA)
+    local strength = GetSafeUnitStat(LE_UNIT_STAT_STRENGTH)
+    local agility = GetSafeUnitStat(LE_UNIT_STAT_AGILITY)
+    local intellect = GetSafeUnitStat(LE_UNIT_STAT_INTELLECT)
+    if stamina == nil or strength == nil or agility == nil or intellect == nil then
+        return nil
+    end
+
+    local critPercent = CallSafeNumber(GetCritChance)
+    local hastePercent = CallSafeNumber(GetHaste) or CallSafeNumber(GetMeleeHaste)
+    local masteryPercent = CallSafeNumber(GetMasteryEffect)
+    local versatilityPercent = CallSafeNumber(GetCombatRatingBonus, CR_VERSATILITY_DAMAGE_DONE)
+    if critPercent == nil
+        or hastePercent == nil
+        or masteryPercent == nil
+        or versatilityPercent == nil
+    then
+        return nil
+    end
 
     local stats = {
-        stamina            = stamina or 0,
-        strength           = strength or 0,
-        agility            = agility or 0,
-        intellect          = intellect or 0,
-        critRating         = CR_CRIT_MELEE and GetCombatRating(CR_CRIT_MELEE) or 0,
-        critPercent        = GetCritChance()    or 0,
-        hasteRating        = CR_HASTE_MELEE and GetCombatRating(CR_HASTE_MELEE) or 0,
-        hastePercent       = GetMeleeHaste()    or 0,
-        masteryRating      = CR_MASTERY and GetCombatRating(CR_MASTERY) or 0,
-        masteryPercent     = GetMasteryEffect() or 0,
-        versatilityRating  = CR_VERSATILITY_DAMAGE_DONE and GetCombatRating(CR_VERSATILITY_DAMAGE_DONE) or 0,
-        versatilityPercent = GetCombatRatingBonus(CR_VERSATILITY_DAMAGE_DONE) or 0,
-        speedRating        = CR_SPEED and GetCombatRating(CR_SPEED) or 0,
-        speedPercent       = CR_SPEED and GetCombatRatingBonus(CR_SPEED) or 0,
-        leechRating        = CR_LIFESTEAL and GetCombatRating(CR_LIFESTEAL) or 0,
-        leechPercent       = CR_LIFESTEAL and GetCombatRatingBonus(CR_LIFESTEAL) or 0,
-        avoidanceRating    = CR_AVOIDANCE and GetCombatRating(CR_AVOIDANCE) or 0,
-        avoidancePercent   = CR_AVOIDANCE and GetCombatRatingBonus(CR_AVOIDANCE) or 0,
+        stamina            = stamina,
+        strength           = strength,
+        agility            = agility,
+        intellect          = intellect,
+        critRating         = CallSafeNumber(GetCombatRating, CR_CRIT_MELEE),
+        critPercent        = critPercent,
+        hasteRating        = CallSafeNumber(GetCombatRating, CR_HASTE_MELEE),
+        hastePercent       = hastePercent,
+        masteryRating      = CallSafeNumber(GetCombatRating, CR_MASTERY),
+        masteryPercent     = masteryPercent,
+        versatilityRating  = CallSafeNumber(GetCombatRating, CR_VERSATILITY_DAMAGE_DONE),
+        versatilityPercent = versatilityPercent,
+        speedRating        = CallSafeNumber(GetCombatRating, CR_SPEED),
+        speedPercent       = CallSafeNumber(GetCombatRatingBonus, CR_SPEED),
+        leechRating        = CallSafeNumber(GetCombatRating, CR_LIFESTEAL),
+        leechPercent       = CallSafeNumber(GetCombatRatingBonus, CR_LIFESTEAL),
+        avoidanceRating    = CallSafeNumber(GetCombatRating, CR_AVOIDANCE),
+        avoidancePercent   = CallSafeNumber(GetCombatRatingBonus, CR_AVOIDANCE),
     }
 
-    local mplusScore = 0
-    if type(C_ChallengeMode) == "table" and type(C_ChallengeMode.GetOverallDungeonScore) == "function" then
-        local ok, score = pcall(C_ChallengeMode.GetOverallDungeonScore)
-        if ok then
-            mplusScore = tonumber(score) or 0
-        end
-    end
+    local mplusScore = type(C_ChallengeMode) == "table"
+        and CallSafeNumber(C_ChallengeMode.GetOverallDungeonScore)
+        or nil
+    mplusScore = mplusScore or 0
 
     local ownedKeystone = nil
     if C_MythicPlus then
         local ownedKeystoneLevel = nil
         if type(C_MythicPlus.GetOwnedKeystoneLevel) == "function" then
-            local ok, result = pcall(C_MythicPlus.GetOwnedKeystoneLevel)
-            if ok then
-                ownedKeystoneLevel = tonumber(result)
-            end
+            ownedKeystoneLevel = CallSafeNumber(C_MythicPlus.GetOwnedKeystoneLevel)
         end
 
         if ownedKeystoneLevel and ownedKeystoneLevel > 0 then
             local mapChallengeModeID = nil
             if type(C_MythicPlus.GetOwnedKeystoneChallengeMapID) == "function" then
-                local ok, result = pcall(C_MythicPlus.GetOwnedKeystoneChallengeMapID)
-                if ok then
-                    mapChallengeModeID = tonumber(result)
-                end
+                mapChallengeModeID = CallSafeNumber(C_MythicPlus.GetOwnedKeystoneChallengeMapID)
             end
 
             ownedKeystone = {
@@ -4089,6 +4519,9 @@ local function BuildPendingSnapshot()
     local weeklyRewards = addon.BuildWeeklyRewardsSnapshot()
     local majorFactions = addon.BuildMajorFactionsSnapshot()
     local clientInfo = addon.BuildSnapshotClientInfo()
+    local unitLevel = CallSafeNumber(UnitLevel, "player")
+    local moneyCopper = CallSafeNumber(GetMoney)
+    if unitLevel == nil or moneyCopper == nil then return nil end
 
     return {
         key      = key,
@@ -4097,11 +4530,11 @@ local function BuildPendingSnapshot()
         charInfo = charInfo,
         snap = {
             takenAt         = time(),
-            level           = UnitLevel("player"),
+            level           = unitLevel,
             spec            = specName,
             role            = role,
             itemLevel       = math.floor((equippedIlvl or 0) * 100 + 0.5) / 100,
-            gold            = GetMoney() / 10000,
+            gold            = moneyCopper / 10000,
             playtimeSeconds = 0,
             playtimeThisLevelSeconds = 0,
             mythicPlusScore = mplusScore,
@@ -4237,22 +4670,36 @@ local function CollectSnapshot(forceFresh)
     if not IsLoggedIn() then return false end
     if pendingSnapshot and not forceFresh then return false end
 
+    local inCombat = false
+    if type(InCombatLockdown) == "function" then
+        local ok, value = pcall(InCombatLockdown)
+        inCombat = ok and value == true
+    end
+    if not inCombat and type(UnitAffectingCombat) == "function" then
+        local ok, value = pcall(UnitAffectingCombat, "player")
+        inCombat = ok and value == true
+    end
+    if inCombat then
+        runtimeState.snapshotDeferredForCombat = true
+        return false
+    end
+
     local snapshot = BuildPendingSnapshot()
     if not snapshot then return false end
+    runtimeState.snapshotDeferredForCombat = false
     pendingSnapshot = snapshot
 
     CommitSnapshot(GetEstimatedPlaytime(snapshot.key))
     return true
 end
 
-local function RequestFreshSnapshot()
+function addon.RequestFreshSnapshot()
     local requested = CollectSnapshot(true)
     if requested then
         StartSnapshotTicker()
     end
     return requested
 end
-addon.RequestFreshSnapshot = RequestFreshSnapshot
 
 function addon.IsSnapshotPending()
     return pendingSnapshot ~= nil
@@ -4290,9 +4737,23 @@ end
 -- Slash Commands & Events
 -- ============================================================
 
+-- Small internal surface for standalone regression tests. This table is
+-- runtime-only and is never persisted in SavedVariables.
+addon.testHooks = {
+    CaptureCompletionInfoMembers = CaptureCompletionInfoMembers,
+    CollectMythicPlusHistory = CollectMythicPlusHistory,
+    GetChallengeModeStartTimestamp = GetChallengeModeStartTimestamp,
+    GetRunStatus = GetRunStatus,
+    MigrateDatabase = MigrateDatabase,
+    NormalizeAndDeduplicateRuns = NormalizeAndDeduplicateRuns,
+    NormalizeMythicPlusDate = NormalizeMythicPlusDate,
+    NormalizeMythicPlusRun = NormalizeMythicPlusRun,
+    MYTHIC_PLUS_STORAGE_VERSION = STORAGE_POLICY.mythicPlusVersion,
+}
+
 SLASH_WOWDASHBOARD1 = "/wd"
 SLASH_WOWDASHBOARD2 = "/wowdashboard"
-local function PrintSlashHelp()
+function addon.PrintSlashHelp()
     PrintAddonMessage("Commands: /wd, /wd help, /wd open, /wd mplusdebug")
 end
 
@@ -4316,7 +4777,7 @@ SlashCmdList["WOWDASHBOARD"] = function(msg)
     end
 
     if command == "help" then
-        PrintSlashHelp()
+        addon.PrintSlashHelp()
         return
     end
 
@@ -4325,21 +4786,26 @@ SlashCmdList["WOWDASHBOARD"] = function(msg)
         return
     end
 
-    PrintSlashHelp()
+    addon.PrintSlashHelp()
 end
 
-local eventFrame = CreateFrame("Frame")
-eventFrame:RegisterEvent("ADDON_LOADED")
-eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
-eventFrame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
-eventFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
-eventFrame:RegisterEvent("CHALLENGE_MODE_START")
-eventFrame:RegisterEvent("CHALLENGE_MODE_COMPLETED")
-eventFrame:RegisterEvent("CHALLENGE_MODE_RESET")
-eventFrame:RegisterEvent("CHALLENGE_MODE_LEAVER_TIMER_STARTED")
-eventFrame:RegisterEvent("CHALLENGE_MODE_LEAVER_TIMER_ENDED")
-eventFrame:RegisterEvent("TIME_PLAYED_MSG")
-eventFrame:SetScript("OnEvent", function(self, event, ...)
+addon.eventFrame = CreateFrame("Frame")
+addon.eventFrame:RegisterEvent("ADDON_LOADED")
+addon.eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
+addon.eventFrame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
+addon.eventFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
+addon.eventFrame:RegisterEvent("CHALLENGE_MODE_START")
+addon.eventFrame:RegisterEvent("CHALLENGE_MODE_COMPLETED")
+addon.eventFrame:RegisterEvent("CHALLENGE_MODE_COMPLETED_REWARDS")
+addon.eventFrame:RegisterEvent("CHALLENGE_MODE_MAPS_UPDATE")
+addon.eventFrame:RegisterEvent("CHALLENGE_MODE_MEMBER_INFO_UPDATED")
+addon.eventFrame:RegisterEvent("CHALLENGE_MODE_RESET")
+addon.eventFrame:RegisterEvent("CHALLENGE_MODE_LEAVER_TIMER_STARTED")
+addon.eventFrame:RegisterEvent("CHALLENGE_MODE_LEAVER_TIMER_ENDED")
+addon.eventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+addon.eventFrame:RegisterEvent("SAVED_VARIABLES_TOO_LARGE")
+addon.eventFrame:RegisterEvent("TIME_PLAYED_MSG")
+addon.eventFrame:SetScript("OnEvent", function(self, event, ...)
     if event == "ADDON_LOADED" and ... == addonName then
         if not WowDashboardDB then
             WowDashboardDB = {
@@ -4361,16 +4827,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
                 },
             }
         end
-        if not WowDashboardDB.version or WowDashboardDB.version < DB_VERSION then
-            WowDashboardDB.version = DB_VERSION
-        end
-        if not WowDashboardDB.characters then WowDashboardDB.characters = {} end
-        if type(WowDashboardDB.activeMythicPlusMembers) ~= "table" then
-            WowDashboardDB.activeMythicPlusMembers = {}
-        end
-        if type(WowDashboardDB.pendingMythicPlusMembers) ~= "table" then
-            WowDashboardDB.pendingMythicPlusMembers = {}
-        end
+        MigrateDatabase()
         if WowDashboardDB.panelOpen == nil then WowDashboardDB.panelOpen = false end
         EnsureAddonSigning()
         addon.EnsureAddonSettings()
@@ -4418,7 +4875,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
             ScheduleMythicPlusHistorySync("initial_login", 8)
         else
             -- Re-entering world (dungeon entry/exit, zone transfer)
-            if GetTime() - lastSnapshotAt > 60 then
+            if GetTime() - lastSnapshotAt > STORAGE_POLICY.snapshotEventMinInterval then
                 C_Timer.After(2, CollectSnapshot)
             end
             ScheduleMythicPlusHistorySync("player_entering_world", 4)
@@ -4436,7 +4893,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
             })
         end
         ScheduleActiveAttemptReconcile("zone_changed_new_area", ACTIVE_ATTEMPT_RECONCILE_GRACE)
-        if GetTime() - lastSnapshotAt > 60 then
+        if GetTime() - lastSnapshotAt > STORAGE_POLICY.snapshotEventMinInterval then
             C_Timer.After(2, CollectSnapshot)
         end
 
@@ -4513,6 +4970,32 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
             ScheduleMythicPlusHistorySync("challenge_mode_completed", retryDelay, { force = true })
         end
 
+    elseif event == "CHALLENGE_MODE_MEMBER_INFO_UPDATED" then
+        CaptureCompletedRunMembers()
+        ScheduleMythicPlusHistorySync("challenge_mode_member_info_updated", 1, { force = true })
+
+    elseif event == "CHALLENGE_MODE_COMPLETED_REWARDS" then
+        local mapChallengeModeID, _, durationMs = ...
+        CaptureCompletedRunMembers()
+        ScheduleNextMythicPlusScoreBackfill("challenge_mode_completed_rewards_score", {
+            reset = true,
+            force = true,
+        })
+        ScheduleMythicPlusHistorySync("challenge_mode_completed_rewards", 1, { force = true })
+        AppendMythicPlusDebugEvent(GetCharKey(), "challenge_mode_completed_rewards", {
+            summary = "map " .. tostring(mapChallengeModeID) .. " in " .. tostring(durationMs) .. "ms",
+            mapChallengeModeID = ToSafeNumber(mapChallengeModeID),
+            durationMs = ToSafeNumber(durationMs),
+        })
+
+    elseif event == "CHALLENGE_MODE_MAPS_UPDATE" then
+        -- Map data may refresh at login, after a hotfix, or across a season
+        -- rollover. Keep successful names fast while never pinning stale data
+        -- for the rest of a long-running client session.
+        runtimeState.cachedCurrentMythicPlusSeasonID = nil
+        runtimeState.challengeModeMapNameCache = {}
+        runtimeState.mythicPlusMapInfoRequested = true
+
     elseif event == "CHALLENGE_MODE_RESET" then
         FinalizeActiveAttemptAsAbandoned("challenge_mode_reset", {
             abandonReason = "challenge_mode_reset",
@@ -4537,6 +5020,21 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         AppendMythicPlusDebugEvent(characterKey, "leaver_timer_ended", {
             summary = "leaver timer ended",
         })
+
+    elseif event == "PLAYER_REGEN_ENABLED" then
+        if runtimeState.snapshotDeferredForCombat then
+            runtimeState.snapshotDeferredForCombat = false
+            C_Timer.After(1, CollectSnapshot)
+        end
+
+    elseif event == "SAVED_VARIABLES_TOO_LARGE" then
+        local affectedAddonName = ...
+        if affectedAddonName == nil or affectedAddonName == addonName then
+            PrintAddonMessage(
+                "SavedVariables are near the client limit. Older snapshots and Mythic+ runs "
+                    .. "will be pruned automatically on the next load."
+            )
+        end
 
     elseif event == "TIME_PLAYED_MSG" then
         local totalSeconds, thisLevelSeconds = ...

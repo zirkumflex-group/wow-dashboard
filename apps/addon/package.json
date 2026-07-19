@@ -1,0 +1,10 @@
+{
+  "name": "@wow-dashboard/addon",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "lint": "oxlint tests/run-lua.mjs && node tests/run-lua.mjs compile",
+    "format:check": "oxfmt --check package.json tests/run-lua.mjs",
+    "test": "node tests/run-lua.mjs test"
+  }
+}

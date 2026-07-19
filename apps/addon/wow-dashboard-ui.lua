@@ -28,6 +28,8 @@ local DASHBOARD_FRAME_STRATA = "DIALOG"
 local DASHBOARD_FRAME_LEVEL = 100
 local MainFrame = nil
 local dashboardTicker = nil
+local lastOverviewRefreshAt = 0
+local OVERVIEW_REFRESH_INTERVAL = 30
 
 local function RaiseDashboardFrame(frame)
     if not frame then return end
@@ -68,7 +70,10 @@ local function OnSecondTick()
         end
     end
 
-    if addon.RefreshOverviewPanel then
+    local now = GetTime()
+    if addon.RefreshOverviewPanel
+        and (now - lastOverviewRefreshAt) >= OVERVIEW_REFRESH_INTERVAL
+    then
         addon.RefreshOverviewPanel()
     end
 end
@@ -364,9 +369,10 @@ gui.SetMetric = function(index, value, detail)
 end
 
 addon.RefreshOverviewPanel = function()
-    if not overviewWidgets.title then
+    if not overviewWidgets.title or (MainFrame and not MainFrame:IsShown()) then
         return
     end
+    lastOverviewRefreshAt = GetTime()
 
     local key, name, realm, entry = gui.GetCurrentDashboardEntry()
     local latest, snapshotCount = gui.GetLatestSnapshot(entry)
@@ -507,6 +513,7 @@ function addon.EnsureDashboardFrame()
 
     local currentTab = "overview"
     local overviewPanel = nil
+    local snapshotsPanel = nil
 
     local function UpdateTabVisuals()
         local function Apply(button, active)
@@ -803,22 +810,57 @@ function addon.EnsureDashboardFrame()
     end
 
     addon.RefreshLog = function(force)
-        if not force and currentTab ~= "snapshots" then return end
+        if not force and (currentTab ~= "snapshots" or not MainFrame:IsShown()) then return end
         if not WowDashboardDB or not WowDashboardDB.characters then return end
 
-        -- Gather all snapshots across all characters, newest first
+        -- Merge the already chronological per-character arrays and stop as
+        -- soon as the visible row limit is reached. This avoids allocating
+        -- and sorting the full SavedVariables history every time the tab opens.
         local all = {}
+        local cursors = {}
         for key, charData in pairs(WowDashboardDB.characters) do
             local snapshots = type(charData) == "table" and charData.snapshots or nil
-            for _, snap in ipairs(snapshots or {}) do
-                if type(snap) == "table" and type(snap.takenAt) == "number" then
-                    all[#all + 1] = { key = key, snap = snap }
-                end
+            if type(snapshots) == "table" and #snapshots > 0 then
+                cursors[#cursors + 1] = {
+                    key = key,
+                    snapshots = snapshots,
+                    index = #snapshots,
+                }
             end
         end
-        table.sort(all, function(a, b) return a.snap.takenAt > b.snap.takenAt end)
 
-        local n = math.min(#all, MAX_LOG_ENTRIES)
+        while #all < MAX_LOG_ENTRIES do
+            local bestCursor = nil
+            local bestSnapshot = nil
+            local bestTakenAt = nil
+
+            for _, cursor in ipairs(cursors) do
+                while cursor.index > 0 do
+                    local candidate = cursor.snapshots[cursor.index]
+                    if type(candidate) == "table" and type(candidate.takenAt) == "number" then
+                        break
+                    end
+                    cursor.index = cursor.index - 1
+                end
+
+                if cursor.index > 0 then
+                    local candidate = cursor.snapshots[cursor.index]
+                    if bestTakenAt == nil or candidate.takenAt > bestTakenAt then
+                        bestTakenAt = candidate.takenAt
+                        bestSnapshot = candidate
+                        bestCursor = cursor
+                    end
+                end
+            end
+
+            if bestCursor == nil then
+                break
+            end
+            all[#all + 1] = { key = bestCursor.key, snap = bestSnapshot }
+            bestCursor.index = bestCursor.index - 1
+        end
+
+        local n = #all
 
         -- Hide rows no longer needed
         for i = n + 1, rowCount do
