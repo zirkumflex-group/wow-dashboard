@@ -6,6 +6,7 @@ import { bodyLimit } from "hono/body-limit";
 import {
   addonIngestBodySchema,
   addonIngestLimits,
+  adminUsersQuerySchema,
   characterDetailTimelineQuerySchema,
   characterMythicPlusQuerySchema,
   characterPageQuerySchema,
@@ -27,6 +28,8 @@ import { players } from "@wow-dashboard/db";
 import { env } from "@wow-dashboard/env/api";
 import { auth, type ApiAuthSession, type ApiAuthUser } from "./auth";
 import { db } from "./db";
+import { isAdminIdentity } from "./lib/adminAccess";
+import { insertAuditEvent } from "./lib/audit";
 import {
   completeDesktopLoginAttempt,
   consumeDesktopLoginAttempt,
@@ -40,6 +43,7 @@ import { limitPublicHeavyRead, limitPublicRead } from "./lib/rateLimit";
 import { ensureRedis } from "./lib/redis";
 import { logger } from "./lib/logger";
 import { AddonIngestServiceError, ingestAddonData } from "./services/addonIngest";
+import { readAdminOverview, readAdminUsers } from "./services/admin";
 import {
   readBoosterCharactersForExport,
   readCharacterDetailTimeline,
@@ -246,6 +250,7 @@ function serializeUser(user: ApiAuthUser) {
     email: user.email,
     emailVerified: user.emailVerified,
     image: user.image ?? null,
+    role: user.role ?? "user",
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
   };
@@ -665,6 +670,23 @@ app.use("/api/*", async (c, next) => {
   await next();
 });
 
+app.use("/api/admin/*", async (c, next) => {
+  const session = c.get("session");
+  const user = c.get("user");
+
+  c.header("Cache-Control", "private, no-store");
+
+  if (!session || !user) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  if (!isAdminIdentity(user)) {
+    return c.json({ error: "Forbidden" }, 403);
+  }
+
+  await next();
+});
+
 app.get("/healthz", (c) => c.json({ ok: true }));
 app.get("/readyz", async (c) => {
   try {
@@ -829,6 +851,7 @@ app.get("/api/me", async (c) => {
   return c.json({
     session: serializeSession(session),
     user: serializeUser(user),
+    isAdmin: isAdminIdentity(user),
     player: await readPlayerBinding(user.id).then((player) =>
       player
         ? {
@@ -840,6 +863,33 @@ app.get("/api/me", async (c) => {
         : null,
     ),
   });
+});
+
+app.get("/api/admin/overview", async (c) => {
+  const user = c.get("user")!;
+  const overview = await readAdminOverview();
+
+  await insertAuditEvent("admin.dashboard.read", {
+    userId: user.id,
+    metadata: { section: "overview" },
+  }).catch((error) => {
+    logger.warn("audit.persist_failed", {
+      auditEvent: "admin.dashboard.read",
+      userId: user.id,
+      error,
+    });
+  });
+
+  return c.json(overview);
+});
+
+app.get("/api/admin/users", async (c) => {
+  const parsedQuery = adminUsersQuerySchema.safeParse(c.req.query());
+  if (!parsedQuery.success) {
+    return c.json({ error: formatValidationError(parsedQuery.error.issues) }, 400);
+  }
+
+  return c.json(await readAdminUsers(parsedQuery.data));
 });
 
 app.get("/api/sessions", async (c) => {

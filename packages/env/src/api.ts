@@ -12,6 +12,21 @@ const documentedPlaceholderBetterAuthSecret = "replace-with-32-character-secret"
 const placeholderBattleNetClientId = "replace-with-battlenet-client-id";
 const placeholderBattleNetClientSecret = "replace-with-battlenet-client-secret";
 
+const adminUserIdsSchema = z
+  .string()
+  .default("")
+  .transform((value) =>
+    Array.from(
+      new Set(
+        value
+          .split(",")
+          .map((userId) => userId.trim())
+          .filter((userId) => userId !== ""),
+      ),
+    ),
+  )
+  .pipe(z.array(z.string().min(1).max(255)).max(20));
+
 export const env = createEnv({
   server: {
     PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
@@ -25,6 +40,7 @@ export const env = createEnv({
     BETTER_AUTH_SECRET: requiredEnvStringInProduction(placeholderBetterAuthSecret, 32, [
       documentedPlaceholderBetterAuthSecret,
     ]),
+    ADMIN_USER_IDS: adminUserIdsSchema,
     BATTLENET_CLIENT_ID: requiredEnvStringInProduction(placeholderBattleNetClientId),
     BATTLENET_CLIENT_SECRET: requiredEnvStringInProduction(placeholderBattleNetClientSecret),
     ...serverRuntimeSchema,

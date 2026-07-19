@@ -6,6 +6,10 @@ export const user = pgTable("user", {
   email: text("email").notNull().unique(),
   emailVerified: boolean("emailVerified").notNull(),
   image: text("image"),
+  role: text("role").default("user"),
+  banned: boolean("banned").default(false),
+  banReason: text("banReason"),
+  banExpires: timestamp("banExpires", { mode: "date", withTimezone: true }),
   createdAt: timestamp("createdAt", { mode: "date", withTimezone: true }).notNull(),
   updatedAt: timestamp("updatedAt", { mode: "date", withTimezone: true }).notNull(),
 });
@@ -20,6 +24,7 @@ export const session = pgTable(
     updatedAt: timestamp("updatedAt", { mode: "date", withTimezone: true }).notNull(),
     ipAddress: text("ipAddress"),
     userAgent: text("userAgent"),
+    impersonatedBy: text("impersonatedBy"),
     userId: text("userId")
       .notNull()
       .references(() => user.id, { onDelete: "cascade" }),

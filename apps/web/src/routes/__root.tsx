@@ -40,6 +40,7 @@ function getDefaultTitleForPath(pathname: string) {
   if (pathname.startsWith("/character/")) return `Character | ${APP_TITLE}`;
   if (pathname.startsWith("/players/")) return `Player | ${APP_TITLE}`;
   if (pathname.startsWith("/settings")) return `Settings | ${APP_TITLE}`;
+  if (pathname.startsWith("/admin")) return `Admin | ${APP_TITLE}`;
   if (pathname.startsWith("/auth")) return `Sign In | ${APP_TITLE}`;
   return APP_TITLE;
 }

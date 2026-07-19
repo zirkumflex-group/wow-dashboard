@@ -46,6 +46,7 @@ LOG_LEVEL=info
 Also set real values for:
 
 - `BETTER_AUTH_SECRET`
+- `ADMIN_USER_IDS` (comma-separated stable Better Auth user IDs allowed to open `/admin`)
 - `BATTLENET_CLIENT_ID`
 - `BATTLENET_CLIENT_SECRET`
 - `POSTGRES_PASSWORD`

@@ -325,6 +325,11 @@ export const dashboardSessionRouteParamsSchema = z.object({
   id: z.string().trim().min(1).max(255),
 });
 
+export const adminUsersQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).max(100_000).default(1),
+  pageSize: z.coerce.number().int().min(1).max(50).default(20),
+});
+
 export type CharacterRouteSlugParts = {
   name: string;
   realm: string;
@@ -472,6 +477,7 @@ export const addonIngestBodySchema = z.object({
 export type CharactersLatestQuery = z.infer<typeof charactersLatestQuerySchema>;
 export type PlayerRouteParams = z.infer<typeof playerRouteParamsSchema>;
 export type DashboardSessionRouteParams = z.infer<typeof dashboardSessionRouteParamsSchema>;
+export type AdminUsersQuery = z.infer<typeof adminUsersQuerySchema>;
 export type CharacterRouteParams = z.infer<typeof characterRouteParamsSchema>;
 export type CharacterPageQuery = z.infer<typeof characterPageQuerySchema>;
 export type CharacterDetailTimelineQuery = z.infer<typeof characterDetailTimelineQuerySchema>;

@@ -221,16 +221,23 @@ async function resetQueueSchema() {
   await db.execute(sql.raw(`drop schema if exists pgboss cascade`));
 }
 
-async function seedAuthenticatedUser(input?: { expiresAt?: Date; userAgent?: string | null }) {
+async function seedAuthenticatedUser(input?: {
+  expiresAt?: Date;
+  userAgent?: string | null;
+  name?: string;
+  role?: "admin" | "user";
+}) {
   const userId = `user-${randomUUID()}`;
   const token = `session-token-${randomUUID()}`;
 
   await db.insert(authUsers).values({
     id: userId,
-    name: "Test User",
+    name: input?.name ?? "Test User",
     email: `${userId}@example.com`,
     emailVerified: true,
     image: null,
+    role: input?.role ?? "user",
+    banned: false,
     createdAt: new Date("2026-04-21T12:00:00.000Z"),
     updatedAt: new Date("2026-04-21T12:00:00.000Z"),
   });
@@ -575,12 +582,108 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
 
     assert.equal(response.status, 200);
     const payload = (await response.json()) as {
-      user: { id: string };
+      user: { id: string; role: string };
       session: { userId: string };
+      isAdmin: boolean;
     };
 
     assert.equal(payload.user.id, auth.userId);
+    assert.equal(payload.user.role, "user");
     assert.equal(payload.session.userId, auth.userId);
+    assert.equal(payload.isAdmin, false);
+  });
+
+  it("rejects non-admin access to administrator analytics", async () => {
+    const regularUser = await seedAuthenticatedUser();
+
+    const unauthenticatedResponse = await app.request("http://localhost/api/admin/overview");
+    assert.equal(unauthenticatedResponse.status, 401);
+
+    const forbiddenResponse = await app.request("http://localhost/api/admin/overview", {
+      headers: authHeaders(regularUser.token),
+    });
+    assert.equal(forbiddenResponse.status, 403);
+    assert.deepEqual(await forbiddenResponse.json(), { error: "Forbidden" });
+    assert.match(forbiddenResponse.headers.get("cache-control") ?? "", /no-store/);
+  });
+
+  it("returns privacy-safe metrics and a paginated directory to administrators", async () => {
+    const adminAuth = await seedAuthenticatedUser({ name: "Admin User", role: "admin" });
+    const [player] = await db
+      .insert(players)
+      .values({
+        battlenetAccountId: `bnet-${randomUUID()}`,
+        userId: adminAuth.userId,
+        battleTag: "Admin#1234",
+      })
+      .returning({ id: players.id });
+    assert.ok(player);
+
+    await db.insert(characters).values({
+      playerId: player.id,
+      name: "Adminchar",
+      realm: "Blackhand",
+      region: "eu",
+      class: "Warrior",
+      race: "Orc",
+      faction: "horde",
+    });
+    await db.insert(auditLog).values({
+      userId: adminAuth.userId,
+      event: "addon.ingest",
+      metadata: { totalCharacters: 1 },
+      timestamp: new Date(),
+    });
+
+    const overviewResponse = await app.request("http://localhost/api/admin/overview", {
+      headers: authHeaders(adminAuth.token),
+    });
+    assert.equal(overviewResponse.status, 200, await overviewResponse.clone().text());
+    assert.match(overviewResponse.headers.get("cache-control") ?? "", /no-store/);
+    const overview = (await overviewResponse.json()) as {
+      totals: {
+        users: number;
+        characters: number;
+        addonActiveUsers: number;
+        addonIngests: number;
+        activeSessions: number;
+      };
+      regions: Array<{ region: string; users: number; characters: number }>;
+    };
+    assert.equal(overview.totals.users, 1);
+    assert.equal(overview.totals.characters, 1);
+    assert.equal(overview.totals.addonActiveUsers, 1);
+    assert.equal(overview.totals.addonIngests, 1);
+    assert.equal(overview.totals.activeSessions, 1);
+    assert.deepEqual(
+      overview.regions.find((region) => region.region === "eu"),
+      { region: "eu", users: 1, characters: 1 },
+    );
+
+    const usersResponse = await app.request("http://localhost/api/admin/users?page=1&pageSize=20", {
+      headers: authHeaders(adminAuth.token),
+    });
+    assert.equal(usersResponse.status, 200, await usersResponse.clone().text());
+    const directory = (await usersResponse.json()) as {
+      users: Array<Record<string, unknown>>;
+      total: number;
+      page: number;
+      totalPages: number;
+    };
+    assert.equal(directory.total, 1);
+    assert.equal(directory.page, 1);
+    assert.equal(directory.totalPages, 1);
+    assert.equal(directory.users[0]?.name, "Admin#1234");
+    assert.equal(directory.users[0]?.role, "admin");
+    assert.equal(directory.users[0]?.characterCount, 1);
+    assert.deepEqual(directory.users[0]?.regions, ["eu"]);
+    assert.equal("email" in (directory.users[0] ?? {}), false);
+    assert.equal("ipAddress" in (directory.users[0] ?? {}), false);
+
+    const readAudit = await db.query.auditLog.findFirst({
+      where: and(eq(auditLog.userId, adminAuth.userId), eq(auditLog.event, "admin.dashboard.read")),
+    });
+    assert.ok(readAudit);
   });
 
   it("creates a dedicated desktop session for login-code handoff", async () => {

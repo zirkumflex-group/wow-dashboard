@@ -45,9 +45,11 @@ describe("API client transport", () => {
             email: "user@example.com",
             emailVerified: true,
             image: null,
+            role: "user",
             createdAt: "2026-01-01T00:00:00.000Z",
             updatedAt: "2026-01-01T00:00:00.000Z",
           },
+          isAdmin: false,
           player: null,
         });
       },
@@ -72,5 +74,25 @@ describe("API client transport", () => {
 
     assert.deepEqual(await client.getMyCharacterCount(), { count: 3 });
     assert.equal(requestedUrl, "https://dashboard.example/api/characters/count");
+  });
+
+  it("serializes administrator directory pagination", async () => {
+    let requestedUrl = "";
+    const client = createApiClient({
+      baseUrl: "https://dashboard.example/api",
+      fetch: async (input) => {
+        requestedUrl = String(input);
+        return Response.json({
+          users: [],
+          total: 0,
+          page: 2,
+          pageSize: 20,
+          totalPages: 1,
+        });
+      },
+    });
+
+    await client.getAdminUsers({ page: 2, pageSize: 20 });
+    assert.equal(requestedUrl, "https://dashboard.example/api/admin/users?page=2&pageSize=20");
   });
 });

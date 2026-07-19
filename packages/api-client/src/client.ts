@@ -1,5 +1,8 @@
 import { z } from "zod";
 import {
+  adminOverviewResponseSchema,
+  adminUsersQuerySchema,
+  adminUsersResponseSchema,
   addonIngestBodySchema,
   addonIngestResponseSchema,
   apiErrorResponseSchema,
@@ -43,6 +46,9 @@ import {
   updatePlayerDiscordResponseSchema,
   type AddonIngestBody,
   type AddonIngestResponse,
+  type AdminOverviewResponse,
+  type AdminUsersQuery,
+  type AdminUsersResponse,
   type CharacterDetailTimelineQuery,
   type CharacterDetailTimelineResponse,
   type CharacterBoosterExportEntry,
@@ -283,6 +289,24 @@ export function createApiClient(config: ApiClientConfig) {
         method: "GET",
         path: "/me",
         outputSchema: meResponseSchema,
+      });
+    },
+
+    getAdminOverview(): Promise<AdminOverviewResponse> {
+      return requestJson({
+        method: "GET",
+        path: "/admin/overview",
+        outputSchema: adminOverviewResponseSchema,
+      });
+    },
+
+    getAdminUsers(input: AdminUsersQuery): Promise<AdminUsersResponse> {
+      const query = adminUsersQuerySchema.parse(input);
+      return requestJson({
+        method: "GET",
+        path: "/admin/users",
+        query,
+        outputSchema: adminUsersResponseSchema,
       });
     },
 

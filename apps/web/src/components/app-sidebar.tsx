@@ -31,6 +31,7 @@ import Copy from "lucide-react/dist/esm/icons/copy.mjs";
 import LayoutDashboard from "lucide-react/dist/esm/icons/layout-dashboard.mjs";
 import Scale from "lucide-react/dist/esm/icons/scale.mjs";
 import Settings from "lucide-react/dist/esm/icons/settings.mjs";
+import Shield from "lucide-react/dist/esm/icons/shield.mjs";
 import Star from "lucide-react/dist/esm/icons/star.mjs";
 import Trophy from "lucide-react/dist/esm/icons/trophy.mjs";
 import { Link, useRouterState } from "@tanstack/react-router";
@@ -49,7 +50,8 @@ const navItems = [
   { to: "/compare" as const, label: "Compare", icon: Scale },
 ];
 
-const bottomNavItems = [{ to: "/settings" as const, label: "Settings", icon: Settings }];
+const settingsNavItem = { to: "/settings" as const, label: "Settings", icon: Settings };
+const adminNavItem = { to: "/admin" as const, label: "Admin", icon: Shield };
 
 function getCharacterRouteSegment(pathname: string) {
   if (!pathname.startsWith("/character/")) {
@@ -120,6 +122,7 @@ function NavUser() {
 
 export function AppSidebar() {
   const session = authClient.useSession();
+  const meQuery = useQuery(apiQueryOptions.me());
   const router = useRouterState();
   const pathname = router.location.pathname;
   const activeCharacterRouteSegment = getCharacterRouteSegment(pathname);
@@ -145,6 +148,9 @@ export function AppSidebar() {
   }, [characters, pinnedCharacterIds]);
   const showQuickAccess =
     pinnedCharacterIds.length > 0 && (isQuickAccessLoading || quickAccessCharacters.length > 0);
+  const bottomNavItems = meQuery.data?.isAdmin
+    ? [adminNavItem, settingsNavItem]
+    : [settingsNavItem];
 
   return (
     <Sidebar collapsible="icon">

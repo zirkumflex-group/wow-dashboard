@@ -39,6 +39,7 @@ export const authUserSchema = z.object({
   email: z.string(),
   emailVerified: z.boolean(),
   image: z.string().nullable(),
+  role: z.string(),
   createdAt: isoDateTimeSchema,
   updatedAt: isoDateTimeSchema,
 });
@@ -46,6 +47,7 @@ export const authUserSchema = z.object({
 export const meResponseSchema = z.object({
   session: authSessionSchema,
   user: authUserSchema,
+  isAdmin: z.boolean(),
   player: z
     .object({
       id: z.string().uuid(),
@@ -54,6 +56,81 @@ export const meResponseSchema = z.object({
       shareDiscordInBoosterExport: z.boolean(),
     })
     .nullable(),
+});
+
+const adminCountSchema = z.number().int().nonnegative();
+
+export const adminOverviewResponseSchema = z.object({
+  generatedAt: isoDateTimeSchema,
+  windowDays: z.number().int().positive(),
+  totals: z.object({
+    users: adminCountSchema,
+    newUsers: adminCountSchema,
+    linkedPlayers: adminCountSchema,
+    characters: adminCountSchema,
+    snapshots: adminCountSchema,
+    addonActiveUsers: adminCountSchema,
+    addonIngests: adminCountSchema,
+    activeSessionUsers: adminCountSchema,
+    activeSessions: adminCountSchema,
+  }),
+  activity: z.array(
+    z.object({
+      date: z.string(),
+      newUsers: adminCountSchema,
+      addonIngests: adminCountSchema,
+    }),
+  ),
+  regions: z.array(
+    z.object({
+      region: characterRegionSchema,
+      users: adminCountSchema,
+      characters: adminCountSchema,
+    }),
+  ),
+  addonVersions: z.array(
+    z.object({
+      version: z.string(),
+      users: adminCountSchema,
+    }),
+  ),
+  sessionClients: z.array(
+    z.object({
+      client: z.enum(["web", "desktop", "unknown"]),
+      users: adminCountSchema,
+      sessions: adminCountSchema,
+    }),
+  ),
+  recentActivity: z.array(
+    z.object({
+      id: z.string().uuid(),
+      event: z.string(),
+      actorName: z.string().nullable(),
+      occurredAt: isoDateTimeSchema,
+      hasError: z.boolean(),
+    }),
+  ),
+});
+
+export const adminUsersResponseSchema = z.object({
+  users: z.array(
+    z.object({
+      id: z.string(),
+      name: z.string(),
+      role: z.string(),
+      banned: z.boolean(),
+      createdAt: isoDateTimeSchema,
+      characterCount: adminCountSchema,
+      regions: z.array(characterRegionSchema),
+      lastAddonIngestAt: isoDateTimeSchema.nullable(),
+      lastSessionAt: isoDateTimeSchema.nullable(),
+      activeSessionCount: adminCountSchema,
+    }),
+  ),
+  total: adminCountSchema,
+  page: z.number().int().positive(),
+  pageSize: z.number().int().positive(),
+  totalPages: z.number().int().positive(),
 });
 
 export const dashboardSessionSchema = z.object({
@@ -471,6 +548,8 @@ export const characterMythicPlusResultSchema = characterMythicPlusResponseSchema
 
 export type ApiErrorResponse = z.infer<typeof apiErrorResponseSchema>;
 export type MeResponse = z.infer<typeof meResponseSchema>;
+export type AdminOverviewResponse = z.infer<typeof adminOverviewResponseSchema>;
+export type AdminUsersResponse = z.infer<typeof adminUsersResponseSchema>;
 export type DashboardSession = z.infer<typeof dashboardSessionSchema>;
 export type DashboardSessionsResponse = z.infer<typeof dashboardSessionsResponseSchema>;
 export type RevokeDashboardSessionResponse = z.infer<typeof revokeDashboardSessionResponseSchema>;

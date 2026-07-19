@@ -1,4 +1,7 @@
 import type {
+  AdminOverviewResponse,
+  AdminUsersQuery,
+  AdminUsersResponse,
   CharacterDetailTimelineQuery,
   CharacterDetailTimelineResponse,
   CharactersLatestQuery,
@@ -32,6 +35,9 @@ function normalizeCharacterIds(input: CharactersLatestQuery) {
 
 export const apiQueryKeys = {
   me: () => ["api", "me"] as const,
+  adminOverview: () => ["api", "admin", "overview"] as const,
+  adminUsers: (input: AdminUsersQuery) =>
+    ["api", "admin", "users", input.page, input.pageSize] as const,
   myCharacters: () => ["api", "characters"] as const,
   myCharacterCount: () => ["api", "characters", "count"] as const,
   charactersLatest: (input: CharactersLatestQuery) =>
@@ -69,6 +75,25 @@ export function createApiQueryOptions(client: ApiClient) {
       return {
         queryKey: apiQueryKeys.me(),
         queryFn: () => client.getMe(),
+      };
+    },
+
+    adminOverview(): ApiQueryOptions<
+      AdminOverviewResponse,
+      ReturnType<typeof apiQueryKeys.adminOverview>
+    > {
+      return {
+        queryKey: apiQueryKeys.adminOverview(),
+        queryFn: () => client.getAdminOverview(),
+      };
+    },
+
+    adminUsers(
+      input: AdminUsersQuery,
+    ): ApiQueryOptions<AdminUsersResponse, ReturnType<typeof apiQueryKeys.adminUsers>> {
+      return {
+        queryKey: apiQueryKeys.adminUsers(input),
+        queryFn: () => client.getAdminUsers(input),
       };
     },
 

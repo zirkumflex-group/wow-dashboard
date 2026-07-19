@@ -1,11 +1,13 @@
 import { eq } from "drizzle-orm";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { betterAuth } from "better-auth";
+import { admin } from "better-auth/plugins/admin";
 import { bearer } from "better-auth/plugins/bearer";
 import { genericOAuth } from "better-auth/plugins/generic-oauth";
 import { players, schema } from "@wow-dashboard/db";
 import { env } from "@wow-dashboard/env/api";
 import { db } from "./db";
+import { configuredAdminUserIds } from "./lib/adminAccess";
 import { insertAuditEvent } from "./lib/audit";
 import { authSecondaryStorage } from "./lib/authStorage";
 import { enqueueSyncCharactersJob } from "./lib/queue";
@@ -222,6 +224,9 @@ export const auth = betterAuth({
     },
   },
   plugins: [
+    admin({
+      adminUserIds: configuredAdminUserIds,
+    }),
     bearer(),
     genericOAuth({
       config: [
