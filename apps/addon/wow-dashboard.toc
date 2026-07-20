@@ -1,7 +1,7 @@
 ## X-Flavor: retail
 ## X-Expansion: Midnight
 ## Interface: 120007
-## Version: 1.3.0
+## Version: 1.4.0
 
 ## Title: WoW Dashboard
 ## Notes: A WoW Dashboard addon.|n|nOpen with Slash Command:|n/wowdashboard
