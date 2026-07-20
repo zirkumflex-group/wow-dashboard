@@ -19,7 +19,7 @@ process.env.BATTLENET_CLIENT_ID ??= "test-client-id";
 process.env.BATTLENET_CLIENT_SECRET ??= "test-client-secret";
 
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import { after, beforeEach, describe, it } from "node:test";
 import { and, eq, sql } from "drizzle-orm";
 import {
@@ -38,14 +38,24 @@ import {
   user as authUsers,
 } from "@wow-dashboard/db";
 import { addonIngestLimits, createCharacterRouteSlug, queueNames } from "@wow-dashboard/api-schema";
+import {
+  persistentSessionTtlSeconds,
+  persistentSessionUpdateAgeSeconds,
+} from "./lib/sessionPolicy";
 
-const [{ app }, { databaseConnection, db }, { closeQueue }, { closeRedis, ensureRedis }] =
-  await Promise.all([
-    import("./server"),
-    import("./db"),
-    import("./lib/queue"),
-    import("./lib/redis"),
-  ]);
+const [
+  { app },
+  { auth: apiAuth },
+  { databaseConnection, db },
+  { closeQueue },
+  { closeRedis, ensureRedis },
+] = await Promise.all([
+  import("./server"),
+  import("./auth"),
+  import("./db"),
+  import("./lib/queue"),
+  import("./lib/redis"),
+]);
 
 const originalFetch = globalThis.fetch.bind(globalThis);
 
@@ -525,6 +535,12 @@ function authHeaders(token: string): HeadersInit {
   };
 }
 
+function browserSessionCookie(token: string) {
+  const secret = process.env.BETTER_AUTH_SECRET!;
+  const signature = createHmac("sha256", secret).update(token).digest("base64");
+  return `better-auth.session_token=${encodeURIComponent(`${token}.${signature}`)}`;
+}
+
 const dayInMilliseconds = 24 * 60 * 60 * 1000;
 
 function recentAddonTimestamp(offsetSeconds = 0) {
@@ -591,6 +607,58 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     assert.equal(payload.user.role, "user");
     assert.equal(payload.session.userId, auth.userId);
     assert.equal(payload.isAdmin, false);
+  });
+
+  it("uses the shared six-month rolling session policy", async () => {
+    const authContext = await apiAuth.$context;
+    assert.equal(authContext.sessionConfig.expiresIn, persistentSessionTtlSeconds);
+    assert.equal(authContext.sessionConfig.updateAge, persistentSessionUpdateAgeSeconds);
+  });
+
+  it("upgrades legacy browser sessions and forwards the rolling cookie refresh", async () => {
+    const auth = await seedAuthenticatedUser({
+      expiresAt: new Date(Date.now() + 7 * dayInMilliseconds),
+      userAgent: "browser",
+    });
+
+    const response = await app.request("http://localhost/api/me", {
+      headers: {
+        cookie: browserSessionCookie(auth.token),
+      },
+    });
+
+    assert.equal(response.status, 200, await response.clone().text());
+    const setCookie = response.headers.get("set-cookie") ?? "";
+    assert.match(setCookie, /better-auth\.session_token=/);
+    assert.match(setCookie, new RegExp(`Max-Age=${persistentSessionTtlSeconds}`));
+
+    const [sessionRow] = await db
+      .select({ expiresAt: authSessions.expiresAt })
+      .from(authSessions)
+      .where(eq(authSessions.token, auth.token));
+    assert.ok(sessionRow);
+    assertBoundedDesktopSessionExpiry(sessionRow.expiresAt);
+  });
+
+  it("lets Better Auth expire its own cookie without a middleware refresh overriding it", async () => {
+    const auth = await seedAuthenticatedUser({ userAgent: "browser" });
+
+    const response = await app.request("http://localhost/api/auth/sign-out", {
+      method: "POST",
+      headers: {
+        cookie: browserSessionCookie(auth.token),
+        origin: process.env.SITE_URL!,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({}),
+    });
+
+    assert.equal(response.status, 200, await response.clone().text());
+    assert.match(response.headers.get("set-cookie") ?? "", /Max-Age=0/);
+    assert.equal(
+      await db.query.session.findFirst({ where: eq(authSessions.token, auth.token) }),
+      undefined,
+    );
   });
 
   it("rejects non-admin access to administrator analytics", async () => {
@@ -695,7 +763,9 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     });
 
     assert.equal(codeResponse.status, 200);
-    const codePayload = (await codeResponse.json()) as { code: string };
+    assert.match(codeResponse.headers.get("cache-control") ?? "", /no-store/);
+    const codePayload = (await codeResponse.json()) as { code: string; expiresIn: number };
+    assert.equal(codePayload.expiresIn, 5 * 60);
 
     const sessionsBeforeRedeem = await db
       .select({ id: authSessions.id })
@@ -717,6 +787,7 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     });
 
     assert.equal(redeemResponse.status, 200);
+    assert.match(redeemResponse.headers.get("cache-control") ?? "", /no-store/);
     const redeemPayload = (await redeemResponse.json()) as { token: string };
 
     assert.notEqual(redeemPayload.token, auth.token);
@@ -779,6 +850,7 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
       `http://localhost/api/auth/desktop-login?attemptId=${encodeURIComponent(attemptId)}`,
     );
     assert.equal(pendingResponse.status, 200);
+    assert.match(pendingResponse.headers.get("cache-control") ?? "", /no-store/);
     assert.deepEqual(await pendingResponse.json(), { status: "pending" });
 
     const completeResponse = await app.request("http://localhost/api/auth/desktop-login/complete", {
@@ -1000,10 +1072,9 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
     assert.deepEqual(revokeAudit.metadata, { sessionId: desktopSessionId });
   });
 
-  it("does not promote non-desktop bearer sessions without the Electron client marker", async () => {
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  it("refreshes non-desktop sessions without marking them as Electron sessions", async () => {
     const auth = await seedAuthenticatedUser({
-      expiresAt,
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       userAgent: "browser",
     });
 
@@ -1023,7 +1094,7 @@ describe("Phase 5 API routes", { concurrency: false }, () => {
 
     assert.ok(sessionRow);
     assert.equal(sessionRow.userAgent, "browser");
-    assert.equal(sessionRow.expiresAt.getTime(), expiresAt.getTime());
+    assertBoundedDesktopSessionExpiry(sessionRow.expiresAt);
   });
 
   it("allows desktop null-origin preflights only for bearer-authenticated API requests", async () => {

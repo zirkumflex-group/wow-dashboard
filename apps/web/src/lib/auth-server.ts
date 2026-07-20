@@ -3,6 +3,8 @@ import { createServerFn } from "@tanstack/react-start";
 import { getRequestHeader } from "@tanstack/react-start/server";
 import { env } from "@wow-dashboard/env/web";
 
+import { forwardApiResponseCookies } from "@/lib/api-response-cookies";
+
 type AuthSessionResponse = Awaited<ReturnType<ReturnType<typeof createApiClient>["getMe"]>>;
 
 export const getAuthSession = createServerFn({ method: "GET" }).handler(
@@ -11,6 +13,7 @@ export const getAuthSession = createServerFn({ method: "GET" }).handler(
     const apiClient = createApiClient({
       baseUrl: env.VITE_API_URL,
       getHeaders: () => (cookie ? { cookie } : undefined),
+      onResponse: forwardApiResponseCookies,
     });
 
     try {

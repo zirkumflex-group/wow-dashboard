@@ -40,6 +40,8 @@ import type {
   AppUpdateState,
 } from "../shared/update";
 import { replaceDirectoryAtomically } from "./atomicAddonInstall";
+import { loadEncryptedSessionToken, saveEncryptedSessionToken } from "./authTokenStorage";
+import { findDesktopAuthDeepLink, readDesktopAuthCode } from "./desktopAuthLink";
 import {
   compareVersionStrings,
   parseAddonReleaseTags,
@@ -76,8 +78,13 @@ let launchMinimizedCache = true;
 let addonWatcher: ReturnType<typeof fs.watch> | null = null;
 let addonSyncDebounce: ReturnType<typeof setTimeout> | null = null;
 let storedSessionToken: string | null = null;
-let pendingLoginResolve: ((token: string) => void) | null = null;
+let authTokenPersistenceQueue: Promise<void> = Promise.resolve();
+let pendingLoginResolve: (() => void) | null = null;
 let pendingLoginReject: ((err: Error) => void) | null = null;
+let desktopLoginInFlight: Promise<boolean> | null = null;
+let desktopAuthCodeExchangeInFlight: Promise<void> | null = null;
+let queuedDesktopAuthDeepLink: string | null = null;
+let desktopAuthRuntimeReady = false;
 let stagingAddonUpdate = false;
 let applyingStagedAddonUpdate = false;
 let appUpdateCheckInFlight: Promise<void> | null = null;
@@ -258,9 +265,17 @@ function parseJsonResponseText(text: string): { ok: true; value: unknown } | { o
   }
 }
 
-function persistDesktopSessionToken(token: string): void {
-  storedSessionToken = token;
-  saveSessionToken(token);
+async function persistDesktopSessionToken(token: string) {
+  const result = await saveSessionToken(token);
+  if (result === "encryption-unavailable") {
+    console.warn(
+      "[wow-dashboard] Secure credential storage is unavailable; the desktop session cannot persist after exit.",
+    );
+  } else if (result === "failed") {
+    console.warn("[wow-dashboard] Failed to persist the desktop session credential.");
+  }
+  broadcastToRenderers("auth:sessionChanged");
+  return result;
 }
 
 function runOpenCommand(command: string, args: readonly string[]): Promise<void> {
@@ -306,45 +321,31 @@ function getTokenPath(): string {
   return join(app.getPath("userData"), "auth-token.bin");
 }
 
-function loadStoredAuth(): void {
-  if (!safeStorage.isEncryptionAvailable()) return;
-  try {
-    const buf = fs.readFileSync(getTokenPath());
-    const raw = safeStorage.decryptString(buf);
-    try {
-      const parsed = JSON.parse(raw) as { sessionToken?: string };
-      if (typeof parsed.sessionToken === "string") {
-        storedSessionToken = parsed.sessionToken;
-        return;
-      }
-    } catch {
-      if (raw) {
-        storedSessionToken = raw;
-        saveSessionToken(raw);
-      }
-    }
-  } catch {
-    return;
-  }
+async function loadStoredAuth(): Promise<void> {
+  storedSessionToken = await loadEncryptedSessionToken(getTokenPath(), safeStorage);
 }
 
-function saveSessionToken(token: string | null): void {
+async function saveSessionToken(token: string | null) {
   storedSessionToken = token;
-  if (!safeStorage.isEncryptionAvailable()) return;
-  const tokenPath = getTokenPath();
-  if (!token) {
-    try {
-      fs.unlinkSync(tokenPath);
-    } catch {
-      // file may not exist
-    }
-    return;
+  // Serialize replacement and removal so a reconnect racing with logout can
+  // never write an older credential after the user has signed out.
+  const operation = authTokenPersistenceQueue.then(() =>
+    saveEncryptedSessionToken(getTokenPath(), token, safeStorage),
+  );
+  authTokenPersistenceQueue = operation.then(
+    () => undefined,
+    () => undefined,
+  );
+  return operation;
+}
+
+async function clearDesktopSessionToken() {
+  const result = await saveSessionToken(null);
+  if (result === "failed") {
+    console.warn("[wow-dashboard] Failed to remove the desktop session credential.");
   }
-  try {
-    fs.writeFileSync(tokenPath, safeStorage.encryptString(JSON.stringify({ sessionToken: token })));
-  } catch (err) {
-    console.warn("[wow-dashboard] Failed to persist token:", err);
-  }
+  broadcastToRenderers("auth:sessionChanged");
+  return result;
 }
 
 async function loadTrayIcon(): Promise<Electron.NativeImage> {
@@ -2739,7 +2740,7 @@ async function requestAuthenticatedJson<T>(
   const responseText = await response.text();
   if (!response.ok) {
     if (response.status === 401) {
-      saveSessionToken(null);
+      await clearDesktopSessionToken();
     }
     throw new Error(
       `API request failed with status ${response.status} ${response.statusText}: ${responseText}`,
@@ -2981,63 +2982,106 @@ function createWindow(): void {
   });
 }
 
-function handleDeepLink(url: string): void {
-  try {
-    const parsed = new URL(url);
-    if (parsed.hostname === "auth") {
-      const code = parsed.searchParams.get("code");
-      if (code && pendingLoginResolve) {
-        const resolve = pendingLoginResolve;
-        const reject = pendingLoginReject;
-        pendingLoginResolve = null;
-        pendingLoginReject = null;
-
-        // Exchange the one-time code for the long-lived API bearer token.
-        net
-          .fetch(
-            getApiAuthUrl("/auth/redeem-code"),
-            withNetworkTimeout({
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ code }),
-            }),
-          )
-          .then(async (resp) => {
-            if (!resp.ok) throw new Error(`Code exchange failed: ${resp.status}`);
-            const data = (await resp.json()) as { token?: string; error?: string };
-            if (!data.token) throw new Error(data.error ?? "No token in response");
-            storedSessionToken = data.token;
-            saveSessionToken(data.token);
-            resolve(data.token);
-          })
-          .catch((err: Error) => {
-            reject?.(err);
-          });
-      }
-    }
-  } catch {
-    // ignore malformed deep-links
+async function exchangeDesktopAuthCode(code: string): Promise<void> {
+  const previousSessionToken = storedSessionToken;
+  const response = await net.fetch(
+    getApiAuthUrl("/auth/redeem-code"),
+    withNetworkTimeout({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code }),
+    }),
+  );
+  const payload = (await response.json().catch(() => null)) as {
+    token?: string;
+    error?: string;
+  } | null;
+  if (!response.ok) {
+    throw new Error(payload?.error ?? `Code exchange failed: ${response.status}`);
   }
+  if (!payload?.token) {
+    throw new Error(payload?.error ?? "No token in response");
+  }
+
+  const persistenceResult = await persistDesktopSessionToken(payload.token);
+  if (
+    persistenceResult === "saved" &&
+    previousSessionToken &&
+    previousSessionToken !== payload.token
+  ) {
+    // A reconnect creates a replacement desktop session. Revoke the previous
+    // one only after the new credential is durably stored, so reconnects do not
+    // accumulate active sessions or strand the app if local persistence fails.
+    void session.defaultSession
+      .fetch(
+        getApiAuthUrl("/auth/sign-out"),
+        withNetworkTimeout({
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Origin: SITE_URL,
+            [DESKTOP_CLIENT_HEADER]: DESKTOP_CLIENT_HEADER_VALUE,
+            Authorization: `Bearer ${previousSessionToken}`,
+          },
+          body: JSON.stringify({}),
+        }),
+      )
+      .catch(() => null);
+  }
+  scheduleBackgroundAddonSync("Battle.net login", 1_000);
+
+  const resolve = pendingLoginResolve;
+  pendingLoginResolve = null;
+  pendingLoginReject = null;
+  resolve?.();
+  showWindow();
+}
+
+function handleDeepLink(url: string): void {
+  const code = readDesktopAuthCode(url);
+  if (!code) return;
+
+  if (!desktopAuthRuntimeReady) {
+    queuedDesktopAuthDeepLink = url;
+    return;
+  }
+
+  // The OS can deliver the same protocol URL through more than one lifecycle
+  // event. The handoff is single-use, so exchange only one at a time.
+  if (desktopAuthCodeExchangeInFlight) return;
+
+  const exchange = exchangeDesktopAuthCode(code).catch((error: unknown) => {
+    const loginError = error instanceof Error ? error : new Error("Login code exchange failed");
+    const reject = pendingLoginReject;
+    pendingLoginResolve = null;
+    pendingLoginReject = null;
+    reject?.(loginError);
+    if (!reject) {
+      console.warn("[wow-dashboard] Desktop login handoff failed:", loginError.message);
+    }
+    showWindow();
+  });
+  desktopAuthCodeExchangeInFlight = exchange.finally(() => {
+    desktopAuthCodeExchangeInFlight = null;
+  });
 }
 
 // ─── IPC handlers ─────────────────────────────────────────────────────────────
 
 // Auth
-ipcMain.handle("auth:login", () => {
-  return new Promise<boolean>((resolve, reject) => {
+function beginDesktopLogin(): Promise<boolean> {
+  if (desktopLoginInFlight) return desktopLoginInFlight;
+
+  const login = new Promise<boolean>((resolve, reject) => {
     const loginUrl = getElectronLoginUrl();
     let settled = false;
 
-    const finalizeSuccess = (token?: string) => {
+    const finalizeSuccess = () => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
       pendingLoginResolve = null;
       pendingLoginReject = null;
-      if (token) {
-        persistDesktopSessionToken(token);
-        scheduleBackgroundAddonSync("Battle.net login", 1_000);
-      }
       if (mainWindow) {
         if (mainWindow.isMinimized()) mainWindow.restore();
         mainWindow.focus();
@@ -3062,9 +3106,7 @@ ipcMain.handle("auth:login", () => {
       10 * 60 * 1000,
     );
 
-    pendingLoginResolve = (token: string) => {
-      finalizeSuccess(token);
-    };
+    pendingLoginResolve = finalizeSuccess;
     pendingLoginReject = (err: Error) => {
       finalizeError(err);
     };
@@ -3076,6 +3118,18 @@ ipcMain.handle("auth:login", () => {
       finalizeError(error);
     });
   });
+
+  const trackedLogin = login.finally(() => {
+    if (desktopLoginInFlight === trackedLogin) {
+      desktopLoginInFlight = null;
+    }
+  });
+  desktopLoginInFlight = trackedLogin;
+  return trackedLogin;
+}
+
+ipcMain.handle("auth:login", () => {
+  return beginDesktopLogin();
 });
 
 ipcMain.handle("auth:getSession", async () => {
@@ -3099,7 +3153,7 @@ ipcMain.handle("auth:getSession", async () => {
     const responseText = await resp.text();
     if (!resp.ok) {
       if (resp.status === 401) {
-        saveSessionToken(null);
+        await clearDesktopSessionToken();
         return {
           status: "unauthenticated",
         } satisfies DesktopAuthSessionState;
@@ -3118,7 +3172,7 @@ ipcMain.handle("auth:getSession", async () => {
 
     const sessionState = resolveDesktopAuthSessionState(parsed.value);
     if (sessionState.status === "unauthenticated") {
-      saveSessionToken(null);
+      await clearDesktopSessionToken();
     }
     return sessionState;
   } catch {
@@ -3130,8 +3184,7 @@ ipcMain.handle("auth:getSession", async () => {
 
 ipcMain.handle("auth:logout", async () => {
   const sessionToken = storedSessionToken;
-  storedSessionToken = null;
-  saveSessionToken(null);
+  const localResult = await clearDesktopSessionToken();
   try {
     await session.defaultSession.fetch(
       getApiAuthUrl("/auth/sign-out"),
@@ -3146,7 +3199,7 @@ ipcMain.handle("auth:logout", async () => {
         body: JSON.stringify({}),
       }),
     );
-    return true;
+    return localResult === "removed";
   } catch {
     return false;
   }
@@ -4513,7 +4566,7 @@ app.whenReady().then(async () => {
     app.setAsDefaultProtocolClient("wow-dashboard");
   }
   // Restore persisted desktop auth state from OS keychain (safeStorage).
-  loadStoredAuth();
+  await loadStoredAuth();
 
   // Load settings before creating the window so closeBehaviorCache is populated and
   // the synchronous close handler has the correct value from the very first close event.
@@ -4538,6 +4591,16 @@ app.whenReady().then(async () => {
   void initializeAddonRuntime().catch((error) => {
     console.warn("[wow-dashboard] Failed to initialize addon runtime:", error);
   });
+
+  // A protocol URL can launch a new app process (for example after an update)
+  // instead of arriving through second-instance. Redeem it after safeStorage
+  // and the runtime are ready, even when no renderer login promise survived.
+  desktopAuthRuntimeReady = true;
+  const startupDeepLink = queuedDesktopAuthDeepLink ?? findDesktopAuthDeepLink(process.argv);
+  queuedDesktopAuthDeepLink = null;
+  if (startupDeepLink) {
+    handleDeepLink(startupDeepLink);
+  }
 
   app.on("activate", () => {
     showWindow();

@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld("electron", {
     login: () => ipcRenderer.invoke("auth:login"),
     getSession: () => ipcRenderer.invoke("auth:getSession") as Promise<DesktopAuthSessionState>,
     logout: () => ipcRenderer.invoke("auth:logout"),
+    onSessionChanged: (cb: () => void) => subscribeToChannel("auth:sessionChanged", cb),
   },
   api: {
     getCharacterCount: () => ipcRenderer.invoke("api:getCharacterCount") as Promise<number>,

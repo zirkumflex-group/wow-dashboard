@@ -4,6 +4,7 @@ import { Card, CardContent } from "@wow-dashboard/ui/components/card";
 import ChartNoAxesCombined from "lucide-react/dist/esm/icons/chart-no-axes-combined.mjs";
 import ShieldCheck from "lucide-react/dist/esm/icons/shield-check.mjs";
 import UploadCloud from "lucide-react/dist/esm/icons/upload-cloud.mjs";
+import { useState } from "react";
 
 import { authClient } from "@/lib/auth-client";
 
@@ -45,6 +46,28 @@ export const Route = createFileRoute("/")({
 });
 
 function HomeComponent() {
+  const [isSigningIn, setIsSigningIn] = useState(false);
+  const [signInError, setSignInError] = useState<string | null>(null);
+
+  async function handleSignIn() {
+    if (isSigningIn) return;
+
+    setIsSigningIn(true);
+    setSignInError(null);
+    try {
+      const result = await authClient.signIn.oauth2({
+        providerId: "battlenet",
+        callbackURL: new URL("/dashboard", window.location.origin).toString(),
+      });
+      if (result.error) {
+        throw new Error("Could not start Battle.net sign-in. Please try again.");
+      }
+    } catch {
+      setSignInError("Could not start Battle.net sign-in. Check your connection and try again.");
+      setIsSigningIn(false);
+    }
+  }
+
   return (
     <div className="analytics-shell mx-auto flex min-h-svh w-full max-w-7xl flex-col px-4 py-5 sm:px-6 lg:px-8">
       <header className="flex items-center justify-between border-b border-border/70 pb-4">
@@ -75,20 +98,17 @@ function HomeComponent() {
             runs from one private dashboard.
           </p>
           <div className="mt-8 flex flex-wrap items-center gap-3">
-            <Button
-              size="lg"
-              onClick={() =>
-                authClient.signIn.oauth2({
-                  providerId: "battlenet",
-                  callbackURL: new URL("/dashboard", window.location.origin).toString(),
-                })
-              }
-            >
-              Sign In with Battle.net
+            <Button size="lg" disabled={isSigningIn} onClick={() => void handleSignIn()}>
+              {isSigningIn ? "Opening Battle.net…" : "Sign In with Battle.net"}
             </Button>
             <p className="max-w-xs text-xs leading-5 text-muted-foreground">
               Authentication and character access remain scoped to your account.
             </p>
+            {signInError && (
+              <p className="w-full text-sm text-destructive" role="status" aria-live="polite">
+                {signInError}
+              </p>
+            )}
           </div>
         </section>
 

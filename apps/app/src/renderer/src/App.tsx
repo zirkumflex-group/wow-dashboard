@@ -56,6 +56,7 @@ declare global {
         login: () => Promise<boolean>;
         getSession: () => Promise<DesktopAuthSessionState>;
         logout: () => Promise<boolean>;
+        onSessionChanged: (cb: () => void) => () => void;
       };
       api: {
         getCharacterCount: () => Promise<number>;
@@ -140,7 +141,8 @@ async function _fetchToken(): Promise<string | null> {
   try {
     const sessionState = await window.electron.auth.getSession();
     if (sessionState.status === "unauthenticated") {
-      await _clearToken();
+      _token = null;
+      _notify();
       return null;
     }
 
@@ -158,6 +160,9 @@ async function _fetchToken(): Promise<string | null> {
 
 // Kick off initial token fetch as soon as the module loads
 _fetchToken();
+window.electron.auth.onSessionChanged(() => {
+  void _fetchToken();
+});
 
 function useElectronAuth() {
   const token = useSyncExternalStore(
@@ -257,7 +262,7 @@ function LoginScreen({ onLogin }: { onLogin: () => Promise<void> }) {
     try {
       await onLogin();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Login failed");
+      setError(e instanceof Error ? e.message : "Sign-in failed. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -274,12 +279,16 @@ function LoginScreen({ onLogin }: { onLogin: () => Promise<void> }) {
         <button
           onClick={handleLogin}
           disabled={loading}
-          className="rounded-lg bg-blue-600 px-6 py-3 font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+          className="rounded-lg bg-blue-600 px-6 py-3 font-medium text-white hover:bg-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-950 disabled:opacity-50"
         >
-          {loading ? "Opening Battle.net…" : "Login with Battle.net"}
+          {loading ? "Opening Battle.net…" : "Sign In with Battle.net"}
         </button>
 
-        {error && <p className="text-sm text-red-400">{error}</p>}
+        {error && (
+          <p className="text-sm text-red-400" role="status" aria-live="polite">
+            {error}
+          </p>
+        )}
 
         {(error || !loading) && (
           <div className="space-y-2">
@@ -809,8 +818,11 @@ function Dashboard({
             >
               Open Dashboard ↗
             </button>
-            <button onClick={onLogout} className="text-sm text-gray-400 hover:text-white">
-              Sign out
+            <button
+              onClick={onLogout}
+              className="text-sm text-gray-400 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+            >
+              Sign Out
             </button>
           </div>
         </div>
@@ -1022,9 +1034,9 @@ function Dashboard({
                 <button
                   onClick={handleReconnectBattleNet}
                   disabled={syncing}
-                  className="rounded bg-red-400 px-3 py-1.5 text-sm font-medium text-red-950 hover:bg-red-300 disabled:opacity-50"
+                  className="rounded bg-red-400 px-3 py-1.5 text-sm font-medium text-red-950 hover:bg-red-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-200 disabled:opacity-50"
                 >
-                  {syncing ? "Reconnecting..." : "Reconnect Battle.net"}
+                  {syncing ? "Reconnecting…" : "Reconnect Battle.net"}
                 </button>
               )}
             </div>

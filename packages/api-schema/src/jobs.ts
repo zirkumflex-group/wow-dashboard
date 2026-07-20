@@ -24,7 +24,7 @@ export const syncCharactersDeadLetterQueueOptions = {
   warningQueueSize: 25,
 } as const;
 
-export const loginCodeTtlSeconds = 60;
+export const loginCodeTtlSeconds = 5 * 60;
 export const mythicPlusPreviewRunLimit = 50;
 
 export const syncCharactersJobPayloadSchema = z.object({

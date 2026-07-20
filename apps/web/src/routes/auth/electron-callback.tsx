@@ -26,14 +26,18 @@ function ElectronCallback() {
   const [legacyComplete, setLegacyComplete] = useState(false);
   const [attemptId] = useState(readAttemptId);
   const anchorRef = useRef<HTMLAnchorElement>(null);
+  const completionStartedRef = useRef(false);
   const session = authClient.useSession();
 
   useEffect(() => {
-    if (session.isPending || deepLinkUrl || legacyComplete) return;
+    if (session.isPending || deepLinkUrl || legacyComplete || completionStartedRef.current) {
+      return;
+    }
     if (!session.data) {
       setError("Could not retrieve session token. Please try logging in again.");
       return;
     }
+    completionStartedRef.current = true;
 
     if (attemptId) {
       fetch(getDesktopLoginCompleteUrl(), {
@@ -83,15 +87,17 @@ function ElectronCallback() {
   if (error) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-4">
-        <p className="text-lg font-medium">Login failed</p>
-        <p className="text-muted-foreground text-sm">{error}</p>
+        <h1 className="text-lg font-medium">Sign-In Failed</h1>
+        <p className="text-muted-foreground text-sm" role="status" aria-live="polite">
+          {error}
+        </p>
       </div>
     );
   }
 
   return (
     <div className="flex h-full flex-col items-center justify-center gap-4">
-      <p className="text-lg font-medium">Login successful!</p>
+      <h1 className="text-lg font-medium">Sign-In Successful</h1>
       <p className="text-muted-foreground text-sm">Returning to the app…</p>
       {deepLinkUrl && (
         <>

@@ -88,6 +88,7 @@ import {
 
 type AccessTokenResolver = () => Promise<string | null | undefined> | string | null | undefined;
 type HeadersResolver = () => Promise<HeadersInit | undefined> | HeadersInit | undefined;
+type ResponseObserver = (response: Response) => Promise<void> | void;
 type QueryValue =
   | string
   | number
@@ -102,6 +103,7 @@ export type ApiClientConfig = {
   credentials?: RequestCredentials;
   getAccessToken?: AccessTokenResolver;
   getHeaders?: HeadersResolver;
+  onResponse?: ResponseObserver;
   requestTimeoutMs?: number;
 };
 
@@ -269,6 +271,7 @@ export function createApiClient(config: ApiClientConfig) {
     }
 
     const response = await fetchImpl(`${baseUrl}${path}${buildQueryString(query)}`, requestInit);
+    await config.onResponse?.(response);
     const rawBody = parseResponseBody(await response.text());
 
     if (!response.ok) {

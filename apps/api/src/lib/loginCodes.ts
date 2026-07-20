@@ -4,14 +4,16 @@ import { auth } from "../auth";
 import { insertAuditEvent } from "./audit";
 import { logger } from "./logger";
 import { ensureRedis } from "./redis";
+import {
+  desktopSessionMaximumClockSkewSeconds,
+  desktopSessionRefreshThresholdSeconds,
+  desktopSessionUserAgent,
+  persistentSessionTtlSeconds,
+} from "./sessionPolicy";
 
 const loginCodePrefix = "auth:login-code";
 const desktopLoginAttemptPrefix = "auth:desktop-login";
 const codeBytes = 32;
-const desktopSessionUserAgent = "wow-dashboard-desktop";
-const desktopSessionTtlSeconds = 180 * 24 * 60 * 60;
-const desktopSessionRefreshThresholdSeconds = 30 * 24 * 60 * 60;
-const desktopSessionMaximumClockSkewSeconds = 5 * 60;
 
 type StoredAuthHandoff = {
   userId: string;
@@ -35,7 +37,7 @@ function createRandomCode(): string {
 }
 
 function getDesktopSessionExpiresAt(): Date {
-  return new Date(Date.now() + desktopSessionTtlSeconds * 1000);
+  return new Date(Date.now() + persistentSessionTtlSeconds * 1000);
 }
 
 type MaybeDesktopSession = {
@@ -70,7 +72,7 @@ async function ensureDesktopSessionLifetimeWithOptions(
     !Number.isFinite(expiresAt.getTime()) ||
     expiresAt.getTime() <= Date.now() + desktopSessionRefreshThresholdSeconds * 1000 ||
     expiresAt.getTime() >
-      Date.now() + (desktopSessionTtlSeconds + desktopSessionMaximumClockSkewSeconds) * 1000;
+      Date.now() + (persistentSessionTtlSeconds + desktopSessionMaximumClockSkewSeconds) * 1000;
   const shouldUpdateUserAgent = session.userAgent !== desktopSessionUserAgent;
 
   if (!shouldRefreshExpiry && !shouldUpdateUserAgent) {

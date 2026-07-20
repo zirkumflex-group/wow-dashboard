@@ -79,6 +79,13 @@ type AppBindings = {
 export const app = new Hono<AppBindings>();
 const desktopClientHeader = "x-wow-dashboard-client";
 const desktopClientHeaderValue = "desktop";
+const dashboardAuthRoutePaths = new Set([
+  "/api/auth/login-code",
+  "/api/auth/desktop-login",
+  "/api/auth/desktop-login/complete",
+  "/api/auth/redeem-code",
+]);
+const authHandoffIdentifierPattern = /^[A-Za-z0-9_-]{16,128}$/;
 
 function getRequestId(c: Context<AppBindings>): string {
   const candidate = c.req.header("x-request-id")?.trim();
@@ -149,6 +156,30 @@ function isAllowedApiOrigin(origin: string) {
 
 function hasAuthorizationHeader(value: string | null | undefined) {
   return typeof value === "string" && value.trim() !== "";
+}
+
+function isBetterAuthHandlerPath(pathname: string) {
+  return pathname.startsWith("/api/auth/") && !dashboardAuthRoutePaths.has(pathname);
+}
+
+function readSetCookieHeaders(headers: Headers) {
+  const getSetCookie = (
+    headers as Headers & {
+      getSetCookie?: () => string[];
+    }
+  ).getSetCookie;
+  if (typeof getSetCookie === "function") {
+    return getSetCookie.call(headers);
+  }
+
+  const combinedHeader = headers.get("set-cookie");
+  return combinedHeader ? [combinedHeader] : [];
+}
+
+function readAuthHandoffIdentifier(value: unknown) {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  return authHandoffIdentifierPattern.test(normalized) ? normalized : null;
 }
 
 function isElectronBearerRequest(c: Context<AppBindings>) {
@@ -644,9 +675,19 @@ app.use(
 );
 
 app.use("/api/*", async (c, next) => {
-  const session = await auth.api.getSession({
+  // Better Auth must own its endpoint response headers. In particular, calling
+  // getSession before /get-session would refresh the database row and consume
+  // the refresh opportunity before its handler can return the new cookie.
+  if (isBetterAuthHandlerPath(c.req.path)) {
+    await next();
+    return;
+  }
+
+  const authResult = await auth.api.getSession({
     headers: c.req.raw.headers,
+    returnHeaders: true,
   });
+  const session = authResult.response;
 
   if (session?.session) {
     try {
@@ -668,6 +709,16 @@ app.use("/api/*", async (c, next) => {
   c.set("user", session?.user ?? null);
 
   await next();
+
+  // Browser requests use the Better Auth cookie. Forward rolling refreshes
+  // produced by the direct server API call so activity on dashboard API routes
+  // also renews the browser cookie. Bearer clients keep their token in the OS
+  // credential store and must not receive a second cookie copy.
+  if (!hasAuthorizationHeader(c.req.header("authorization"))) {
+    for (const cookie of readSetCookieHeaders(authResult.headers)) {
+      c.header("Set-Cookie", cookie, { append: true });
+    }
+  }
 });
 
 app.use("/api/admin/*", async (c, next) => {
@@ -723,6 +774,7 @@ app.get("/dev/auth", (c) => {
 });
 
 app.post("/api/auth/login-code", async (c) => {
+  c.header("Cache-Control", "private, no-store");
   const user = c.get("user");
 
   if (!user) {
@@ -740,6 +792,7 @@ app.post("/api/auth/login-code", async (c) => {
 });
 
 app.post("/api/auth/desktop-login/complete", async (c) => {
+  c.header("Cache-Control", "private, no-store");
   const user = c.get("user");
 
   if (!user) {
@@ -753,9 +806,9 @@ app.post("/api/auth/desktop-login/complete", async (c) => {
     return c.json({ error: "Invalid request body" }, 400);
   }
 
-  const attemptId = typeof body.attemptId === "string" ? body.attemptId.trim() : "";
+  const attemptId = readAuthHandoffIdentifier(body.attemptId);
   if (!attemptId) {
-    return c.json({ error: "attemptId is required" }, 400);
+    return c.json({ error: "A valid attemptId is required" }, 400);
   }
 
   await completeDesktopLoginAttempt({
@@ -770,9 +823,10 @@ app.post("/api/auth/desktop-login/complete", async (c) => {
 });
 
 app.get("/api/auth/desktop-login", async (c) => {
-  const attemptId = (c.req.query("attemptId") ?? "").trim();
+  c.header("Cache-Control", "no-store");
+  const attemptId = readAuthHandoffIdentifier(c.req.query("attemptId"));
   if (!attemptId) {
-    return c.json({ error: "attemptId is required" }, 400);
+    return c.json({ error: "A valid attemptId is required" }, 400);
   }
 
   const token = await consumeDesktopLoginAttempt(attemptId);
@@ -784,6 +838,7 @@ app.get("/api/auth/desktop-login", async (c) => {
 });
 
 app.post("/api/auth/redeem-code", async (c) => {
+  c.header("Cache-Control", "no-store");
   let body: { code?: unknown };
   try {
     body = (await c.req.json()) as { code?: unknown };
@@ -791,9 +846,9 @@ app.post("/api/auth/redeem-code", async (c) => {
     return c.json({ error: "Invalid request body" }, 400);
   }
 
-  const code = typeof body.code === "string" ? body.code : "";
+  const code = readAuthHandoffIdentifier(body.code);
   if (!code) {
-    return c.json({ error: "code is required" }, 400);
+    return c.json({ error: "A valid code is required" }, 400);
   }
 
   const token = await redeemLoginCode(code);

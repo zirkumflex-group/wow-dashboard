@@ -11,6 +11,10 @@ import { configuredAdminUserIds } from "./lib/adminAccess";
 import { insertAuditEvent } from "./lib/audit";
 import { authSecondaryStorage } from "./lib/authStorage";
 import { enqueueSyncCharactersJob } from "./lib/queue";
+import {
+  persistentSessionTtlSeconds,
+  persistentSessionUpdateAgeSeconds,
+} from "./lib/sessionPolicy";
 
 type BattleNetProfile = Record<string, string | undefined>;
 type BattleNetAccountHook = {
@@ -139,6 +143,8 @@ export const auth = betterAuth({
   }),
   secondaryStorage: authSecondaryStorage,
   session: {
+    expiresIn: persistentSessionTtlSeconds,
+    updateAge: persistentSessionUpdateAgeSeconds,
     storeSessionInDatabase: true,
   },
   rateLimit: {

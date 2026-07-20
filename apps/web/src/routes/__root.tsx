@@ -133,7 +133,10 @@ function RootDocument() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const sessionState = authClient.useSession();
   const noLayout = pathname.startsWith("/auth/electron");
-  const sessionData = sessionState.data ?? context.sessionData ?? null;
+  const sessionData =
+    sessionState.isPending || sessionState.error
+      ? (context.sessionData ?? null)
+      : (sessionState.data ?? null);
   const isAuthenticated = sessionData !== null;
 
   useEffect(() => {

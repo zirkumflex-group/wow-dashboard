@@ -2,6 +2,8 @@ import { apiQueryKeys, createApiClient, createApiQueryOptions } from "@wow-dashb
 import { createIsomorphicFn } from "@tanstack/react-start";
 import { env } from "@wow-dashboard/env/web";
 
+import { forwardApiResponseCookies } from "@/lib/api-response-cookies";
+
 const getServerRequestHeaders = createIsomorphicFn()
   .server(async () => {
     const { getRequestHeader } = await import("@tanstack/react-start/server");
@@ -13,6 +15,7 @@ const getServerRequestHeaders = createIsomorphicFn()
 export const apiClient = createApiClient({
   baseUrl: env.VITE_API_URL,
   getHeaders: getServerRequestHeaders,
+  onResponse: forwardApiResponseCookies,
 });
 
 export { apiQueryKeys };

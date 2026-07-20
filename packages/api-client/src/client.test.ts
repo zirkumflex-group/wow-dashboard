@@ -76,6 +76,30 @@ describe("API client transport", () => {
     assert.equal(requestedUrl, "https://dashboard.example/api/characters/count");
   });
 
+  it("exposes response headers before parsing for server-side cookie forwarding", async () => {
+    let forwardedCookie = "";
+    const client = createApiClient({
+      baseUrl: "https://dashboard.example/api",
+      onResponse: (response) => {
+        forwardedCookie = response.headers.get("set-cookie") ?? "";
+      },
+      fetch: async () =>
+        Response.json(
+          {
+            count: 3,
+          },
+          {
+            headers: {
+              "set-cookie": "better-auth.session_token=refreshed; HttpOnly; Max-Age=15552000",
+            },
+          },
+        ),
+    });
+
+    await client.getMyCharacterCount();
+    assert.match(forwardedCookie, /better-auth\.session_token=refreshed/);
+  });
+
   it("serializes administrator directory pagination", async () => {
     let requestedUrl = "";
     const client = createApiClient({

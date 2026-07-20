@@ -79,7 +79,11 @@ function ElectronLogin() {
     <div className="flex h-full items-center justify-center">
       <div className="flex flex-col items-center gap-3 text-center">
         <p className="text-muted-foreground text-sm">Redirecting to Battle.net…</p>
-        {error && <p className="text-sm text-red-500">{error}</p>}
+        {error && (
+          <p className="text-sm text-red-500" role="status" aria-live="polite">
+            {error} Return to the app and try again.
+          </p>
+        )}
       </div>
     </div>
   );

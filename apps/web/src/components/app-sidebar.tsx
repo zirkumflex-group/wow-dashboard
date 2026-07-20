@@ -35,8 +35,9 @@ import Shield from "lucide-react/dist/esm/icons/shield.mjs";
 import Star from "lucide-react/dist/esm/icons/star.mjs";
 import Trophy from "lucide-react/dist/esm/icons/trophy.mjs";
 import { Link, useRouterState } from "@tanstack/react-router";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { createCharacterRouteId } from "@wow-dashboard/api-schema";
+import { toast } from "sonner";
 
 import { apiQueryOptions } from "@/lib/api-client";
 import { authClient } from "@/lib/auth-client";
@@ -70,6 +71,23 @@ function NavUser() {
   const session = authClient.useSession();
   const user = session.data?.user;
   const { isMobile } = useSidebar();
+  const [isSigningOut, setIsSigningOut] = useState(false);
+
+  async function handleSignOut() {
+    if (isSigningOut) return;
+
+    setIsSigningOut(true);
+    try {
+      const result = await authClient.signOut();
+      if (result.error) {
+        throw new Error("Sign-out request failed");
+      }
+      location.assign("/");
+    } catch {
+      toast.error("Could not sign out. Check your connection and try again.");
+      setIsSigningOut(false);
+    }
+  }
 
   return (
     <SidebarMenu>
@@ -100,17 +118,10 @@ function NavUser() {
               <DropdownMenuSeparator />
               <DropdownMenuItem
                 className="text-destructive focus:text-destructive"
-                onClick={() => {
-                  authClient.signOut({
-                    fetchOptions: {
-                      onSuccess: () => {
-                        location.reload();
-                      },
-                    },
-                  });
-                }}
+                disabled={isSigningOut}
+                onClick={() => void handleSignOut()}
               >
-                Sign Out
+                {isSigningOut ? "Signing Out…" : "Sign Out"}
               </DropdownMenuItem>
             </DropdownMenuGroup>
           </DropdownMenuContent>
