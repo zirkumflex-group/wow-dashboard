@@ -258,7 +258,9 @@ case "$SKIP_GIT_PULL" in
     echo "Skipping git pull because SKIP_GIT_PULL=$SKIP_GIT_PULL."
     ;;
   0 | false | no)
-    git pull --ff-only
+    # Production deploys are sourced from main even when an older checkout is
+    # still using the legacy local branch name `master`.
+    git pull --ff-only origin main
     ;;
   *)
     echo "Invalid SKIP_GIT_PULL value: $SKIP_GIT_PULL. Use 1 or 0." >&2

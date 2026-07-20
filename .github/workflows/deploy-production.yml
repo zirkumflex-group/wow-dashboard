@@ -58,7 +58,7 @@ jobs:
             -p "$SSH_PORT" \
             -o IdentitiesOnly=yes \
             "$SSH_USER@$SSH_HOST" \
-            'cd ~/wow-dashboard && bash deploy/update-server.sh'
+            'cd ~/wow-dashboard && git pull --ff-only origin main && SKIP_GIT_PULL=1 bash deploy/update-server.sh'
 
       - name: Check production health
         run: |

@@ -75,7 +75,8 @@ bash deploy/update-server.sh
 
 The script:
 
-- pulls the current branch with `--ff-only`
+- fast-forwards the production checkout from `origin/main` with `--ff-only`, including legacy
+  checkouts whose local branch is still named `master`
 - builds only the production services affected by the changed files
 - runs Drizzle migrations through the one-shot `migrate` service for backend deploys
 - recreates affected services
@@ -107,7 +108,8 @@ The manual workflow:
 1. runs the reusable full verification workflow
 2. validates the deployment secrets
 3. SSHes into the VPS
-4. runs `cd ~/wow-dashboard && bash deploy/update-server.sh`
+4. explicitly fast-forwards from `origin/main`, then runs `deploy/update-server.sh` without a
+   duplicate pull
 5. retries the public readiness check at `https://wow.zirkumflex.io/readyz`
 
 Configure these GitHub repository secrets:
