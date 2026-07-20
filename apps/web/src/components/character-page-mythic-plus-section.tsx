@@ -655,38 +655,35 @@ function RecentRunKeyCell({ run }: { run: MythicPlusRun }) {
 }
 
 function RecentRunPartyMembers({
-  run,
+  members,
   characterRealm,
   characterRegion,
   hiddenKeys,
-  hideAllNames,
   hideServerNames,
   disableActions = false,
   onHide,
 }: {
-  run: MythicPlusRun;
+  members: MythicPlusRunMember[];
   characterRealm: string;
   characterRegion: string;
   hiddenKeys: Set<string>;
-  hideAllNames: boolean;
   hideServerNames: boolean;
   disableActions?: boolean;
   onHide: (key: string) => void;
 }) {
-  const allMembers = getDisplayedRunMembers(run.members);
-  if (allMembers.length === 0 || hideAllNames) {
+  if (members.length === 0) {
     return null;
   }
 
   return (
-    <div className="mt-1.5 flex min-w-0 max-w-full flex-wrap items-center gap-x-2 gap-y-1 text-xs leading-tight">
-      {allMembers.map((member) => {
+    <div className="grid min-w-0 flex-1 grid-cols-5 gap-x-2 text-[11px] leading-4">
+      {members.map((member) => {
         const key = getMemberKey(member, characterRealm);
         const isHidden = hiddenKeys.has(key);
 
         if (isHidden) {
           return (
-            <span key={key} className="inline-flex min-w-0 items-center">
+            <span key={key} className="inline-flex min-w-0 items-start pt-0.5">
               <span
                 className="inline-block h-3 w-12 shrink-0 rounded-sm bg-muted-foreground/20 blur-[4px]"
                 aria-hidden="true"
@@ -699,25 +696,24 @@ function RecentRunPartyMembers({
         const realmSuffix = getRunMemberRealmSuffix(member, characterRealm, hideServerNames);
         const fullMemberName = formatRunMemberName(member, characterRealm, hideServerNames);
         return (
-          <span
-            key={key}
-            className="group/member inline-flex min-w-0 max-w-full items-center gap-1"
-          >
+          <span key={key} className="group/member relative min-w-0">
             <a
               href={url}
               target="_blank"
               rel="noreferrer"
               className={cn(
-                "inline-flex min-w-0 max-w-44 truncate font-medium decoration-current/40 underline-offset-2 hover:underline",
+                "flex min-w-0 flex-col font-medium decoration-current/40 underline-offset-2 hover:underline",
                 classColor(member.classTag ?? ""),
               )}
               title={`View ${fullMemberName} on Raider.IO`}
               tabIndex={disableActions ? -1 : undefined}
             >
-              <span className="truncate">
-                {member.name}
-                {realmSuffix ? `-${realmSuffix}` : ""}
-              </span>
+              <span className="whitespace-nowrap">{member.name}</span>
+              {realmSuffix ? (
+                <span className="whitespace-nowrap text-[9px] font-normal leading-3 opacity-70">
+                  {realmSuffix}
+                </span>
+              ) : null}
             </a>
             <button
               type="button"
@@ -727,9 +723,10 @@ function RecentRunPartyMembers({
                   onHide(key);
                 }
               }}
-              className="inline-flex size-4 shrink-0 items-center justify-center rounded-sm text-muted-foreground opacity-0 transition-opacity duration-150 hover:bg-muted hover:text-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring group-hover/member:opacity-100 group-focus-within/member:opacity-100"
+              className="absolute right-0 top-0 inline-flex size-4 items-center justify-center rounded-sm bg-background/90 text-muted-foreground opacity-0 transition-opacity duration-150 hover:bg-muted hover:text-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring group-hover/member:opacity-100 group-focus-within/member:opacity-100"
               title={`Hide ${member.name}`}
               aria-label={`Hide ${member.name}`}
+              tabIndex={disableActions ? -1 : undefined}
             >
               <EyeOff size={10} aria-hidden="true" />
             </button>
@@ -1773,7 +1770,7 @@ export function MythicPlusSection({
               </div>
             </div>
           </CardHeader>
-          <CardContent className="flex min-h-0 flex-1 flex-col p-4">
+          <CardContent className="flex min-h-0 flex-1 flex-col p-3">
             <div className="dark-scrollbar min-h-0 flex-1 overflow-auto rounded-md border border-border/60">
               <table className="w-full min-w-[760px] table-fixed text-sm">
                 <colgroup>
@@ -1796,7 +1793,7 @@ export function MythicPlusSection({
                     </th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-border/50">
+                <tbody>
                   {visibleRecentRuns.map((run, index) => {
                     const runId = getSelectableRunId(run);
                     const isSelected = runId ? selectedRunIdSet.has(runId) : false;
@@ -1807,6 +1804,19 @@ export function MythicPlusSection({
                     const isScorePending =
                       isCompletedMythicPlusRun(run) &&
                       (run.runScore === undefined || run.runScore === null);
+                    const displayedPartyMembers = hideAllNames
+                      ? []
+                      : getDisplayedRunMembers(run.members);
+                    const interactiveRowClassName = cn(
+                      isSelectingRuns && runId ? "cursor-pointer select-none" : "",
+                      isSelected ? "bg-primary/10 hover:bg-primary/15" : "",
+                      isGrouped && session?.isPaid
+                        ? "border-l-2 border-l-emerald-400/70 bg-emerald-500/[0.04]"
+                        : "",
+                      isGrouped && !session?.isPaid
+                        ? "border-l-2 border-l-amber-400/70 bg-amber-500/[0.04]"
+                        : "",
+                    );
 
                     return (
                       <Fragment key={getRecentRunRowKey(run)}>
@@ -1828,15 +1838,8 @@ export function MythicPlusSection({
                         ) : null}
                         <tr
                           className={cn(
-                            "transition-colors hover:bg-muted/15",
-                            isSelectingRuns && runId ? "cursor-pointer select-none" : "",
-                            isSelected ? "bg-primary/10 hover:bg-primary/15" : "",
-                            isGrouped && session?.isPaid
-                              ? "border-l-2 border-l-emerald-400/70 bg-emerald-500/[0.04]"
-                              : "",
-                            isGrouped && !session?.isPaid
-                              ? "border-l-2 border-l-amber-400/70 bg-amber-500/[0.04]"
-                              : "",
+                            "border-t border-border/50 transition-colors hover:bg-muted/15",
+                            interactiveRowClassName,
                           )}
                           role={isSelectingRuns && runId ? "button" : undefined}
                           tabIndex={isSelectingRuns && runId ? 0 : undefined}
@@ -1851,7 +1854,7 @@ export function MythicPlusSection({
                             }
                           }}
                         >
-                          <td className="px-3 py-3 align-top text-muted-foreground">
+                          <td className="px-3 py-2 align-middle text-muted-foreground">
                             <div className="flex items-start gap-2">
                               {isSelectingRuns ? (
                                 <RecentRunSelectionMark selected={isSelected} />
@@ -1859,7 +1862,7 @@ export function MythicPlusSection({
                               <RecentRunPlayedAt run={run} />
                             </div>
                           </td>
-                          <td className="min-w-0 px-3 py-3 align-top">
+                          <td className="min-w-0 px-3 py-2 align-middle">
                             <div className="flex min-w-0 items-center gap-2">
                               <DungeonIcon
                                 mapChallengeModeID={run.mapChallengeModeID}
@@ -1872,24 +1875,14 @@ export function MythicPlusSection({
                                 {getRunLabel(run)}
                               </div>
                             </div>
-                            <RecentRunPartyMembers
-                              run={run}
-                              characterRealm={characterRealm}
-                              characterRegion={characterRegion}
-                              hiddenKeys={hiddenPlayerKeys}
-                              hideAllNames={hideAllNames}
-                              hideServerNames={hideServerNames}
-                              disableActions={isSelectingRuns}
-                              onHide={hidePlayer}
-                            />
                           </td>
-                          <td className="px-3 py-3 align-top text-right">
+                          <td className="px-3 py-2 align-middle text-right">
                             <RecentRunKeyCell run={run} />
                           </td>
-                          <td className="px-3 py-3 align-top">
+                          <td className="px-3 py-2 align-middle">
                             <MythicPlusResultBadge run={run} />
                           </td>
-                          <td className="px-3 py-3 align-top text-right">
+                          <td className="px-3 py-2 align-middle text-right">
                             <div className="flex items-center justify-end gap-1.5 tabular-nums">
                               <span
                                 className={cn(
@@ -1906,15 +1899,41 @@ export function MythicPlusSection({
                               ) : null}
                             </div>
                           </td>
-                          <td className="w-[8.5rem] whitespace-nowrap px-3 py-3 align-top text-right tabular-nums text-muted-foreground">
+                          <td className="w-[8.5rem] whitespace-nowrap px-3 py-2 align-middle text-right tabular-nums text-muted-foreground">
                             {formatRunTimeComparison(run)}
                           </td>
                         </tr>
+                        {displayedPartyMembers.length > 0 ? (
+                          <tr
+                            className={cn(
+                              "transition-colors hover:bg-muted/15",
+                              interactiveRowClassName,
+                            )}
+                            onClick={(event) => selectRun(run, event)}
+                          >
+                            <td colSpan={6} className="px-3 pb-2 pt-0">
+                              <div className="flex min-w-0 items-start gap-2 border-t border-border/30 pt-1.5">
+                                <span className="shrink-0 pt-px font-mono text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">
+                                  Party
+                                </span>
+                                <RecentRunPartyMembers
+                                  members={displayedPartyMembers}
+                                  characterRealm={characterRealm}
+                                  characterRegion={characterRegion}
+                                  hiddenKeys={hiddenPlayerKeys}
+                                  hideServerNames={hideServerNames}
+                                  disableActions={isSelectingRuns}
+                                  onHide={hidePlayer}
+                                />
+                              </div>
+                            </td>
+                          </tr>
+                        ) : null}
                       </Fragment>
                     );
                   })}
                   {hasMoreRecentRuns ? (
-                    <tr className="bg-muted/10">
+                    <tr className="border-t border-border/50 bg-muted/10">
                       <td colSpan={6} className="px-3 py-3 text-center">
                         <Button
                           size="sm"

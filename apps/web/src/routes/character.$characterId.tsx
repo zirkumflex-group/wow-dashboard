@@ -11,6 +11,7 @@ import {
   Card,
   CardContent,
   CardDescription,
+  CardFooter,
   CardHeader,
   CardTitle,
 } from "@wow-dashboard/ui/components/card";
@@ -3196,7 +3197,7 @@ function CharacterPageState({
   isLoading?: boolean;
 }) {
   return (
-    <div className="analytics-shell mx-auto w-full max-w-[1920px] px-4 py-6 sm:px-6 lg:px-8">
+    <div className="analytics-shell w-full px-4 py-6 sm:px-6 lg:px-8">
       <Card className="analytics-panel">
         <CardContent className="flex flex-col gap-4 px-6 py-6">
           {isLoading ? (
@@ -3814,7 +3815,7 @@ function RouteComponent() {
   }
 
   return (
-    <div className="analytics-shell mx-auto flex w-full max-w-[1920px] flex-col gap-5 px-4 py-6 sm:px-6 lg:px-8">
+    <div className="analytics-shell flex w-full flex-col gap-5 px-4 py-6 sm:px-6 lg:px-8">
       {/* Character header */}
       <Card className="analytics-hero">
         <CardHeader className="relative z-10 border-b border-border/60 bg-transparent px-6 py-5">
@@ -3872,7 +3873,7 @@ function RouteComponent() {
                 />
               </div>
             </div>
-            <div className="flex w-full max-w-lg flex-col gap-2 self-start xl:items-end">
+            <div className="flex w-full max-w-xl flex-col gap-2 self-start xl:items-end">
               <div className="flex w-full flex-wrap items-center gap-2 xl:justify-end">
                 <Button
                   type="button"
@@ -3904,39 +3905,47 @@ function RouteComponent() {
                   {character.visibility === "private" ? "Private" : "Copy Link"}
                 </Button>
                 {canEditCharacter && (
-                  <div className="flex w-full flex-col gap-2 rounded-md border border-border/60 bg-background/60 p-2">
-                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                      <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                        Visibility
-                      </span>
-                      <ToggleGroup
-                        type="single"
-                        value={character.visibility}
-                        onValueChange={(value) => {
-                          if (value) {
-                            void handleVisibilityChange(value as CharacterVisibility);
-                          }
-                        }}
-                        variant="outline"
-                        size="sm"
-                        aria-label="Character visibility"
-                        className="w-full justify-start rounded-md border border-border/60 bg-card p-0.5 sm:w-auto"
-                      >
-                        {VISIBILITY_OPTIONS.map(({ value, label, Icon }) => (
-                          <ToggleGroupItem
-                            key={value}
-                            value={value}
-                            aria-label={label}
-                            disabled={isUpdatingVisibility}
-                            className="h-8 flex-1 px-2 text-xs data-[state=on]:bg-muted sm:flex-none"
-                          >
-                            <Icon aria-hidden="true" />
-                            <span>{label}</span>
-                          </ToggleGroupItem>
-                        ))}
-                      </ToggleGroup>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+                  <Card className="character-controls-card w-full overflow-hidden">
+                    <CardHeader className="border-b border-border/50 bg-muted/10 px-3 py-2.5">
+                      <CardTitle className="text-sm font-semibold">Character controls</CardTitle>
+                      <CardDescription className="text-xs">
+                        Manage page access, boost status, and trade availability.
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="px-3 py-3">
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                        <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                          Visibility
+                        </span>
+                        <ToggleGroup
+                          type="single"
+                          value={character.visibility}
+                          onValueChange={(value) => {
+                            if (value) {
+                              void handleVisibilityChange(value as CharacterVisibility);
+                            }
+                          }}
+                          variant="default"
+                          size="sm"
+                          aria-label="Character visibility"
+                          className="grid w-full grid-cols-3 gap-1 rounded-md bg-muted/40 p-1 sm:w-auto"
+                        >
+                          {VISIBILITY_OPTIONS.map(({ value, label, Icon }) => (
+                            <ToggleGroupItem
+                              key={value}
+                              value={value}
+                              aria-label={label}
+                              disabled={isUpdatingVisibility}
+                              className="h-8 w-full px-2 text-xs text-muted-foreground data-[state=on]:bg-background data-[state=on]:text-foreground data-[state=on]:shadow-sm"
+                            >
+                              <Icon aria-hidden="true" />
+                              <span>{label}</span>
+                            </ToggleGroupItem>
+                          ))}
+                        </ToggleGroup>
+                      </div>
+                    </CardContent>
+                    <CardFooter className="flex flex-wrap items-center gap-2 border-t border-border/50 bg-muted/10 px-3 py-2.5">
                       <Button
                         type="button"
                         size="sm"
@@ -4034,8 +4043,8 @@ function RouteComponent() {
                           </div>
                         </SheetContent>
                       </Sheet>
-                    </div>
-                  </div>
+                    </CardFooter>
+                  </Card>
                 )}
               </div>
             </div>

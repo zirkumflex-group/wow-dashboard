@@ -29,6 +29,7 @@ import ArrowUp from "lucide-react/dist/esm/icons/arrow-up.mjs";
 import ChevronUp from "lucide-react/dist/esm/icons/chevron-up.mjs";
 import Copy from "lucide-react/dist/esm/icons/copy.mjs";
 import LayoutDashboard from "lucide-react/dist/esm/icons/layout-dashboard.mjs";
+import PanelLeftClose from "lucide-react/dist/esm/icons/panel-left-close.mjs";
 import Scale from "lucide-react/dist/esm/icons/scale.mjs";
 import Settings from "lucide-react/dist/esm/icons/settings.mjs";
 import Shield from "lucide-react/dist/esm/icons/shield.mjs";
@@ -98,13 +99,13 @@ function NavUser() {
               size="lg"
               className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
             >
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold uppercase">
+              <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-sidebar-accent text-xs font-semibold uppercase text-sidebar-accent-foreground ring-1 ring-sidebar-border">
                 {user?.name?.[0] ?? "?"}
               </div>
               <div className="grid flex-1 text-left text-sm leading-tight">
                 <span className="truncate font-medium">{user?.name ?? "Loading…"}</span>
               </div>
-              <ChevronUp aria-hidden="true" className="ml-auto size-4" />
+              <ChevronUp aria-hidden="true" className="ml-auto" />
             </SidebarMenuButton>
           </DropdownMenuTrigger>
           <DropdownMenuContent
@@ -133,6 +134,7 @@ function NavUser() {
 
 export function AppSidebar() {
   const session = authClient.useSession();
+  const { toggleSidebar } = useSidebar();
   const meQuery = useQuery(apiQueryOptions.me());
   const router = useRouterState();
   const pathname = router.location.pathname;
@@ -164,24 +166,37 @@ export function AppSidebar() {
     : [settingsNavItem];
 
   return (
-    <Sidebar collapsible="icon">
-      <SidebarHeader>
+    <Sidebar collapsible="icon" variant="floating">
+      <SidebarHeader className="border-b border-sidebar-border/70">
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton size="lg" asChild>
+            <SidebarMenuButton size="lg" asChild className="pr-10">
               <Link to="/dashboard">
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-primary/35 bg-primary/10 font-mono text-[10px] font-bold text-primary">
+                <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-sidebar-primary font-mono text-[10px] font-bold text-sidebar-primary-foreground shadow-sm">
                   WD
                 </div>
-                <span className="font-semibold tracking-tight">WoW Dashboard</span>
+                <div className="grid min-w-0 flex-1 text-left leading-tight">
+                  <span className="truncate font-semibold tracking-tight">WoW Dashboard</span>
+                  <span className="truncate text-[10px] text-sidebar-foreground/55">
+                    Character intelligence
+                  </span>
+                </div>
               </Link>
             </SidebarMenuButton>
+            <SidebarMenuAction
+              onClick={toggleSidebar}
+              aria-label="Collapse sidebar"
+              title="Collapse sidebar"
+            >
+              <PanelLeftClose aria-hidden="true" />
+            </SidebarMenuAction>
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarHeader>
 
       <SidebarContent>
         <SidebarGroup>
+          <SidebarGroupLabel>Navigation</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
               {navItems.map((item) => {
@@ -208,7 +223,7 @@ export function AppSidebar() {
         {showQuickAccess && (
           <SidebarGroup>
             <SidebarGroupLabel className="flex items-center gap-2">
-              <Star aria-hidden="true" className="size-3.5 text-yellow-400" />
+              <Star aria-hidden="true" className="text-sidebar-primary" />
               <span>Quick Access</span>
             </SidebarGroupLabel>
             <SidebarGroupContent>
@@ -232,13 +247,15 @@ export function AppSidebar() {
                           asChild
                           isActive={isActive}
                           tooltip={`${character.name} — ${character.realm}`}
-                          className="h-9 border border-sidebar-border/50 bg-sidebar-accent/20 pr-14 hover:bg-sidebar-accent/35 data-[active=true]:border-sidebar-border data-[active=true]:bg-sidebar-accent/55"
+                          size="lg"
+                          variant="outline"
+                          className="pr-14 ring-1 ring-sidebar-border/70"
                         >
                           <Link
                             to="/character/$characterId"
                             params={{ characterId: characterRouteId }}
                           >
-                            <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-sm border border-sidebar-border/70 bg-sidebar text-[10px] font-semibold uppercase">
+                            <div className="flex size-7 shrink-0 items-center justify-center rounded-sm border border-sidebar-border/70 bg-sidebar text-[10px] font-semibold uppercase">
                               {character.name[0] ?? "?"}
                             </div>
                             <div className="grid min-w-0 flex-1 text-left leading-tight">
@@ -310,7 +327,9 @@ export function AppSidebar() {
         </SidebarGroup>
       </SidebarContent>
 
-      <SidebarFooter>{session.data ? <NavUser /> : null}</SidebarFooter>
+      <SidebarFooter className="border-t border-sidebar-border/70">
+        {session.data ? <NavUser /> : null}
+      </SidebarFooter>
 
       <SidebarRail />
     </Sidebar>
