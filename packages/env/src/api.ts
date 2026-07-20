@@ -34,6 +34,10 @@ export const env = createEnv({
       "postgres://wowdash:wowdash@localhost:5432/wowdash",
     ),
     REDIS_URL: envStringWithDevelopmentDefault("redis://localhost:6379"),
+    APP_REVISION: z
+      .string()
+      .regex(/^[a-f0-9]{40}$/)
+      .optional(),
     SITE_URL: z.url().default("http://localhost:3001"),
     API_URL: z.url().default("http://localhost:3000/api"),
     BETTER_AUTH_URL: z.url().default("http://localhost:3000"),

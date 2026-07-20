@@ -45,6 +45,8 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile.api
       target: runtime-api
+      args:
+        APP_REVISION: ${APP_REVISION:-}
     restart: unless-stopped
     env_file:
       - ${SERVICE_ENV_FILE:-.env.production}

@@ -98,53 +98,31 @@ FORCE_CLEAN_BUILD=1 bash deploy/update-server.sh
 
 ## Manual GitHub Actions Deploy
 
-Automatic push deployment is intentionally paused while the production server is being replaced.
-`.github/workflows/deploy-production.yml` has only a `workflow_dispatch` trigger and must be run from
-`main`. Pushing to `main` does not deploy production.
+Automatic push deployment remains intentionally disabled. `.github/workflows/deploy-production.yml`
+has only a `workflow_dispatch` trigger and must be run from `main`. Pushing to `main` does not deploy
+production.
 
 The manual workflow:
 
 1. runs the reusable full verification workflow
-2. validates the deployment secrets
-3. SSHes into the VPS
-4. runs `cd ~/wow-dashboard && bash deploy/update-server.sh`
-5. retries the public readiness check at `https://wow.zirkumflex.io/readyz`
+2. creates an HMAC-signed deployment request using the protected GitHub `production` environment
+3. waits for Beeroot's outbound-only poller to verify the request and run `wow-dashboardctl deploy`
+4. confirms that `https://wow.zirkumflex.io/readyz` reports the exact verified `main` revision
 
-Configure these GitHub repository secrets:
+Install the Beeroot poller and copy its generated signing key directly into the GitHub environment:
 
-```text
-PRODUCTION_SSH_HOST=<server-host-or-ip>
-PRODUCTION_SSH_USER=<server-user>
-PRODUCTION_SSH_PORT=22
-PRODUCTION_SSH_PRIVATE_KEY=<private deploy key>
-PRODUCTION_SSH_KNOWN_HOSTS=<output from ssh-keyscan>
+```bash
+sudo bash deploy/beeroot/install-deploy-poller.sh
+sudo cat /etc/wow-dashboard/deploy-trigger.key | \
+  gh secret set PRODUCTION_DEPLOY_HMAC_KEY --env production
 ```
 
-`PRODUCTION_SSH_PORT` is optional and defaults to `22`.
+See [`deploy/beeroot/README.md`](beeroot/README.md) for the request validation and host service
+details. The workflow does not expose Beeroot SSH, attach a self-hosted runner to this public
+repository, or pass database and application credentials through GitHub.
 
 The old `PRODUCTION_AUTO_DEPLOY` variable is no longer read. Re-enabling automatic deploys requires
-an explicit workflow change after the replacement server, secrets, host key, backup, restore, and
-rollback paths have been verified.
-
-Generate a dedicated deploy key on your local machine:
-
-```bash
-ssh-keygen -t ed25519 -f ~/.ssh/wow-dashboard-production-deploy -C "wow-dashboard-production-deploy"
-```
-
-Install the public key on the VPS:
-
-```bash
-ssh-copy-id -i ~/.ssh/wow-dashboard-production-deploy.pub <server-user>@<server-host>
-```
-
-Store the private key content as `PRODUCTION_SSH_PRIVATE_KEY`.
-
-Store the server host key as `PRODUCTION_SSH_KNOWN_HOSTS`:
-
-```bash
-ssh-keyscan -H <server-host>
-```
+an explicit workflow change after backup, restore, and rollback paths have been verified.
 
 The deploy job already uses the GitHub `production` environment. Configure required reviewers or
 other environment protection rules in repository settings if a second approval is desired.
@@ -154,9 +132,9 @@ other environment protection rules in repository settings if a second approval i
 Before switching production to a new host:
 
 1. create an off-server Postgres backup and pass the restore test below
-2. install the repository at `~/wow-dashboard` and create `deploy/.env.production`
-3. update the production environment's SSH host, user, private key, and known-host entry
-4. run `deploy/update-server.sh` on the new host and verify both API and worker health
+2. install the production checkout and environment using the host's documented control plane
+3. install the signed deployment poller and configure `PRODUCTION_DEPLOY_HMAC_KEY`
+4. run the host deployment command and verify both API and worker health
 5. run the manual GitHub deployment from `main`
 6. switch DNS only after application, OAuth, addon ingest, and desktop smoke tests pass
 7. keep automatic push deployment disabled until the user explicitly asks to re-enable it
@@ -173,7 +151,9 @@ docker compose --env-file deploy/.env.production -f deploy/docker-compose.prod.y
 
 Only Caddy publishes public ports. Postgres and Redis stay internal to Docker.
 
-`/readyz` is the API readiness contract and checks its database, Redis, and queue dependencies.
+`/readyz` is the API readiness contract and checks its database, Redis, and queue dependencies. A
+production deployment also includes the deployed Git revision so the GitHub workflow can reject a
+healthy-but-stale release.
 The worker also serves private `/healthz` and `/readyz` endpoints on port `3002`; its Docker health
 check verifies database connectivity and pg-boss queue access. A healthy API does not by itself
 prove that background synchronization is running, so verify both `api` and `worker` are healthy in

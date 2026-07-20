@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly app_dir=/srv/wow-dashboard/app
+readonly env_file=/etc/wow-dashboard/production.env
+readonly compose_file=/srv/wow-dashboard/app/deploy/docker-compose.prod.yml
+readonly host_compose_file=/etc/wow-dashboard/docker-compose.host.yml
+readonly api_ready_url=http://127.0.0.1:3210/readyz
+readonly web_ready_url=http://127.0.0.1:3211/robots.txt
+readonly requested_revision="${DEPLOY_REVISION:-}"
+
+if [[ "$(id -u)" -ne 0 ]]; then
+  echo "Run this command with sudo." >&2
+  exit 1
+fi
+
+exec 9>/run/lock/wow-dashboard-deploy.lock
+if ! flock -n 9; then
+  echo "Another WoW Dashboard deployment is already running." >&2
+  exit 1
+fi
+
+run_as_wowdash() {
+  runuser -u wowdash -- env \
+    HOME=/srv/wow-dashboard \
+    COMPOSE_PROJECT_NAME=wow-dashboard \
+    SERVICE_ENV_FILE="$env_file" \
+    APP_REVISION="${APP_REVISION:-}" \
+    "$@"
+}
+
+compose() {
+  run_as_wowdash docker compose \
+    --env-file "$env_file" \
+    -f "$compose_file" \
+    -f "$host_compose_file" \
+    "$@"
+}
+
+if [[ ! -f "$env_file" ]]; then
+  echo "Missing production environment: $env_file" >&2
+  exit 1
+fi
+
+if ! awk -F= '
+  $1 == "BATTLENET_CLIENT_ID" && length(substr($0, index($0, "=") + 1)) > 0 { id = 1 }
+  $1 == "BATTLENET_CLIENT_SECRET" && length(substr($0, index($0, "=") + 1)) > 0 { secret = 1 }
+  END { exit !(id && secret) }
+' "$env_file"; then
+  echo "Battle.net credentials are not installed. Run: sudo wow-dashboard-set-credentials" >&2
+  exit 1
+fi
+
+if [[ -n "$(run_as_wowdash git -C "$app_dir" status --porcelain)" ]]; then
+  echo "Production checkout is dirty; refusing to overwrite local changes." >&2
+  run_as_wowdash git -C "$app_dir" status --short >&2
+  exit 1
+fi
+
+run_as_wowdash git -C "$app_dir" fetch --prune origin \
+  +refs/heads/main:refs/remotes/origin/main
+origin_main="$(run_as_wowdash git -C "$app_dir" rev-parse refs/remotes/origin/main)"
+
+if [[ -n "$requested_revision" ]]; then
+  if [[ ! "$requested_revision" =~ ^[a-f0-9]{40}$ ]]; then
+    echo "DEPLOY_REVISION must be a complete lowercase Git commit SHA." >&2
+    exit 1
+  fi
+
+  if ! run_as_wowdash git -C "$app_dir" cat-file -e "${requested_revision}^{commit}"; then
+    echo "The requested deployment revision is not available locally." >&2
+    exit 1
+  fi
+
+  if ! run_as_wowdash git -C "$app_dir" merge-base --is-ancestor \
+    "$requested_revision" "$origin_main"; then
+    echo "The requested deployment revision is not contained in origin/main." >&2
+    exit 1
+  fi
+
+  current_revision="$(run_as_wowdash git -C "$app_dir" rev-parse HEAD)"
+  if ! run_as_wowdash git -C "$app_dir" merge-base --is-ancestor \
+    "$current_revision" "$requested_revision"; then
+    echo "The requested revision would not fast-forward the production checkout." >&2
+    exit 1
+  fi
+fi
+
+if [[ -n "$(compose ps -q postgres 2>/dev/null || true)" ]]; then
+  systemctl start wow-dashboard-backup.service
+fi
+
+if [[ -n "$requested_revision" ]]; then
+  run_as_wowdash git -C "$app_dir" merge --ff-only "$requested_revision"
+else
+  run_as_wowdash git -C "$app_dir" merge --ff-only "$origin_main"
+fi
+
+deployed_revision="$(run_as_wowdash git -C "$app_dir" rev-parse HEAD)"
+if [[ -n "$requested_revision" && "$deployed_revision" != "$requested_revision" ]]; then
+  echo "Production did not reach the requested deployment revision." >&2
+  exit 1
+fi
+export APP_REVISION="$deployed_revision"
+
+compose config --quiet
+compose build migrate api worker web
+compose up -d postgres redis
+compose run --rm migrate
+systemctl restart wow-dashboard.service
+
+ready=0
+for _ in $(seq 1 60); do
+  if curl -fsS --max-time 5 "$api_ready_url" >/dev/null \
+    && curl -fsS --max-time 5 "$web_ready_url" >/dev/null; then
+    ready=1
+    break
+  fi
+  sleep 2
+done
+
+compose ps
+
+if [[ "$ready" != "1" ]]; then
+  echo "Deployment finished, but the local readiness checks did not pass." >&2
+  exit 1
+fi
+
+echo "WoW Dashboard revision $deployed_revision is healthy on the loopback backends."

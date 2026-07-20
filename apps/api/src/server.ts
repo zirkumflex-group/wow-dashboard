@@ -753,7 +753,7 @@ app.get("/readyz", async (c) => {
       throw new Error("Redis ping failed");
     }
 
-    return c.json({ ok: true });
+    return c.json({ ok: true, ...(env.APP_REVISION ? { revision: env.APP_REVISION } : {}) });
   } catch (error) {
     logger.warn("health.ready_failed", { error });
     return c.json({ ok: false }, 503);

@@ -19,57 +19,66 @@ jobs:
     needs: verify
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 20
     environment: production
+    permissions:
+      contents: write
 
     env:
-      SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
-      SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
-      SSH_PORT: ${{ secrets.PRODUCTION_SSH_PORT || '22' }}
-      SSH_PRIVATE_KEY: ${{ secrets.PRODUCTION_SSH_PRIVATE_KEY }}
-      SSH_KNOWN_HOSTS: ${{ secrets.PRODUCTION_SSH_KNOWN_HOSTS }}
       HEALTH_URL: ${{ vars.PRODUCTION_HEALTH_URL || 'https://wow.zirkumflex.io/readyz' }}
 
     steps:
-      - name: Validate deployment secrets
-        run: |
-          missing=0
-          for name in SSH_HOST SSH_USER SSH_PRIVATE_KEY SSH_KNOWN_HOSTS; do
-            if [ -z "${!name:-}" ]; then
-              echo "::error::Missing required production deployment secret: ${name}"
-              missing=1
-            fi
-          done
-          exit "$missing"
+      - name: Checkout requested revision
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
 
-      - name: Configure SSH
+      - name: Request Beeroot deployment
+        env:
+          DEPLOY_HMAC_KEY: ${{ secrets.PRODUCTION_DEPLOY_HMAC_KEY }}
         run: |
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/production_deploy_key
-          chmod 600 ~/.ssh/production_deploy_key
-          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/known_hosts
+          payload="v1:${GITHUB_REPOSITORY}:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:${GITHUB_SHA}"
+          signature="$(PAYLOAD="$payload" python3 - <<'PY'
+          import hashlib
+          import hmac
+          import os
 
-      - name: Deploy on VPS
-        run: |
-          ssh \
-            -i ~/.ssh/production_deploy_key \
-            -p "$SSH_PORT" \
-            -o IdentitiesOnly=yes \
-            "$SSH_USER@$SSH_HOST" \
-            'cd ~/wow-dashboard && bash deploy/update-server.sh'
+          key_hex = os.environ.get("DEPLOY_HMAC_KEY", "").strip()
+          if len(key_hex) != 64:
+              raise SystemExit("PRODUCTION_DEPLOY_HMAC_KEY must contain 32 bytes encoded as hex")
 
-      - name: Check production health
+          try:
+              key = bytes.fromhex(key_hex)
+          except ValueError as error:
+              raise SystemExit("PRODUCTION_DEPLOY_HMAC_KEY is not valid hex") from error
+
+          print(hmac.new(key, os.environ["PAYLOAD"].encode(), hashlib.sha256).hexdigest())
+          PY
+          )"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag --force --annotate production-deploy-request \
+            --message "wow-dashboard-deploy-request:${payload}:${signature}" \
+            "$GITHUB_SHA"
+          git push --force origin refs/tags/production-deploy-request
+
+      - name: Wait for requested revision
         run: |
-          for attempt in {1..12}; do
-            if curl --fail-with-body --silent --show-error "$HEALTH_URL"; then
+          for attempt in {1..120}; do
+            response="$(curl --fail-with-body --silent --show-error "$HEALTH_URL" || true)"
+            revision="$(jq -r '.revision // empty' <<<"$response" 2>/dev/null || true)"
+
+            if [ "$revision" = "$GITHUB_SHA" ]; then
+              echo "Beeroot deployed revision $revision."
+              curl --fail-with-body --silent --show-error "$HEALTH_URL"
               exit 0
             fi
-            if [ "$attempt" -lt 12 ]; then
-              echo "Production is not ready yet; retrying in 5 seconds (${attempt}/12)."
+
+            if [ "$attempt" -lt 120 ]; then
+              echo "Beeroot has not reported the requested revision yet (${attempt}/120)."
               sleep 5
             fi
           done
-          echo "Production readiness check failed after 12 attempts." >&2
+          echo "Beeroot did not deploy the requested main revision within 10 minutes." >&2
           exit 1

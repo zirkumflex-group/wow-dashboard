@@ -1,0 +1,28 @@
+[Unit]
+Description=Poll GitHub for signed WoW Dashboard production deployment requests
+Documentation=file:/srv/wow-dashboard/OPERATIONS.md
+Wants=network-online.target
+After=network-online.target docker.service
+ConditionPathExists=/etc/wow-dashboard/deploy-trigger.key
+ConditionPathExists=/srv/wow-dashboard/app/.git
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/wow-dashboard-deploy-poll
+StateDirectory=wow-dashboard-deploy
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=full
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
